@@ -268,8 +268,8 @@ impl Language {
             Language::ObjectiveC => "objc",
             Language::ObjectiveCxx | Language::ObjectiveCxxHeader => "objc++",
             Language::Cuda => "cuda",
-            Language::Ptx => "cuda",
-            Language::Cubin => "cuda",
+            Language::Ptx => "ptx",
+            Language::Cubin => "cubin",
             Language::Rust => "rust",
             Language::Hip => "hip",
         }
@@ -288,8 +288,8 @@ impl CompilerKind {
             | Language::ObjectiveCxx
             | Language::ObjectiveCxxHeader => "C/C++",
             Language::Cuda => "CUDA",
-            Language::Ptx => "CUDA",
-            Language::Cubin => "CUDA",
+            Language::Ptx => "PTX",
+            Language::Cubin => "CUBIN",
             Language::Rust => "Rust",
             Language::Hip => "HIP",
         }
@@ -303,8 +303,8 @@ impl CompilerKind {
             CompilerKind::C(CCompilerKind::Gcc) => textual_lang + " [gcc]",
             CompilerKind::C(CCompilerKind::Msvc) => textual_lang + " [msvc]",
             CompilerKind::C(CCompilerKind::Nvcc) => textual_lang + " [nvcc]",
-            CompilerKind::C(CCompilerKind::Cicc) => textual_lang + " [nvcc]",
-            CompilerKind::C(CCompilerKind::Ptxas) => textual_lang + " [nvcc]",
+            CompilerKind::C(CCompilerKind::Cicc) => textual_lang + " [cicc]",
+            CompilerKind::C(CCompilerKind::Ptxas) => textual_lang + " [ptxas]",
             CompilerKind::C(CCompilerKind::Nvhpc) => textual_lang + " [nvhpc]",
             CompilerKind::C(CCompilerKind::TaskingVX) => textual_lang + " [taskingvx]",
             CompilerKind::Rust => textual_lang,
@@ -786,7 +786,7 @@ where
             dist::RunJobResult::Complete(jc) => jc,
             dist::RunJobResult::JobNotFound => bail!("Job {} not found on server", job_id),
         };
-        info!(
+        debug!(
             "fetched {:?}",
             jc.outputs
                 .iter()
@@ -1417,10 +1417,13 @@ where
     let test = b"
 #if defined(__NVCC__) && defined(__NVCOMPILER)
 compiler_id=nvcc-nvhpc
+compiler_version=__CUDACC_VER_MAJOR__.__CUDACC_VER_MINOR__.__CUDACC_VER_BUILD__
 #elif defined(__NVCC__) && defined(_MSC_VER)
 compiler_id=nvcc-msvc
+compiler_version=__CUDACC_VER_MAJOR__.__CUDACC_VER_MINOR__.__CUDACC_VER_BUILD__
 #elif defined(__NVCC__)
 compiler_id=nvcc
+compiler_version=__CUDACC_VER_MAJOR__.__CUDACC_VER_MINOR__.__CUDACC_VER_BUILD__
 #elif defined(_MSC_VER) && !defined(__clang__)
 compiler_id=msvc
 #elif defined(_MSC_VER) && defined(_MT)
@@ -1572,10 +1575,17 @@ compiler_version=__VERSION__
                     "nvcc" => NvccHostCompiler::Gcc,
                     &_ => NvccHostCompiler::Gcc,
                 };
+                let host_compiler_version = lines
+                    .next()
+                    // In case the compiler didn't expand the macro.
+                    .filter(|&line| line != "__VERSION__")
+                    .map(str::to_owned);
+
                 return CCompiler::new(
                     Nvcc {
                         host_compiler,
-                        version: version.clone(),
+                        version,
+                        host_compiler_version,
                     },
                     executable,
                     &pool,

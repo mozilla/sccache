@@ -105,7 +105,7 @@ pub struct ParsedArguments {
     pub arch_args: Vec<OsString>,
     /// Commandline arguments for the preprocessor or the compiler that don't affect the computed hash.
     pub unhashed_args: Vec<OsString>,
-    /// Extra files that need to be sent along with dist compiles.
+    /// Extra unhashed files that need to be sent along with dist compiles.
     pub extra_dist_files: Vec<PathBuf>,
     /// Extra files that need to have their contents hashed.
     pub extra_hash_files: Vec<PathBuf>,
@@ -1165,14 +1165,24 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I>
             ..
         } = *self;
 
-        compiler.generate_compile_commands(
+        let (command, dist_command, cacheable) = compiler.generate_compile_commands(
             path_transformer,
             executable,
             parsed_args,
             cwd,
             env_vars,
             rewrite_includes_only,
-        )
+        )?;
+
+        let force_no_cache = env_vars
+            .iter()
+            .any(|(k, _v)| k.as_os_str() == "SCCACHE_NO_CACHE");
+
+        if force_no_cache {
+            Ok((command, dist_command, Cacheable::No))
+        } else {
+            Ok((command, dist_command, cacheable))
+        }
     }
 
     #[cfg(feature = "dist-client")]

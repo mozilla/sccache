@@ -55,6 +55,7 @@ pub enum NvccHostCompiler {
 #[derive(Clone, Debug)]
 pub struct Nvcc {
     pub host_compiler: NvccHostCompiler,
+    pub host_compiler_version: Option<String>,
     pub version: Option<String>,
 }
 
@@ -67,7 +68,17 @@ impl CCompilerImpl for Nvcc {
         false
     }
     fn version(&self) -> Option<String> {
-        self.version.clone()
+        let nvcc_ver = self.version.clone().unwrap_or_default();
+        let host_ver = self.host_compiler_version.clone().unwrap_or_default();
+        let both_ver = [nvcc_ver, host_ver]
+            .iter()
+            .filter(|x| !x.is_empty())
+            .join("-");
+        if both_ver.is_empty() {
+            None
+        } else {
+            Some(both_ver)
+        }
     }
     fn parse_arguments(
         &self,
@@ -241,7 +252,7 @@ impl CCompilerImpl for Nvcc {
     {
         generate_compile_commands(parsed_args, executable, cwd, env_vars).map(
             |(command, dist_command, cacheable)| {
-                (CCompileCommand::new(command), dist_command, Cacheable::No)
+                (CCompileCommand::new(command), dist_command, cacheable)
             },
         )
     }
@@ -654,18 +665,18 @@ where
             );
         }
 
-        let cacheable = match exe.file_name().and_then(|s| s.to_str()) {
+        let (env_vars, cacheable) = match exe.file_name().and_then(|s| s.to_str()) {
             // cicc and ptxas are cacheable
-            Some("cicc") | Some("ptxas") => Cacheable::Yes,
+            Some("cicc") | Some("ptxas") => (env_vars.clone(), Cacheable::Yes),
             // cudafe++, nvlink, and fatbinary are not cacheable
-            Some("cudafe++") | Some("nvlink") => Cacheable::No,
+            Some("cudafe++") | Some("nvlink") => (env_vars.clone(), Cacheable::No),
             Some("fatbinary") => {
                 // The fatbinary command represents the start of the last group
                 if !no_more_groups {
                     command_groups.push(vec![]);
                 }
                 no_more_groups = true;
-                Cacheable::No
+                (env_vars.clone(), Cacheable::No)
             }
             _ => {
                 // All generated host compiler commands include `-D__CUDA_ARCH_LIST__=`.
@@ -685,20 +696,28 @@ where
                         command_groups.push(vec![]);
                     }
                     // Do not run preprocessor calls through sccache
-                    Cacheable::No
+                    (env_vars.clone(), Cacheable::No)
                 } else {
-                    // Cache the host compiler calls, since we've marked the outer `nvcc` call
-                    // as non-cacheable. This ensures `sccache nvcc ...` _always_ decomposes the
-                    // nvcc call into its constituent subcommands with `--dryrun`, but only caches
-                    // the final build product once.
-                    //
-                    // `nvcc --dryrun` is the most reliable way to ensure caching nvcc invocations
-                    // is fully sound, since the host compiler could change in a way we can't detect.
-                    //
-                    // Always calling `nvcc --dryrun` ensures that if this happens, the final build
-                    // product is the result of running the host compiler through sccache, which will
-                    // detect things like compiler/version differences when computing the objects' hash.
-                    Cacheable::Yes
+                    // Returns Cacheable::Yes to indicate we _do_ want to run this host
+                    // compiler call through sccache (because it may be distributed),
+                    // but we _do not_ want to cache its output. The output file will
+                    // be cached as the result of the outer `nvcc` command. Caching
+                    // here would store the same object twice under two different hashes,
+                    // unnecessarily bloating the cache size.
+                    (
+                        env_vars
+                            .iter()
+                            .chain(
+                                [
+                                    // Do not cache host compiler calls
+                                    ("SCCACHE_NO_CACHE".into(), "true".into()),
+                                ]
+                                .iter(),
+                            )
+                            .cloned()
+                            .collect::<Vec<_>>(),
+                        Cacheable::Yes,
+                    )
                 }
             }
         };
@@ -716,7 +735,7 @@ where
                     exe: exe.clone(),
                     args: args.clone(),
                     cwd: dir.into(),
-                    env_vars: env_vars.clone(),
+                    env_vars,
                     cacheable,
                 });
             }
@@ -1156,6 +1175,7 @@ mod test {
         let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
         Nvcc {
             host_compiler: NvccHostCompiler::Gcc,
+            host_compiler_version: None,
             version: None,
         }
         .parse_arguments(&arguments, ".".as_ref())
@@ -1164,6 +1184,7 @@ mod test {
         let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
         Nvcc {
             host_compiler: NvccHostCompiler::Msvc,
+            host_compiler_version: None,
             version: None,
         }
         .parse_arguments(&arguments, ".".as_ref())
@@ -1172,6 +1193,7 @@ mod test {
         let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
         Nvcc {
             host_compiler: NvccHostCompiler::Nvhpc,
+            host_compiler_version: None,
             version: None,
         }
         .parse_arguments(&arguments, ".".as_ref())
