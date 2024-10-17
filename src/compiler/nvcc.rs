@@ -38,6 +38,8 @@ use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::future::{Future, IntoFuture};
 use std::io::{self, BufRead, Read, Write};
+#[cfg(unix)]
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process;
 use which::which_in;
@@ -508,9 +510,9 @@ impl CompileCommandImpl for NvccCompileCommand {
         };
 
         let n = nvcc_subcommand_groups.len();
-        let cuda_front_end_range = if n < 1 { 0..0 } else { 0..1 };
-        let device_compile_range = if n < 2 { 0..0 } else { 1..n - 1 };
-        let final_assembly_range = if n < 3 { 0..0 } else { n - 1..n };
+        let cuda_front_end_range = if n > 0 { 0..1 } else { 0..0 };
+        let final_assembly_range = if n > 1 { n - 1..n } else { 0..0 };
+        let device_compile_range = if n > 2 { 1..n - 1 } else { 0..0 };
 
         let num_parallel = device_compile_range.len().min(*num_parallel).max(1);
 
@@ -531,12 +533,7 @@ impl CompileCommandImpl for NvccCompileCommand {
                     output = aggregate_output(output, result.unwrap_or_else(error_to_output));
                 }
 
-                if output
-                    .status
-                    .code()
-                    .and_then(|c| (c != 0).then_some(c))
-                    .is_some()
-                {
+                if !output.status.success() {
                     output.stdout.shrink_to_fit();
                     output.stderr.shrink_to_fit();
                     maybe_keep_temps_then_clean();
@@ -657,6 +654,7 @@ where
             trace!(
                 "transformed nvcc command: {:?}",
                 [
+                    &[format!("cd {} &&", dir.to_string_lossy()).to_string()],
                     &[exe.to_str().unwrap_or_default().to_string()][..],
                     &args[..]
                 ]
@@ -786,7 +784,11 @@ where
     let is_valid_line_re = Regex::new(r"^#\$ (.*)$").unwrap();
     let is_envvar_line_re = Regex::new(r"^([_A-Z]+)=(.*)$").unwrap();
 
+    let mut dryrun_env_vars = Vec::<(OsString, OsString)>::new();
+    let mut dryrun_env_vars_re_map = HashMap::<String, regex::Regex>::new();
+
     let mut lines = Vec::<(usize, PathBuf, Vec<String>)>::new();
+
     let reader = std::io::BufReader::new(&nvcc_dryrun_output.stderr[..]);
 
     for pair in reader.lines().enumerate() {
@@ -794,8 +796,13 @@ where
         // Select lines that match the `#$ ` prefix from nvcc --dryrun
         let line = select_valid_dryrun_lines(&is_valid_line_re, &line?)?;
 
-        let maybe_exe_and_args =
-            fold_env_vars_or_split_into_exe_and_args(&is_envvar_line_re, env_vars, cwd, &line)?;
+        let maybe_exe_and_args = fold_env_vars_or_split_into_exe_and_args(
+            &is_envvar_line_re,
+            &mut dryrun_env_vars,
+            &mut dryrun_env_vars_re_map,
+            cwd,
+            &line,
+        )?;
 
         let (exe, mut args) = match maybe_exe_and_args {
             Some(exe_and_args) => exe_and_args,
@@ -817,6 +824,17 @@ where
         }
     }
 
+    for pair in dryrun_env_vars {
+        env_vars.splice(
+            if let Some(idx) = env_vars.iter().position(|(k, _)| *k == pair.0) {
+                idx..idx + 1
+            } else {
+                env_vars.len()..env_vars.len()
+            },
+            [pair],
+        );
+    }
+
     Ok(lines)
 }
 
@@ -833,6 +851,7 @@ fn select_valid_dryrun_lines(re: &Regex, line: &str) -> Result<String> {
 fn fold_env_vars_or_split_into_exe_and_args(
     re: &Regex,
     env_vars: &mut Vec<(OsString, OsString)>,
+    env_var_re_map: &mut HashMap<String, regex::Regex>,
     cwd: &Path,
     line: &str,
 ) -> Result<Option<(PathBuf, Vec<String>)>> {
@@ -840,13 +859,16 @@ fn fold_env_vars_or_split_into_exe_and_args(
     if let Some(var) = re.captures(line) {
         let (_, [var, val]) = var.extract();
 
-        let loc = if let Some(idx) = env_vars.iter().position(|(key, _)| key == var) {
-            idx..idx + 1
-        } else {
-            env_vars.len()..env_vars.len()
-        };
+        env_var_re_map
+            .entry(var.to_owned())
+            .or_insert_with_key(|key| {
+                let re = "$".to_owned() + key;
+                let re = regex::escape(&re) + r"[^\w]";
+                Regex::new(&re).unwrap()
+            });
 
         let mut pair = (var.into(), val.into());
+
         // Handle the special `_SPACE_= ` line
         if val != " " {
             pair.1 = val
@@ -857,7 +879,9 @@ fn fold_env_vars_or_split_into_exe_and_args(
                 .join(" ")
                 .into();
         }
-        env_vars.splice(loc, [pair]);
+
+        env_vars.push(pair);
+
         return Ok(None);
     }
 
@@ -867,9 +891,13 @@ fn fold_env_vars_or_split_into_exe_and_args(
 
     // Expand envvars in nvcc subcommands, i.e. "$CICC_PATH/cicc ..."
     if let Some(env_vars) = dist::osstring_tuples_to_strings(env_vars) {
-        for (key, val) in env_vars {
-            let var = "$".to_owned() + &key;
-            line = line.replace(&var, &val);
+        for (var, val) in env_vars {
+            if let Some(re) = env_var_re_map.get(&var) {
+                if re.is_match(&line) {
+                    let var = "$".to_owned() + &var;
+                    line = line.replace(&var, &val);
+                }
+            }
         }
     }
 
@@ -1051,14 +1079,14 @@ where
                             .await
                         }
                     }
-                    .map_or_else(error_to_output, compile_result_to_output),
+                    .map_or_else(error_to_output, |res| compile_result_to_output(exe, res)),
                 }
             }
         };
 
         output = aggregate_output(output, out);
 
-        if output.status.code().unwrap_or(0) != 0 {
+        if !output.status.success() {
             break;
         }
     }
@@ -1068,10 +1096,10 @@ where
 
 fn aggregate_output(lhs: process::Output, rhs: process::Output) -> process::Output {
     process::Output {
-        status: exit_status(std::cmp::max(
-            lhs.status.code().unwrap_or(0),
-            rhs.status.code().unwrap_or(0),
-        ) as ExitStatusValue),
+        status: exit_status(
+            std::cmp::max(status_to_code(lhs.status), status_to_code(rhs.status))
+                as ExitStatusValue,
+        ),
         stdout: [lhs.stdout, rhs.stdout].concat(),
         stderr: [lhs.stderr, rhs.stderr].concat(),
     }
@@ -1088,11 +1116,45 @@ fn error_to_output(err: Error) -> process::Output {
     }
 }
 
-fn compile_result_to_output(res: protocol::CompileFinished) -> process::Output {
+fn compile_result_to_output(exe: &Path, res: protocol::CompileFinished) -> process::Output {
+    if let Some(signal) = res.signal {
+        return process::Output {
+            status: exit_status(signal as ExitStatusValue),
+            stdout: res.stdout,
+            stderr: [
+                format!(
+                    "{} terminated (signal: {})",
+                    exe.file_stem().unwrap().to_string_lossy(),
+                    signal
+                )
+                .as_bytes(),
+                &res.stderr,
+            ]
+            .concat(),
+        };
+    }
     process::Output {
-        status: exit_status(res.retcode.or(res.signal).unwrap_or(0) as ExitStatusValue),
+        status: exit_status(res.retcode.unwrap_or(0) as ExitStatusValue),
         stdout: res.stdout,
         stderr: res.stderr,
+    }
+}
+
+#[cfg(unix)]
+fn status_to_code(res: process::ExitStatus) -> ExitStatusValue {
+    if res.success() {
+        0 as ExitStatusValue
+    } else {
+        res.signal().or(res.code()).unwrap_or(1) as ExitStatusValue
+    }
+}
+
+#[cfg(windows)]
+fn status_to_code(res: process::ExitStatus) -> ExitStatusValue {
+    if res.success() {
+        0 as ExitStatusValue
+    } else {
+        res.code().unwrap_or(1) as ExitStatusValue
     }
 }
 
@@ -1130,6 +1192,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     flag!("--save-temps", UnhashedFlag),
     take_arg!("--system-include", PathBuf, CanBeSeparated('='), PreprocessorArgumentPath),
     take_arg!("--threads", OsString, CanBeSeparated('='), Unhashed),
+    take_arg!("--x", OsString, CanBeSeparated('='), Language),
 
     take_arg!("-Werror", OsString, CanBeSeparated('='), PreprocessorArgument),
     take_arg!("-Xarchive", OsString, CanBeSeparated('='), PassThrough),
