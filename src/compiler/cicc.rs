@@ -114,11 +114,13 @@ where
     let input = args.splice(input_loc..input_loc + 1, []).next().unwrap();
 
     let mut take_next = false;
-    let mut extra_inputs = vec![];
     let mut outputs = HashMap::new();
+    let mut extra_dist_files = vec![];
 
     let mut common_args = vec![];
     let mut unhashed_args = vec![];
+    let mut gen_module_id_file = false;
+    let mut module_id_file_name = Option::<PathBuf>::None;
 
     for arg in ArgsIter::new(args.iter().cloned(), arg_info) {
         match arg {
@@ -140,13 +142,14 @@ where
                         );
                         continue;
                     }
-                    Some(UnhashedInput(o)) => {
+                    Some(UnhashedGenModuleIdFileFlag) => {
                         take_next = false;
-                        let path = cwd.join(o);
-                        if !path.exists() {
-                            continue;
-                        }
-                        extra_inputs.push(path);
+                        gen_module_id_file = true;
+                        &mut unhashed_args
+                    }
+                    Some(UnhashedModuleIdFileName(o)) => {
+                        take_next = false;
+                        module_id_file_name = Some(cwd.join(o));
                         &mut unhashed_args
                     }
                     Some(UnhashedOutput(o)) => {
@@ -163,7 +166,7 @@ where
                         }
                         &mut unhashed_args
                     }
-                    Some(UnhashedFlag) | Some(Unhashed(_)) => {
+                    Some(UnhashedFlag) => {
                         take_next = false;
                         &mut unhashed_args
                     }
@@ -190,6 +193,20 @@ where
         };
     }
 
+    if let Some(module_id_path) = module_id_file_name {
+        if gen_module_id_file {
+            outputs.insert(
+                "--module_id_file_name",
+                ArtifactDescriptor {
+                    path: module_id_path,
+                    optional: true,
+                },
+            );
+        } else {
+            extra_dist_files.push(module_id_path);
+        }
+    }
+
     CompilerArguments::Ok(ParsedArguments {
         input: input.into(),
         outputs,
@@ -202,7 +219,7 @@ where
         common_args,
         arch_args: vec![],
         unhashed_args,
-        extra_dist_files: extra_inputs,
+        extra_dist_files,
         extra_hash_files: vec![],
         msvc_show_includes: false,
         profile_generate: false,
@@ -294,11 +311,11 @@ pub fn generate_compile_commands(
 
 ArgData! { pub
     Output(PathBuf),
-    UnhashedInput(PathBuf),
     UnhashedOutput(PathBuf),
     UnhashedFlag,
+    UnhashedGenModuleIdFileFlag,
+    UnhashedModuleIdFileName(PathBuf),
     PassThrough(OsString),
-    Unhashed(OsString),
 }
 
 use self::ArgData::*;
@@ -306,9 +323,9 @@ use self::ArgData::*;
 counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     take_arg!("--gen_c_file_name", PathBuf, Separated, UnhashedOutput),
     take_arg!("--gen_device_file_name", PathBuf, Separated, UnhashedOutput),
-    flag!("--gen_module_id_file", UnhashedFlag),
+    flag!("--gen_module_id_file", UnhashedGenModuleIdFileFlag),
     take_arg!("--include_file_name", OsString, Separated, PassThrough),
-    take_arg!("--module_id_file_name", PathBuf, Separated, UnhashedInput),
+    take_arg!("--module_id_file_name", PathBuf, Separated, UnhashedModuleIdFileName),
     take_arg!("--stub_file_name", PathBuf, Separated, UnhashedOutput),
     take_arg!("-o", PathBuf, Separated, Output),
 ]);

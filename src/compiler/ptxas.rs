@@ -103,7 +103,7 @@ impl CCompilerImpl for Ptxas {
 use cicc::ArgData::*;
 
 counted_array!(pub static ARGS: [ArgInfo<cicc::ArgData>; _] = [
-    take_arg!("-arch", OsString, CanBeSeparated, PassThrough),
-    take_arg!("-m", OsString, CanBeSeparated, PassThrough),
+    take_arg!("-arch", OsString, CanBeSeparated('='), PassThrough),
+    take_arg!("-m", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("-o", PathBuf, Separated, Output),
 ]);
