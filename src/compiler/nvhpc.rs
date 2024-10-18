@@ -180,6 +180,7 @@ impl CCompilerImpl for Nvhpc {
             env_vars,
             self.kind(),
             rewrite_includes_only,
+            gcc::language_to_gcc_arg,
         )
         .map(|(command, dist_command, cacheable)| {
             (CCompileCommand::new(command), dist_command, cacheable)

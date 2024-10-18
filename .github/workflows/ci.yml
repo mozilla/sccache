@@ -86,21 +86,53 @@ jobs:
             extra_args: --no-default-features
             allow_failure: true
           - os: ubuntu-22.04
-          - os: macos-13
-          # M1 CPU
-          - os: macos-14
-          - os: windows-2019
+            cuda: "11.8"
+            extra_desc: cuda11.8
+          - os: ubuntu-24.04
+            cuda: "12.6"
             # Oldest supported version, keep in sync with README.md
             rustc: "1.75.0"
+            extra_desc: cuda12.6
+          - os: macos-13
+          # # M1 CPU
+          - os: macos-14
           - os: windows-2019
+            cuda: "11.8"
+            # Oldest supported version, keep in sync with README.md
+            rustc: "1.75.0"
+            extra_args: --no-fail-fast
+            extra_desc: cuda11.8
+          - os: windows-2019
+            cuda: "11.8"
             rustc: nightly
             allow_failure: true
             extra_args: --features=unstable
+            extra_desc: cuda11.8
           - os: windows-2019
+            cuda: "11.8"
             rustc: beta
+            extra_desc: cuda11.8
+          - os: windows-2022
+            cuda: "12.6"
+            # Oldest supported version, keep in sync with README.md
+            rustc: "1.75.0"
+            extra_args: --no-fail-fast
+            extra_desc: cuda12.6
+          - os: windows-2022
+            cuda: "12.6"
+            rustc: nightly
+            allow_failure: true
+            extra_args: --features=unstable
+            extra_desc: cuda12.6
+          - os: windows-2022
+            cuda: "12.6"
+            rustc: beta
+            extra_desc: cuda12.6
     env:
       RUST_BACKTRACE: 1
     steps:
+      - uses: ilammy/msvc-dev-cmd@v1
+
       - name: Clone repository
         uses: actions/checkout@v4
 
@@ -109,9 +141,28 @@ jobs:
         with:
           toolchain: ${{ matrix.rustc }}
 
-      - name: Install gcc & clang for tests
-        run: sudo apt-get install -y clang gcc
-        if: ${{ matrix.os == 'ubuntu-20.04' || matrix.os == 'ubuntu-22.04' }}
+      - if: ${{ contains(matrix.os, 'ubuntu') }}
+        name: Install gcc & clang for tests
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -x
+          # Conflicts with clang-cuda
+          if dpkg -s gcc-14 >/dev/null 2>&1; then
+            sudo apt remove -y gcc-14 g++-14
+            sudo apt autoremove -y
+          fi
+          sudo apt install -y --no-install-recommends clang gcc
+          echo 'gcc version:'
+          gcc --version
+          echo 'clang version:'
+          clang --version
+
+      - if: matrix.cuda != '' && contains(fromJSON('["Linux", "Windows"]'), runner.os)
+        name: Install nvcc
+        uses: ./.github/actions/nvcc-toolchain
+        with:
+          cuda-version: ${{ matrix.cuda }}
 
       - name: Build tests
         run: cargo test --no-run --locked --all-targets ${{ matrix.extra_args }}
@@ -206,7 +257,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-20.04
+          - os: ubuntu-22.04
+            cuda: "11.8"
             rustc: nightly
             allow_failure: true
             extra_args: --features=unstable
@@ -230,6 +282,12 @@ jobs:
       - name: Install gcc & clang for tests
         run: sudo apt-get install -y clang gcc
         if: ${{ matrix.os == 'ubuntu-20.04' }}
+
+      - if: matrix.cuda != '' && contains(fromJSON('["Linux", "Windows"]'), runner.os)
+        name: Install nvcc
+        uses: ./.github/actions/nvcc-toolchain
+        with:
+          cuda-version: ${{ matrix.cuda }}
 
       - name: "`grcov` ~ install"
         run: cargo install grcov
