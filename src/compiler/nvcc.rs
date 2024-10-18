@@ -252,7 +252,7 @@ impl CCompilerImpl for Nvcc {
     where
         T: CommandCreatorSync,
     {
-        generate_compile_commands(parsed_args, executable, cwd, env_vars).map(
+        generate_compile_commands(parsed_args, executable, cwd, env_vars, &self.host_compiler).map(
             |(command, dist_command, cacheable)| {
                 (CCompileCommand::new(command), dist_command, cacheable)
             },
@@ -265,6 +265,7 @@ pub fn generate_compile_commands(
     executable: &Path,
     cwd: &Path,
     env_vars: &[(OsString, OsString)],
+    host_compiler: &NvccHostCompiler,
 ) -> Result<(NvccCompileCommand, Option<dist::CompileCommand>, Cacheable)> {
     let mut unhashed_args = parsed_args.unhashed_args.clone();
 
@@ -415,6 +416,7 @@ pub fn generate_compile_commands(
         arguments,
         env_vars,
         cwd: cwd.to_owned(),
+        host_compiler: host_compiler.clone(),
     };
 
     Ok((command, None, Cacheable::Yes))
@@ -429,6 +431,7 @@ pub struct NvccCompileCommand {
     pub arguments: Vec<OsString>,
     pub env_vars: Vec<(OsString, OsString)>,
     pub cwd: PathBuf,
+    pub host_compiler: NvccHostCompiler,
 }
 
 #[async_trait]
@@ -462,6 +465,7 @@ impl CompileCommandImpl for NvccCompileCommand {
             arguments,
             env_vars,
             cwd,
+            host_compiler,
         } = self;
 
         let nvcc_subcommand_groups = group_nvcc_subcommands_by_compilation_stage(
@@ -472,6 +476,7 @@ impl CompileCommandImpl for NvccCompileCommand {
             temp_dir.as_path(),
             keep_dir.clone(),
             env_vars,
+            host_compiler,
         )
         .await?;
 
@@ -558,6 +563,7 @@ pub struct NvccGeneratedSubcommand {
     pub cacheable: Cacheable,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn group_nvcc_subcommands_by_compilation_stage<T>(
     creator: &T,
     executable: &Path,
@@ -566,6 +572,7 @@ async fn group_nvcc_subcommands_by_compilation_stage<T>(
     tmp: &Path,
     keep_dir: Option<PathBuf>,
     env_vars: &[(OsString, OsString)],
+    host_compiler: &NvccHostCompiler,
 ) -> Result<Vec<Vec<NvccGeneratedSubcommand>>>
 where
     T: CommandCreatorSync,
@@ -611,6 +618,7 @@ where
             keep_dir.is_none(),
             arguments,
             is_nvcc_exe,
+            host_compiler,
         ),
         // Get the host compile command lines with paths relative to `cwd` and absolute paths to `tmp`
         select_nvcc_subcommands(
@@ -621,6 +629,7 @@ where
             keep_dir.is_none(),
             &[arguments, &["--keep-dir".into(), tmp.into()][..]].concat(),
             |exe| !is_nvcc_exe(exe),
+            host_compiler,
         ),
     )
     .await?;
@@ -649,6 +658,12 @@ where
     let mut no_more_groups = false;
     let mut command_groups: Vec<Vec<NvccGeneratedSubcommand>> = vec![];
 
+    let preprocessor_flag = match host_compiler {
+        NvccHostCompiler::Msvc => "-P",
+        _ => "-E",
+    }
+    .to_owned();
+
     for (_, dir, exe, args) in all_commands {
         if log_enabled!(log::Level::Trace) {
             trace!(
@@ -663,7 +678,7 @@ where
             );
         }
 
-        let (env_vars, cacheable) = match exe.file_name().and_then(|s| s.to_str()) {
+        let (env_vars, cacheable) = match exe.file_stem().and_then(|s| s.to_str()) {
             // cicc and ptxas are cacheable
             Some("cicc") | Some("ptxas") => (env_vars.clone(), Cacheable::Yes),
             // cudafe++, nvlink, and fatbinary are not cacheable
@@ -687,7 +702,7 @@ where
                 {
                     continue;
                 }
-                if args.contains(&"-E".to_owned()) {
+                if args.contains(&preprocessor_flag) {
                     // Each preprocessor step represents the start of a new command
                     // group, unless it comes after a call to fatbinary.
                     if !no_more_groups {
@@ -743,6 +758,7 @@ where
     Ok(command_groups)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn select_nvcc_subcommands<T, F>(
     creator: &T,
     executable: &Path,
@@ -751,6 +767,7 @@ async fn select_nvcc_subcommands<T, F>(
     remap_filenames: bool,
     arguments: &[OsString],
     select_subcommand: F,
+    host_compiler: &NvccHostCompiler,
 ) -> Result<Vec<(usize, PathBuf, Vec<String>)>>
 where
     F: Fn(&str) -> bool,
@@ -789,12 +806,20 @@ where
 
     let mut lines = Vec::<(usize, PathBuf, Vec<String>)>::new();
 
+    #[cfg(unix)]
     let reader = std::io::BufReader::new(&nvcc_dryrun_output.stderr[..]);
+    #[cfg(windows)]
+    let reader = std::io::BufReader::new(&nvcc_dryrun_output.stdout[..]);
 
     for pair in reader.lines().enumerate() {
         let (idx, line) = pair;
         // Select lines that match the `#$ ` prefix from nvcc --dryrun
-        let line = select_valid_dryrun_lines(&is_valid_line_re, &line?)?;
+        let line = match select_valid_dryrun_lines(&is_valid_line_re, &line?) {
+            Ok(line) => line,
+            // Ignore lines that don't start with `#$ `. For some reason, nvcc
+            // on Windows prints the name of the input file without the prefix
+            Err(err) => continue,
+        };
 
         let maybe_exe_and_args = fold_env_vars_or_split_into_exe_and_args(
             &is_envvar_line_re,
@@ -802,6 +827,7 @@ where
             &mut dryrun_env_vars_re_map,
             cwd,
             &line,
+            host_compiler,
         )?;
 
         let (exe, mut args) = match maybe_exe_and_args {
@@ -814,7 +840,7 @@ where
             args = remap_generated_filenames(&args, &mut old_to_new, &mut ext_counts);
         }
 
-        match exe.file_name().and_then(|s| s.to_str()) {
+        match exe.file_stem().and_then(|s| s.to_str()) {
             None => continue,
             Some(exe_name) => {
                 if select_subcommand(exe_name) {
@@ -854,48 +880,61 @@ fn fold_env_vars_or_split_into_exe_and_args(
     env_var_re_map: &mut HashMap<String, regex::Regex>,
     cwd: &Path,
     line: &str,
+    host_compiler: &NvccHostCompiler,
 ) -> Result<Option<(PathBuf, Vec<String>)>> {
+    fn envvar_in_shell_format(var: &str) -> String {
+        if cfg!(target_os = "windows") {
+            format!("%{}%", var) // %CICC_PATH%
+        } else {
+            format!("${}", var) // $CICC_PATH
+        }
+    }
+
+    fn envvar_in_shell_format_re(var: &str) -> Regex {
+        Regex::new(
+            &(if cfg!(target_os = "windows") {
+                regex::escape(&envvar_in_shell_format(var))
+            } else {
+                regex::escape(&envvar_in_shell_format(var)) + r"[^\w]"
+            }),
+        )
+        .unwrap()
+    }
+
     // Intercept the environment variable lines and add them to the env_vars list
     if let Some(var) = re.captures(line) {
         let (_, [var, val]) = var.extract();
 
         env_var_re_map
             .entry(var.to_owned())
-            .or_insert_with_key(|key| {
-                let re = "$".to_owned() + key;
-                let re = regex::escape(&re) + r"[^\w]";
-                Regex::new(&re).unwrap()
-            });
+            .or_insert_with_key(|var| envvar_in_shell_format_re(var));
 
-        let mut pair = (var.into(), val.into());
-
-        // Handle the special `_SPACE_= ` line
-        if val != " " {
-            pair.1 = val
-                .trim()
-                .split(' ')
-                .map(|x| x.trim_start_matches('\"').trim_end_matches('\"'))
-                .collect::<Vec<_>>()
-                .join(" ")
-                .into();
-        }
-
-        env_vars.push(pair);
+        env_vars.push((var.into(), val.into()));
 
         return Ok(None);
     }
 
     // The rest of the lines are subcommands, so parse into a vec of [cmd, args..]
 
-    let mut line = line.to_owned();
+    let mut line = if cfg!(target_os = "windows") {
+        let line = line
+            .replace("\"\"", "\"")
+            .replace(r"\\?\", "")
+            .replace('\\', "/");
+        match host_compiler {
+            NvccHostCompiler::Msvc => line.replace(" -E ", " -P ").replace(" > ", " -Fi"),
+            _ => line,
+        }
+    } else {
+        line.to_owned()
+    };
 
-    // Expand envvars in nvcc subcommands, i.e. "$CICC_PATH/cicc ..."
+    // Expand envvars in nvcc subcommands, i.e. "$CICC_PATH/cicc ..." or "%CICC_PATH%/cicc"
     if let Some(env_vars) = dist::osstring_tuples_to_strings(env_vars) {
         for (var, val) in env_vars {
             if let Some(re) = env_var_re_map.get(&var) {
                 if re.is_match(&line) {
-                    let var = "$".to_owned() + &var;
-                    line = line.replace(&var, &val);
+                    line = line.replace(&envvar_in_shell_format(&var), &val);
                 }
             }
         }
@@ -929,6 +968,15 @@ fn remap_generated_filenames(
 ) -> Vec<String> {
     args.iter()
         .map(|arg| {
+            // Special case for MSVC's preprocess output file name flag
+            let arg_is_msvc_preprocessor_output = arg.starts_with("-Fi");
+
+            let arg = if arg_is_msvc_preprocessor_output {
+                arg.trim_start_matches("-Fi").to_owned()
+            } else {
+                arg.to_owned()
+            };
+
             // If the argument doesn't start with `-` and is a file that
             // ends in one of the below extensions, rename the file to an
             // auto-incrementing stable name
@@ -953,11 +1001,11 @@ fn remap_generated_filenames(
             //
             // This ensures stable names are in cudafe++ output and #include directives,
             // eliminating one source of false-positive cache misses.
-            match maybe_extension {
+            let arg = match maybe_extension {
                 Some(extension) => {
                     old_to_new
-                        .entry(arg.into())
-                        .or_insert_with(|| {
+                        .entry(arg)
+                        .or_insert_with_key(|arg| {
                             // Initialize or update the number of files with a given extension:
                             // compute_70.cudafe1.stub.c -> 0.cudafe1.stub.c
                             // compute_60.cudafe1.stub.c -> 1.cudafe1.stub.c
@@ -972,10 +1020,8 @@ fn remap_generated_filenames(
                                 .parent()
                                 .unwrap_or(Path::new(""))
                                 .join(count + extension)
-                                .as_os_str()
-                                .to_str()
-                                .unwrap_or("")
-                                .to_owned()
+                                .to_string_lossy()
+                                .to_string()
                         })
                         .to_owned()
                 }
@@ -989,6 +1035,12 @@ fn remap_generated_filenames(
                     }
                     arg
                 }
+            };
+
+            if arg_is_msvc_preprocessor_output {
+                format!("-Fi{}", arg)
+            } else {
+                arg
             }
         })
         .collect::<Vec<_>>()
