@@ -1391,6 +1391,7 @@ fn test_s3_no_credentials_valid_false() {
 
 #[test]
 fn test_gcs_service_account() {
+    env::set_var("SCCACHE_S3_NO_CREDENTIALS", "false");
     env::set_var("SCCACHE_GCS_BUCKET", "my-bucket");
     env::set_var("SCCACHE_GCS_SERVICE_ACCOUNT", "my@example.com");
     env::set_var("SCCACHE_GCS_RW_MODE", "READ_WRITE");
@@ -1410,6 +1411,7 @@ fn test_gcs_service_account() {
         None => unreachable!(),
     };
 
+    env::remove_var("SCCACHE_S3_NO_CREDENTIALS");
     env::remove_var("SCCACHE_GCS_BUCKET");
     env::remove_var("SCCACHE_GCS_SERVICE_ACCOUNT");
     env::remove_var("SCCACHE_GCS_RW_MODE");

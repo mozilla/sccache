@@ -128,7 +128,17 @@ fn compile_cuda_cmdline<T: AsRef<OsStr>>(
                 exe,
                 compile_flag,
                 input,
-                "--cuda-gpu-arch=sm_50",
+                "--cuda-gpu-arch=sm_70",
+                format!(
+                    "--cuda-path={}",
+                    env::var_os("CUDA_PATH")
+                        .or(env::var_os("CUDA_HOME"))
+                        .unwrap_or("/usr/local/cuda".into())
+                        .to_string_lossy()
+                ),
+                "--no-cuda-version-check",
+                // work around for clang-cuda on windows-2019 (https://github.com/microsoft/STL/issues/2359)
+                "-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH",
                 "-o",
                 output
             )
@@ -206,7 +216,7 @@ fn test_basic_compile(compiler: Compiler, tempdir: &Path) {
         exe,
         env_vars,
     } = compiler;
-    trace!("run_sccache_command_test: {}", name);
+    println!("test_basic_compile: {}", name);
     // Compile a source file.
     copy_to_tempdir(&[INPUT, INPUT_ERR], tempdir);
 
@@ -258,7 +268,7 @@ fn test_noncacheable_stats(compiler: Compiler, tempdir: &Path) {
         exe,
         env_vars,
     } = compiler;
-    trace!("test_noncacheable_stats: {}", name);
+    println!("test_noncacheable_stats: {}", name);
     copy_to_tempdir(&[INPUT], tempdir);
 
     trace!("compile");
@@ -517,7 +527,7 @@ fn test_gcc_clang_no_warnings_from_macro_expansion(compiler: Compiler, tempdir: 
         exe,
         env_vars,
     } = compiler;
-    trace!("test_gcc_clang_no_warnings_from_macro_expansion: {}", name);
+    println!("test_gcc_clang_no_warnings_from_macro_expansion: {}", name);
     // Compile a source file.
     copy_to_tempdir(&[INPUT_MACRO_EXPANSION], tempdir);
 
@@ -543,7 +553,7 @@ fn test_compile_with_define(compiler: Compiler, tempdir: &Path) {
         exe,
         env_vars,
     } = compiler;
-    trace!("test_compile_with_define: {}", name);
+    println!("test_compile_with_define: {}", name);
     // Compile a source file.
     copy_to_tempdir(&[INPUT_WITH_DEFINE], tempdir);
 
@@ -631,7 +641,7 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
         exe,
         env_vars,
     } = compiler;
-    trace!("run_sccache_command_test: {}", name);
+    println!("test_nvcc_cuda_compiles: {}", name);
     // Compile multiple source files.
     copy_to_tempdir(&[INPUT_FOR_CUDA_A, INPUT_FOR_CUDA_B], tempdir);
 
@@ -642,6 +652,7 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
             name,
             exe,
             "-c",
+            // relative path for input
             INPUT_FOR_CUDA_A,
             // relative path for output
             out_file.file_name().unwrap().to_string_lossy().as_ref(),
@@ -677,6 +688,7 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
             name,
             exe,
             "-c",
+            // relative path for input
             INPUT_FOR_CUDA_A,
             // absolute path for output
             out_file.to_string_lossy().as_ref(),
@@ -720,7 +732,8 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
             name,
             exe,
             "-c",
-            INPUT_FOR_CUDA_B,
+            // absolute path for input
+            &tempdir.join(INPUT_FOR_CUDA_B).to_string_lossy(),
             // absolute path for output
             out_file.to_string_lossy().as_ref(),
             Vec::new(),
@@ -848,7 +861,7 @@ fn test_nvcc_proper_lang_stat_tracking(compiler: Compiler, tempdir: &Path) {
     } = compiler;
     zero_stats();
 
-    trace!("run_sccache_command_test: {}", name);
+    println!("test_nvcc_proper_lang_stat_tracking: {}", name);
     // Compile multiple source files.
     copy_to_tempdir(&[INPUT_FOR_CUDA_C, INPUT], tempdir);
 
@@ -925,7 +938,7 @@ fn test_clang_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
         exe,
         env_vars,
     } = compiler;
-    trace!("run_sccache_command_test: {}", name);
+    println!("test_clang_cuda_compiles: {}", name);
     // Compile multiple source files.
     copy_to_tempdir(&[INPUT_FOR_CUDA_A, INPUT_FOR_CUDA_B], tempdir);
 
@@ -1022,16 +1035,17 @@ fn test_clang_proper_lang_stat_tracking(compiler: Compiler, tempdir: &Path) {
     } = compiler;
     zero_stats();
 
-    trace!("run_sccache_command_test: {}", name);
+    println!("test_clang_proper_lang_stat_tracking: {}", name);
     // Compile multiple source files.
     copy_to_tempdir(&[INPUT_FOR_CUDA_C, INPUT], tempdir);
 
     let out_file = tempdir.join(OUTPUT);
     trace!("compile CUDA A");
     sccache_command()
-        .args(compile_cmdline(
+        .args(compile_cuda_cmdline(
             name,
             &exe,
+            "-c",
             INPUT_FOR_CUDA_C,
             OUTPUT,
             Vec::new(),
@@ -1043,9 +1057,10 @@ fn test_clang_proper_lang_stat_tracking(compiler: Compiler, tempdir: &Path) {
     fs::remove_file(&out_file).unwrap();
     trace!("compile CUDA A");
     sccache_command()
-        .args(compile_cmdline(
+        .args(compile_cuda_cmdline(
             name,
             &exe,
+            "-c",
             INPUT_FOR_CUDA_C,
             OUTPUT,
             Vec::new(),
@@ -1096,7 +1111,7 @@ fn test_hip_compiles(compiler: &Compiler, tempdir: &Path) {
         exe,
         env_vars,
     } = compiler;
-    trace!("run_sccache_command_test: {}", name);
+    println!("test_hip_compiles: {}", name);
     // Compile multiple source files.
     copy_to_tempdir(&[INPUT_FOR_HIP_A, INPUT_FOR_HIP_B], tempdir);
 
@@ -1193,7 +1208,7 @@ fn test_hip_compiles_multi_targets(compiler: &Compiler, tempdir: &Path) {
         exe,
         env_vars,
     } = compiler;
-    trace!("run_sccache_command_test: {}", name);
+    println!("test_hip_compiles_multi_targets: {}", name);
     // Compile multiple source files.
     copy_to_tempdir(&[INPUT_FOR_HIP_A, INPUT_FOR_HIP_B], tempdir);
 
@@ -1330,13 +1345,13 @@ fn test_clang_cache_whitespace_normalization(
         exe,
         env_vars,
     } = compiler;
-    println!("run_sccache_command_test: {}", name);
-    println!("expecting hit: {}", hit);
+    println!("test_clang_cache_whitespace_normalization: {}", name);
+    debug!("expecting hit: {}", hit);
     // Compile a source file.
     copy_to_tempdir(&[INPUT_WITH_WHITESPACE, INPUT_WITH_WHITESPACE_ALT], tempdir);
     zero_stats();
 
-    println!("compile whitespace");
+    debug!("compile whitespace");
     sccache_command()
         .args(compile_cmdline(
             name,
@@ -1349,7 +1364,7 @@ fn test_clang_cache_whitespace_normalization(
         .envs(env_vars.clone())
         .assert()
         .success();
-    println!("request stats");
+    debug!("request stats");
     get_stats(|info| {
         assert_eq!(1, info.stats.compile_requests);
         assert_eq!(1, info.stats.requests_executed);
@@ -1357,7 +1372,7 @@ fn test_clang_cache_whitespace_normalization(
         assert_eq!(1, info.stats.cache_misses.all());
     });
 
-    println!("compile whitespace_alt");
+    debug!("compile whitespace_alt");
     sccache_command()
         .args(compile_cmdline(
             name,
@@ -1370,7 +1385,7 @@ fn test_clang_cache_whitespace_normalization(
         .envs(env_vars)
         .assert()
         .success();
-    println!("request stats (expecting cache hit)");
+    debug!("request stats (expecting cache hit)");
     if hit {
         get_stats(move |info| {
             assert_eq!(2, info.stats.compile_requests);
@@ -1444,7 +1459,13 @@ fn find_cuda_compilers() -> Vec<Compiler> {
                     })
             })
             .collect::<Vec<_>>(),
-        Err(_) => vec![],
+        Err(_) => {
+            eprintln!(
+                "unable to find `nvcc` in PATH={:?}",
+                env::var_os("PATH").unwrap_or_default()
+            );
+            vec![]
+        }
     };
     compilers
 }
@@ -1544,6 +1565,13 @@ fn test_cuda_sccache_command(preprocessor_cache_mode: bool) {
         .tempdir()
         .unwrap();
     let compilers = find_cuda_compilers();
+    println!(
+        "CUDA compilers: {:?}",
+        compilers
+            .iter()
+            .map(|c| c.exe.to_string_lossy())
+            .collect::<Vec<_>>()
+    );
     if compilers.is_empty() {
         warn!("No compilers found, skipping test");
     } else {

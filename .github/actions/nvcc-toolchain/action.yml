@@ -1,0 +1,16 @@
+name: nvcc-toolchain
+inputs:
+  cuda-version:
+    description: CUDA Toolkit version
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - if: runner.os == 'Linux'
+      shell: bash
+      run: .github/actions/nvcc-toolchain/install-cuda.sh ${{ inputs.cuda-version }}
+
+    - if: runner.os == 'Windows'
+      shell: powershell
+      run: .\.github\actions\nvcc-toolchain\install-cuda.ps1 -cudaVersion ${{ inputs.cuda-version }}

@@ -140,6 +140,7 @@ impl CCompilerImpl for Clang {
             self.kind(),
             rewrite_includes_only,
             ignorable_whitespace_flags,
+            language_to_clang_arg,
         )
         .await
     }
@@ -168,10 +169,29 @@ impl CCompilerImpl for Clang {
             env_vars,
             self.kind(),
             rewrite_includes_only,
+            language_to_clang_arg,
         )
         .map(|(command, dist_command, cacheable)| {
             (CCompileCommand::new(command), dist_command, cacheable)
         })
+    }
+}
+
+pub fn language_to_clang_arg(lang: Language) -> Option<&'static str> {
+    match lang {
+        Language::C => Some("c"),
+        Language::CHeader => Some("c-header"),
+        Language::Cxx => Some("c++"),
+        Language::CxxHeader => Some("c++-header"),
+        Language::ObjectiveC => Some("objective-c"),
+        Language::ObjectiveCxx => Some("objective-c++"),
+        Language::ObjectiveCxxHeader => Some("objective-c++-header"),
+        Language::Cuda => Some("cuda"),
+        Language::Ptx => None,
+        Language::Cubin => None,
+        Language::Rust => None, // Let the compiler decide
+        Language::Hip => Some("hip"),
+        Language::GenericHeader => None, // Let the compiler decide
     }
 }
 
