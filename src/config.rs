@@ -315,6 +315,8 @@ pub struct S3CacheConfig {
     pub endpoint: Option<String>,
     pub use_ssl: Option<bool>,
     pub server_side_encryption: Option<bool>,
+    pub use_virtual_host_style: Option<bool>
+
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -640,6 +642,7 @@ fn config_from_env() -> Result<EnvConfig> {
         let server_side_encryption = bool_from_env_var("SCCACHE_S3_SERVER_SIDE_ENCRYPTION")?;
         let endpoint = env::var("SCCACHE_ENDPOINT").ok();
         let key_prefix = key_prefix_from_env_var("SCCACHE_S3_KEY_PREFIX");
+        let use_virtual_host_style = bool_from_env_var("SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE")?;
 
         Some(S3CacheConfig {
             bucket,
@@ -649,6 +652,7 @@ fn config_from_env() -> Result<EnvConfig> {
             endpoint,
             use_ssl,
             server_side_encryption,
+            use_virtual_host_style
         })
     } else {
         None
@@ -1555,7 +1559,8 @@ no_credentials = true
                     use_ssl: Some(true),
                     key_prefix: "s3prefix".into(),
                     no_credentials: true,
-                    server_side_encryption: Some(false)
+                    server_side_encryption: Some(false),
+                    use_virtual_host_style: Some(false)
                 }),
                 webdav: Some(WebdavCacheConfig {
                     endpoint: "http://127.0.0.1:8080".to_string(),

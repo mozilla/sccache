@@ -29,11 +29,16 @@ impl S3Cache {
         endpoint: Option<&str>,
         use_ssl: Option<bool>,
         server_side_encryption: Option<bool>,
+        use_virtual_host_style: Option<bool>,
     ) -> Result<Operator> {
         let mut builder = S3::default()
             .http_client(set_user_agent())
             .bucket(bucket)
             .root(key_prefix);
+
+        if use_virtual_host_style.unwrap_or_default() {
+            builder = builder.enable_virtual_host_style();
+        }
 
         if let Some(region) = region {
             builder = builder.region(region);
