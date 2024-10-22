@@ -50,11 +50,18 @@ pub const DEFAULT_PORT: u16 = 4226;
 const SERVER_STARTUP_TIMEOUT: Duration = Duration::from_millis(10000);
 
 /// Get the port on which the server should listen.
-fn get_port() -> u16 {
-    env::var("SCCACHE_SERVER_PORT")
+fn get_addr() -> crate::net::SocketAddr {
+    #[cfg(unix)]
+    if let Ok(addr) = env::var("SCCACHE_SERVER_UDS") {
+        if let Ok(uds) = crate::net::SocketAddr::parse_uds(&addr) {
+            return uds;
+        }
+    }
+    let port = env::var("SCCACHE_SERVER_PORT")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(DEFAULT_PORT)
+        .unwrap_or(DEFAULT_PORT);
+    crate::net::SocketAddr::with_port(port)
 }
 
 /// Check if ignoring all response errors
@@ -293,28 +300,27 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
     })
 }
 
-/// Attempt to connect to an sccache server listening on `port`, or start one if no server is running.
+/// Attempt to connect to an sccache server listening on `addr`, or start one if no server is running.
 fn connect_or_start_server(
-    port: u16,
+    addr: &crate::net::SocketAddr,
     startup_timeout: Option<Duration>,
 ) -> Result<ServerConnection> {
-    trace!("connect_or_start_server({})", port);
-    match connect_to_server(port) {
+    trace!("connect_or_start_server({addr})");
+    match connect_to_server(addr) {
         Ok(server) => Ok(server),
         Err(ref e)
-            if e.kind() == io::ErrorKind::ConnectionRefused
-                || e.kind() == io::ErrorKind::TimedOut =>
+            if (e.kind() == io::ErrorKind::ConnectionRefused
+                || e.kind() == io::ErrorKind::TimedOut)
+                || (e.kind() == io::ErrorKind::NotFound && addr.is_unix_path()) =>
         {
             // If the connection was refused we probably need to start
             // the server.
             match run_server_process(startup_timeout)? {
-                ServerStartup::Ok { port: actualport } => {
-                    if port != actualport {
+                ServerStartup::Ok { addr: actual_addr } => {
+                    if addr.to_string() != actual_addr {
                         // bail as the next connect_with_retry will fail
                         bail!(
-                            "sccache: Listening on port {} instead of {}",
-                            actualport,
-                            port
+                            "sccache: Listening on address {actual_addr} instead of {addr}"
                         );
                     }
                 }
@@ -324,7 +330,7 @@ fn connect_or_start_server(
                 ServerStartup::TimedOut => bail!("Timed out waiting for server startup. Maybe the remote service is unreachable?\nRun with SCCACHE_LOG=debug SCCACHE_NO_DAEMON=1 to get more information"),
                 ServerStartup::Err { reason } => bail!("Server startup failed: {}\nRun with SCCACHE_LOG=debug SCCACHE_NO_DAEMON=1 to get more information", reason),
             }
-            let server = connect_with_retry(port)?;
+            let server = connect_with_retry(addr)?;
             Ok(server)
         }
         Err(e) => Err(e.into()),
@@ -614,7 +620,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
     match cmd {
         Command::ShowStats(fmt, advanced) => {
             trace!("Command::ShowStats({:?})", fmt);
-            let stats = match connect_to_server(get_port()) {
+            let stats = match connect_to_server(&get_addr()) {
                 Ok(srv) => request_stats(srv).context("failed to get stats from server")?,
                 // If there is no server, spawning a new server would start with zero stats
                 // anyways, so we can just return (mostly) empty stats directly.
@@ -658,7 +664,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                 // We aren't asking for a log file
                 daemonize()?;
             }
-            server::start_server(config, get_port())?;
+            server::start_server(config, &get_addr())?;
         }
         Command::StartServer => {
             trace!("Command::StartServer");
@@ -666,10 +672,8 @@ pub fn run_command(cmd: Command) -> Result<i32> {
             let startup =
                 run_server_process(startup_timeout).context("failed to start server process")?;
             match startup {
-                ServerStartup::Ok { port } => {
-                    if port != DEFAULT_PORT {
-                        println!("sccache: Listening on port {}", port);
-                    }
+                ServerStartup::Ok { addr } => {
+                    println!("sccache: Listening on address {addr}");
                 }
                 ServerStartup::TimedOut => bail!("Timed out waiting for server startup"),
                 ServerStartup::AddrInUse => bail!("Server startup failed: Address in use"),
@@ -679,13 +683,13 @@ pub fn run_command(cmd: Command) -> Result<i32> {
         Command::StopServer => {
             trace!("Command::StopServer");
             println!("Stopping sccache server...");
-            let server = connect_to_server(get_port()).context("couldn't connect to server")?;
+            let server = connect_to_server(&get_addr()).context("couldn't connect to server")?;
             let stats = request_shutdown(server)?;
             stats.print(false);
         }
         Command::ZeroStats => {
             trace!("Command::ZeroStats");
-            let conn = connect_or_start_server(get_port(), startup_timeout)?;
+            let conn = connect_or_start_server(&get_addr(), startup_timeout)?;
             request_zero_stats(conn).context("couldn't zero stats on server")?;
             eprintln!("Statistics zeroed.");
         }
@@ -747,7 +751,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
         ),
         Command::DistStatus => {
             trace!("Command::DistStatus");
-            let srv = connect_or_start_server(get_port(), startup_timeout)?;
+            let srv = connect_or_start_server(&get_addr(), startup_timeout)?;
             let status =
                 request_dist_status(srv).context("failed to get dist-status from server")?;
             serde_json::to_writer(&mut io::stdout(), &status)?;
@@ -785,7 +789,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
         } => {
             trace!("Command::Compile {{ {:?}, {:?}, {:?} }}", exe, cmdline, cwd);
             let jobserver = unsafe { Client::new() };
-            let conn = connect_or_start_server(get_port(), startup_timeout)?;
+            let conn = connect_or_start_server(&get_addr(), startup_timeout)?;
             let mut runtime = Runtime::new()?;
             let res = do_compile(
                 ProcessCommandCreator::new(&jobserver),
