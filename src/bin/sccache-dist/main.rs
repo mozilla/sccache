@@ -656,45 +656,76 @@ impl SchedulerIncoming for Scheduler {
         let mut jobs = self.jobs.lock().unwrap();
         let mut servers = self.servers.lock().unwrap();
 
-        if let btree_map::Entry::Occupied(mut entry) = jobs.entry(job_id) {
-            let job_detail = entry.get();
-            if job_detail.server_id != server_id {
+        if let btree_map::Entry::Occupied(mut job) = jobs.entry(job_id) {
+            let cur_state = job.get().state;
+
+            if job.get().server_id != server_id {
                 bail!(
-                    "Job id {} is not registered on server {:?}",
+                    "[update_job_state({}, {})]: Job state updated from {:?} to {:?}, but job is not registered to server",
                     job_id,
-                    server_id
+                    server_id.addr(),
+                    cur_state, job_state
                 )
             }
 
             let now = Instant::now();
-            let mut server_details = servers.get_mut(&server_id);
-            if let Some(ref mut details) = server_details {
-                details.last_seen = now;
+
+            let server = match servers.get_mut(&server_id) {
+                Some(server) => {
+                    server.last_seen = now;
+                    server
+                }
+                None => {
+                    let (job_id, _) = job.remove_entry();
+                    bail!(
+                        "[update_job_state({}, {})]: Job state updated from {:?} to {:?}, but server is not known to scheduler",
+                        job_id, server_id.addr(), cur_state, job_state
+                    )
+                }
             };
 
-            match (job_detail.state, job_state) {
-                (JobState::Pending, JobState::Ready) => entry.get_mut().state = job_state,
+            match (cur_state, job_state) {
+                (JobState::Pending, JobState::Ready) => {
+                    // Update the job's `last_seen` time to ensure it isn't
+                    // pruned for taking longer than UNCLAIMED_READY_TIMEOUT
+                    server.jobs_unclaimed.entry(job_id).and_modify(|e| *e = now);
+                    job.get_mut().state = job_state;
+                }
                 (JobState::Ready, JobState::Started) => {
-                    if let Some(details) = server_details {
-                        details.jobs_unclaimed.remove(&job_id);
-                    } else {
-                        warn!("Job state updated, but server is not known to scheduler")
-                    }
-                    entry.get_mut().state = job_state
+                    server.jobs_unclaimed.remove(&job_id);
+                    job.get_mut().state = job_state;
                 }
                 (JobState::Started, JobState::Complete) => {
-                    let (job_id, _) = entry.remove_entry();
-                    if let Some(entry) = server_details {
-                        assert!(entry.jobs_assigned.remove(&job_id))
-                    } else {
-                        bail!("Job was marked as finished, but server is not known to scheduler")
+                    let (job_id, _) = job.remove_entry();
+                    if !server.jobs_assigned.remove(&job_id) {
+                        bail!(
+                            "[update_job_state({}, {})]: Job was marked as finished, but job is not known to scheduler",
+                            job_id, server_id.addr()
+                        )
                     }
                 }
-                (from, to) => bail!("Invalid job state transition from {} to {}", from, to),
+                (from, to) => bail!(
+                    "[update_job_state({}, {})]: Invalid job state transition from {:?} to {:?}",
+                    job_id,
+                    server_id.addr(),
+                    from,
+                    to,
+                ),
             }
-            info!("Job {} updated state to {:?}", job_id, job_state);
+            info!(
+                "[update_job_state({}, {})]: Job state updated from {:?} to {:?}",
+                job_id,
+                server_id.addr(),
+                cur_state,
+                job_state
+            );
         } else {
-            bail!("Unknown job")
+            bail!(
+                "[update_job_state({}, {})]: Cannot update unknown job state to {:?}",
+                job_id,
+                server_id.addr(),
+                job_state
+            )
         }
         Ok(UpdateJobStateResult::Success)
     }
@@ -739,12 +770,19 @@ impl Server {
 impl ServerIncoming for Server {
     fn handle_assign_job(&self, job_id: JobId, tc: Toolchain) -> Result<AssignJobResult> {
         let need_toolchain = !self.cache.lock().unwrap().contains_toolchain(&tc);
-        assert!(self
+        if let Some(other_tc) = self
             .job_toolchains
             .lock()
             .unwrap()
-            .insert(job_id, tc)
-            .is_none());
+            .insert(job_id, tc.clone())
+        {
+            bail!(
+                "[{}]: Failed to replace toolchain {:?} with {:?}",
+                job_id,
+                other_tc,
+                tc
+            );
+        };
         let state = if need_toolchain {
             JobState::Pending
         } else {
@@ -800,7 +838,7 @@ impl ServerIncoming for Server {
             Some(tc) => {
                 match self
                     .builder
-                    .run_build(tc, command, outputs, inputs_rdr, &self.cache)
+                    .run_build(job_id, tc, command, outputs, inputs_rdr, &self.cache)
                 {
                     Err(e) => Err(e.context("run build failed")),
                     Ok(res) => Ok(RunJobResult::Complete(JobComplete {

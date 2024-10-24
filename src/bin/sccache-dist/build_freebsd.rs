@@ -15,8 +15,8 @@
 use anyhow::{bail, Context, Error, Result};
 use flate2::read::GzDecoder;
 use sccache::dist::{
-    BuildResult, BuilderIncoming, CompileCommand, InputsReader, OutputData, ProcessOutput, TcCache,
-    Toolchain,
+    BuildResult, BuilderIncoming, CompileCommand, InputsReader, JobId, OutputData, ProcessOutput,
+    TcCache, Toolchain,
 };
 use sccache::lru_disk_cache::Error as LruError;
 use std::collections::{hash_map, HashMap};
@@ -146,7 +146,12 @@ impl PotBuilder {
     // If we have a spare running container, claim it and remove it from the available list,
     // otherwise try and create a new container (possibly creating the Pot image along
     // the way)
-    fn get_container(&self, tc: &Toolchain, tccache: &Mutex<TcCache>) -> Result<String> {
+    fn get_container(
+        &self,
+        job_id: JobId,
+        tc: &Toolchain,
+        tccache: &Mutex<TcCache>,
+    ) -> Result<String> {
         let container = {
             let mut map = self.container_lists.lock().unwrap();
             map.entry(tc.clone()).or_insert_with(Vec::new).pop()
@@ -161,8 +166,9 @@ impl PotBuilder {
                     match map.entry(tc.clone()) {
                         hash_map::Entry::Occupied(e) => e.get().clone(),
                         hash_map::Entry::Vacant(e) => {
-                            info!("Creating pot image for {:?} (may block requests)", tc);
+                            info!("[get_container({})]: Creating pot image for {:?} (may block requests)", job_id, tc);
                             let image = Self::make_image(
+                                job_id,
                                 tc,
                                 tccache,
                                 &self.pot_fs_root,
@@ -201,17 +207,21 @@ impl PotBuilder {
     // Failing during cleanup is pretty unexpected, but we can still return the successful compile
     // TODO: if too many of these fail, we should mark this builder as faulty
     fn finish_container(
+        job_id: JobId,
         container_lists: Arc<Mutex<HashMap<Toolchain, Vec<String>>>>,
         tc: Toolchain,
         cid: String,
         pot_cmd: &PathBuf,
     ) {
         if let Err(e) = Self::clean_container(&cid) {
-            info!("Failed to clean container {}: {}", cid, e);
+            info!(
+                "[finish_container({})]: Failed to clean container {}: {}",
+                job_id, cid, e
+            );
             if let Err(e) = pot_rm(&cid, pot_cmd) {
                 warn!(
-                    "Failed to remove container {} after failed clean: {}",
-                    cid, e
+                    "[finish_container({})]: Failed to remove container {} after failed clean: {}",
+                    job_id, cid, e
                 );
             }
             return;
@@ -219,20 +229,27 @@ impl PotBuilder {
 
         // Good as new, add it back to the container list
         if let Some(entry) = container_lists.lock().unwrap().get_mut(&tc) {
-            debug!("Reclaimed container {}", cid);
+            debug!(
+                "[finish_container({})]: Reclaimed container {}",
+                job_id, cid
+            );
             entry.push(cid)
         } else {
             warn!(
-                "Was ready to reclaim container {} but toolchain went missing",
-                cid
+                "[finish_container({})]: Was ready to reclaim container {} but toolchain went missing",
+                job_id, cid
             );
             if let Err(e) = pot_rm(&cid, pot_cmd) {
-                warn!("Failed to remove container {}: {}", cid, e);
+                warn!(
+                    "[finish_container({})]: Failed to remove container {}: {}",
+                    job_id, cid, e
+                );
             }
         }
     }
 
     fn make_image(
+        job_id: JobId,
         tc: &Toolchain,
         tccache: &Mutex<TcCache>,
         pot_fs_root: &Path,
@@ -241,7 +258,11 @@ impl PotBuilder {
         pot_clone_args: &[String],
     ) -> Result<String> {
         let imagename = format!("sccache-image-{}", &tc.archive_id);
-        trace!("Creating toolchain image: {}", imagename);
+        trace!(
+            "[make_image({})]: Creating toolchain image: {}",
+            job_id,
+            imagename
+        );
         let mut clone_args: Vec<&str> = ["clone", "-p", &imagename, "-P", clone_from].to_vec();
         clone_args.append(&mut pot_clone_args.iter().map(|s| s as &str).collect());
         Command::new(pot_cmd)
@@ -258,11 +279,14 @@ impl PotBuilder {
             Err(e) => return Err(Error::from(e).context("failed to get toolchain from cache")),
         };
 
-        trace!("Copying in toolchain");
+        trace!("[make_image({})]: Copying in toolchain", job_id);
         tar::Archive::new(GzDecoder::new(toolchain_rdr))
             .unpack(pot_fs_root.join("jails").join(&imagename).join("m"))
             .or_else(|e| {
-                warn!("Failed to unpack toolchain: {:?}", e);
+                warn!(
+                    "[make_image({})]: Failed to unpack toolchain: {:?}",
+                    job_id, e
+                );
                 tccache
                     .remove(tc)
                     .context("Failed to remove corrupt toolchain")?;
@@ -303,20 +327,26 @@ impl PotBuilder {
     }
 
     fn perform_build(
+        job_id: JobId,
         compile_command: CompileCommand,
         inputs_rdr: InputsReader,
         output_paths: Vec<String>,
         cid: &str,
         pot_fs_root: &Path,
     ) -> Result<BuildResult> {
-        trace!("Compile environment: {:?}", compile_command.env_vars);
         trace!(
-            "Compile command: {:?} {:?}",
+            "[perform_build({})]: Compile environment: {:?}",
+            job_id,
+            compile_command.env_vars
+        );
+        trace!(
+            "[perform_build({})]: Compile command: {:?} {:?}",
+            job_id,
             compile_command.executable,
             compile_command.arguments
         );
 
-        trace!("copying in inputs");
+        trace!("[perform_build({})]: copying in inputs", job_id);
         // not elegant
         tar::Archive::new(inputs_rdr)
             .unpack(pot_fs_root.join("jails").join(cid).join("m"))
@@ -330,7 +360,7 @@ impl PotBuilder {
         } = compile_command;
         let cwd = Path::new(&cwd);
 
-        trace!("creating output directories");
+        trace!("[perform_build({})]: creating output directories", job_id);
         assert!(!output_paths.is_empty());
         let mut cmd = Command::new("jexec");
         cmd.args(&[cid, "mkdir", "-p"]).arg(cwd);
@@ -346,14 +376,17 @@ impl PotBuilder {
         cmd.check_run()
             .context("Failed to create directories required for compile in container")?;
 
-        trace!("performing compile");
+        trace!("[perform_build({})]: performing compile", job_id);
         // TODO: likely shouldn't perform the compile as root in the container
         let mut cmd = Command::new("jexec");
         cmd.arg(cid);
         cmd.arg("env");
         for (k, v) in env_vars {
             if k.contains('=') {
-                warn!("Skipping environment variable: {:?}", k);
+                warn!(
+                    "[perform_build({})]: Skipping environment variable: {:?}",
+                    job_id, k
+                );
                 continue;
             }
             let mut env = k;
@@ -368,10 +401,14 @@ impl PotBuilder {
         cmd.arg(executable);
         cmd.args(arguments);
         let compile_output = cmd.output().context("Failed to start executing compile")?;
-        trace!("compile_output: {:?}", compile_output);
+        trace!(
+            "[perform_build({})]: compile_output: {:?}",
+            job_id,
+            compile_output
+        );
 
         let mut outputs = vec![];
-        trace!("retrieving {:?}", output_paths);
+        trace!("[perform_build({})]: retrieving {:?}", job_id, output_paths);
         for path in output_paths {
             let abspath = cwd.join(&path); // Resolve in case it's relative since we copy it from the root level
                                            // TODO: this isn't great, but cp gives it out as a tar
@@ -385,7 +422,10 @@ impl PotBuilder {
                     .expect("Failed to read compress output stdout");
                 outputs.push((path, output))
             } else {
-                debug!("Missing output path {:?}", path)
+                debug!(
+                    "[perform_build({})]: Missing output path {:?}",
+                    job_id, path
+                )
             }
         }
 
@@ -402,20 +442,31 @@ impl BuilderIncoming for PotBuilder {
     // From Server
     fn run_build(
         &self,
+        job_id: JobId,
         tc: Toolchain,
         command: CompileCommand,
         outputs: Vec<String>,
         inputs_rdr: InputsReader,
         tccache: &Mutex<TcCache>,
     ) -> Result<BuildResult> {
-        debug!("Finding container");
+        debug!("[run_build({})]: Finding container", job_id);
         let cid = self
-            .get_container(&tc, tccache)
+            .get_container(job_id, &tc, tccache)
             .context("Failed to get a container for build")?;
-        debug!("Performing build with container {}", cid);
-        let res = Self::perform_build(command, inputs_rdr, outputs, &cid, &self.pot_fs_root)
-            .context("Failed to perform build")?;
-        debug!("Finishing with container {}", cid);
+        debug!(
+            "[run_build({})]: Performing build with container {}",
+            job_id, cid
+        );
+        let res = Self::perform_build(
+            job_id,
+            command,
+            inputs_rdr,
+            outputs,
+            &cid,
+            &self.pot_fs_root,
+        )
+        .context("Failed to perform build")?;
+        debug!("[run_build({})]: Finishing with container {}", job_id, cid);
         let cloned = self.clone();
         let tc = tc;
         while cloned.cleanup_thread_count.fetch_add(1, Ordering::SeqCst)
@@ -425,10 +476,10 @@ impl BuilderIncoming for PotBuilder {
             hint::spin_loop();
         }
         thread::spawn(move || {
-            Self::finish_container(cloned.container_lists, tc, cid, &cloned.pot_cmd);
+            Self::finish_container(job_id, cloned.container_lists, tc, cid, &cloned.pot_cmd);
             cloned.cleanup_thread_count.fetch_sub(1, Ordering::SeqCst);
         });
-        debug!("Returning result");
+        debug!("[run_build({})]: Returning result", job_id);
         Ok(res)
     }
 }

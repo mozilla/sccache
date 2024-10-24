@@ -56,7 +56,6 @@ use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 #[cfg(feature = "dist-client")]
 use std::time::Instant;
-use std::u64;
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
 use tokio::{
@@ -1278,18 +1277,18 @@ where
                     let mut stats = me.stats.lock().await;
                     match compiled {
                         CompileResult::Error => {
-                            debug!("compile result: cache error");
+                            debug!("[{}]: compile result: cache error", out_pretty);
 
                             stats.cache_errors.increment(&kind, &lang);
                         }
                         CompileResult::CacheHit(duration) => {
-                            debug!("compile result: cache hit");
+                            debug!("[{}]: compile result: cache hit", out_pretty);
 
                             stats.cache_hits.increment(&kind, &lang);
                             stats.cache_read_hit_duration += duration;
                         }
                         CompileResult::CacheMiss(miss_type, dist_type, duration, future) => {
-                            debug!("compile result: cache miss");
+                            debug!("[{}]: compile result: cache miss", out_pretty);
 
                             match dist_type {
                                 DistType::NoDist => {}
@@ -1315,17 +1314,17 @@ where
                             }
                             stats.cache_misses.increment(&kind, &lang);
                             stats.compiler_write_duration += duration;
-                            debug!("stats after compile result: {stats:?}");
+                            trace!("[{}]: stats after compile result: {:?}", out_pretty, stats);
                             cache_write = Some(future);
                         }
                         CompileResult::NotCacheable => {
-                            debug!("compile result: not cacheable");
+                            debug!("[{}]: compile result: not cacheable", out_pretty);
 
                             stats.cache_misses.increment(&kind, &lang);
                             stats.non_cacheable_compilations += 1;
                         }
                         CompileResult::CompileFailed => {
-                            debug!("compile result: compile failed");
+                            debug!("[{}]: compile result: compile failed", out_pretty);
 
                             stats.compile_fails += 1;
                         }
@@ -1338,7 +1337,7 @@ where
                         stdout,
                         stderr,
                     } = out;
-                    trace!("CompileFinished retcode: {}", status);
+                    debug!("[{}]: CompileFinished retcode: {}", out_pretty, status);
                     match status.code() {
                         Some(code) => res.retcode = Some(code),
                         None => res.signal = Some(get_signal(status)),
@@ -1350,7 +1349,7 @@ where
                     let mut stats = me.stats.lock().await;
                     match err.downcast::<ProcessError>() {
                         Ok(ProcessError(output)) => {
-                            debug!("Compilation failed: {:?}", output);
+                            debug!("[{}]: Compilation failed: {:?}", out_pretty, output);
                             stats.compile_fails += 1;
                             match output.status.code() {
                                 Some(code) => res.retcode = Some(code),
@@ -1397,7 +1396,7 @@ where
                 if let Some(cache_write) = cache_write {
                     match cache_write.await {
                         Err(e) => {
-                            debug!("Error executing cache write: {}", e);
+                            debug!("[{}]: Error executing cache write: {}", out_pretty, e);
                             me.stats.lock().await.cache_write_errors += 1;
                         }
                         //TODO: save cache stats!

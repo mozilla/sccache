@@ -973,14 +973,14 @@ mod server {
                     (POST) (/api/v1/distserver/assign_job/{job_id: JobId}) => {
                         job_auth_or_401!(request, &job_authorizer, job_id);
                         let toolchain = try_or_400_log!(req_id, bincode_input(request));
-                        trace!("Req {}: assign_job({}): {:?}", req_id, job_id, toolchain);
+                        debug!("Req {}: assign_job({}): {:?}", req_id, job_id, toolchain);
 
                         let res: AssignJobResult = try_or_500_log!(req_id, handler.handle_assign_job(job_id, toolchain));
                         prepare_response(request, &res)
                     },
                     (POST) (/api/v1/distserver/submit_toolchain/{job_id: JobId}) => {
                         job_auth_or_401!(request, &job_authorizer, job_id);
-                        trace!("Req {}: submit_toolchain({})", req_id, job_id);
+                        debug!("Req {}: submit_toolchain({})", req_id, job_id);
 
                         let body = request.data().expect("body was already read in submit_toolchain");
                         let toolchain_rdr = ToolchainReader(Box::new(body));
@@ -997,7 +997,28 @@ mod server {
                         let mut bincode_reader = body.take(bincode_length);
                         let runjob = try_or_500_log!(req_id, bincode::deserialize_from(&mut bincode_reader)
                             .context("failed to deserialize run job request"));
-                        trace!("Req {}: run_job({}): {:?}", req_id, job_id, runjob);
+
+                        if log_enabled!(log::Level::Trace) {
+                            trace!("Req {}: run_job({}): {:?}", req_id, job_id, runjob);
+                        } else if log_enabled!(log::Level::Debug) {
+                            let RunJobHttpRequest { command, outputs: _ } = &runjob;
+                            let dist::CompileCommand {
+                                env_vars: _,
+                                executable,
+                                arguments,
+                                cwd
+                            } = &command;
+                            debug!(
+                                "Req {}: run_job({}): cwd={:?}, cmd={:?}",
+                                req_id,
+                                job_id,
+                                cwd,
+                                [vec![executable.clone()], arguments.to_vec()]
+                                    .concat()
+                                    .join(" ")
+                            );
+                        }
+
                         let RunJobHttpRequest { command, outputs } = runjob;
                         let body = bincode_reader.into_inner();
                         let inputs_rdr = InputsReader(Box::new(ZlibReadDecoder::new(body)));

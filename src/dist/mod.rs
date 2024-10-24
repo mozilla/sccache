@@ -706,6 +706,7 @@ pub trait BuilderIncoming: Send + Sync {
     // From Server
     fn run_build(
         &self,
+        job_id: JobId,
         toolchain: Toolchain,
         command: CompileCommand,
         outputs: Vec<String>,
