@@ -3,6 +3,7 @@ extern crate log;
 
 use anyhow::{bail, Context, Error, Result};
 use base64::Engine;
+use itertools::Itertools;
 use rand::{rngs::OsRng, RngCore};
 use sccache::config::{
     scheduler as scheduler_config, server as server_config, INSECURE_DIST_CLIENT_TOKEN,
@@ -399,141 +400,242 @@ impl Default for Scheduler {
     }
 }
 
+fn error_chain_to_string(err: &Error) -> String {
+    let mut err_msg = err.to_string();
+    let mut maybe_cause = err.source();
+    while let Some(cause) = maybe_cause {
+        err_msg.push_str(", caused by: ");
+        err_msg.push_str(&cause.to_string());
+        maybe_cause = cause.source();
+    }
+    err_msg
+}
+
 impl SchedulerIncoming for Scheduler {
     fn handle_alloc_job(
         &self,
         requester: &dyn SchedulerOutgoing,
         tc: Toolchain,
     ) -> Result<AllocJobResult> {
-        let (job_id, server_id, auth) = {
+        // Attempt to allocate a job to the best server. The best server is the server
+        // with the fewest assigned jobs and least-recently-reported error. Servers
+        // whose load exceeds `MAX_PER_CORE_LOAD` are not considered candidates for
+        // job assignment.
+        //
+        // If we fail to assign a job to a server, attempt to assign the job to the next
+        // best candidate until either the job has been assigned successfully, or the
+        // candidate list has been exhausted.
+        //
+        // Special care is taken to not lock `self.servers` or `self.jobs` while network
+        // requests are in-flight, as that will block other request-handling threads and
+        // deadlock the scheduler.
+        //
+        // Do not assert!() anywhere, as that permanently corrupts the scheduler.
+        // All error conditions must fail gracefully.
+
+        let make_auth_token = |job_id: JobId, server_id: ServerId| {
             // LOCKS
             let mut servers = self.servers.lock().unwrap();
+            if let Some(details) = servers.get_mut(&server_id) {
+                let auth = details
+                    .job_authorizer
+                    .generate_token(job_id)
+                    .map_err(Error::from)
+                    .context("Could not create an auth token")?;
 
-            let res = {
-                let mut best = None;
-                let mut best_err = None;
-                let mut best_load: f64 = MAX_PER_CORE_LOAD;
-                let now = Instant::now();
-                for (&server_id, details) in servers.iter_mut() {
-                    let load = details.jobs_assigned.len() as f64 / details.num_cpus as f64;
+                //
+                // Eagerly associate this job with the server so other threads consider this job
+                // when computing load for this server, and potentially select another server for
+                // assignment.
+                //
 
-                    if let Some(last_error) = details.last_error {
-                        if load < MAX_PER_CORE_LOAD {
-                            if now.duration_since(last_error) > SERVER_REMEMBER_ERROR_TIMEOUT {
-                                details.last_error = None;
-                            }
-                            match best_err {
-                                Some((
-                                    _,
-                                    &mut ServerDetails {
-                                        last_error: Some(best_last_err),
-                                        ..
-                                    },
-                                )) => {
-                                    if last_error < best_last_err {
-                                        trace!(
-                                            "Selected {:?}, its most recent error is {:?} ago",
-                                            server_id,
-                                            now - last_error
-                                        );
-                                        best_err = Some((server_id, details));
-                                    }
-                                }
-                                _ => {
-                                    trace!(
-                                        "Selected {:?}, its most recent error is {:?} ago",
-                                        server_id,
-                                        now - last_error
-                                    );
-                                    best_err = Some((server_id, details));
-                                }
-                            }
-                        }
-                    } else if load < best_load {
-                        best = Some((server_id, details));
-                        trace!("Selected {:?} as the server with the best load", server_id);
-                        best_load = load;
-                        if load == 0f64 {
-                            break;
-                        }
-                    }
+                // Throw an error if a job with the same ID has already been assigned to this server.
+                if details.jobs_assigned.contains(&job_id)
+                    || details.jobs_unclaimed.contains_key(&job_id)
+                {
+                    bail!("Failed to assign job to server {}", server_id.addr());
                 }
 
-                // Assign the job to our best choice
-                if let Some((server_id, server_details)) = best.or(best_err) {
-                    let job_count = self.job_count.fetch_add(1, Ordering::SeqCst) as u64;
-                    let job_id = JobId(job_count);
-                    assert!(server_details.jobs_assigned.insert(job_id));
-                    assert!(server_details
-                        .jobs_unclaimed
-                        .insert(job_id, Instant::now())
-                        .is_none());
+                details.jobs_assigned.insert(job_id);
+                details.jobs_unclaimed.insert(job_id, Instant::now());
 
-                    info!(
-                        "Job {} created and will be assigned to server {:?}",
-                        job_id, server_id
-                    );
-                    let auth = server_details
-                        .job_authorizer
-                        .generate_token(job_id)
-                        .map_err(Error::from)
-                        .context("Could not create an auth token for this job")?;
-                    Some((job_id, server_id, auth))
-                } else {
-                    None
+                Ok(auth)
+            } else {
+                bail!("Failed to assign job to unknown server")
+            }
+        };
+
+        let try_alloc_job = |job_id: JobId, server_id: ServerId, auth: String, tc: Toolchain| {
+            let AssignJobResult {
+                state,
+                need_toolchain,
+            } = match requester.do_assign_job(server_id, job_id, tc, auth.clone()) {
+                Ok(res) => res,
+                Err(err) => {
+                    // LOCKS
+                    let mut servers = self.servers.lock().unwrap();
+                    // Couldn't assign the job, so undo the eager assignment above
+                    if let Some(details) = servers.get_mut(&server_id) {
+                        details.jobs_assigned.remove(&job_id);
+                        details.jobs_unclaimed.remove(&job_id);
+                        details.last_error = Some(Instant::now());
+                    }
+                    return Err(err);
                 }
             };
 
-            if let Some(res) = res {
-                res
-            } else {
-                let msg = format!(
-                    "Insufficient capacity across {} available servers",
-                    servers.len()
-                );
-                return Ok(AllocJobResult::Fail { msg });
-            }
-        };
-        let AssignJobResult {
-            state,
-            need_toolchain,
-        } = requester
-            .do_assign_job(server_id, job_id, tc, auth.clone())
-            .with_context(|| {
-                // LOCKS
-                let mut servers = self.servers.lock().unwrap();
-                if let Some(entry) = servers.get_mut(&server_id) {
-                    entry.last_error = Some(Instant::now());
-                    entry.jobs_unclaimed.remove(&job_id);
-                    if !entry.jobs_assigned.remove(&job_id) {
-                        "assign job failed and job not known to the server"
-                    } else {
-                        "assign job failed, job un-assigned from the server"
-                    }
-                } else {
-                    "assign job failed and server not known"
-                }
-            })?;
-        {
             // LOCKS
             let mut jobs = self.jobs.lock().unwrap();
+            if jobs.contains_key(&job_id) {
+                bail!(
+                    "Failed to assign job to server {} with state {}",
+                    server_id.addr(),
+                    state
+                );
+            }
+
+            jobs.insert(job_id, JobDetail { server_id, state });
+
+            if log_enabled!(log::Level::Trace) {
+                // LOCKS
+                let mut servers = self.servers.lock().unwrap();
+                if let Some(details) = servers.get_mut(&server_id) {
+                    if let Some(last_error) = details.last_error {
+                        trace!(
+                            "[alloc_job({})]: Assigned job to server {:?} whose most recent error was {:?} ago",
+                            job_id,
+                            server_id.addr(),
+                            Instant::now() - last_error
+                        );
+                    }
+                }
+            }
 
             info!(
-                "Job {} successfully assigned and saved with state {:?}",
-                job_id, state
+                "[alloc_job({})]: Job created and assigned to server {:?} with state {:?}",
+                job_id,
+                server_id.addr(),
+                state
             );
-            assert!(jobs
-                .insert(job_id, JobDetail { server_id, state })
-                .is_none());
-        }
-        let job_alloc = JobAlloc {
-            auth,
-            job_id,
-            server_id,
+
+            Ok(AllocJobResult::Success {
+                job_alloc: JobAlloc {
+                    auth,
+                    job_id,
+                    server_id,
+                },
+                need_toolchain,
+            })
         };
-        Ok(AllocJobResult::Success {
-            job_alloc,
-            need_toolchain,
+
+        let sort_servers_by_least_load_and_oldest_error = || {
+            let now = Instant::now();
+            // LOCKS
+            let mut servers = self.servers.lock().unwrap();
+
+            // Compute instantaneous load and update shared server state
+            servers
+                .iter_mut()
+                .map(|(server_id, details)| {
+                    // Assume all jobs assigned to this server will eventually be handled.
+                    let load = details.jobs_assigned.len() as f64 / details.num_cpus as f64;
+                    // Forget errors that are too old to care about anymore
+                    if let Some(last_error) = details.last_error {
+                        // TODO: Explain why we only reset errors when load < MAX_LOAD_PER_CORE?
+                        if load < MAX_PER_CORE_LOAD
+                            && now.duration_since(last_error) > SERVER_REMEMBER_ERROR_TIMEOUT
+                        {
+                            details.last_error = None;
+                        }
+                    }
+                    (server_id, details, load)
+                })
+                // Sort servers by least load and oldest error
+                .sorted_by(|(_, details_a, load_a), (_, details_b, load_b)| {
+                    match (details_a.last_error, details_b.last_error) {
+                        // If neither server has a recent error, prefer the one with lowest load
+                        (None, None) => load_a.total_cmp(load_b),
+                        // Prefer servers with no recent errors over servers with recent errors
+                        (None, Some(_)) => std::cmp::Ordering::Less,
+                        (Some(_), None) => std::cmp::Ordering::Greater,
+                        // If both servers have an error, prefer the one with the oldest error
+                        (Some(err_a), Some(err_b)) => err_b.cmp(&err_a),
+                    }
+                })
+                // Collect to avoid retaining the lock on `self.servers`.
+                // Use `server_id` as the key for `self.servers` lookups later.
+                .map(|(server_id, _, _)| *server_id)
+                .collect::<Vec<_>>()
+        };
+
+        // Create a list of server candidates sorted by least load and oldest error
+        let sorted_servers = sort_servers_by_least_load_and_oldest_error();
+        let num_servers = sorted_servers.len();
+
+        let job_id = self.job_count.fetch_add(1, Ordering::SeqCst) as u64;
+        let job_id = JobId(job_id);
+
+        let mut result = None;
+
+        // Loop through candidate servers.
+        // Exit the loop once we've allocated the job.
+        // Try the next candidate if we encounter an error.
+        for server_id in sorted_servers {
+            // Compute load again local to the loop.
+            // Since alloc_job in other threads can recover from errors and assign jobs to the
+            // next-best candidate, the load initially computed in `sort_servers()` can drift.
+            // Computing load again ensures we allocate accurately based on the current stats.
+            let load = {
+                // LOCKS
+                let mut servers = self.servers.lock().unwrap();
+                if let Some(details) = servers.get_mut(&server_id) {
+                    details.jobs_assigned.len() as f64 / details.num_cpus as f64
+                } else {
+                    MAX_PER_CORE_LOAD
+                }
+            };
+
+            // Never assign jobs to overloaded servers
+            if load >= MAX_PER_CORE_LOAD {
+                continue;
+            }
+
+            // Generate job auth token for this server
+            let auth = match make_auth_token(job_id, server_id) {
+                Ok(auth) => auth,
+                Err(err) => {
+                    warn!("[alloc_job({})]: {}", job_id, error_chain_to_string(&err));
+                    result = Some(Err(err));
+                    continue;
+                }
+            };
+
+            // Attempt to allocate the job to this server. If alloc_job fails,
+            // store the error and attempt to allocate to the next server.
+            // If all servers error, return the last error to the client.
+            match try_alloc_job(job_id, server_id, auth, tc.clone()) {
+                Ok(res) => {
+                    // If alloc_job succeeded, return the result
+                    result = Some(Ok(res));
+                    break;
+                }
+                Err(err) => {
+                    // If alloc_job failed, try the next best server
+                    warn!("[alloc_job({})]: {}", job_id, error_chain_to_string(&err));
+                    result = Some(Err(err));
+                    continue;
+                }
+            }
+        }
+
+        result.unwrap_or_else(|| {
+            // Fallback to the default failure case
+            Ok(AllocJobResult::Fail {
+                msg: format!(
+                    "[alloc_job({})]: Insufficient capacity across {} available servers",
+                    job_id, num_servers
+                ),
+            })
         })
     }
 
