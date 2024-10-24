@@ -736,6 +736,8 @@ mod server {
                     reqwest::Certificate::from_pem(&cert_pem)
                         .context("failed to interpret pem as certificate")?,
                 );
+                // Remove the old entry first so it isn't added to the client in the following loop
+                certs.remove(&server_id);
                 for (_, cert_pem) in certs.values() {
                     client_builder = client_builder.add_root_certificate(
                         reqwest::Certificate::from_pem(cert_pem).expect("previously valid cert"),
@@ -1106,7 +1108,7 @@ mod client {
         auth_token: String,
         scheduler_url: reqwest::Url,
         // cert_digest -> cert_pem
-        server_certs: Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>>,
+        server_certs: Arc<Mutex<HashMap<dist::ServerId, (Vec<u8>, Vec<u8>)>>>,
         client: Arc<Mutex<reqwest::Client>>,
         pool: tokio::runtime::Handle,
         tc_cache: Arc<cache::ClientToolchains>,
@@ -1149,7 +1151,8 @@ mod client {
 
         fn update_certs(
             client: &mut reqwest::Client,
-            certs: &mut HashMap<Vec<u8>, Vec<u8>>,
+            certs: &mut HashMap<dist::ServerId, (Vec<u8>, Vec<u8>)>,
+            server_id: dist::ServerId,
             cert_digest: Vec<u8>,
             cert_pem: Vec<u8>,
         ) -> Result<()> {
@@ -1159,7 +1162,9 @@ mod client {
                 reqwest::Certificate::from_pem(&cert_pem)
                     .context("failed to interpret pem as certificate")?,
             );
-            for cert_pem in certs.values() {
+            // Remove the old entry first so it isn't added to the client in the following loop
+            certs.remove(&server_id);
+            for (_, cert_pem) in certs.values() {
                 client_async_builder = client_async_builder.add_root_certificate(
                     reqwest::Certificate::from_pem(cert_pem).expect("previously valid cert"),
                 );
@@ -1174,7 +1179,7 @@ mod client {
                 .context("failed to create an async HTTP client")?;
             // Use the updated certificates
             *client = new_client_async;
-            certs.insert(cert_digest, cert_pem);
+            certs.insert(server_id, (cert_digest, cert_pem));
             Ok(())
         }
     }
@@ -1201,8 +1206,10 @@ mod client {
                         job_alloc,
                         need_toolchain,
                     });
-                    if server_certs.lock().unwrap().contains_key(&cert_digest) {
-                        return alloc_job_res;
+                    if let Some((digest, _)) = server_certs.lock().unwrap().get(&server_id) {
+                        if cert_digest == *digest {
+                            return alloc_job_res;
+                        }
                     }
                     info!(
                         "Need to request new certificate for server {}",
@@ -1227,6 +1234,7 @@ mod client {
                             Self::update_certs(
                                 &mut client.lock().unwrap(),
                                 &mut server_certs.lock().unwrap(),
+                                server_id,
                                 res.cert_digest,
                                 res.cert_pem,
                             )
