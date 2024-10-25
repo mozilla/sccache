@@ -123,6 +123,9 @@ The latest `cache.XXX` entries may be found here: https://github.com/mozilla/scc
 Whatever is set by a file based configuration, it is overruled by the env
 configuration variables
 
+### dist
+* `SCCACHE_DIST_RETRY_LIMIT` Number of times the client should retry failed distributed compilations. The default is `0` (no retries).
+
 ### misc
 
 * `SCCACHE_ALLOW_CORE_DUMPS` to enable core dumps by the server

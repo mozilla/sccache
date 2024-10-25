@@ -54,6 +54,7 @@ hyper-util = { version = "0.1.3", optional = true, features = [
   "server",
 ] }
 is-terminal = "0.4.12"
+itertools = "0.12"
 jobserver = "0.1"
 jwt = { package = "jsonwebtoken", version = "9", optional = true }
 libc = "0.2.153"
@@ -126,7 +127,6 @@ assert_cmd = "2.0.13"
 cc = "1.0"
 chrono = "0.4.33"
 filetime = "0.2"
-itertools = "0.12"
 predicates = "=3.1.0"
 serial_test = "3.1"
 temp-env = "0.3.6"

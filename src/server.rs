@@ -843,14 +843,14 @@ where
                     me.handle_compile(compile).await
                 }
                 Request::GetStats => {
-                    debug!("handle_client: get_stats");
+                    trace!("handle_client: get_stats");
                     me.get_info()
                         .await
                         .map(|i| Response::Stats(Box::new(i)))
                         .map(Message::WithoutBody)
                 }
                 Request::DistStatus => {
-                    debug!("handle_client: dist_status");
+                    trace!("handle_client: dist_status");
                     me.get_dist_status()
                         .await
                         .map(Response::DistStatus)

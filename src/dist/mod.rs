@@ -92,7 +92,7 @@ mod path_transform {
         }
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub struct PathTransformer {
         dist_to_local_path: HashMap<String, PathBuf>,
     }
@@ -269,7 +269,7 @@ mod path_transform {
     use std::iter;
     use std::path::{Path, PathBuf};
 
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub struct PathTransformer;
 
     impl PathTransformer {

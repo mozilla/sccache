@@ -130,6 +130,7 @@ impl ParsedArguments {
 }
 
 /// A generic implementation of the `Compilation` trait for C/C++ compilers.
+#[derive(Debug, Clone)]
 struct CCompilation<I: CCompilerImpl> {
     parsed_args: ParsedArguments,
     #[cfg(feature = "dist-client")]
@@ -1172,6 +1173,10 @@ impl<I: CCompilerImpl> Compilation for CCompilation<I> {
                     optional: output.optional,
                 }),
         )
+    }
+
+    fn box_clone(&self) -> Box<dyn Compilation> {
+        Box::new((*self).clone())
     }
 }
 

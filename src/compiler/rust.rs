@@ -1787,6 +1787,10 @@ impl Compilation for RustCompilation {
             optional: v.optional,
         }))
     }
+
+    fn box_clone(&self) -> Box<dyn Compilation> {
+        Box::new((*self).clone())
+    }
 }
 
 // TODO: we do end up with slashes facing the wrong way, but Windows is agnostic so it's
