@@ -1740,15 +1740,7 @@ impl<T: CommandCreatorSync> Compilation<T> for RustCompilation {
             })
         })();
 
-        let force_no_cache = env_vars
-            .iter()
-            .any(|(k, _v)| k.as_os_str() == "SCCACHE_NO_CACHE");
-
-        if force_no_cache {
-            Ok((CCompileCommand::new(command), dist_command, Cacheable::No))
-        } else {
-            Ok((CCompileCommand::new(command), dist_command, Cacheable::Yes))
-        }
+        Ok((CCompileCommand::new(command), dist_command, Cacheable::Yes))
     }
 
     #[cfg(feature = "dist-client")]
