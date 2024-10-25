@@ -1165,24 +1165,14 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I>
             ..
         } = *self;
 
-        let (command, dist_command, cacheable) = compiler.generate_compile_commands(
+        compiler.generate_compile_commands(
             path_transformer,
             executable,
             parsed_args,
             cwd,
             env_vars,
             rewrite_includes_only,
-        )?;
-
-        let force_no_cache = env_vars
-            .iter()
-            .any(|(k, _v)| k.as_os_str() == "SCCACHE_NO_CACHE");
-
-        if force_no_cache {
-            Ok((command, dist_command, Cacheable::No))
-        } else {
-            Ok((command, dist_command, cacheable))
-        }
+        )
     }
 
     #[cfg(feature = "dist-client")]

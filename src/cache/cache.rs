@@ -101,6 +101,8 @@ pub enum Cache {
     Hit(CacheRead),
     /// Result was not found in cache.
     Miss,
+    /// Do not cache the results of the compilation.
+    None,
     /// Cache entry should be ignored, force compilation.
     Recache,
 }
@@ -110,6 +112,7 @@ impl fmt::Debug for Cache {
         match *self {
             Cache::Hit(_) => write!(f, "Cache::Hit(...)"),
             Cache::Miss => write!(f, "Cache::Miss"),
+            Cache::None => write!(f, "Cache::None"),
             Cache::Recache => write!(f, "Cache::Recache"),
         }
     }
