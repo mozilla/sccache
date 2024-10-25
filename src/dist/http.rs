@@ -20,6 +20,37 @@ pub use self::server::{
     ClientAuthCheck, ClientVisibleMsg, Scheduler, ServerAuthCheck, HEARTBEAT_TIMEOUT,
 };
 
+use std::env;
+use std::time::Duration;
+
+/// Default timeout for connections to an sccache-dist server
+const DEFAULT_DIST_CONNECT_TIMEOUT: u64 = 5;
+
+/// Timeout for connections to an sccache-dist server
+pub fn get_connect_timeout() -> Duration {
+    Duration::new(
+        env::var("SCCACHE_DIST_CONNECT_TIMEOUT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(DEFAULT_DIST_CONNECT_TIMEOUT),
+        0,
+    )
+}
+
+/// Default timeout for compile requests to an sccache-dist server
+const DEFAULT_DIST_REQUEST_TIMEOUT: u64 = 600;
+
+/// Timeout for compile requests to an sccache-dist server
+pub fn get_request_timeout() -> Duration {
+    Duration::new(
+        env::var("SCCACHE_DIST_REQUEST_TIMEOUT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(DEFAULT_DIST_REQUEST_TIMEOUT),
+        0,
+    )
+}
+
 mod common {
     use reqwest::header;
     use serde::{Deserialize, Serialize};
@@ -264,7 +295,7 @@ mod server {
         AllocJobHttpResponse, HeartbeatServerHttpRequest, JobJwt, ReqwestRequestBuilderExt,
         RunJobHttpRequest, ServerCertificateHttpResponse,
     };
-    use super::urls;
+    use super::{get_connect_timeout, get_request_timeout, urls};
     use crate::dist::{
         self, AllocJobResult, AssignJobResult, HeartbeatServerResult, InputsReader, JobAuthorizer,
         JobId, JobState, RunJobResult, SchedulerStatusResult, ServerId, ServerNonce,
@@ -745,6 +776,8 @@ mod server {
                 }
                 // Finish the client
                 let new_client = client_builder
+                    .timeout(get_request_timeout())
+                    .connect_timeout(get_connect_timeout())
                     // Disable connection pool to avoid broken connection
                     // between runtime
                     .pool_max_idle_per_host(0)
@@ -1092,17 +1125,13 @@ mod client {
     use std::io::Write;
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
-    use std::time::Duration;
 
     use super::common::{
         bincode_req_fut, AllocJobHttpResponse, ReqwestRequestBuilderExt, RunJobHttpRequest,
         ServerCertificateHttpResponse,
     };
-    use super::urls;
+    use super::{get_connect_timeout, get_request_timeout, urls};
     use crate::errors::*;
-
-    const REQUEST_TIMEOUT_SECS: u64 = 600;
-    const CONNECT_TIMEOUT_SECS: u64 = 5;
 
     pub struct Client {
         auth_token: String,
@@ -1125,11 +1154,9 @@ mod client {
             auth_token: String,
             rewrite_includes_only: bool,
         ) -> Result<Self> {
-            let timeout = Duration::new(REQUEST_TIMEOUT_SECS, 0);
-            let connect_timeout = Duration::new(CONNECT_TIMEOUT_SECS, 0);
             let client = reqwest::ClientBuilder::new()
-                .timeout(timeout)
-                .connect_timeout(connect_timeout)
+                .timeout(get_request_timeout())
+                .connect_timeout(get_connect_timeout())
                 // Disable connection pool to avoid broken connection
                 // between runtime
                 .pool_max_idle_per_host(0)
@@ -1170,9 +1197,9 @@ mod client {
                 );
             }
             // Finish the client
-            let timeout = Duration::new(REQUEST_TIMEOUT_SECS, 0);
             let new_client_async = client_async_builder
-                .timeout(timeout)
+                .timeout(get_request_timeout())
+                .connect_timeout(get_connect_timeout())
                 // Disable keep-alive
                 .pool_max_idle_per_host(0)
                 .build()

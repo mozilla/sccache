@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(any(feature = "dist-server", feature = "dist-client"))]
+use crate::dist::http::{get_connect_timeout, get_request_timeout};
 use crate::mock_command::{CommandChild, RunCommand};
 use blake3::Hasher as blake3_Hasher;
 use byteorder::{BigEndian, ByteOrder};
@@ -941,6 +943,8 @@ pub fn daemonize() -> Result<()> {
 pub fn new_reqwest_blocking_client() -> reqwest::blocking::Client {
     reqwest::blocking::Client::builder()
         .pool_max_idle_per_host(0)
+        .timeout(get_request_timeout())
+        .connect_timeout(get_connect_timeout())
         .build()
         .expect("http client must build with success")
 }
