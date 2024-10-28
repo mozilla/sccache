@@ -8,6 +8,7 @@ use rand::{rngs::OsRng, RngCore};
 use sccache::config::{
     scheduler as scheduler_config, server as server_config, INSECURE_DIST_CLIENT_TOKEN,
 };
+use sccache::dist::http::get_dist_request_timeout;
 use sccache::dist::{
     self, AllocJobResult, AssignJobResult, BuilderIncoming, CompileCommand, HeartbeatServerResult,
     InputsReader, JobAlloc, JobAuthorizer, JobComplete, JobId, JobState, RunJobResult,
@@ -317,6 +318,7 @@ const UNCLAIMED_READY_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Copy, Clone)]
 struct JobDetail {
+    mtime: Instant,
     server_id: ServerId,
     state: JobState,
 }
@@ -494,7 +496,14 @@ impl SchedulerIncoming for Scheduler {
                 );
             }
 
-            jobs.insert(job_id, JobDetail { server_id, state });
+            jobs.insert(
+                job_id,
+                JobDetail {
+                    server_id,
+                    state,
+                    mtime: Instant::now(),
+                },
+            );
 
             if log_enabled!(log::Level::Trace) {
                 // LOCKS
@@ -686,6 +695,27 @@ impl SchedulerIncoming for Scheduler {
                     }
                 }
 
+                // If the server has jobs assigned that have taken longer than `SCCACHE_DIST_REQUEST_TIMEOUT` seconds,
+                // either the client retried the compilation (due to a server error), or the client abandoned the job
+                // after calling `run_job/<job_id>` (for example, when the user kills the build).
+                //
+                // In both cases the scheduler moves the job from pending/ready to started, and is expecting to hear
+                // from the build server that the job has been completed. That message will never arrive, so we track
+                // the time when jobs are started, and prune them if they take longer than the configured request
+                // timeout.
+                //
+                // Note: this assumes the scheduler's `SCCACHE_DIST_REQUEST_TIMEOUT` is >= the client's value, but
+                // that should be easy for the user to configure.
+                for &job_id in details.jobs_assigned.iter() {
+                    if let Some(detail) = jobs.get(&job_id) {
+                        if now.duration_since(detail.mtime) >= get_dist_request_timeout() {
+                            // insert into jobs_unclaimed to avoid the warning below
+                            details.jobs_unclaimed.insert(job_id, detail.mtime);
+                            stale_jobs.push(job_id);
+                        }
+                    }
+                }
+
                 if !stale_jobs.is_empty() {
                     warn!(
                         "The following stale jobs will be de-allocated: {:?}",
@@ -791,10 +821,12 @@ impl SchedulerIncoming for Scheduler {
                     // Update the job's `last_seen` time to ensure it isn't
                     // pruned for taking longer than UNCLAIMED_READY_TIMEOUT
                     server.jobs_unclaimed.entry(job_id).and_modify(|e| *e = now);
+                    job.get_mut().mtime = now;
                     job.get_mut().state = job_state;
                 }
                 (JobState::Ready, JobState::Started) => {
                     server.jobs_unclaimed.remove(&job_id);
+                    job.get_mut().mtime = now;
                     job.get_mut().state = job_state;
                 }
                 (JobState::Started, JobState::Complete) => {

@@ -24,10 +24,10 @@ use std::env;
 use std::time::Duration;
 
 /// Default timeout for connections to an sccache-dist server
-const DEFAULT_DIST_CONNECT_TIMEOUT: u64 = 5;
+const DEFAULT_DIST_CONNECT_TIMEOUT: u64 = 30;
 
 /// Timeout for connections to an sccache-dist server
-pub fn get_connect_timeout() -> Duration {
+pub fn get_dist_connect_timeout() -> Duration {
     Duration::new(
         env::var("SCCACHE_DIST_CONNECT_TIMEOUT")
             .ok()
@@ -41,7 +41,7 @@ pub fn get_connect_timeout() -> Duration {
 const DEFAULT_DIST_REQUEST_TIMEOUT: u64 = 600;
 
 /// Timeout for compile requests to an sccache-dist server
-pub fn get_request_timeout() -> Duration {
+pub fn get_dist_request_timeout() -> Duration {
     Duration::new(
         env::var("SCCACHE_DIST_REQUEST_TIMEOUT")
             .ok()
@@ -295,7 +295,7 @@ mod server {
         AllocJobHttpResponse, HeartbeatServerHttpRequest, JobJwt, ReqwestRequestBuilderExt,
         RunJobHttpRequest, ServerCertificateHttpResponse,
     };
-    use super::{get_connect_timeout, get_request_timeout, urls};
+    use super::{get_dist_connect_timeout, get_dist_request_timeout, urls};
     use crate::dist::{
         self, AllocJobResult, AssignJobResult, HeartbeatServerResult, InputsReader, JobAuthorizer,
         JobId, JobState, RunJobResult, SchedulerStatusResult, ServerId, ServerNonce,
@@ -776,8 +776,8 @@ mod server {
                 }
                 // Finish the client
                 let new_client = client_builder
-                    .timeout(get_request_timeout())
-                    .connect_timeout(get_connect_timeout())
+                    .timeout(get_dist_request_timeout())
+                    .connect_timeout(get_dist_connect_timeout())
                     // Disable connection pool to avoid broken connection
                     // between runtime
                     .pool_max_idle_per_host(0)
@@ -1130,7 +1130,7 @@ mod client {
         bincode_req_fut, AllocJobHttpResponse, ReqwestRequestBuilderExt, RunJobHttpRequest,
         ServerCertificateHttpResponse,
     };
-    use super::{get_connect_timeout, get_request_timeout, urls};
+    use super::{get_dist_connect_timeout, get_dist_request_timeout, urls};
     use crate::errors::*;
 
     pub struct Client {
@@ -1155,8 +1155,8 @@ mod client {
             rewrite_includes_only: bool,
         ) -> Result<Self> {
             let client = reqwest::ClientBuilder::new()
-                .timeout(get_request_timeout())
-                .connect_timeout(get_connect_timeout())
+                .timeout(get_dist_request_timeout())
+                .connect_timeout(get_dist_connect_timeout())
                 // Disable connection pool to avoid broken connection
                 // between runtime
                 .pool_max_idle_per_host(0)
@@ -1198,8 +1198,8 @@ mod client {
             }
             // Finish the client
             let new_client_async = client_async_builder
-                .timeout(get_request_timeout())
-                .connect_timeout(get_connect_timeout())
+                .timeout(get_dist_request_timeout())
+                .connect_timeout(get_dist_connect_timeout())
                 // Disable keep-alive
                 .pool_max_idle_per_host(0)
                 .build()
