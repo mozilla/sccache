@@ -1242,39 +1242,11 @@ where
                 match c.parse_arguments(&cmd, &cwd, &env_vars) {
                     CompilerArguments::Ok(hasher) => {
                         debug!("parse_arguments: Ok: {:?}", cmd);
-                        let me = self.clone();
 
                         let body = self
-                            .rt
-                            .spawn(async move {
-                                std::panic::AssertUnwindSafe(
-                                    me.start_compile_task(c, hasher, cmd, cwd, env_vars)
-                                )
-                                .catch_unwind()
-                                .await
-                                .map_err(|e| {
-                                    let panic = e
-                                        .downcast_ref::<&str>()
-                                        .map(|s| &**s)
-                                        .or_else(|| e.downcast_ref::<String>().map(|s| &**s))
-                                        .unwrap_or("An unknown panic was caught.");
-                                    let thread = std::thread::current();
-                                    let thread_name = thread.name().unwrap_or("unnamed");
-                                    if let Some((file, line, column)) = PANIC_LOCATION.with(|l| l.take()) {
-                                        anyhow!("thread '{thread_name}' panicked at {file}:{line}:{column}: {panic}")
-                                    } else {
-                                        anyhow!("thread '{thread_name}' panicked: {panic}")
-                                    }
-                                })
-                                .and_then(std::convert::identity)
-                            })
-                            .map_err(anyhow::Error::new)
-                            .and_then(|res| async {
-                                match res {
-                                    Ok(res) => Ok(Response::CompileFinished(res)),
-                                    Err(err) => Err(err),
-                                }
-                            })
+                            .clone()
+                            .start_compile_task(c, hasher, cmd, cwd, env_vars)
+                            .and_then(|res| async { Ok(Response::CompileFinished(res)) })
                             .boxed();
 
                         return Message::WithBody(
@@ -1311,7 +1283,7 @@ where
     /// a compile result in the cache or execute the compilation and store
     /// the result in the cache.
     pub async fn start_compile_task(
-        &self,
+        self,
         compiler: Box<dyn Compiler<C>>,
         hasher: Box<dyn CompilerHasher<C>>,
         arguments: Vec<OsString>,
@@ -1321,7 +1293,6 @@ where
         self.stats.lock().await.requests_executed += 1;
 
         let force_recache = env_vars.iter().any(|(k, _v)| k == "SCCACHE_RECACHE");
-
         let force_no_cache = env_vars.iter().any(|(k, _v)| k == "SCCACHE_NO_CACHE");
 
         let cache_control = if force_no_cache {
@@ -1336,181 +1307,206 @@ where
         let color_mode = hasher.color_mode();
         let kind = compiler.kind();
         let lang = hasher.language();
+        let me = self.clone();
 
-        let result = match self.dist_client.get_client().await {
-            Ok(client) => {
-                hasher
-                    .get_cached_or_compile(
-                        self,
-                        client,
-                        self.creator.clone(),
-                        self.storage.clone(),
-                        arguments,
-                        cwd,
-                        env_vars,
-                        cache_control,
-                        self.rt.clone(),
-                    )
-                    .await
-            }
-            Err(e) => Err(e),
-        };
-        let mut cache_write = None;
-        let mut res = CompileFinished {
-            color_mode,
-            ..Default::default()
-        };
+        self.rt
+            .spawn(async move {
 
-        let mut stats = self.stats.lock().await;
-
-        match result {
-            Ok((compiled, out)) => {
-                match compiled {
-                    CompileResult::Error => {
-                        debug!("compile result: cache error");
-
-                        stats.cache_errors.increment(&kind, &lang);
+                let result = match me.dist_client.get_client().await {
+                    Ok(client) => {
+                        std::panic::AssertUnwindSafe(hasher
+                            .get_cached_or_compile(
+                                &me,
+                                client,
+                                me.creator.clone(),
+                                me.storage.clone(),
+                                arguments,
+                                cwd,
+                                env_vars,
+                                cache_control,
+                                me.rt.clone(),
+                            )
+                        )
+                        .catch_unwind()
+                        .await
+                        .map_err(|e| {
+                            let panic = e
+                                .downcast_ref::<&str>()
+                                .map(|s| &**s)
+                                .or_else(|| e.downcast_ref::<String>().map(|s| &**s))
+                                .unwrap_or("An unknown panic was caught.");
+                            let thread = std::thread::current();
+                            let thread_name = thread.name().unwrap_or("unnamed");
+                            if let Some((file, line, column)) = PANIC_LOCATION.with(|l| l.take()) {
+                                anyhow!("thread '{thread_name}' panicked at {file}:{line}:{column}: {panic}")
+                            } else {
+                                anyhow!("thread '{thread_name}' panicked: {panic}")
+                            }
+                        })
+                        .and_then(std::convert::identity)
                     }
-                    CompileResult::CacheHit(duration) => {
-                        debug!("compile result: cache hit");
+                    Err(e) => Err(e),
+                };
 
-                        stats.cache_hits.increment(&kind, &lang);
-                        stats.cache_read_hit_duration += duration;
-                    }
-                    CompileResult::CacheMiss(miss_type, dist_type, duration, future) => {
-                        debug!("compile result: cache miss");
+                let mut cache_write = None;
+                let mut res = CompileFinished {
+                    color_mode,
+                    ..Default::default()
+                };
 
-                        match dist_type {
-                            DistType::NoDist => {}
-                            DistType::Ok(id) => {
-                                let server = id.addr().to_string();
-                                let server_count = stats.dist_compiles.entry(server).or_insert(0);
-                                *server_count += 1;
-                            }
-                            DistType::Error => stats.dist_errors += 1,
-                        }
-                        match miss_type {
-                            MissType::Normal => {}
-                            MissType::ForcedNoCache => {}
-                            MissType::ForcedRecache => {
-                                stats.forced_recaches += 1;
-                            }
-                            MissType::TimedOut => {
-                                stats.cache_timeouts += 1;
-                            }
-                            MissType::CacheReadError => {
+                let mut stats = me.stats.lock().await;
+
+                match result {
+                    Ok((compiled, out)) => {
+                        match compiled {
+                            CompileResult::Error => {
+                                debug!("compile result: cache error");
+
                                 stats.cache_errors.increment(&kind, &lang);
                             }
-                        }
-                        stats.cache_misses.increment(&kind, &lang);
-                        stats.compiler_write_duration += duration;
-                        debug!("stats after compile result: {stats:?}");
-                        cache_write = Some(future);
-                    }
-                    CompileResult::NotCached => {
-                        debug!("[{}]: compile result: not cached", out_pretty);
-                    }
-                    CompileResult::NotCacheable => {
-                        debug!("compile result: not cacheable");
+                            CompileResult::CacheHit(duration) => {
+                                debug!("compile result: cache hit");
 
-                        stats.cache_misses.increment(&kind, &lang);
-                        stats.non_cacheable_compilations += 1;
-                    }
-                    CompileResult::CompileFailed => {
-                        debug!("compile result: compile failed");
+                                stats.cache_hits.increment(&kind, &lang);
+                                stats.cache_read_hit_duration += duration;
+                            }
+                            CompileResult::CacheMiss(miss_type, dist_type, duration, future) => {
+                                debug!("compile result: cache miss");
 
-                        stats.compile_fails += 1;
-                    }
-                };
-                // Make sure the write guard has been dropped ASAP.
-                drop(stats);
+                                match dist_type {
+                                    DistType::NoDist => {}
+                                    DistType::Ok(id) => {
+                                        let server = id.addr().to_string();
+                                        let server_count = stats.dist_compiles.entry(server).or_insert(0);
+                                        *server_count += 1;
+                                    }
+                                    DistType::Error => stats.dist_errors += 1,
+                                }
+                                match miss_type {
+                                    MissType::Normal => {}
+                                    MissType::ForcedNoCache => {}
+                                    MissType::ForcedRecache => {
+                                        stats.forced_recaches += 1;
+                                    }
+                                    MissType::TimedOut => {
+                                        stats.cache_timeouts += 1;
+                                    }
+                                    MissType::CacheReadError => {
+                                        stats.cache_errors.increment(&kind, &lang);
+                                    }
+                                }
+                                stats.cache_misses.increment(&kind, &lang);
+                                stats.compiler_write_duration += duration;
+                                debug!("stats after compile result: {stats:?}");
+                                cache_write = Some(future);
+                            }
+                            CompileResult::NotCached => {
+                                debug!("[{}]: compile result: not cached", out_pretty);
+                            }
+                            CompileResult::NotCacheable => {
+                                debug!("compile result: not cacheable");
 
-                let Output {
-                    status,
-                    stdout,
-                    stderr,
-                } = out;
+                                stats.cache_misses.increment(&kind, &lang);
+                                stats.non_cacheable_compilations += 1;
+                            }
+                            CompileResult::CompileFailed => {
+                                debug!("compile result: compile failed");
 
-                trace!("CompileFinished retcode: {}", status);
-
-                match status.code() {
-                    Some(code) => res.retcode = Some(code),
-                    None => res.signal = Some(get_signal(status)),
-                };
-
-                res.stdout = stdout;
-                res.stderr = stderr;
-            }
-            Err(err) => {
-                match err.downcast::<ProcessError>() {
-                    Ok(ProcessError(output)) => {
-                        debug!("Compilation failed: {:?}", output);
-                        stats.compile_fails += 1;
+                                stats.compile_fails += 1;
+                            }
+                        };
                         // Make sure the write guard has been dropped ASAP.
                         drop(stats);
 
-                        match output.status.code() {
+                        let Output {
+                            status,
+                            stdout,
+                            stderr,
+                        } = out;
+
+                        trace!("CompileFinished retcode: {}", status);
+
+                        match status.code() {
                             Some(code) => res.retcode = Some(code),
-                            None => res.signal = Some(get_signal(output.status)),
+                            None => res.signal = Some(get_signal(status)),
                         };
-                        res.stdout = output.stdout;
-                        res.stderr = output.stderr;
+
+                        res.stdout = stdout;
+                        res.stderr = stderr;
                     }
-                    Err(err) => match err.downcast::<HttpClientError>() {
-                        Ok(HttpClientError(msg)) => {
-                            // Make sure the write guard has been dropped ASAP.
-                            drop(stats);
-                            self.dist_client.reset_state().await;
-                            let errmsg = format!("[{:?}] http error status: {}", out_pretty, msg);
-                            error!("{}", errmsg);
-                            res.retcode = Some(1);
-                            res.stderr = errmsg.as_bytes().to_vec();
-                        }
-                        Err(err) => {
-                            stats.cache_errors.increment(&kind, &lang);
-                            // Make sure the write guard has been dropped ASAP.
-                            drop(stats);
+                    Err(err) => {
+                        match err.downcast::<ProcessError>() {
+                            Ok(ProcessError(output)) => {
+                                debug!("Compilation failed: {:?}", output);
+                                stats.compile_fails += 1;
+                                // Make sure the write guard has been dropped ASAP.
+                                drop(stats);
 
-                            use std::fmt::Write;
-
-                            error!("[{:?}] fatal error: {}", out_pretty, err);
-
-                            let mut error = "sccache: encountered fatal error\n".to_string();
-                            let _ = writeln!(error, "sccache: error: {}", err);
-                            for e in err.chain() {
-                                error!("[{:?}] \t{}", out_pretty, e);
-                                let _ = writeln!(error, "sccache: caused by: {}", e);
+                                match output.status.code() {
+                                    Some(code) => res.retcode = Some(code),
+                                    None => res.signal = Some(get_signal(output.status)),
+                                };
+                                res.stdout = output.stdout;
+                                res.stderr = output.stderr;
                             }
-                            //TODO: figure out a better way to communicate this?
-                            res.retcode = Some(-2);
-                            res.stderr = error.into_bytes();
+                            Err(err) => match err.downcast::<HttpClientError>() {
+                                Ok(HttpClientError(msg)) => {
+                                    // Make sure the write guard has been dropped ASAP.
+                                    drop(stats);
+                                    me.dist_client.reset_state().await;
+                                    let errmsg = format!("[{:?}] http error status: {}", out_pretty, msg);
+                                    error!("{}", errmsg);
+                                    res.retcode = Some(1);
+                                    res.stderr = errmsg.as_bytes().to_vec();
+                                }
+                                Err(err) => {
+                                    stats.cache_errors.increment(&kind, &lang);
+                                    // Make sure the write guard has been dropped ASAP.
+                                    drop(stats);
+
+                                    use std::fmt::Write;
+
+                                    error!("[{:?}] fatal error: {}", out_pretty, err);
+
+                                    let mut error = "sccache: encountered fatal error\n".to_string();
+                                    let _ = writeln!(error, "sccache: error: {}", err);
+                                    for e in err.chain() {
+                                        error!("[{:?}] \t{}", out_pretty, e);
+                                        let _ = writeln!(error, "sccache: caused by: {}", e);
+                                    }
+                                    //TODO: figure out a better way to communicate this?
+                                    res.retcode = Some(-2);
+                                    res.stderr = error.into_bytes();
+                                }
+                            },
                         }
-                    },
-                }
-            }
-        };
+                    }
+                };
 
-        if let Some(cache_write) = cache_write {
-            match cache_write.await {
-                Err(e) => {
-                    debug!("Error executing cache write: {}", e);
-                    self.stats.lock().await.cache_write_errors += 1;
+                if let Some(cache_write) = cache_write {
+                    match cache_write.await {
+                        Err(e) => {
+                            debug!("Error executing cache write: {}", e);
+                            me.stats.lock().await.cache_write_errors += 1;
+                        }
+                        //TODO: save cache stats!
+                        Ok(info) => {
+                            debug!(
+                                "[{}]: Cache write finished in {}",
+                                info.object_file_pretty,
+                                util::fmt_duration_as_secs(&info.duration)
+                            );
+                            let mut stats = me.stats.lock().await;
+                            stats.cache_writes += 1;
+                            stats.cache_write_duration += info.duration;
+                        }
+                    }
                 }
-                //TODO: save cache stats!
-                Ok(info) => {
-                    debug!(
-                        "[{}]: Cache write finished in {}",
-                        info.object_file_pretty,
-                        util::fmt_duration_as_secs(&info.duration)
-                    );
-                    let mut stats = self.stats.lock().await;
-                    stats.cache_writes += 1;
-                    stats.cache_write_duration += info.duration;
-                }
-            }
-        }
 
-        Ok(res)
+                Ok(res)
+            })
+            .map_err(anyhow::Error::new)
+            .await?
     }
 }
 
