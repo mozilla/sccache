@@ -27,7 +27,7 @@ use fs_err as fs;
 use log::Level::Trace;
 use std::collections::HashMap;
 use std::env;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process;
@@ -856,8 +856,6 @@ where
         let _ = rewrite_includes_only;
     }
 
-    trace!("compile");
-
     let out_file = match parsed_args.outputs.get("obj") {
         Some(obj) => &obj.path,
         None => return Err(anyhow!("Missing object file output")),
@@ -884,6 +882,16 @@ where
         arguments.push("--".into());
     }
     arguments.push(parsed_args.input.clone().into());
+
+    trace!(
+        "compile: {} {}",
+        executable.to_string_lossy(),
+        arguments.join(OsStr::new(" ")).to_string_lossy()
+    );
+
+    let has_verbose_flag = arguments.contains(&OsString::from("-v"))
+        || arguments.contains(&OsString::from("--verbose"));
+
     let command = SingleCompileCommand {
         executable: executable.to_owned(),
         arguments,
@@ -894,56 +902,60 @@ where
     #[cfg(not(feature = "dist-client"))]
     let dist_command = None;
     #[cfg(feature = "dist-client")]
-    let dist_command = (|| {
-        // https://gcc.gnu.org/onlinedocs/gcc-4.9.0/gcc/Overall-Options.html
-        let mut language: Option<String> =
-            language_to_arg(parsed_args.language).map(|lang| lang.into());
-        if !rewrite_includes_only {
-            match parsed_args.language {
-                Language::C => language = Some("cpp-output".into()),
-                Language::GenericHeader | Language::CHeader | Language::CxxHeader => {}
-                _ => language.as_mut()?.push_str("-cpp-output"),
+    let dist_command = if has_verbose_flag {
+        None
+    } else {
+        (|| {
+            // https://gcc.gnu.org/onlinedocs/gcc-4.9.0/gcc/Overall-Options.html
+            let mut language: Option<String> =
+                language_to_arg(parsed_args.language).map(|lang| lang.into());
+            if !rewrite_includes_only {
+                match parsed_args.language {
+                    Language::C => language = Some("cpp-output".into()),
+                    Language::GenericHeader | Language::CHeader | Language::CxxHeader => {}
+                    _ => language.as_mut()?.push_str("-cpp-output"),
+                }
             }
-        }
 
-        let mut arguments: Vec<String> = vec![];
-        // Language needs to be before input
-        if let Some(lang) = &language {
-            arguments.extend(vec!["-x".into(), lang.into()])
-        }
-        arguments.extend(vec![
-            parsed_args.compilation_flag.clone().into_string().ok()?,
-            path_transformer.as_dist(&parsed_args.input)?,
-            "-o".into(),
-            path_transformer.as_dist(out_file)?,
-        ]);
-        if let CCompilerKind::Gcc = kind {
-            // From https://gcc.gnu.org/onlinedocs/gcc/Preprocessor-Options.html:
-            //
-            // -fdirectives-only
-            //
-            //     [...]
-            //
-            //     With -fpreprocessed, predefinition of command line and most
-            //     builtin macros is disabled. Macros such as __LINE__, which
-            //     are contextually dependent, are handled normally. This
-            //     enables compilation of files previously preprocessed with -E
-            //     -fdirectives-only.
-            //
-            // Which is exactly what we do :-)
-            if rewrite_includes_only && !parsed_args.suppress_rewrite_includes_only {
-                arguments.push("-fdirectives-only".into());
+            let mut arguments: Vec<String> = vec![];
+            // Language needs to be before input
+            if let Some(lang) = &language {
+                arguments.extend(vec!["-x".into(), lang.into()])
             }
-            arguments.push("-fpreprocessed".into());
-        }
-        arguments.extend(dist::osstrings_to_strings(&parsed_args.common_args)?);
-        Some(dist::CompileCommand {
-            executable: path_transformer.as_dist(executable)?,
-            arguments,
-            env_vars: dist::osstring_tuples_to_strings(env_vars)?,
-            cwd: path_transformer.as_dist_abs(cwd)?,
-        })
-    })();
+            arguments.extend(vec![
+                parsed_args.compilation_flag.clone().into_string().ok()?,
+                path_transformer.as_dist(&parsed_args.input)?,
+                "-o".into(),
+                path_transformer.as_dist(out_file)?,
+            ]);
+            if let CCompilerKind::Gcc = kind {
+                // From https://gcc.gnu.org/onlinedocs/gcc/Preprocessor-Options.html:
+                //
+                // -fdirectives-only
+                //
+                //     [...]
+                //
+                //     With -fpreprocessed, predefinition of command line and most
+                //     builtin macros is disabled. Macros such as __LINE__, which
+                //     are contextually dependent, are handled normally. This
+                //     enables compilation of files previously preprocessed with -E
+                //     -fdirectives-only.
+                //
+                // Which is exactly what we do :-)
+                if rewrite_includes_only && !parsed_args.suppress_rewrite_includes_only {
+                    arguments.push("-fdirectives-only".into());
+                }
+                arguments.push("-fpreprocessed".into());
+            }
+            arguments.extend(dist::osstrings_to_strings(&parsed_args.common_args)?);
+            Some(dist::CompileCommand {
+                executable: path_transformer.as_dist(executable)?,
+                arguments,
+                env_vars: dist::osstring_tuples_to_strings(env_vars)?,
+                cwd: path_transformer.as_dist_abs(cwd)?,
+            })
+        })()
+    };
 
     Ok((command, dist_command, Cacheable::Yes))
 }
