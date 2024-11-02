@@ -1358,6 +1358,9 @@ where
 
                 match result {
                     Ok((compiled, out)) => {
+
+                        let mut dist_type = DistType::NoDist;
+
                         match compiled {
                             CompileResult::Error => {
                                 debug!("compile result: cache error");
@@ -1370,18 +1373,10 @@ where
                                 stats.cache_hits.increment(&kind, &lang);
                                 stats.cache_read_hit_duration += duration;
                             }
-                            CompileResult::CacheMiss(miss_type, dist_type, duration, future) => {
-                                debug!("compile result: cache miss");
+                            CompileResult::CacheMiss(miss_type, dt, duration, future) => {
+                                debug!("[{}]: compile result: cache miss", out_pretty);
+                                dist_type = dt;
 
-                                match dist_type {
-                                    DistType::NoDist => {}
-                                    DistType::Ok(id) => {
-                                        let server = id.addr().to_string();
-                                        let server_count = stats.dist_compiles.entry(server).or_insert(0);
-                                        *server_count += 1;
-                                    }
-                                    DistType::Error => stats.dist_errors += 1,
-                                }
                                 match miss_type {
                                     MissType::Normal => {}
                                     MissType::ForcedNoCache => {}
@@ -1400,21 +1395,33 @@ where
                                 debug!("stats after compile result: {stats:?}");
                                 cache_write = Some(future);
                             }
-                            CompileResult::NotCached => {
+                            CompileResult::NotCached(dt) => {
                                 debug!("[{}]: compile result: not cached", out_pretty);
+                                dist_type = dt;
                             }
-                            CompileResult::NotCacheable => {
-                                debug!("compile result: not cacheable");
-
+                            CompileResult::NotCacheable(dt) => {
+                                debug!("[{}]: compile result: not cacheable", out_pretty);
+                                dist_type = dt;
                                 stats.cache_misses.increment(&kind, &lang);
                                 stats.non_cacheable_compilations += 1;
                             }
-                            CompileResult::CompileFailed => {
-                                debug!("compile result: compile failed");
-
+                            CompileResult::CompileFailed(dt) => {
+                                debug!("[{}]: compile result: compile failed", out_pretty);
+                                dist_type = dt;
                                 stats.compile_fails += 1;
                             }
                         };
+
+                        match dist_type {
+                            DistType::NoDist => {}
+                            DistType::Ok(id) => {
+                                let server = id.addr().to_string();
+                                let server_count = stats.dist_compiles.entry(server).or_insert(0);
+                                *server_count += 1;
+                            }
+                            DistType::Error => stats.dist_errors += 1,
+                        }
+
                         // Make sure the write guard has been dropped ASAP.
                         drop(stats);
 
