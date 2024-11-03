@@ -692,14 +692,16 @@ where
                 (env_vars.clone(), Cacheable::No)
             }
             _ => {
-                // All generated host compiler commands include `-D__CUDA_ARCH_LIST__=`.
-                // If this definition isn't present, this command is either a new binary
+                // All generated host compiler commands include one of these defines.
+                // If one of these isn't present, this command is either a new binary
                 // in the CTK that we don't know about, or a line like `rm x_dlink.reg.c`
                 // that nvcc generates in certain cases.
-                if !args
-                    .iter()
-                    .any(|arg| arg.starts_with("-D__CUDA_ARCH_LIST__"))
-                {
+                if !args.iter().any(|arg| {
+                    arg.starts_with("-D__CUDACC__")
+                        || arg.starts_with("-D__NVCC__")
+                        || arg.starts_with("-D__CUDA_ARCH__")
+                        || arg.starts_with("-D__CUDA_ARCH_LIST__")
+                }) {
                     continue;
                 }
                 if args.contains(&preprocessor_flag) {
