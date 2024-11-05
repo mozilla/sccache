@@ -8,7 +8,7 @@ This cache type will need tokens like `ACTIONS_CACHE_URL` and `ACTIONS_RUNTIME_T
 
 ```yaml
 - name: Configure sccache
-  uses: actions/github-script@v6
+  uses: actions/github-script@v7
   with:
     script: |
       core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
