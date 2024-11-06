@@ -3561,7 +3561,6 @@ proc_macro false
             "--emit=dep-info,link",
             "--out-dir",
             "/out",
-            "-Zprofile"
         );
 
         assert_eq!(h.gcno, Some("foo.gcno".into()));
@@ -3577,7 +3576,6 @@ proc_macro false
             "extra-filename=-a1b6419f8321841f",
             "--out-dir",
             "/out",
-            "-Zprofile"
         );
 
         assert_eq!(h.gcno, Some("foo-a1b6419f8321841f.gcno".into()));
