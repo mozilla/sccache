@@ -1263,7 +1263,7 @@ impl pkg::ToolchainPackager for CToolchainPackager {
         // files by path.
         let named_file = |kind: &str, name: &str| -> Option<PathBuf> {
             let mut output = process::Command::new(&self.executable)
-                .arg(&format!("-print-{}-name={}", kind, name))
+                .arg(format!("-print-{}-name={}", kind, name))
                 .output()
                 .ok()?;
             debug!(

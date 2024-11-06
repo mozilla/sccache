@@ -3560,7 +3560,7 @@ proc_macro false
             "./src/lib.rs",
             "--emit=dep-info,link",
             "--out-dir",
-            "/out",
+            "/out"
         );
 
         assert_eq!(h.gcno, Some("foo.gcno".into()));
@@ -3575,7 +3575,7 @@ proc_macro false
             "-C",
             "extra-filename=-a1b6419f8321841f",
             "--out-dir",
-            "/out",
+            "/out"
         );
 
         assert_eq!(h.gcno, Some("foo-a1b6419f8321841f.gcno".into()));
