@@ -239,7 +239,7 @@ jobs:
         env:
           CARGO_INCREMENTAL: "0"
           RUSTC_WRAPPER: ""
-          RUSTFLAGS: "-Zprofile -Ccodegen-units=1 -Copt-level=0 -Clink-dead-code -Coverflow-checks=off"
+          RUSTFLAGS: "-Ccodegen-units=1 -Copt-level=0 -Clink-dead-code -Coverflow-checks=off -Cprofile-generate=target/debug"
 
       - name: Generate coverage data (via `grcov`)
         id: coverage

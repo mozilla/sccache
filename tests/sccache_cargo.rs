@@ -98,7 +98,10 @@ fn test_rust_cargo_check_nightly() -> Result<()> {
 
     test_rust_cargo_cmd(
         "check",
-        SccacheTest::new(Some(&[("RUSTFLAGS", OsString::from("-Zprofile"))]))?,
+        SccacheTest::new(Some(&[(
+            "RUSTFLAGS",
+            OsString::from("-Cprofile-generate=."),
+        )]))?,
     )
 }
 
@@ -110,7 +113,10 @@ fn test_rust_cargo_check_nightly_readonly() -> Result<()> {
 
     test_rust_cargo_cmd_readonly(
         "check",
-        SccacheTest::new(Some(&[("RUSTFLAGS", OsString::from("-Zprofile"))]))?,
+        SccacheTest::new(Some(&[(
+            "RUSTFLAGS",
+            OsString::from("-Cprofile-generate=."),
+        )]))?,
     )
 }
 
@@ -122,7 +128,10 @@ fn test_rust_cargo_build_nightly() -> Result<()> {
 
     test_rust_cargo_cmd(
         "build",
-        SccacheTest::new(Some(&[("RUSTFLAGS", OsString::from("-Zprofile"))]))?,
+        SccacheTest::new(Some(&[(
+            "RUSTFLAGS",
+            OsString::from("-Cprofile-generate=."),
+        )]))?,
     )
 }
 
@@ -134,7 +143,10 @@ fn test_rust_cargo_build_nightly_readonly() -> Result<()> {
 
     test_rust_cargo_cmd_readonly(
         "build",
-        SccacheTest::new(Some(&[("RUSTFLAGS", OsString::from("-Zprofile"))]))?,
+        SccacheTest::new(Some(&[(
+            "RUSTFLAGS",
+            OsString::from("-Cprofile-generate=."),
+        )]))?,
     )
 }
 

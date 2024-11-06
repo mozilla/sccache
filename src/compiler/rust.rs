@@ -159,8 +159,8 @@ pub struct ParsedArguments {
     crate_types: CrateTypes,
     /// If dependency info is being emitted, the name of the dep info file.
     dep_info: Option<PathBuf>,
-    /// If gcno info is being emitted, the name of the gcno file.
-    gcno: Option<PathBuf>,
+    /// If profile info is being emitted, the name of the profile file.
+    profile: Option<PathBuf>,
     /// rustc says that emits .rlib for --emit=metadata
     /// https://github.com/rust-lang/rust/issues/54852
     emit: HashSet<String>,
@@ -994,7 +994,6 @@ ArgData! {
     CodeGen(ArgCodegen),
     PassThrough(OsString),
     Target(ArgTarget),
-    Unstable(ArgUnstable),
 }
 
 use self::ArgData::*;
@@ -1036,7 +1035,6 @@ counted_array!(static ARGS: [ArgInfo<ArgData>; _] = [
     take_arg!("-L", ArgLinkPath, CanBeSeparated, LinkPath),
     flag!("-V", NotCompilationFlag),
     take_arg!("-W", OsString, CanBeSeparated, PassThrough),
-    take_arg!("-Z", ArgUnstable, CanBeSeparated, Unstable),
     take_arg!("-l", ArgLinkLibrary, CanBeSeparated, LinkLibrary),
     take_arg!("-o", PathBuf, CanBeSeparated, TooHardPath),
 ]);
@@ -1114,6 +1112,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                 match (opt.as_ref(), value) {
                     ("extra-filename", Some(value)) => extra_filename = Some(value.to_owned()),
                     ("extra-filename", None) => cannot_cache!("extra-filename"),
+                    ("profile-generate", Some(_)) => profile = true,
                     // Incremental compilation makes a mess of sccache's entire world
                     // view. It produces additional compiler outputs that we don't cache,
                     // and just letting rustc do its work in incremental mode is likely
@@ -1126,12 +1125,6 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                     (_, _) => (),
                 }
             }
-            Some(Unstable(ArgUnstable { opt, value })) => match value.as_deref() {
-                Some("y") | Some("yes") | Some("on") | None if opt == "profile" => {
-                    profile = true;
-                }
-                _ => (),
-            },
             Some(Color(value)) => {
                 // We'll just assume the last specified value wins.
                 color_mode = match value.as_ref() {
@@ -1220,14 +1213,15 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
         None
     };
 
-    // Figure out the gcno filename, if producing gcno files with `-Zprofile`.
-    let gcno = if profile && emit.contains("link") {
-        let mut gcno = crate_name.clone();
+    // Figure out the profile filename, if producing profile files with `-C profile-generate`.
+    let profile = if profile && emit.contains("link") {
+        let mut profile = crate_name.clone();
         if let Some(extra_filename) = extra_filename {
-            gcno.push_str(&extra_filename[..]);
+            profile.push_str(&extra_filename[..]);
         }
-        gcno.push_str(".gcno");
-        Some(gcno)
+        // LLVM will append ".profraw" to the filename.
+        profile.push_str(".profraw");
+        Some(profile)
     } else {
         None
     };
@@ -1267,7 +1261,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
         staticlibs,
         crate_name,
         dep_info: dep_info.map(|s| s.into()),
-        gcno: gcno.map(|s| s.into()),
+        profile: profile.map(|s| s.into()),
         emit,
         color_mode,
         has_json,
@@ -1311,7 +1305,7 @@ where
                     dep_info,
                     emit,
                     has_json,
-                    gcno,
+                    profile,
                     ..
                 },
         } = *self;
@@ -1535,10 +1529,10 @@ where
         } else {
             None
         };
-        if let Some(gcno) = gcno {
-            let p = output_dir.join(&gcno);
+        if let Some(profile) = profile {
+            let p = output_dir.join(&profile);
             outputs.insert(
-                gcno.to_string_lossy().into_owned(),
+                profile.to_string_lossy().into_owned(),
                 ArtifactDescriptor {
                     path: p,
                     optional: true,
@@ -3213,7 +3207,7 @@ proc_macro false
                 emit,
                 color_mode: ColorMode::Auto,
                 has_json: false,
-                gcno: None,
+                profile: None,
             },
         });
         let creator = new_creator();
@@ -3561,10 +3555,11 @@ proc_macro false
             "--emit=dep-info,link",
             "--out-dir",
             "/out",
-            "-Zprofile"
+            "-C",
+            "profile-generate=."
         );
 
-        assert_eq!(h.gcno, Some("foo.gcno".into()));
+        assert_eq!(h.profile, Some("foo.profraw".into()));
 
         let h = parses!(
             "--crate-name",
@@ -3577,9 +3572,10 @@ proc_macro false
             "extra-filename=-a1b6419f8321841f",
             "--out-dir",
             "/out",
-            "-Zprofile"
+            "-C",
+            "profile-generate=."
         );
 
-        assert_eq!(h.gcno, Some("foo-a1b6419f8321841f.gcno".into()));
+        assert_eq!(h.profile, Some("foo-a1b6419f8321841f.profraw".into()));
     }
 }
