@@ -85,7 +85,7 @@ mod code_grant_pkce {
         html_response, json_response, query_pairs, MIN_TOKEN_VALIDITY, MIN_TOKEN_VALIDITY_WARNING,
         REDIRECT_WITH_AUTH_JSON,
     };
-    use crate::util::new_reqwest_blocking_client;
+    use crate::util::new_reqwest_client;
     use crate::util::BASE64_URL_SAFE_ENGINE;
     use base64::Engine;
     use bytes::Bytes;
@@ -232,7 +232,7 @@ mod code_grant_pkce {
         Ok(response)
     }
 
-    pub fn code_to_token(
+    pub async fn code_to_token(
         token_url: &str,
         client_id: &str,
         code_verifier: &str,
@@ -246,8 +246,8 @@ mod code_grant_pkce {
             grant_type: GRANT_TYPE_PARAM_VALUE,
             redirect_uri,
         };
-        let client = new_reqwest_blocking_client();
-        let res = client.post(token_url).json(&token_request).send()?;
+        let client = new_reqwest_client();
+        let res = client.post(token_url).json(&token_request).send().await?;
         if !res.status().is_success() {
             bail!(
                 "Sending code to {} failed, HTTP error: {}",
@@ -258,6 +258,7 @@ mod code_grant_pkce {
 
         let (token, expires_at) = handle_token_response(
             res.json()
+                .await
                 .context("Failed to parse token response as JSON")?,
         )?;
         if expires_at - Instant::now() < MIN_TOKEN_VALIDITY {
@@ -585,8 +586,12 @@ pub fn get_token_oauth2_code_grant_pkce(
     let code = code_rx
         .try_recv()
         .expect("Hyper shutdown but code not available - internal error");
-    code_grant_pkce::code_to_token(token_url, client_id, &verifier, &code, &redirect_uri)
-        .context("Failed to convert oauth2 code into a token")
+
+    runtime.block_on(async move {
+        code_grant_pkce::code_to_token(token_url, client_id, &verifier, &code, &redirect_uri)
+            .await
+            .context("Failed to convert oauth2 code into a token")
+    })
 }
 
 // https://auth0.com/docs/api-auth/tutorials/implicit-grant

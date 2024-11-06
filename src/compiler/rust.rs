@@ -34,7 +34,6 @@ use fs_err as fs;
 use log::Level::Trace;
 use once_cell::sync::Lazy;
 #[cfg(feature = "dist-client")]
-#[cfg(feature = "dist-client")]
 use std::borrow::Borrow;
 use std::borrow::Cow;
 #[cfg(feature = "dist-client")]

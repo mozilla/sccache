@@ -207,7 +207,7 @@ fn test_basic_compile(compiler: Compiler, tempdir: &Path) {
     let out_file = tempdir.join(OUTPUT);
     trace!("compile");
     sccache_command()
-        .args(&compile_cmdline(name, &exe, INPUT, OUTPUT, Vec::new()))
+        .args(compile_cmdline(name, &exe, INPUT, OUTPUT, Vec::new()))
         .current_dir(tempdir)
         .envs(env_vars.clone())
         .assert()
@@ -226,7 +226,7 @@ fn test_basic_compile(compiler: Compiler, tempdir: &Path) {
     trace!("compile");
     fs::remove_file(&out_file).unwrap();
     sccache_command()
-        .args(&compile_cmdline(name, &exe, INPUT, OUTPUT, Vec::new()))
+        .args(compile_cmdline(name, &exe, INPUT, OUTPUT, Vec::new()))
         .current_dir(tempdir)
         .envs(env_vars)
         .assert()
@@ -564,7 +564,7 @@ fn test_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
     let out_file = tempdir.join(OUTPUT);
     trace!("compile A");
     sccache_command()
-        .args(&compile_cuda_cmdline(
+        .args(compile_cuda_cmdline(
             name,
             exe,
             INPUT_FOR_CUDA_A,
@@ -589,7 +589,7 @@ fn test_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
     trace!("compile A");
     fs::remove_file(&out_file).unwrap();
     sccache_command()
-        .args(&compile_cuda_cmdline(
+        .args(compile_cuda_cmdline(
             name,
             exe,
             INPUT_FOR_CUDA_A,
@@ -617,7 +617,7 @@ fn test_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
     // phase is correctly running and outputting text
     trace!("compile B");
     sccache_command()
-        .args(&compile_cuda_cmdline(
+        .args(compile_cuda_cmdline(
             name,
             exe,
             INPUT_FOR_CUDA_B,
@@ -658,7 +658,7 @@ fn test_proper_lang_stat_tracking(compiler: Compiler, tempdir: &Path) {
     let out_file = tempdir.join(OUTPUT);
     trace!("compile CUDA A");
     sccache_command()
-        .args(&compile_cmdline(
+        .args(compile_cmdline(
             name,
             &exe,
             INPUT_FOR_CUDA_C,
@@ -672,7 +672,7 @@ fn test_proper_lang_stat_tracking(compiler: Compiler, tempdir: &Path) {
     fs::remove_file(&out_file).unwrap();
     trace!("compile CUDA A");
     sccache_command()
-        .args(&compile_cmdline(
+        .args(compile_cmdline(
             name,
             &exe,
             INPUT_FOR_CUDA_C,
@@ -686,7 +686,7 @@ fn test_proper_lang_stat_tracking(compiler: Compiler, tempdir: &Path) {
     fs::remove_file(&out_file).unwrap();
     trace!("compile C++ A");
     sccache_command()
-        .args(&compile_cmdline(name, &exe, INPUT, OUTPUT, Vec::new()))
+        .args(compile_cmdline(name, &exe, INPUT, OUTPUT, Vec::new()))
         .current_dir(tempdir)
         .envs(env_vars.clone())
         .assert()
@@ -694,7 +694,7 @@ fn test_proper_lang_stat_tracking(compiler: Compiler, tempdir: &Path) {
     fs::remove_file(&out_file).unwrap();
     trace!("compile C++ A");
     sccache_command()
-        .args(&compile_cmdline(name, &exe, INPUT, OUTPUT, Vec::new()))
+        .args(compile_cmdline(name, &exe, INPUT, OUTPUT, Vec::new()))
         .current_dir(tempdir)
         .envs(env_vars)
         .assert()
@@ -734,7 +734,7 @@ fn test_hip_compiles(compiler: &Compiler, tempdir: &Path) {
     let out_file = tempdir.join(OUTPUT);
     trace!("compile A");
     sccache_command()
-        .args(&compile_hip_cmdline(
+        .args(compile_hip_cmdline(
             name,
             exe,
             INPUT_FOR_HIP_A,
@@ -760,7 +760,7 @@ fn test_hip_compiles(compiler: &Compiler, tempdir: &Path) {
     trace!("compile A");
     fs::remove_file(&out_file).unwrap();
     sccache_command()
-        .args(&compile_hip_cmdline(
+        .args(compile_hip_cmdline(
             name,
             exe,
             INPUT_FOR_HIP_A,
@@ -789,7 +789,7 @@ fn test_hip_compiles(compiler: &Compiler, tempdir: &Path) {
     // phase is correctly running and outputting text
     trace!("compile B");
     sccache_command()
-        .args(&compile_hip_cmdline(
+        .args(compile_hip_cmdline(
             name,
             exe,
             INPUT_FOR_HIP_B,
@@ -831,7 +831,7 @@ fn test_hip_compiles_multi_targets(compiler: &Compiler, tempdir: &Path) {
     let out_file = tempdir.join(OUTPUT);
     trace!("compile A with gfx900 and gfx1030");
     sccache_command()
-        .args(&compile_hip_cmdline(
+        .args(compile_hip_cmdline(
             name,
             exe,
             INPUT_FOR_HIP_A,
@@ -858,7 +858,7 @@ fn test_hip_compiles_multi_targets(compiler: &Compiler, tempdir: &Path) {
     trace!("compile A with with gfx900 and gfx1030 again");
     fs::remove_file(&out_file).unwrap();
     sccache_command()
-        .args(&compile_hip_cmdline(
+        .args(compile_hip_cmdline(
             name,
             exe,
             INPUT_FOR_HIP_A,
@@ -888,7 +888,7 @@ fn test_hip_compiles_multi_targets(compiler: &Compiler, tempdir: &Path) {
     // phase is correctly running and outputting text
     trace!("compile B with gfx900 and gfx1030");
     sccache_command()
-        .args(&compile_hip_cmdline(
+        .args(compile_hip_cmdline(
             name,
             exe,
             INPUT_FOR_HIP_B,
@@ -967,7 +967,7 @@ fn test_clang_cache_whitespace_normalization(
 
     println!("compile whitespace");
     sccache_command()
-        .args(&compile_cmdline(
+        .args(compile_cmdline(
             name,
             &exe,
             INPUT_WITH_WHITESPACE,
@@ -988,7 +988,7 @@ fn test_clang_cache_whitespace_normalization(
 
     println!("compile whitespace_alt");
     sccache_command()
-        .args(&compile_cmdline(
+        .args(compile_cmdline(
             name,
             &exe,
             INPUT_WITH_WHITESPACE_ALT,

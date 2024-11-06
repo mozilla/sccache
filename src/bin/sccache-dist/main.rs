@@ -2,7 +2,9 @@
 extern crate log;
 
 use anyhow::{bail, Context, Error, Result};
+use async_trait::async_trait;
 use base64::Engine;
+use cmdline::{AuthSubcommand, Command};
 use rand::{rngs::OsRng, RngCore};
 use sccache::config::{
     scheduler as scheduler_config, server as server_config, INSECURE_DIST_CLIENT_TOKEN,
@@ -22,16 +24,15 @@ use std::env;
 use std::io;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
+use tokio::runtime::Runtime;
 
 #[cfg_attr(target_os = "freebsd", path = "build_freebsd.rs")]
 mod build;
 
 mod cmdline;
 mod token_check;
-
-use cmdline::{AuthSubcommand, Command};
 
 pub const INSECURE_DIST_SERVER_TOKEN: &str = "dangerously_insecure_server";
 
@@ -184,10 +185,10 @@ fn run(command: Command) -> Result<i32> {
                 scheduler_config::ServerAuth::Insecure => {
                     warn!("Scheduler starting with DANGEROUSLY_INSECURE server authentication");
                     let token = INSECURE_DIST_SERVER_TOKEN;
-                    Box::new(move |server_token| check_server_token(server_token, token))
+                    Arc::new(move |server_token| check_server_token(server_token, token))
                 }
                 scheduler_config::ServerAuth::Token { token } => {
-                    Box::new(move |server_token| check_server_token(server_token, &token))
+                    Arc::new(move |server_token| check_server_token(server_token, &token))
                 }
                 scheduler_config::ServerAuth::JwtHS256 { secret_key } => {
                     let secret_key = BASE64_URL_SAFE_ENGINE
@@ -203,7 +204,7 @@ fn run(command: Command) -> Result<i32> {
                         validation.validate_nbf = false;
                         validation
                     };
-                    Box::new(move |server_token| {
+                    Arc::new(move |server_token| {
                         check_jwt_server_token(server_token, &secret_key, &validation)
                     })
                 }
@@ -217,7 +218,10 @@ fn run(command: Command) -> Result<i32> {
                 check_client_auth,
                 check_server_auth,
             );
-            http_scheduler.start()?;
+
+            // Create runtime after daemonize because Tokio doesn't work well with daemonize
+            let runtime = Runtime::new().context("Failed to create Tokio runtime")?;
+            runtime.block_on(async { http_scheduler.start().await })?;
             unreachable!();
         }
 
@@ -294,7 +298,8 @@ fn run(command: Command) -> Result<i32> {
                 server,
             )
             .context("Failed to create sccache HTTP server instance")?;
-            http_server.start()?;
+            let runtime = Runtime::new().context("Failed to create Tokio runtime")?;
+            runtime.block_on(async { http_server.start().await })?;
             unreachable!();
         }
     }
@@ -399,8 +404,9 @@ impl Default for Scheduler {
     }
 }
 
+#[async_trait]
 impl SchedulerIncoming for Scheduler {
-    fn handle_alloc_job(
+    async fn handle_alloc_job(
         &self,
         requester: &dyn SchedulerOutgoing,
         tc: Toolchain,
@@ -499,6 +505,7 @@ impl SchedulerIncoming for Scheduler {
             need_toolchain,
         } = requester
             .do_assign_job(server_id, job_id, tc, auth.clone())
+            .await
             .with_context(|| {
                 // LOCKS
                 let mut servers = self.servers.lock().unwrap();
@@ -717,7 +724,7 @@ impl SchedulerIncoming for Scheduler {
 pub struct Server {
     builder: Box<dyn BuilderIncoming>,
     cache: Mutex<TcCache>,
-    job_toolchains: Mutex<HashMap<JobId, Toolchain>>,
+    job_toolchains: tokio::sync::Mutex<HashMap<JobId, Toolchain>>,
 }
 
 impl Server {
@@ -731,18 +738,19 @@ impl Server {
         Ok(Server {
             builder,
             cache: Mutex::new(cache),
-            job_toolchains: Mutex::new(HashMap::new()),
+            job_toolchains: tokio::sync::Mutex::new(HashMap::new()),
         })
     }
 }
 
+#[async_trait]
 impl ServerIncoming for Server {
-    fn handle_assign_job(&self, job_id: JobId, tc: Toolchain) -> Result<AssignJobResult> {
+    async fn handle_assign_job(&self, job_id: JobId, tc: Toolchain) -> Result<AssignJobResult> {
         let need_toolchain = !self.cache.lock().unwrap().contains_toolchain(&tc);
         assert!(self
             .job_toolchains
             .lock()
-            .unwrap()
+            .await
             .insert(job_id, tc)
             .is_none());
         let state = if need_toolchain {
@@ -756,18 +764,19 @@ impl ServerIncoming for Server {
             need_toolchain,
         })
     }
-    fn handle_submit_toolchain(
+    async fn handle_submit_toolchain(
         &self,
         requester: &dyn ServerOutgoing,
         job_id: JobId,
-        tc_rdr: ToolchainReader,
+        tc_rdr: ToolchainReader<'_>,
     ) -> Result<SubmitToolchainResult> {
         requester
             .do_update_job_state(job_id, JobState::Ready)
+            .await
             .context("Updating job state failed")?;
         // TODO: need to lock the toolchain until the container has started
         // TODO: can start prepping container
-        let tc = match self.job_toolchains.lock().unwrap().get(&job_id).cloned() {
+        let tc = match self.job_toolchains.lock().await.get(&job_id).cloned() {
             Some(tc) => tc,
             None => return Ok(SubmitToolchainResult::JobNotFound),
         };
@@ -783,18 +792,19 @@ impl ServerIncoming for Server {
             .map(|_| SubmitToolchainResult::Success)
             .unwrap_or(SubmitToolchainResult::CannotCache))
     }
-    fn handle_run_job(
+    async fn handle_run_job(
         &self,
         requester: &dyn ServerOutgoing,
         job_id: JobId,
         command: CompileCommand,
         outputs: Vec<String>,
-        inputs_rdr: InputsReader,
+        inputs_rdr: InputsReader<'_>,
     ) -> Result<RunJobResult> {
         requester
             .do_update_job_state(job_id, JobState::Started)
+            .await
             .context("Updating job state failed")?;
-        let tc = self.job_toolchains.lock().unwrap().remove(&job_id);
+        let tc = self.job_toolchains.lock().await.remove(&job_id);
         let res = match tc {
             None => Ok(RunJobResult::JobNotFound),
             Some(tc) => {
@@ -812,6 +822,7 @@ impl ServerIncoming for Server {
         };
         requester
             .do_update_job_state(job_id, JobState::Complete)
+            .await
             .context("Updating job state failed")?;
         res
     }
