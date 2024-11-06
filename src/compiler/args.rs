@@ -671,7 +671,7 @@ macro_rules! take_arg {
         ArgInfo::TakeArg(
             $s,
             |arg: OsString| $vtype::process(arg).map($variant),
-            ArgDisposition::$d(Some(b'=')),
+            ArgDisposition::$d(Some($x as u8)),
         )
     };
 }
