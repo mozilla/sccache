@@ -12,8 +12,10 @@
 
 use crate::errors::*;
 use opendal::layers::LoggingLayer;
+use opendal::raw::HttpClient;
 use opendal::services::Webdav;
 use opendal::Operator;
+use reqwest::ClientBuilder;
 
 /// A cache that stores entries in a Webdav.
 pub struct WebdavCache;
@@ -32,11 +34,19 @@ impl WebdavCache {
             .root(key_prefix)
             .username(username.unwrap_or_default())
             .password(password.unwrap_or_default())
-            .token(token.unwrap_or_default());
+            .token(token.unwrap_or_default())
+            .http_client(set_user_agent());
 
         let op = Operator::new(builder)?
             .layer(LoggingLayer::default())
             .finish();
         Ok(op)
     }
+}
+
+/// Set the user agent (helps with monitoring on the server side)
+fn set_user_agent() -> HttpClient {
+    let user_agent = format!("{}/{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+    let client_builder = ClientBuilder::new().user_agent(user_agent);
+    HttpClient::build(client_builder).unwrap()
 }
