@@ -10,7 +10,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cache::s3::set_user_agent;
+use crate::cache::cache::set_user_agent;
 use crate::errors::*;
 use opendal::layers::LoggingLayer;
 use opendal::services::Webdav;

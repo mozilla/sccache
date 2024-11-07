@@ -44,6 +44,8 @@ use crate::config::Config;
 use crate::config::{self, CacheType};
 use async_trait::async_trait;
 use fs_err as fs;
+use opendal::raw::HttpClient;
+use reqwest::ClientBuilder;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::io::{self, Cursor, Read, Seek, Write};
@@ -551,6 +553,13 @@ impl Storage for opendal::Operator {
 /// Normalize key `abcdef` into `a/b/c/abcdef`
 pub(in crate::cache) fn normalize_key(key: &str) -> String {
     format!("{}/{}/{}/{}", &key[0..1], &key[1..2], &key[2..3], &key)
+}
+
+/// Set the user agent (helps with monitoring on the server side)
+pub fn set_user_agent() -> HttpClient {
+    let user_agent = format!("{}/{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+    let client_builder = ClientBuilder::new().user_agent(user_agent);
+    HttpClient::build(client_builder).unwrap()
 }
 
 /// Get a suitable `Storage` implementation from configuration.

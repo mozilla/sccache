@@ -10,11 +10,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::cache::cache::set_user_agent;
 use opendal::layers::LoggingLayer;
-use opendal::raw::HttpClient;
 use opendal::services::S3;
 use opendal::Operator;
-use reqwest::ClientBuilder;
 
 use crate::errors::*;
 
@@ -65,13 +64,6 @@ impl S3Cache {
             .finish();
         Ok(op)
     }
-}
-
-/// Set the user agent (helps with monitoring on the server side)
-pub fn set_user_agent() -> HttpClient {
-    let user_agent = format!("{}/{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
-    let client_builder = ClientBuilder::new().user_agent(user_agent);
-    HttpClient::build(client_builder).unwrap()
 }
 
 /// Resolve given endpoint along with use_ssl settings.
