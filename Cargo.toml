@@ -162,14 +162,14 @@ all = [
   "webdav",
   "oss",
 ]
-azure = ["opendal/services-azblob", "reqsign", "reqwest"]
+azure = ["opendal/services-azblob", "reqsign"]
 default = ["all"]
-gcs = ["opendal/services-gcs", "reqsign", "url", "reqwest/blocking", "reqwest"]
-gha = ["opendal/services-ghac", "reqwest"]
-memcached = ["opendal/services-memcached", "reqwest"]
+gcs = ["opendal/services-gcs", "reqsign", "url", "reqwest/blocking"]
+gha = ["opendal/services-ghac"]
+memcached = ["opendal/services-memcached"]
 native-zlib = []
 oss = ["opendal/services-oss", "reqsign"]
-redis = ["url", "opendal/services-redis", "reqwest"]
+redis = ["url", "opendal/services-redis"]
 s3 = ["opendal/services-s3", "reqsign", "reqwest"]
 webdav = ["opendal/services-webdav", "reqwest"]
 # Enable features that will build a vendored version of openssl and

@@ -44,7 +44,9 @@ use crate::config::Config;
 use crate::config::{self, CacheType};
 use async_trait::async_trait;
 use fs_err as fs;
+#[cfg(any(feature = "s3", feature = "webdav",))]
 use opendal::raw::HttpClient;
+#[cfg(any(feature = "s3", feature = "webdav",))]
 use reqwest::ClientBuilder;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -556,6 +558,7 @@ pub(in crate::cache) fn normalize_key(key: &str) -> String {
 }
 
 /// Set the user agent (helps with monitoring on the server side)
+#[cfg(any(feature = "s3", feature = "webdav",))]
 pub fn set_user_agent() -> HttpClient {
     let user_agent = format!("{}/{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
     let client_builder = ClientBuilder::new().user_agent(user_agent);
