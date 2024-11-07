@@ -68,7 +68,7 @@ impl S3Cache {
 }
 
 /// Set the user agent (helps with monitoring on the server side)
-fn set_user_agent() -> HttpClient {
+pub fn set_user_agent() -> HttpClient {
     let user_agent = format!("{}/{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
     let client_builder = ClientBuilder::new().user_agent(user_agent);
     HttpClient::build(client_builder).unwrap()

@@ -10,12 +10,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::cache::s3::set_user_agent;
 use crate::errors::*;
 use opendal::layers::LoggingLayer;
-use opendal::raw::HttpClient;
 use opendal::services::Webdav;
 use opendal::Operator;
-use reqwest::ClientBuilder;
 
 /// A cache that stores entries in a Webdav.
 pub struct WebdavCache;
@@ -42,11 +41,4 @@ impl WebdavCache {
             .finish();
         Ok(op)
     }
-}
-
-/// Set the user agent (helps with monitoring on the server side)
-fn set_user_agent() -> HttpClient {
-    let user_agent = format!("{}/{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
-    let client_builder = ClientBuilder::new().user_agent(user_agent);
-    HttpClient::build(client_builder).unwrap()
 }
