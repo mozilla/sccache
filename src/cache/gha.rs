@@ -19,6 +19,8 @@ use opendal::Operator;
 use crate::errors::*;
 use crate::VERSION;
 
+use super::http_client::set_user_agent;
+
 /// A cache that stores entries in GHA Cache Services.
 pub struct GHACache;
 
@@ -30,7 +32,8 @@ impl GHACache {
             //
             // User customization is theoretically supported, but I decided
             // to see the community feedback first.
-            .root("/sccache");
+            .root("/sccache")
+            .http_client(set_user_agent());
 
         builder = if version.is_empty() {
             builder.version(&format!("sccache-v{VERSION}"))

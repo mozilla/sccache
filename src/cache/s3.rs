@@ -10,12 +10,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cache::cache::set_user_agent;
 use opendal::layers::LoggingLayer;
 use opendal::services::S3;
 use opendal::Operator;
 
 use crate::errors::*;
+
+use super::http_client::set_user_agent;
 
 pub struct S3Cache;
 

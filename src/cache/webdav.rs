@@ -10,11 +10,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cache::cache::set_user_agent;
 use crate::errors::*;
 use opendal::layers::LoggingLayer;
 use opendal::services::Webdav;
 use opendal::Operator;
+
+use super::http_client::set_user_agent;
 
 /// A cache that stores entries in a Webdav.
 pub struct WebdavCache;

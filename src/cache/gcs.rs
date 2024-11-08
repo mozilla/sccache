@@ -22,6 +22,8 @@ use reqwest::Client;
 use serde::Deserialize;
 use url::Url;
 
+use super::http_client::set_user_agent;
+
 fn rw_to_scope(mode: CacheMode) -> &'static str {
     match mode {
         CacheMode::ReadOnly => "https://www.googleapis.com/auth/devstorage.read_only",
@@ -45,7 +47,8 @@ impl GCSCache {
         let mut builder = Gcs::default()
             .bucket(bucket)
             .root(key_prefix)
-            .scope(rw_to_scope(rw_mode));
+            .scope(rw_to_scope(rw_mode))
+            .http_client(set_user_agent());
 
         if let Some(service_account) = service_account {
             builder = builder.service_account(service_account);
