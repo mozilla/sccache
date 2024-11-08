@@ -438,6 +438,73 @@ int main(int argc, char** argv) {
     });
 }
 
+/* test case like this:
+    echo "int test(){}" > test.cc
+    mkdir o1 o2
+    sccache g++ -c -g -gsplit-dwarf test.cc -o test1.o
+    sccache g++ -c -g -gsplit-dwarf test.cc -o test1.o   --- > cache hit
+    sccache g++ -c -g -gsplit-dwarf test.cc -o test2.o   --- > cache miss
+    strings test2.o |grep test2.dwo
+*/
+fn test_split_dwarf_object_generate_output_dir_changes(compiler: Compiler, tempdir: &Path) {
+    let Compiler {
+        name,
+        exe,
+        env_vars,
+    } = compiler;
+    trace!("test -g -gsplit-dwarf with different output");
+    zero_stats();
+    const SRC: &str = "source.c";
+    write_source(tempdir, SRC, "int test(){}");
+    let mut args = compile_cmdline(name, exe.clone(), SRC, "test1.o", Vec::new());
+    args.extend(vec_from!(OsString, "-g"));
+    args.extend(vec_from!(OsString, "-gsplit-dwarf"));
+    trace!("compile source.c (1)");
+    sccache_command()
+        .args(&args)
+        .current_dir(tempdir)
+        .envs(env_vars.clone())
+        .assert()
+        .success();
+    get_stats(|info| {
+        assert_eq!(0, info.stats.cache_hits.all());
+        assert_eq!(1, info.stats.cache_misses.all());
+        assert_eq!(&1, info.stats.cache_misses.get("C/C++").unwrap());
+    });
+    // Compile the same source again to ensure we can get a cache hit.
+    trace!("compile source.c (2)");
+    sccache_command()
+        .args(&args)
+        .current_dir(tempdir)
+        .envs(env_vars.clone())
+        .assert()
+        .success();
+    get_stats(|info| {
+        assert_eq!(1, info.stats.cache_hits.all());
+        assert_eq!(1, info.stats.cache_misses.all());
+        assert_eq!(&1, info.stats.cache_hits.get("C/C++").unwrap());
+        assert_eq!(&1, info.stats.cache_misses.get("C/C++").unwrap());
+    });
+    // Compile the same source again with different output
+    // to ensure we can force generate new object file.
+    let mut args2 = compile_cmdline(name, exe, SRC, "test2.o", Vec::new());
+    args2.extend(vec_from!(OsString, "-g"));
+    args2.extend(vec_from!(OsString, "-gsplit-dwarf"));
+    trace!("compile source.c (2)");
+    sccache_command()
+        .args(&args2)
+        .current_dir(tempdir)
+        .envs(env_vars.clone())
+        .assert()
+        .success();
+    get_stats(|info| {
+        assert_eq!(1, info.stats.cache_hits.all());
+        assert_eq!(2, info.stats.cache_misses.all());
+        assert_eq!(&1, info.stats.cache_hits.get("C/C++").unwrap());
+        assert_eq!(&2, info.stats.cache_misses.get("C/C++").unwrap());
+    });
+}
+
 fn test_gcc_clang_no_warnings_from_macro_expansion(compiler: Compiler, tempdir: &Path) {
     let Compiler {
         name,
@@ -505,6 +572,7 @@ fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path, preprocessor_ca
     }
     if compiler.name == "clang" || compiler.name == "gcc" {
         test_gcc_clang_no_warnings_from_macro_expansion(compiler.clone(), tempdir);
+        test_split_dwarf_object_generate_output_dir_changes(compiler.clone(), tempdir);
     }
     if compiler.name == "clang++" {
         test_clang_multicall(compiler.clone(), tempdir);
