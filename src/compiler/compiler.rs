@@ -581,7 +581,10 @@ where
                         out_pretty,
                         fmt_duration_as_secs(&duration_compilation)
                     );
-                    return Ok((CompileResult::CompileFailed(dist_type), compiler_result));
+                    return Ok((
+                        CompileResult::CompileFailed(dist_type, duration_compilation),
+                        compiler_result,
+                    ));
                 }
                 if miss_type == MissType::ForcedNoCache {
                     // Do not cache
@@ -590,7 +593,10 @@ where
                         out_pretty,
                         fmt_duration_as_secs(&duration_compilation)
                     );
-                    return Ok((CompileResult::NotCached(dist_type), compiler_result));
+                    return Ok((
+                        CompileResult::NotCached(dist_type, duration_compilation),
+                        compiler_result,
+                    ));
                 }
                 if cacheable != Cacheable::Yes {
                     // Not cacheable
@@ -599,7 +605,10 @@ where
                         out_pretty,
                         fmt_duration_as_secs(&duration_compilation)
                     );
-                    return Ok((CompileResult::NotCacheable(dist_type), compiler_result));
+                    return Ok((
+                        CompileResult::NotCacheable(dist_type, duration_compilation),
+                        compiler_result,
+                    ));
                 }
                 debug!(
                     "[{}]: Compiled in {}, storing in cache",
@@ -1043,11 +1052,11 @@ pub enum CompileResult {
         Pin<Box<dyn Future<Output = Result<CacheWriteInfo>> + Send>>,
     ),
     /// Not in cache and do not cache the results of the compilation.
-    NotCached(DistType),
+    NotCached(DistType, Duration),
     /// Not in cache, but the compilation result was determined to be not cacheable.
-    NotCacheable(DistType),
+    NotCacheable(DistType, Duration),
     /// Not in cache, but compilation failed.
-    CompileFailed(DistType),
+    CompileFailed(DistType, Duration),
 }
 
 /// The state of `--color` options passed to a compiler.
@@ -1068,12 +1077,14 @@ impl fmt::Debug for CompileResult {
             CompileResult::CacheMiss(ref m, ref dt, ref d, _) => {
                 write!(f, "CompileResult::CacheMiss({:?}, {:?}, {:?}, _)", d, m, dt)
             }
-            CompileResult::NotCached(ref dt) => write!(f, "CompileResult::NotCached({:?}", dt),
-            CompileResult::NotCacheable(ref dt) => {
-                write!(f, "CompileResult::NotCacheable({:?}", dt)
+            CompileResult::NotCached(ref dt, ref d) => {
+                write!(f, "CompileResult::NotCached({:?}, {:?}_", dt, d)
             }
-            CompileResult::CompileFailed(ref dt) => {
-                write!(f, "CompileResult::CompileFailed({:?}", dt)
+            CompileResult::NotCacheable(ref dt, ref d) => {
+                write!(f, "CompileResult::NotCacheable({:?}, {:?}_", dt, d)
+            }
+            CompileResult::CompileFailed(ref dt, ref d) => {
+                write!(f, "CompileResult::CompileFailed({:?}, {:?})", dt, d)
             }
         }
     }
@@ -1088,9 +1099,11 @@ impl PartialEq<CompileResult> for CompileResult {
             (CompileResult::CacheMiss(m, dt, _, _), CompileResult::CacheMiss(n, dt2, _, _)) => {
                 m == n && dt == dt2
             }
-            (CompileResult::NotCached(dt), CompileResult::NotCached(dt2)) => dt == dt2,
-            (CompileResult::NotCacheable(dt), CompileResult::NotCacheable(dt2)) => dt == dt2,
-            (CompileResult::CompileFailed(dt), CompileResult::CompileFailed(dt2)) => dt == dt2,
+            (CompileResult::NotCached(dt, _), CompileResult::NotCached(dt2, _)) => dt == dt2,
+            (CompileResult::NotCacheable(dt, _), CompileResult::NotCacheable(dt2, _)) => dt == dt2,
+            (CompileResult::CompileFailed(dt, _), CompileResult::CompileFailed(dt2, _)) => {
+                dt == dt2
+            }
             _ => false,
         }
     }
