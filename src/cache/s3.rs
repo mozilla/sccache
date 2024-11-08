@@ -70,8 +70,8 @@ impl S3Cache {
 /// Set the user agent (helps with monitoring on the server side)
 fn set_user_agent() -> HttpClient {
     let user_agent = format!("{}/{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
-    let client_builder = ClientBuilder::new().user_agent(user_agent);
-    HttpClient::build(client_builder).unwrap()
+    let client = ClientBuilder::new().user_agent(user_agent).build().unwrap();
+    HttpClient::with(client)
 }
 
 /// Resolve given endpoint along with use_ssl settings.
