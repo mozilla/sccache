@@ -123,6 +123,11 @@ The latest `cache.XXX` entries may be found here: https://github.com/mozilla/scc
 Whatever is set by a file based configuration, it is overruled by the env
 configuration variables
 
+### dist
+* `SCCACHE_DIST_CONNECT_TIMEOUT` Timeout in seconds for connections to an sccache-dist server. Default is `5`.
+* `SCCACHE_DIST_REQUEST_TIMEOUT` Timeout in seconds for compile requests to an sccache-dist server. Default is `600`.
+* `SCCACHE_DIST_RETRY_LIMIT` Number of times the client should retry failed distributed compilations. The default is `0` (no retries).
+
 ### misc
 
 * `SCCACHE_ALLOW_CORE_DUMPS` to enable core dumps by the server

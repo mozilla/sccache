@@ -20,6 +20,37 @@ pub use self::server::{
     ClientAuthCheck, ClientVisibleMsg, Scheduler, ServerAuthCheck, HEARTBEAT_TIMEOUT,
 };
 
+use std::env;
+use std::time::Duration;
+
+/// Default timeout for connections to an sccache-dist server
+const DEFAULT_DIST_CONNECT_TIMEOUT: u64 = 30;
+
+/// Timeout for connections to an sccache-dist server
+pub fn get_dist_connect_timeout() -> Duration {
+    Duration::new(
+        env::var("SCCACHE_DIST_CONNECT_TIMEOUT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(DEFAULT_DIST_CONNECT_TIMEOUT),
+        0,
+    )
+}
+
+/// Default timeout for compile requests to an sccache-dist server
+const DEFAULT_DIST_REQUEST_TIMEOUT: u64 = 600;
+
+/// Timeout for compile requests to an sccache-dist server
+pub fn get_dist_request_timeout() -> Duration {
+    Duration::new(
+        env::var("SCCACHE_DIST_REQUEST_TIMEOUT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(DEFAULT_DIST_REQUEST_TIMEOUT),
+        0,
+    )
+}
+
 mod common {
     use reqwest::header;
     use serde::{Deserialize, Serialize};
@@ -264,7 +295,7 @@ mod server {
         AllocJobHttpResponse, HeartbeatServerHttpRequest, JobJwt, ReqwestRequestBuilderExt,
         RunJobHttpRequest, ServerCertificateHttpResponse,
     };
-    use super::urls;
+    use super::{get_dist_connect_timeout, get_dist_request_timeout, urls};
     use crate::dist::{
         self, AllocJobResult, AssignJobResult, HeartbeatServerResult, InputsReader, JobAuthorizer,
         JobId, JobState, RunJobResult, SchedulerStatusResult, ServerId, ServerNonce,
@@ -736,6 +767,8 @@ mod server {
                     reqwest::Certificate::from_pem(&cert_pem)
                         .context("failed to interpret pem as certificate")?,
                 );
+                // Remove the old entry first so it isn't added to the client in the following loop
+                certs.remove(&server_id);
                 for (_, cert_pem) in certs.values() {
                     client_builder = client_builder.add_root_certificate(
                         reqwest::Certificate::from_pem(cert_pem).expect("previously valid cert"),
@@ -743,6 +776,8 @@ mod server {
                 }
                 // Finish the client
                 let new_client = client_builder
+                    .timeout(get_dist_request_timeout())
+                    .connect_timeout(get_dist_connect_timeout())
                     // Disable connection pool to avoid broken connection
                     // between runtime
                     .pool_max_idle_per_host(0)
@@ -973,14 +1008,14 @@ mod server {
                     (POST) (/api/v1/distserver/assign_job/{job_id: JobId}) => {
                         job_auth_or_401!(request, &job_authorizer, job_id);
                         let toolchain = try_or_400_log!(req_id, bincode_input(request));
-                        trace!("Req {}: assign_job({}): {:?}", req_id, job_id, toolchain);
+                        debug!("Req {}: assign_job({}): {:?}", req_id, job_id, toolchain);
 
                         let res: AssignJobResult = try_or_500_log!(req_id, handler.handle_assign_job(job_id, toolchain));
                         prepare_response(request, &res)
                     },
                     (POST) (/api/v1/distserver/submit_toolchain/{job_id: JobId}) => {
                         job_auth_or_401!(request, &job_authorizer, job_id);
-                        trace!("Req {}: submit_toolchain({})", req_id, job_id);
+                        debug!("Req {}: submit_toolchain({})", req_id, job_id);
 
                         let body = request.data().expect("body was already read in submit_toolchain");
                         let toolchain_rdr = ToolchainReader(Box::new(body));
@@ -997,7 +1032,28 @@ mod server {
                         let mut bincode_reader = body.take(bincode_length);
                         let runjob = try_or_500_log!(req_id, bincode::deserialize_from(&mut bincode_reader)
                             .context("failed to deserialize run job request"));
-                        trace!("Req {}: run_job({}): {:?}", req_id, job_id, runjob);
+
+                        if log_enabled!(log::Level::Trace) {
+                            trace!("Req {}: run_job({}): {:?}", req_id, job_id, runjob);
+                        } else if log_enabled!(log::Level::Debug) {
+                            let RunJobHttpRequest { command, outputs: _ } = &runjob;
+                            let dist::CompileCommand {
+                                env_vars: _,
+                                executable,
+                                arguments,
+                                cwd
+                            } = &command;
+                            debug!(
+                                "Req {}: run_job({}): cwd={:?}, cmd={:?}",
+                                req_id,
+                                job_id,
+                                cwd,
+                                [vec![executable.clone()], arguments.to_vec()]
+                                    .concat()
+                                    .join(" ")
+                            );
+                        }
+
                         let RunJobHttpRequest { command, outputs } = runjob;
                         let body = bincode_reader.into_inner();
                         let inputs_rdr = InputsReader(Box::new(ZlibReadDecoder::new(body)));
@@ -1069,23 +1125,19 @@ mod client {
     use std::io::Write;
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
-    use std::time::Duration;
 
     use super::common::{
         bincode_req_fut, AllocJobHttpResponse, ReqwestRequestBuilderExt, RunJobHttpRequest,
         ServerCertificateHttpResponse,
     };
-    use super::urls;
+    use super::{get_dist_connect_timeout, get_dist_request_timeout, urls};
     use crate::errors::*;
-
-    const REQUEST_TIMEOUT_SECS: u64 = 600;
-    const CONNECT_TIMEOUT_SECS: u64 = 5;
 
     pub struct Client {
         auth_token: String,
         scheduler_url: reqwest::Url,
         // cert_digest -> cert_pem
-        server_certs: Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>>,
+        server_certs: Arc<Mutex<HashMap<dist::ServerId, (Vec<u8>, Vec<u8>)>>>,
         client: Arc<Mutex<reqwest::Client>>,
         pool: tokio::runtime::Handle,
         tc_cache: Arc<cache::ClientToolchains>,
@@ -1102,11 +1154,9 @@ mod client {
             auth_token: String,
             rewrite_includes_only: bool,
         ) -> Result<Self> {
-            let timeout = Duration::new(REQUEST_TIMEOUT_SECS, 0);
-            let connect_timeout = Duration::new(CONNECT_TIMEOUT_SECS, 0);
             let client = reqwest::ClientBuilder::new()
-                .timeout(timeout)
-                .connect_timeout(connect_timeout)
+                .timeout(get_dist_request_timeout())
+                .connect_timeout(get_dist_connect_timeout())
                 // Disable connection pool to avoid broken connection
                 // between runtime
                 .pool_max_idle_per_host(0)
@@ -1128,7 +1178,8 @@ mod client {
 
         fn update_certs(
             client: &mut reqwest::Client,
-            certs: &mut HashMap<Vec<u8>, Vec<u8>>,
+            certs: &mut HashMap<dist::ServerId, (Vec<u8>, Vec<u8>)>,
+            server_id: dist::ServerId,
             cert_digest: Vec<u8>,
             cert_pem: Vec<u8>,
         ) -> Result<()> {
@@ -1138,22 +1189,24 @@ mod client {
                 reqwest::Certificate::from_pem(&cert_pem)
                     .context("failed to interpret pem as certificate")?,
             );
-            for cert_pem in certs.values() {
+            // Remove the old entry first so it isn't added to the client in the following loop
+            certs.remove(&server_id);
+            for (_, cert_pem) in certs.values() {
                 client_async_builder = client_async_builder.add_root_certificate(
                     reqwest::Certificate::from_pem(cert_pem).expect("previously valid cert"),
                 );
             }
             // Finish the client
-            let timeout = Duration::new(REQUEST_TIMEOUT_SECS, 0);
             let new_client_async = client_async_builder
-                .timeout(timeout)
+                .timeout(get_dist_request_timeout())
+                .connect_timeout(get_dist_connect_timeout())
                 // Disable keep-alive
                 .pool_max_idle_per_host(0)
                 .build()
                 .context("failed to create an async HTTP client")?;
             // Use the updated certificates
             *client = new_client_async;
-            certs.insert(cert_digest, cert_pem);
+            certs.insert(server_id, (cert_digest, cert_pem));
             Ok(())
         }
     }
@@ -1180,8 +1233,10 @@ mod client {
                         job_alloc,
                         need_toolchain,
                     });
-                    if server_certs.lock().unwrap().contains_key(&cert_digest) {
-                        return alloc_job_res;
+                    if let Some((digest, _)) = server_certs.lock().unwrap().get(&server_id) {
+                        if cert_digest == *digest {
+                            return alloc_job_res;
+                        }
                     }
                     info!(
                         "Need to request new certificate for server {}",
@@ -1206,6 +1261,7 @@ mod client {
                             Self::update_certs(
                                 &mut client.lock().unwrap(),
                                 &mut server_certs.lock().unwrap(),
+                                server_id,
                                 res.cert_digest,
                                 res.cert_pem,
                             )

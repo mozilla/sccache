@@ -92,7 +92,7 @@ mod path_transform {
         }
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub struct PathTransformer {
         dist_to_local_path: HashMap<String, PathBuf>,
     }
@@ -269,7 +269,7 @@ mod path_transform {
     use std::iter;
     use std::path::{Path, PathBuf};
 
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub struct PathTransformer;
 
     impl PathTransformer {
@@ -706,6 +706,7 @@ pub trait BuilderIncoming: Send + Sync {
     // From Server
     fn run_build(
         &self,
+        job_id: JobId,
         toolchain: Toolchain,
         command: CompileCommand,
         outputs: Vec<String>,
