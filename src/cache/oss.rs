@@ -16,6 +16,8 @@ use opendal::Operator;
 
 use crate::errors::*;
 
+use super::http_client::set_user_agent;
+
 pub struct OSSCache;
 
 // Implement the Object Storage Service for Alibaba cloud
@@ -26,7 +28,10 @@ impl OSSCache {
         endpoint: Option<&str>,
         no_credentials: bool,
     ) -> Result<Operator> {
-        let mut builder = Oss::default().bucket(bucket).root(key_prefix);
+        let mut builder = Oss::default()
+            .bucket(bucket)
+            .root(key_prefix)
+            .http_client(set_user_agent());
 
         if let Some(endpoint) = endpoint {
             builder = builder.endpoint(endpoint);

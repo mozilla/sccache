@@ -33,4 +33,14 @@ pub mod s3;
 #[cfg(feature = "webdav")]
 pub mod webdav;
 
+#[cfg(any(
+    feature = "azure",
+    feature = "gcs",
+    feature = "gha",
+    feature = "s3",
+    feature = "webdav",
+    feature = "oss"
+))]
+pub(crate) mod http_client;
+
 pub use crate::cache::cache::*;

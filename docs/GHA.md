@@ -15,6 +15,8 @@ This cache type will need tokens like `ACTIONS_CACHE_URL` and `ACTIONS_RUNTIME_T
       core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
 ```
 
+Requests sent to the GHA cache service will have a user agent header indicating the current sccache version, e.g. `sccache/0.8.2`.
+
 ## Behavior
 
 In case sccache reaches the rate limit of the service, the build will continue, but the storage might not be performed.
