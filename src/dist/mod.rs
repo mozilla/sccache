@@ -300,6 +300,7 @@ pub fn osstrings_to_strings(osstrings: &[OsString]) -> Option<Vec<String>> {
         .map(|arg| arg.clone().into_string().ok())
         .collect::<Option<_>>()
 }
+
 pub fn osstring_tuples_to_strings(
     osstring_tuples: &[(OsString, OsString)],
 ) -> Option<Vec<(String, String)>> {
@@ -309,9 +310,18 @@ pub fn osstring_tuples_to_strings(
         .collect::<Option<_>>()
 }
 
+pub fn strings_to_osstrings(strings: &[String]) -> Vec<OsString> {
+    strings
+        .iter()
+        .map(|arg| std::ffi::OsStr::new(arg).to_os_string())
+        .collect::<Vec<_>>()
+}
+
 // TODO: TryFrom
-pub fn try_compile_command_to_dist(command: compiler::CompileCommand) -> Option<CompileCommand> {
-    let compiler::CompileCommand {
+pub fn try_compile_command_to_dist(
+    command: compiler::SingleCompileCommand,
+) -> Option<CompileCommand> {
+    let compiler::SingleCompileCommand {
         executable,
         arguments,
         env_vars,

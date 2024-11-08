@@ -18,7 +18,7 @@ use crate::compiler::args::*;
 use crate::compiler::c::{ArtifactDescriptor, CCompilerImpl, CCompilerKind, ParsedArguments};
 use crate::compiler::gcc::ArgData::*;
 use crate::compiler::{
-    gcc, write_temp_file, Cacheable, CompileCommand, CompilerArguments, Language,
+    gcc, write_temp_file, CCompileCommand, Cacheable, CompileCommand, CompilerArguments, Language,
 };
 use crate::mock_command::{CommandCreator, CommandCreatorSync, RunCommand};
 use crate::util::{run_input_output, OsStrExt};
@@ -140,11 +140,12 @@ impl CCompilerImpl for Clang {
             self.kind(),
             rewrite_includes_only,
             ignorable_whitespace_flags,
+            language_to_clang_arg,
         )
         .await
     }
 
-    fn generate_compile_commands(
+    fn generate_compile_commands<T>(
         &self,
         path_transformer: &mut dist::PathTransformer,
         executable: &Path,
@@ -152,7 +153,14 @@ impl CCompilerImpl for Clang {
         cwd: &Path,
         env_vars: &[(OsString, OsString)],
         rewrite_includes_only: bool,
-    ) -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)> {
+    ) -> Result<(
+        Box<dyn CompileCommand<T>>,
+        Option<dist::CompileCommand>,
+        Cacheable,
+    )>
+    where
+        T: CommandCreatorSync,
+    {
         gcc::generate_compile_commands(
             path_transformer,
             executable,
@@ -161,7 +169,29 @@ impl CCompilerImpl for Clang {
             env_vars,
             self.kind(),
             rewrite_includes_only,
+            language_to_clang_arg,
         )
+        .map(|(command, dist_command, cacheable)| {
+            (CCompileCommand::new(command), dist_command, cacheable)
+        })
+    }
+}
+
+pub fn language_to_clang_arg(lang: Language) -> Option<&'static str> {
+    match lang {
+        Language::C => Some("c"),
+        Language::CHeader => Some("c-header"),
+        Language::Cxx => Some("c++"),
+        Language::CxxHeader => Some("c++-header"),
+        Language::ObjectiveC => Some("objective-c"),
+        Language::ObjectiveCxx => Some("objective-c++"),
+        Language::ObjectiveCxxHeader => Some("objective-c++-header"),
+        Language::Cuda => Some("cuda"),
+        Language::Ptx => None,
+        Language::Cubin => None,
+        Language::Rust => None, // Let the compiler decide
+        Language::Hip => Some("hip"),
+        Language::GenericHeader => None, // Let the compiler decide
     }
 }
 

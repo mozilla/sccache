@@ -105,6 +105,8 @@ pub enum Cache {
     Hit(CacheRead),
     /// Result was not found in cache.
     Miss,
+    /// Do not cache the results of the compilation.
+    None,
     /// Cache entry should be ignored, force compilation.
     Recache,
 }
@@ -114,6 +116,7 @@ impl fmt::Debug for Cache {
         match *self {
             Cache::Hit(_) => write!(f, "Cache::Hit(...)"),
             Cache::Miss => write!(f, "Cache::Miss"),
+            Cache::None => write!(f, "Cache::None"),
             Cache::Recache => write!(f, "Cache::Recache"),
         }
     }
@@ -561,8 +564,8 @@ pub(in crate::cache) fn normalize_key(key: &str) -> String {
 #[cfg(any(feature = "s3", feature = "webdav",))]
 pub fn set_user_agent() -> HttpClient {
     let user_agent = format!("{}/{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
-    let client_builder = ClientBuilder::new().user_agent(user_agent);
-    HttpClient::build(client_builder).unwrap()
+    let client = ClientBuilder::new().user_agent(user_agent).build().unwrap();
+    HttpClient::with(client)
 }
 
 /// Get a suitable `Storage` implementation from configuration.

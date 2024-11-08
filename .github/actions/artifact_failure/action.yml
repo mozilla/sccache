@@ -16,7 +16,8 @@ runs:
         lsof +D `pwd` || true
         killall sccache || true
         killall sccache-dist || true
-
+        # possible temp dirs for either linux or windows
+        cp "${TMP:-${TEMP:-${TMPDIR:-/tmp}}}"/sccache_*.txt . 2>/dev/null || true
         tar --exclude='target' \
             --exclude='docs' \
             --exclude='bins' \
@@ -25,6 +26,4 @@ runs:
     - uses: actions/upload-artifact@v3
       with:
         name: ${{ inputs.name }}
-        path: |
-          target/failure-${{ inputs.name }}.tar.gz
-          /tmp/sccache_*.txt
+        path: target/failure-${{ inputs.name }}.tar.gz
