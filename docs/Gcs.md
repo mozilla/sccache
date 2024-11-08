@@ -11,6 +11,8 @@ created and read within the GCS bucket, effectively creating a scope. To do that
 use the `SCCACHE_GCS_KEY_PREFIX` environment variable. This can be useful when
 sharing a bucket with another application.
 
+Requests sent to GCS will have a user agent header indicating the current sccache version, e.g. `sccache/0.8.2`.
+
 ## Credentials
 
 Sccache is able to load credentials from various sources. Including:
