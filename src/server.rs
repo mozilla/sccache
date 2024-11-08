@@ -1358,6 +1358,9 @@ where
 
                 match result {
                     Ok((compiled, out)) => {
+
+                        let mut dist_type = DistType::NoDist;
+
                         match compiled {
                             CompileResult::Error => {
                                 debug!("compile result: cache error");
@@ -1370,18 +1373,10 @@ where
                                 stats.cache_hits.increment(&kind, &lang);
                                 stats.cache_read_hit_duration += duration;
                             }
-                            CompileResult::CacheMiss(miss_type, dist_type, duration, future) => {
-                                debug!("compile result: cache miss");
+                            CompileResult::CacheMiss(miss_type, dt, duration, future) => {
+                                debug!("[{}]: compile result: cache miss", out_pretty);
+                                dist_type = dt;
 
-                                match dist_type {
-                                    DistType::NoDist => {}
-                                    DistType::Ok(id) => {
-                                        let server = id.addr().to_string();
-                                        let server_count = stats.dist_compiles.entry(server).or_insert(0);
-                                        *server_count += 1;
-                                    }
-                                    DistType::Error => stats.dist_errors += 1,
-                                }
                                 match miss_type {
                                     MissType::Normal => {}
                                     MissType::ForcedNoCache => {}
@@ -1395,26 +1390,44 @@ where
                                         stats.cache_errors.increment(&kind, &lang);
                                     }
                                 }
+                                stats.compilations += 1;
                                 stats.cache_misses.increment(&kind, &lang);
                                 stats.compiler_write_duration += duration;
                                 debug!("stats after compile result: {stats:?}");
                                 cache_write = Some(future);
                             }
-                            CompileResult::NotCached => {
+                            CompileResult::NotCached(dt, duration) => {
                                 debug!("[{}]: compile result: not cached", out_pretty);
+                                dist_type = dt;
+                                stats.compilations += 1;
+                                stats.compiler_write_duration += duration;
                             }
-                            CompileResult::NotCacheable => {
-                                debug!("compile result: not cacheable");
-
-                                stats.cache_misses.increment(&kind, &lang);
+                            CompileResult::NotCacheable(dt, duration) => {
+                                debug!("[{}]: compile result: not cacheable", out_pretty);
+                                dist_type = dt;
+                                stats.compilations += 1;
+                                stats.compiler_write_duration += duration;
                                 stats.non_cacheable_compilations += 1;
                             }
-                            CompileResult::CompileFailed => {
-                                debug!("compile result: compile failed");
-
+                            CompileResult::CompileFailed(dt, duration) => {
+                                debug!("[{}]: compile result: compile failed", out_pretty);
+                                dist_type = dt;
+                                stats.compilations += 1;
+                                stats.compiler_write_duration += duration;
                                 stats.compile_fails += 1;
                             }
                         };
+
+                        match dist_type {
+                            DistType::NoDist => {}
+                            DistType::Ok(id) => {
+                                let server = id.addr().to_string();
+                                let server_count = stats.dist_compiles.entry(server).or_insert(0);
+                                *server_count += 1;
+                            }
+                            DistType::Error => stats.dist_errors += 1,
+                        }
+
                         // Make sure the write guard has been dropped ASAP.
                         drop(stats);
 
@@ -1579,7 +1592,9 @@ pub struct ServerStats {
     pub cache_write_duration: Duration,
     /// The total time spent reading cache hits.
     pub cache_read_hit_duration: Duration,
-    /// The total time spent reading cache misses.
+    /// The number of compilations performed.
+    pub compilations: u64,
+    /// The total time spent compiling.
     pub compiler_write_duration: Duration,
     /// The count of compilation failures.
     pub compile_fails: u64,
@@ -1632,6 +1647,7 @@ impl Default for ServerStats {
             cache_writes: u64::default(),
             cache_write_duration: Duration::new(0, 0),
             cache_read_hit_duration: Duration::new(0, 0),
+            compilations: u64::default(),
             compiler_write_duration: Duration::new(0, 0),
             compile_fails: u64::default(),
             not_cached: HashMap::new(),
@@ -1720,12 +1736,14 @@ impl ServerStats {
         set_stat!(stats_vec, self.cache_read_errors, "Cache read errors");
         set_stat!(stats_vec, self.forced_recaches, "Forced recaches");
         set_stat!(stats_vec, self.cache_write_errors, "Cache write errors");
-        set_stat!(stats_vec, self.compile_fails, "Compilation failures");
         if advanced {
             set_compiler_stat!(stats_vec, self.cache_errors, "Cache errors");
         } else {
             set_lang_stat!(stats_vec, self.cache_errors, "Cache errors");
         }
+
+        set_stat!(stats_vec, self.compilations, "Compilations");
+        set_stat!(stats_vec, self.compile_fails, "Compilation failures");
 
         set_stat!(
             stats_vec,
@@ -1756,7 +1774,7 @@ impl ServerStats {
         set_duration_stat!(
             stats_vec,
             self.compiler_write_duration,
-            self.cache_misses.all(),
+            self.compilations,
             "Average compiler"
         );
         set_duration_stat!(
