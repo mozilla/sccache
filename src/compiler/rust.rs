@@ -172,6 +172,7 @@ pub struct ParsedArguments {
 
 /// A struct on which to hang a `Compilation` impl.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct RustCompilation {
     /// The path to the rustc executable, not the rustup proxy.
     executable: PathBuf,
