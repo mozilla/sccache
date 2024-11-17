@@ -115,12 +115,10 @@ where
 
     let mut take_next = false;
     let mut outputs = HashMap::new();
-    let mut extra_dist_files = vec![];
+    let mut gen_module_id_file = false;
 
     let mut common_args = vec![];
     let mut unhashed_args = vec![];
-    let mut gen_module_id_file = false;
-    let mut module_id_file_name = Option::<PathBuf>::None;
 
     for arg in ArgsIter::new(args.iter().cloned(), arg_info) {
         match arg {
@@ -144,12 +142,27 @@ where
                     }
                     Some(GenModuleIdFileFlag) => {
                         take_next = false;
+                        // Skip if we already added --gen_module_id_file when handling --module_id_file_name
+                        if gen_module_id_file {
+                            continue;
+                        }
                         gen_module_id_file = true;
                         &mut common_args
                     }
                     Some(ModuleIdFileName(o)) => {
                         take_next = false;
-                        module_id_file_name = Some(cwd.join(o));
+                        outputs.insert(
+                            "--module_id_file_name",
+                            ArtifactDescriptor {
+                                path: cwd.join(o),
+                                optional: true,
+                            },
+                        );
+                        // Always add --gen_module_id_file if --module_id_file_name is specified
+                        if !gen_module_id_file {
+                            gen_module_id_file = true;
+                            common_args.push("--gen_module_id_file".into());
+                        }
                         &mut common_args
                     }
                     Some(UnhashedOutput(o)) => {
@@ -193,20 +206,6 @@ where
         };
     }
 
-    if let Some(module_id_path) = module_id_file_name {
-        if gen_module_id_file {
-            outputs.insert(
-                "--module_id_file_name",
-                ArtifactDescriptor {
-                    path: module_id_path,
-                    optional: true,
-                },
-            );
-        } else {
-            extra_dist_files.push(module_id_path);
-        }
-    }
-
     CompilerArguments::Ok(ParsedArguments {
         input: input.into(),
         outputs,
@@ -219,7 +218,7 @@ where
         common_args,
         arch_args: vec![],
         unhashed_args,
-        extra_dist_files,
+        extra_dist_files: vec![],
         extra_hash_files: vec![],
         msvc_show_includes: false,
         profile_generate: false,

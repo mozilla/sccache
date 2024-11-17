@@ -678,18 +678,10 @@ where
             ),
             // cicc and ptxas are cacheable
             Some("cicc") => {
-                // Remove the `--gen_module_id_file` flag
-                if let Some(idx) = args.iter().position(|x| x == &gen_module_id_file_flag) {
-                    args.splice(idx..idx + 1, []);
-                }
                 let group = device_compile_groups.get_mut(&args[args.len() - 3]);
                 (env_vars.clone(), Cacheable::Yes, group)
             }
             Some("ptxas") => {
-                // Remove the `--gen_module_id_file` flag
-                if let Some(idx) = args.iter().position(|x| x == &gen_module_id_file_flag) {
-                    args.splice(idx..idx + 1, []);
-                }
                 let group = device_compile_groups.values_mut().find(|cmds| {
                     if let Some(cicc) = cmds.last() {
                         if let Some(cicc_out) = cicc.args.last() {
