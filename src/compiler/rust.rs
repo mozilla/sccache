@@ -3736,4 +3736,47 @@ proc_macro false
 
         assert_eq!(h.profile, Some("foo-a1b6419f8321841f.profraw".into()));
     }
+
+    #[test]
+    fn test_parse_target() {
+        // Parse a --target argument that is a string (not a path to a .json file).
+        let h = parses!(
+            "--crate-name",
+            "foo",
+            "--crate-type",
+            "lib",
+            "./src/lib.rs",
+            "--emit=dep-info,link",
+            "--out-dir",
+            "/out",
+            "--target",
+            "string"
+        );
+        assert!(h.arguments.contains(&Argument::WithValue(
+            "--target",
+            ArgData::Target(ArgTarget::Name("string".to_owned())),
+            ArgDisposition::Separated
+        )));
+        assert!(h.target_json.is_none());
+
+        // Parse a --target argument that is a path.
+        let h = parses!(
+            "--crate-name",
+            "foo",
+            "--crate-type",
+            "lib",
+            "./src/lib.rs",
+            "--emit=dep-info,link",
+            "--out-dir",
+            "/out",
+            "--target",
+            "/path/to/target.json"
+        );
+        assert!(h.arguments.contains(&Argument::WithValue(
+            "--target",
+            ArgData::Target(ArgTarget::Path(PathBuf::from("/path/to/target.json"))),
+            ArgDisposition::Separated
+        )));
+        assert_eq!(h.target_json, Some(PathBuf::from("/path/to/target.json")));
+    }
 }
