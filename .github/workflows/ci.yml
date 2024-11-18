@@ -316,7 +316,7 @@ jobs:
           echo "report=${COVERAGE_REPORT_FILE}" >> $GITHUB_OUTPUT
 
       - name: Upload coverage results (to Codecov.io)
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v5
         with:
           file: ${{ steps.coverage.outputs.report }}
           ## flags: IntegrationTests, UnitTests, ${{ steps.vars.outputs.CODECOV_FLAGS }}
