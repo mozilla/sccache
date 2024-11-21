@@ -9,7 +9,6 @@ The following services all expose a WebDAV interface and can be used as a backen
 
 Set `SCCACHE_WEBDAV_ENDPOINT` to an appropriate webdav service endpoint to enable remote caching.
 Set `SCCACHE_WEBDAV_KEY_PREFIX` to specify the key prefix of cache.
-Requests sent to your WebDAV service will have a user agent header indicating the current sccache version, e.g. `sccache/0.8.2`.
 
 ## Credentials
 
