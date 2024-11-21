@@ -35,6 +35,8 @@ use fs_err as fs;
 use log::Level::Trace;
 use once_cell::sync::Lazy;
 #[cfg(feature = "dist-client")]
+use semver::Version;
+#[cfg(feature = "dist-client")]
 use std::borrow::Borrow;
 use std::borrow::Cow;
 #[cfg(feature = "dist-client")]
@@ -2286,6 +2288,7 @@ impl Meter<PathBuf, RlibDepsDetail> for DepsSize {
 struct RlibDepReader {
     cache: Mutex<LruCache<PathBuf, RlibDepsDetail, RandomState, DepsSize>>,
     executable: PathBuf,
+    ls_arg: String,
 }
 
 #[cfg(feature = "dist-client")]
@@ -2339,16 +2342,68 @@ impl RlibDepReader {
         // can cache information from about 570 rlibs - easily enough for a single project.
         const CACHE_SIZE: u64 = 3 * 1024 * 1024;
         let cache = LruCache::with_meter(CACHE_SIZE, DepsSize);
+        let rustc_version = Self::get_rustc_version(&executable, env_vars)?;
 
         let rlib_dep_reader = RlibDepReader {
             cache: Mutex::new(cache),
             executable,
+            ls_arg: Self::get_correct_ls_arg(rustc_version),
         };
         if let Err(e) = rlib_dep_reader.discover_rlib_deps(env_vars, &temp_rlib) {
             bail!("Failed to read deps from minimal rlib: {}", e)
         }
 
         Ok(rlib_dep_reader)
+    }
+
+    fn get_rustc_version(
+        executable: &PathBuf,
+        env_vars: &[(OsString, OsString)],
+    ) -> Result<Version> {
+        let mut cmd = process::Command::new(executable);
+        cmd.arg("--version").env_clear().envs(env_vars.to_vec());
+
+        let process::Output {
+            status,
+            stdout,
+            stderr,
+        } = cmd.output()?;
+
+        if !status.success() {
+            bail!("Failed to get rustc version with {}", executable.display())
+        }
+        if stdout.is_empty() {
+            bail!("rustc stdout empty when parsing version")
+        }
+        if !stderr.is_empty() {
+            bail!(
+                "rustc stderr non-empty when parsing version: {:?}",
+                String::from_utf8_lossy(&stderr)
+            )
+        }
+
+        Self::parse_rustc_version(&stdout)
+    }
+
+    fn parse_rustc_version(stdout: &[u8]) -> Result<Version> {
+        let stdout_string = String::from_utf8_lossy(stdout);
+        let rustc_version: Vec<&str> = stdout_string.split_whitespace().collect();
+        if rustc_version[0] != "rustc" {
+            bail!(
+                "Expected rustc string in rustc version with {:?}",
+                String::from_utf8_lossy(stdout)
+            )
+        }
+
+        Ok(Version::parse(rustc_version[1])?)
+    }
+
+    fn get_correct_ls_arg(version: Version) -> String {
+        if version.major <= 1 && version.minor <= 74 {
+            String::from("ls")
+        } else {
+            String::from("ls=root")
+        }
     }
 
     fn discover_rlib_deps(
@@ -2372,7 +2427,7 @@ impl RlibDepReader {
         trace!("Discovering dependencies of {}", rlib.display());
 
         let mut cmd = process::Command::new(&self.executable);
-        cmd.args(["-Z", "ls"])
+        cmd.args(["-Z", &self.ls_arg])
             .arg(rlib)
             .env_clear()
             .envs(env_vars.to_vec())
@@ -3106,6 +3161,70 @@ proc_macro false
         assert_eq!(res[0], "lucet_runtime");
         assert_eq!(res[1], "lucet_runtime_internals");
         assert_eq!(res[2], "lucet_runtime_macros");
+    }
+
+    #[cfg(feature = "dist-client")]
+    #[test]
+    fn test_rlib_dep_reader_call() {
+        let cargo_home = std::env::var("CARGO_HOME");
+        assert!(cargo_home.is_ok());
+
+        let mut rustc_path = PathBuf::from(cargo_home.unwrap());
+        rustc_path.push("bin");
+        rustc_path.push("rustc");
+        let rlib_dep_reader = RlibDepReader::new_with_check(rustc_path, &[]);
+        assert!(rlib_dep_reader.is_ok());
+    }
+
+    #[cfg(feature = "dist-client")]
+    #[test]
+    fn test_rlib_dep_reader_parse_rustc_version() {
+        let v0 = RlibDepReader::parse_rustc_version("rustc 1.2.3 aaaa".as_bytes());
+        assert!(v0.is_ok());
+        let v0 = v0.unwrap();
+        assert_eq!(v0.major, 1);
+        assert_eq!(v0.minor, 2);
+        assert_eq!(v0.patch, 3);
+
+        assert!(RlibDepReader::parse_rustc_version("rutc 1.2.3 aaaa".as_bytes()).is_err());
+        assert!(RlibDepReader::parse_rustc_version("1.2.3".as_bytes()).is_err());
+    }
+
+    #[cfg(feature = "dist-client")]
+    #[test]
+    fn test_rlib_dep_reader_get_correct_ls_arg() {
+        assert_eq!(
+            RlibDepReader::get_correct_ls_arg(Version::new(0, 73, 0)),
+            "ls"
+        );
+        assert_eq!(
+            RlibDepReader::get_correct_ls_arg(Version::new(1, 73, 0)),
+            "ls"
+        );
+        assert_eq!(
+            RlibDepReader::get_correct_ls_arg(Version::new(1, 73, 1)),
+            "ls"
+        );
+        assert_eq!(
+            RlibDepReader::get_correct_ls_arg(Version::new(1, 74, 0)),
+            "ls"
+        );
+        assert_eq!(
+            RlibDepReader::get_correct_ls_arg(Version::new(1, 74, 1)),
+            "ls"
+        );
+        assert_eq!(
+            RlibDepReader::get_correct_ls_arg(Version::new(1, 75, 0)),
+            "ls=root"
+        );
+        assert_eq!(
+            RlibDepReader::get_correct_ls_arg(Version::new(2, 73, 0)),
+            "ls=root"
+        );
+        assert_eq!(
+            RlibDepReader::get_correct_ls_arg(Version::new(2, 74, 0)),
+            "ls=root"
+        );
     }
 
     fn mock_dep_info(creator: &Arc<Mutex<MockCommandCreator>>, dep_srcs: &[&str]) {
