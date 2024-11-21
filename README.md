@@ -293,7 +293,7 @@ Known Caveats
 
 ### User Agent
 
-* Requests sent to your WebDAV service will have a user agent header indicating the current sccache version, e.g. `sccache/0.8.2`.
+* Requests sent to your storage option of choice will have a user agent header indicating the current sccache version, e.g. `sccache/0.8.2`.
 
 Storage Options
 ---------------
