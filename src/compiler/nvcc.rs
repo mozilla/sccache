@@ -311,10 +311,15 @@ pub fn generate_compile_commands(
         // Remove all occurrences of `-t=` or `--threads` because it's incompatible with --dryrun
         // Prefer the last occurrence of `-t=` or `--threads` to match nvcc behavior
         loop {
-            if let Some(idx) = unhashed_args.iter().position(|x| x.starts_with("-t=")) {
+            if let Some(idx) = unhashed_args.iter().position(|x| x.starts_with("-t")) {
                 let arg = unhashed_args.get(idx);
                 if let Some(arg) = arg.and_then(|arg| arg.to_str()) {
-                    if let Ok(arg) = arg[3..arg.len()].parse::<usize>() {
+                    let range = if arg.contains('=') {
+                        3..arg.len()
+                    } else {
+                        2..arg.len()
+                    };
+                    if let Ok(arg) = arg[range].parse::<usize>() {
                         num_parallel = arg;
                     }
                 }
@@ -1280,6 +1285,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("--compiler-bindir", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("--compiler-options", OsString, CanBeSeparated('='), PreprocessorArgument),
     flag!("--cubin", DoCompilation),
+    take_arg!("--default-stream", OsString, CanBeSeparated('='), PassThrough),
     flag!("--device-c", DoCompilation),
     flag!("--device-w", DoCompilation),
     flag!("--expt-extended-lambda", PreprocessorArgumentFlag),
@@ -1319,6 +1325,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("-code", OsString, CanBeSeparated('='), PassThrough),
     flag!("-cubin", DoCompilation),
     flag!("-dc", DoCompilation),
+    take_arg!("-default-stream", OsString, CanBeSeparated('='), PassThrough),
     flag!("-dw", DoCompilation),
     flag!("-expt-extended-lambda", PreprocessorArgumentFlag),
     flag!("-expt-relaxed-constexpr", PreprocessorArgumentFlag),
@@ -1334,7 +1341,8 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     flag!("-ptx", DoCompilation),
     take_arg!("-rdc", OsString, CanBeSeparated('='), PreprocessorArgument),
     flag!("-save-temps", UnhashedFlag),
-    take_arg!("-t", OsString, CanBeSeparated('='), Unhashed),
+    take_arg!("-t", OsString, CanBeSeparated, Unhashed),
+    take_arg!("-t=", OsString, Concatenated, Unhashed),
     take_arg!("-x", OsString, CanBeSeparated('='), Language),
 ]);
 
@@ -1517,9 +1525,10 @@ mod test {
     #[test]
     fn test_parse_threads_argument_simple_cu() {
         let a = parses!(
-            "-t=1",
+            "-t1",
+            "-t=2",
             "-t",
-            "2",
+            "3",
             "--threads=1",
             "--threads=2",
             "-c",
@@ -1541,7 +1550,7 @@ mod test {
         );
         assert!(a.preprocessor_args.is_empty());
         assert_eq!(
-            ovec!["-t=1", "-t=2", "--threads", "1", "--threads", "2"],
+            ovec!["-t1", "-t=2", "-t3", "--threads", "1", "--threads", "2"],
             a.unhashed_args
         );
     }
