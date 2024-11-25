@@ -586,9 +586,11 @@ jobs:
     env:
       # SCCACHE_GHA_ENABLED: "on"
       ROCM_PATH: "/opt/rocm"
+      RANDOMIZE_READDIR_LOG: "/tmp/readdir.log"
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Clone repository
+        uses: actions/checkout@v4
 
       # I don't want to break the cache during testing. Will turn on after I
       # make sure it's working.
@@ -606,6 +608,24 @@ jobs:
       #     script: |
       #       core.exportVariable('ROCM_PATH', process.env.ROCM_PATH || '');
 
+      - name: Install dependencies
+        shell: bash
+        run: |
+          ## Install dependencies
+          sudo apt-get update
+          sudo apt-get install -y cmake curl
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain none -y
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Install rust
+        uses: ./.github/actions/rust-toolchain
+        with:
+          toolchain: "stable"
+
+      - name: Build & setup librandomize_readdir
+        run: |
+          cargo build -p randomize_readdir
+
       - uses: actions/download-artifact@v4
         with:
           name: integration-tests
@@ -613,37 +633,44 @@ jobs:
       - name: Chmod for binary
         run: chmod +x ${SCCACHE_PATH}
 
-      - name: Install dependencies
-        shell: bash
-        run: |
-          ## Install dependencies
-          sudo apt-get update
-          sudo apt-get install -y cmake
-
       # Ensure that HIPCC isn't already borken
       - name: Sanity Check
         run: |
+          export LD_PRELOAD=$PWD/target/debug/librandomize_readdir.so
           hipcc -o vectoradd_hip --offload-arch=gfx900 tests/cmake-hip/vectoradd_hip.cpp
 
       - name: Test
         run: |
+          export LD_PRELOAD=$PWD/target/debug/librandomize_readdir.so
+          rm "$RANDOMIZE_READDIR_LOG".*
           cmake -B build -S tests/cmake-hip -DCMAKE_HIP_COMPILER_LAUNCHER=${SCCACHE_PATH} -DCMAKE_HIP_ARCHITECTURES=gfx900
           cmake --build build
+          if ! grep -q bitcode "$RANDOMIZE_READDIR_LOG".*; then
+            echo "amdgcn bitcode not accessed, is librandomize_readdir properly set up?"
+            exit 1
+          fi
 
       - name: Output
         run: |
+          export LD_PRELOAD=$PWD/target/debug/librandomize_readdir.so
           ${SCCACHE_PATH} --show-stats
 
       - name: Test Twice for Cache Read
         run: |
+          export LD_PRELOAD=$PWD/target/debug/librandomize_readdir.so
+          rm "$RANDOMIZE_READDIR_LOG".*
           rm -rf build
           cmake -B build -S tests/cmake-hip -DCMAKE_HIP_COMPILER_LAUNCHER=${SCCACHE_PATH} -DCMAKE_HIP_ARCHITECTURES=gfx900
           cmake --build build
+          if ! grep -q bitcode "$RANDOMIZE_READDIR_LOG".*; then
+            echo "amdgcn bitcode not accessed, is librandomize_readdir properly set up?"
+            exit 1
+          fi
 
       - name: Output
         run: |
+          export LD_PRELOAD=$PWD/target/debug/librandomize_readdir.so
           ${SCCACHE_PATH} --show-stats
-
           ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"
 
   gcc:
