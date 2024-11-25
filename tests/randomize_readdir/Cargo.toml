@@ -1,0 +1,13 @@
+[package]
+edition = "2021"
+name = "randomize_readdir"
+version = "0.1.0"
+
+[dependencies]
+ctor = "0.2"
+libc = "0.2.99"
+once_cell = "1"
+rand = "0.8"
+
+[lib]
+crate-type = ["cdylib"]
