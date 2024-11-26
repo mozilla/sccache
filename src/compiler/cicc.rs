@@ -280,6 +280,21 @@ pub fn generate_compile_commands(
         out_file.into(),
     ]);
 
+    if log_enabled!(log::Level::Trace) {
+        trace!(
+            "[{}]: {} command: {:?}",
+            out_file.file_name().unwrap().to_string_lossy(),
+            executable.file_name().unwrap().to_string_lossy(),
+            [
+                &[format!("cd {} &&", cwd.to_string_lossy()).to_string()],
+                &[executable.to_str().unwrap_or_default().to_string()][..],
+                &dist::osstrings_to_strings(&arguments).unwrap_or_default()[..]
+            ]
+            .concat()
+            .join(" ")
+        );
+    }
+
     let command = SingleCompileCommand {
         executable: executable.to_owned(),
         arguments,
