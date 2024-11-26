@@ -59,6 +59,7 @@ impl CCompilerImpl for Msvc {
         &self,
         arguments: &[OsString],
         cwd: &Path,
+        _env_vars: &[(OsString, OsString)],
     ) -> CompilerArguments<ParsedArguments> {
         parse_arguments(arguments, cwd, self.is_clang)
     }

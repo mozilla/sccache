@@ -57,6 +57,7 @@ impl CCompilerImpl for Ptxas {
         &self,
         arguments: &[OsString],
         cwd: &Path,
+        _env_vars: &[(OsString, OsString)],
     ) -> CompilerArguments<ParsedArguments> {
         cicc::parse_arguments(arguments, cwd, Language::Cubin, &ARGS[..])
     }

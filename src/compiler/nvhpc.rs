@@ -59,6 +59,7 @@ impl CCompilerImpl for Nvhpc {
         &self,
         arguments: &[OsString],
         cwd: &Path,
+        _env_vars: &[(OsString, OsString)],
     ) -> CompilerArguments<ParsedArguments> {
         gcc::parse_arguments(
             arguments,
@@ -238,7 +239,7 @@ mod test {
             nvcplusplus: false,
             version: None,
         }
-        .parse_arguments(&arguments, ".".as_ref())
+        .parse_arguments(&arguments, ".".as_ref(), &[])
     }
 
     macro_rules! parses {
