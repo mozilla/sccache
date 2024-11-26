@@ -1119,19 +1119,22 @@ fn remap_generated_filenames(
                         .entry(arg)
                         .or_insert_with_key(|arg| {
                             // Initialize or update the number of files with a given extension:
-                            // compute_70.cudafe1.stub.c -> 0.cudafe1.stub.c
-                            // compute_60.cudafe1.stub.c -> 1.cudafe1.stub.c
+                            // compute_70.cudafe1.stub.c -> x_0.cudafe1.stub.c
+                            // compute_60.cudafe1.stub.c -> x_1.cudafe1.stub.c
                             // etc.
                             let count = ext_counts
                                 .entry(extension.into())
                                 .and_modify(|c| *c += 1)
                                 .or_insert(0)
                                 .to_string();
-                            // Return `/tmp/dir/{count}.{ext}` as the new name, i.e. `/tmp/dir/0.cudafe1.stub.c`
+                            // Return `/tmp/dir/x_{count}.{ext}` as the new name, i.e. `/tmp/dir/x_0.cudafe1.stub.c`
                             PathBuf::from(arg)
                                 .parent()
                                 .unwrap_or(Path::new(""))
-                                .join(count + extension)
+                                // Don't use the count as the first character of the file name, because the file name
+                                // may be used as an identifier (via the __FILE__ macro) and identifiers with leading
+                                // digits are not valid in C/C++, i.e. `x_0.cudafe1.cpp` instead of `0.cudafe1.cpp`.
+                                .join("x_".to_owned() + &count + extension)
                                 .to_string_lossy()
                                 .to_string()
                         })
@@ -1141,8 +1144,22 @@ fn remap_generated_filenames(
                     // If the argument isn't a file name with one of our extensions,
                     // it may _reference_ files we've renamed. Go through and replace
                     // all old names with their new stable names.
+                    //
+                    // Sort by string length descending so we don't accidentally replace
+                    // `zzz.cudafe1.cpp` with the new name for `zzz.cudafe1.c`.
+                    //
+                    // For example, if we have these renames:
+                    //
+                    //   compute_70.cudafe1.cpp -> x_0.cudafe1.cpp
+                    //   compute_70.cudafe1.c   -> x_2.cudafe1.c
+                    //
+                    // `compute_70.cudafe1.cpp` should be replaced with `x_0.cudafe1.cpp`, not `x_2.cudafe1.c`
+                    //
                     let mut arg = arg.clone();
-                    for (old, new) in old_to_new.iter() {
+                    for (old, new) in old_to_new
+                        .iter()
+                        .sorted_by(|a, b| b.0.len().cmp(&a.0.len()))
+                    {
                         arg = arg.replace(old, new);
                     }
                     arg
