@@ -86,11 +86,16 @@ impl CCompilerImpl for Nvcc {
         &self,
         arguments: &[OsString],
         cwd: &Path,
+        env_vars: &[(OsString, OsString)],
     ) -> CompilerArguments<ParsedArguments> {
         let mut arguments = arguments.to_vec();
 
-        if let Ok(flags) = std::env::var("NVCC_PREPEND_FLAGS") {
-            arguments = shlex::split(&flags)
+        if let Some(flags) = env_vars
+            .iter()
+            .find(|(k, _)| k == "NVCC_PREPEND_FLAGS")
+            .and_then(|(_, p)| p.to_str())
+        {
+            arguments = shlex::split(flags)
                 .unwrap_or_default()
                 .iter()
                 .map(|s| s.clone().into_arg_os_string())
@@ -98,9 +103,13 @@ impl CCompilerImpl for Nvcc {
                 .collect::<Vec<_>>();
         }
 
-        if let Ok(flags) = std::env::var("NVCC_APPEND_FLAGS") {
+        if let Some(flags) = env_vars
+            .iter()
+            .find(|(k, _)| k == "NVCC_APPEND_FLAGS")
+            .and_then(|(_, p)| p.to_str())
+        {
             arguments.extend(
-                shlex::split(&flags)
+                shlex::split(flags)
                     .unwrap_or_default()
                     .iter()
                     .map(|s| s.clone().into_arg_os_string()),
@@ -1363,7 +1372,7 @@ mod test {
             host_compiler_version: None,
             version: None,
         }
-        .parse_arguments(&arguments, ".".as_ref())
+        .parse_arguments(&arguments, ".".as_ref(), &[])
     }
     fn parse_arguments_msvc(arguments: Vec<String>) -> CompilerArguments<ParsedArguments> {
         let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
@@ -1372,7 +1381,7 @@ mod test {
             host_compiler_version: None,
             version: None,
         }
-        .parse_arguments(&arguments, ".".as_ref())
+        .parse_arguments(&arguments, ".".as_ref(), &[])
     }
     fn parse_arguments_nvc(arguments: Vec<String>) -> CompilerArguments<ParsedArguments> {
         let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
@@ -1381,7 +1390,7 @@ mod test {
             host_compiler_version: None,
             version: None,
         }
-        .parse_arguments(&arguments, ".".as_ref())
+        .parse_arguments(&arguments, ".".as_ref(), &[])
     }
 
     macro_rules! parses {

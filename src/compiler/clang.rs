@@ -94,6 +94,7 @@ impl CCompilerImpl for Clang {
         &self,
         arguments: &[OsString],
         cwd: &Path,
+        _env_vars: &[(OsString, OsString)],
     ) -> CompilerArguments<ParsedArguments> {
         gcc::parse_arguments(
             arguments,
@@ -282,7 +283,7 @@ mod test {
             is_appleclang: false,
             version: None,
         }
-        .parse_arguments(&arguments, &std::env::current_dir().unwrap())
+        .parse_arguments(&arguments, &std::env::current_dir().unwrap(), &[])
     }
 
     macro_rules! parses {
