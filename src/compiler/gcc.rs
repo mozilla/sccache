@@ -890,6 +890,7 @@ where
         arguments.join(OsStr::new(" ")).to_string_lossy()
     );
 
+    #[cfg(feature = "dist-client")]
     let has_verbose_flag = arguments.contains(&OsString::from("-v"))
         || arguments.contains(&OsString::from("--verbose"));
 
@@ -903,7 +904,11 @@ where
     #[cfg(not(feature = "dist-client"))]
     let dist_command = None;
     #[cfg(feature = "dist-client")]
-    let dist_command = if has_verbose_flag {
+    // 1. Compilations with -v|--verbose must be run locally, since the verbose
+    //    output is parsed by tools like CMake and must reflect the local toolchain
+    // 2. ClangCUDA cannot be dist-compiled because Clang has separate host and
+    //    device preprocessor outputs and cannot compile preprocessed CUDA files.
+    let dist_command = if has_verbose_flag || parsed_args.language == Language::Cuda {
         None
     } else {
         (|| {
