@@ -21,9 +21,19 @@ $mmbVersionTag = "${major}.${minor}.${build}"
 # mm = major minor
 $mmVersionTag = "${major}.${minor}"
 
-# `cuda_${mmbVersionTag}_windows_network.exe` name only valid back to CUDA v11.5.1.
-# Before that it was named `cuda_${mmbVersionTag}_win10_network.exe`.
 $cudaVersionUrl = "https://developer.download.nvidia.com/compute/cuda/${mmbVersionTag}/network_installers/cuda_${mmbVersionTag}_windows_network.exe"
+
+###
+# `cuda_${mmbVersionTag}_windows_network.exe` name only valid back to CUDA v11.5.1.
+# Before that it was named `cuda_${mmbVersionTag}_win10_network.exe`:
+# * https://developer.download.nvidia.com/compute/cuda/11.5.1/network_installers/cuda_11.5.1_windows_network.exe
+# * https://developer.download.nvidia.com/compute/cuda/11.5.0/network_installers/cuda_11.5.0_win10_network.exe
+###
+
+if ([version]$mmbVersionTag -le "11.5.0") {
+    $cudaVersionUrl = "https://developer.download.nvidia.com/compute/cuda/${mmbVersionTag}/network_installers/cuda_${mmbVersionTag}_win10_network.exe"
+}
+
 $cudaComponents =
     "nvcc_$mmVersionTag",
     "curand_$mmVersionTag",
