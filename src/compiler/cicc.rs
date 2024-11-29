@@ -143,12 +143,12 @@ where
                         );
                         continue;
                     }
-                    Some(GenModuleIdFileFlag) => {
+                    Some(UnhashedGenModuleIdFileFlag) => {
                         take_next = false;
                         gen_module_id_file = true;
                         &mut unhashed_args
                     }
-                    Some(ModuleIdFileName(o)) => {
+                    Some(UnhashedModuleIdFileName(o)) => {
                         take_next = false;
                         module_id_file_name = Some(cwd.join(o));
                         &mut unhashed_args
@@ -326,11 +326,11 @@ pub fn generate_compile_commands(
 }
 
 ArgData! { pub
-    GenModuleIdFileFlag,
-    ModuleIdFileName(PathBuf),
     Output(PathBuf),
     PassThrough(OsString),
     UnhashedFlag,
+    UnhashedGenModuleIdFileFlag,
+    UnhashedModuleIdFileName(PathBuf),
     UnhashedOutput(PathBuf),
 }
 
@@ -339,9 +339,9 @@ use self::ArgData::*;
 counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     take_arg!("--gen_c_file_name", PathBuf, Separated, UnhashedOutput),
     take_arg!("--gen_device_file_name", PathBuf, Separated, UnhashedOutput),
-    flag!("--gen_module_id_file", GenModuleIdFileFlag),
+    flag!("--gen_module_id_file", UnhashedGenModuleIdFileFlag),
     take_arg!("--include_file_name", OsString, Separated, PassThrough),
-    take_arg!("--module_id_file_name", PathBuf, Separated, ModuleIdFileName),
+    take_arg!("--module_id_file_name", PathBuf, Separated, UnhashedModuleIdFileName),
     take_arg!("--stub_file_name", PathBuf, Separated, UnhashedOutput),
     take_arg!("-o", PathBuf, Separated, Output),
 ]);
