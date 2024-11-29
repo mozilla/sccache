@@ -837,7 +837,7 @@ where
         } {
             if log_enabled!(log::Level::Trace) {
                 trace!(
-                    "[{}]: transformed nvcc command: {:?}",
+                    "[{}]: transformed nvcc command: \"{}\"",
                     output_file_name.to_string_lossy(),
                     [
                         &[format!("cd {} &&", dir.to_string_lossy()).to_string()],
@@ -1032,7 +1032,8 @@ fn fold_env_vars_or_split_into_exe_and_args(
         let line = line
             .replace("\"\"", "\"")
             .replace(r"\\?\", "")
-            .replace('\\', "/");
+            .replace('\\', "/")
+            .replace(r"//?/", "");
         match host_compiler {
             NvccHostCompiler::Msvc => line.replace(" -E ", " -P ").replace(" > ", " -Fi"),
             _ => line,
@@ -1202,14 +1203,12 @@ where
 
         if log_enabled!(log::Level::Trace) {
             trace!(
-                "[{}]: run_commands_sequential cwd={:?}, cmd={:?}",
+                "[{}]: run_commands_sequential cwd={:?}, cmd=\"{}\"",
                 output_file_name.to_string_lossy(),
                 cwd,
                 [
                     vec![exe.clone().into_os_string().into_string().unwrap()],
-                    args.iter()
-                        .map(|x| shlex::try_quote(x).unwrap().to_string())
-                        .collect::<Vec<_>>()
+                    args.to_vec()
                 ]
                 .concat()
                 .join(" ")

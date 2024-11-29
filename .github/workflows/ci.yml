@@ -66,6 +66,10 @@ jobs:
       matrix:
         include:
           - os: ubuntu-20.04
+            # Oldest tested CUDA Toolkit version. Older CTKs might work, but they're
+            # difficult to test without Ubuntu18.04 GHA runners or containerized jobs.
+            cuda: "11.1"
+            extra_desc: cuda11.1
             # Oldest supported version, keep in sync with README.md
             rustc: "1.75.0"
           - os: ubuntu-22.04
@@ -97,11 +101,11 @@ jobs:
           # # M1 CPU
           - os: macos-14
           - os: windows-2019
-            cuda: "11.8"
+            cuda: "11.1"
             # Oldest supported version, keep in sync with README.md
             rustc: "1.75.0"
             extra_args: --no-fail-fast
-            extra_desc: cuda11.8
+            extra_desc: cuda11.1
           - os: windows-2019
             cuda: "11.8"
             rustc: nightly
@@ -152,7 +156,14 @@ jobs:
             sudo apt remove -y gcc-14 g++-14
             sudo apt autoremove -y
           fi
-          sudo apt install -y --no-install-recommends clang gcc
+          # Ubuntu20.04's clang-10 is too old for CTK 11+, so install clang-12 instead
+          if test "${{ matrix.os }}" = "ubuntu-20.04" && test -n "${{ matrix.cuda }}"; then
+            sudo apt install -y --no-install-recommends gcc clang-12
+            sudo ln -sf $(which clang-12) /usr/bin/clang
+            sudo ln -sf $(which clang++-12) /usr/bin/clang++
+          else
+            sudo apt install -y --no-install-recommends gcc clang
+          fi
           echo 'gcc version:'
           gcc --version
           echo 'clang version:'
