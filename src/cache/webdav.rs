@@ -15,6 +15,8 @@ use opendal::layers::LoggingLayer;
 use opendal::services::Webdav;
 use opendal::Operator;
 
+use super::http_client::set_user_agent;
+
 /// A cache that stores entries in a Webdav.
 pub struct WebdavCache;
 
@@ -32,7 +34,8 @@ impl WebdavCache {
             .root(key_prefix)
             .username(username.unwrap_or_default())
             .password(password.unwrap_or_default())
-            .token(token.unwrap_or_default());
+            .token(token.unwrap_or_default())
+            .http_client(set_user_agent());
 
         let op = Operator::new(builder)?
             .layer(LoggingLayer::default())
