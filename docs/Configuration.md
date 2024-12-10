@@ -19,6 +19,11 @@ cache_dir = "/home/user/.cache/sccache-dist-client"
 type = "token"
 token = "secrettoken"
 
+[cache]
+# If specified, skip the startup check for whether the backend is read-only/writeable;
+# assume it has this mode instead.
+# If unspecified, the server will check the mode at startup.
+assume_rw_mode = "READ_WRITE"
 
 #[cache.azure]
 # does not work as it appears
@@ -139,6 +144,9 @@ configuration variables
   - If you want to be apply to all cache, you should reset cache and make new cache.
 
 ### cache configs
+
+* `SCCACHE_ASSUME_RW_MODE` to skip checking whether the cache is correctly configured.
+  Instead, assume it is `READ_ONLY` or `READ_WRITE`- whichever this environment variable specifies.
 
 #### disk (local)
 
