@@ -762,7 +762,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 
             trace!("Command::PackageToolchain({})", executable.display());
             let runtime = Runtime::new()?;
-            let jobserver = unsafe { Client::new() };
+            let jobserver = Client::new();
             let creator = ProcessCommandCreator::new(&jobserver);
             let args: Vec<_> = env::args_os().collect();
             let env: Vec<_> = env::vars_os().collect();
@@ -788,7 +788,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
             env_vars,
         } => {
             trace!("Command::Compile {{ {:?}, {:?}, {:?} }}", exe, cmdline, cwd);
-            let jobserver = unsafe { Client::new() };
+            let jobserver = Client::new();
             let conn = connect_or_start_server(&get_addr(), startup_timeout)?;
             let mut runtime = Runtime::new()?;
             let res = do_compile(

@@ -83,7 +83,7 @@ macro_rules! assert_map_contains {
 }
 
 pub fn new_creator() -> Arc<Mutex<MockCommandCreator>> {
-    let client = unsafe { Client::new() };
+    let client = Client::new();
     Arc::new(Mutex::new(MockCommandCreator::new(&client)))
 }
 
