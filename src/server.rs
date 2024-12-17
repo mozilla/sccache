@@ -428,7 +428,7 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
         });
         panic_hook(info)
     }));
-    let client = unsafe { Client::new() };
+    let client = Client::new();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .worker_threads(std::cmp::max(20, 2 * num_cpus::get()))

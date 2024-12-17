@@ -88,7 +88,7 @@ where
             CacheMode::ReadWrite,
         ));
 
-        let client = unsafe { Client::new() };
+        let client = Client::new();
         let srv = SccacheServer::new(0, runtime, client, dist_client, storage).unwrap();
         let mut srv: SccacheServer<_, Arc<Mutex<MockCommandCreator>>> = srv;
         let addr = srv.local_addr().unwrap();
