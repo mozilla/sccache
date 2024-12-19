@@ -56,6 +56,7 @@ use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 #[cfg(feature = "dist-client")]
 use std::time::Instant;
+use std::u64;
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
 use tokio::{
