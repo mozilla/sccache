@@ -2314,12 +2314,6 @@ impl RlibDepReader {
             stderr,
         } = cmd.output()?;
 
-        if !status.success() {
-            bail!(
-                "Failed to compile a minimal rlib with {}",
-                executable.display()
-            )
-        }
         if !stdout.is_empty() {
             bail!(
                 "rustc stdout non-empty when compiling a minimal rlib: {:?}",
@@ -2330,6 +2324,12 @@ impl RlibDepReader {
             bail!(
                 "rustc stderr non-empty when compiling a minimal rlib: {:?}",
                 String::from_utf8_lossy(&stderr)
+            )
+        }
+        if !status.success() {
+            bail!(
+                "Failed to compile a minimal rlib with {}",
+                executable.display()
             )
         }
 
@@ -3169,11 +3169,20 @@ proc_macro false
         let cargo_home = std::env::var("CARGO_HOME");
         assert!(cargo_home.is_ok());
 
+        let mut env_vars = vec![];
+        if let Some(rustup_home) = std::env::var_os("RUSTUP_HOME") {
+            env_vars.push(("RUSTUP_HOME".into(), rustup_home));
+        }
+
         let mut rustc_path = PathBuf::from(cargo_home.unwrap());
         rustc_path.push("bin");
         rustc_path.push("rustc");
-        let rlib_dep_reader = RlibDepReader::new_with_check(rustc_path, &[]);
-        assert!(rlib_dep_reader.is_ok());
+
+        let rlib_dep_reader = RlibDepReader::new_with_check(rustc_path, &env_vars);
+        let is_ok = rlib_dep_reader.is_ok();
+        // Unwrap so the error is reported in the test output
+        let _ = rlib_dep_reader.unwrap();
+        assert!(is_ok);
     }
 
     #[cfg(feature = "dist-client")]
