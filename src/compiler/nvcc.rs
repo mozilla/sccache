@@ -461,7 +461,20 @@ pub fn generate_compile_commands(
         output_file_name: output.file_name().unwrap().to_owned(),
     };
 
-    Ok((command, None, Cacheable::Yes))
+    Ok((
+        command,
+        None,
+        // Never assume the outer `nvcc` call is cacheable. We must decompose the nvcc call into
+        // its constituent subcommands with `--dryrun` and only cache the final build product.
+        //
+        // Always decomposing `nvcc --dryrun` is the only way to ensure caching nvcc invocations
+        // is fully sound, because the `nvcc -E` preprocessor output is not sufficient to detect
+        // all source code changes.
+        //
+        // Specifically, `nvcc -E` always defines __CUDA_ARCH__, which means changes to host-only
+        // code guarded by an `#ifndef __CUDA_ARCH__` will _not_ be captured in `nvcc -E` output.
+        Cacheable::No,
+    ))
 }
 
 #[derive(Clone, Debug)]
@@ -811,19 +824,28 @@ where
                         )
                     }
                 } else {
-                    // Returns Cacheable::Yes to indicate we _do_ want to run this host
-                    // compiler call through sccache (because it may be distributed),
-                    // but we _do not_ want to cache its output. The output file will
-                    // be cached as the result of the outer `nvcc` command. Caching
-                    // here would store the same object twice under two different hashes,
-                    // unnecessarily bloating the cache size.
+                    // Cache the host compiler calls, since we've marked the outer `nvcc` call
+                    // as non-cacheable. This ensures `sccache nvcc ...` _always_ decomposes the
+                    // nvcc call into its constituent subcommands with `--dryrun`, but only caches
+                    // the final build product once.
+                    //
+                    // Always decomposing `nvcc --dryrun` is the only way to ensure caching nvcc invocations
+                    // is fully sound, because the `nvcc -E` preprocessor output is not sufficient to detect
+                    // all source code changes.
+                    //
+                    // Specifically, `nvcc -E` always defines __CUDA_ARCH__, which means changes to host-only
+                    // code guarded by an `#ifndef __CUDA_ARCH__` will _not_ be captured in `nvcc -E` output.
                     (
                         env_vars
                             .iter()
                             .chain(
                                 [
-                                    // Do not cache host compiler calls
-                                    ("SCCACHE_NO_CACHE".into(), "true".into()),
+                                    // HACK: This compilation will look like a C/C++ compilation,
+                                    // but we want to report it in the stats as a CUDA compilation.
+                                    // The SccacheService API doesn't have a great way to specify this
+                                    // case, so we set a special envvar here that it can read when the
+                                    // compilation is finished.
+                                    ("__SCCACHE_THIS_IS_A_CUDA_COMPILATION__".into(), "".into()),
                                 ]
                                 .iter(),
                             )

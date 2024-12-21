@@ -703,12 +703,12 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
     trace!("compile A request stats");
     get_stats(|info| {
         assert_eq!(2, info.stats.compile_requests);
-        assert_eq!(5, info.stats.requests_executed);
-        assert_eq!(1, info.stats.cache_hits.all());
+        assert_eq!(8, info.stats.requests_executed);
+        assert_eq!(3, info.stats.cache_hits.all());
         assert_eq!(3, info.stats.cache_misses.all());
         assert_eq!(&1, info.stats.cache_hits.get("CUDA").unwrap());
-        assert!(info.stats.cache_hits.get("PTX").is_none());
-        assert!(info.stats.cache_hits.get("CUBIN").is_none());
+        assert_eq!(&1, info.stats.cache_hits.get("PTX").unwrap());
+        assert_eq!(&1, info.stats.cache_hits.get("CUBIN").unwrap());
         assert_eq!(&1, info.stats.cache_misses.get("CUDA").unwrap());
         assert_eq!(&1, info.stats.cache_misses.get("PTX").unwrap());
         assert_eq!(&1, info.stats.cache_misses.get("CUBIN").unwrap());
@@ -717,8 +717,8 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
         let adv_ptx_key = adv_key_kind("ptx", compiler.name);
         let adv_cubin_key = adv_key_kind("cubin", compiler.name);
         assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_cuda_key).unwrap());
-        assert!(info.stats.cache_hits.get_adv(&adv_ptx_key).is_none());
-        assert!(info.stats.cache_hits.get_adv(&adv_cubin_key).is_none());
+        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_ptx_key).unwrap());
+        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_cubin_key).unwrap());
         assert_eq!(&1, info.stats.cache_misses.get_adv(&adv_cuda_key).unwrap());
         assert_eq!(&1, info.stats.cache_misses.get_adv(&adv_ptx_key).unwrap());
         assert_eq!(&1, info.stats.cache_misses.get_adv(&adv_cubin_key).unwrap());
@@ -747,12 +747,12 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
     trace!("compile B request stats");
     get_stats(|info| {
         assert_eq!(3, info.stats.compile_requests);
-        assert_eq!(9, info.stats.requests_executed);
-        assert_eq!(2, info.stats.cache_hits.all());
+        assert_eq!(12, info.stats.requests_executed);
+        assert_eq!(4, info.stats.cache_hits.all());
         assert_eq!(5, info.stats.cache_misses.all());
         assert_eq!(&1, info.stats.cache_hits.get("CUDA").unwrap());
-        assert!(info.stats.cache_hits.get("PTX").is_none());
-        assert_eq!(&1, info.stats.cache_hits.get("CUBIN").unwrap());
+        assert_eq!(&1, info.stats.cache_hits.get("PTX").unwrap());
+        assert_eq!(&2, info.stats.cache_hits.get("CUBIN").unwrap());
         assert_eq!(&2, info.stats.cache_misses.get("CUDA").unwrap());
         assert_eq!(&2, info.stats.cache_misses.get("PTX").unwrap());
         assert_eq!(&1, info.stats.cache_misses.get("CUBIN").unwrap());
@@ -761,8 +761,8 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
         let adv_ptx_key = adv_key_kind("ptx", compiler.name);
         let adv_cubin_key = adv_key_kind("cubin", compiler.name);
         assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_cuda_key).unwrap());
-        assert!(info.stats.cache_hits.get_adv(&adv_ptx_key).is_none());
-        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_cubin_key).unwrap());
+        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_ptx_key).unwrap());
+        assert_eq!(&2, info.stats.cache_hits.get_adv(&adv_cubin_key).unwrap());
         assert_eq!(&2, info.stats.cache_misses.get_adv(&adv_cuda_key).unwrap());
         assert_eq!(&2, info.stats.cache_misses.get_adv(&adv_ptx_key).unwrap());
         assert_eq!(&1, info.stats.cache_misses.get_adv(&adv_cubin_key).unwrap());
@@ -789,13 +789,13 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
     trace!("compile ptx request stats");
     get_stats(|info| {
         assert_eq!(4, info.stats.compile_requests);
-        assert_eq!(11, info.stats.requests_executed);
-        assert_eq!(3, info.stats.cache_hits.all());
-        assert_eq!(6, info.stats.cache_misses.all());
+        assert_eq!(14, info.stats.requests_executed);
+        assert_eq!(5, info.stats.cache_hits.all());
+        assert_eq!(5, info.stats.cache_misses.all());
         assert_eq!(&1, info.stats.cache_hits.get("CUDA").unwrap());
-        assert_eq!(&1, info.stats.cache_hits.get("PTX").unwrap());
-        assert_eq!(&1, info.stats.cache_hits.get("CUBIN").unwrap());
-        assert_eq!(&3, info.stats.cache_misses.get("CUDA").unwrap());
+        assert_eq!(&2, info.stats.cache_hits.get("PTX").unwrap());
+        assert_eq!(&2, info.stats.cache_hits.get("CUBIN").unwrap());
+        assert_eq!(&2, info.stats.cache_misses.get("CUDA").unwrap());
         assert_eq!(&2, info.stats.cache_misses.get("PTX").unwrap());
         assert_eq!(&1, info.stats.cache_misses.get("CUBIN").unwrap());
         assert!(info.stats.cache_misses.get("C/C++").is_none());
@@ -803,9 +803,9 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
         let adv_ptx_key = adv_key_kind("ptx", compiler.name);
         let adv_cubin_key = adv_key_kind("cubin", compiler.name);
         assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_cuda_key).unwrap());
-        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_ptx_key).unwrap());
-        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_cubin_key).unwrap());
-        assert_eq!(&3, info.stats.cache_misses.get_adv(&adv_cuda_key).unwrap());
+        assert_eq!(&2, info.stats.cache_hits.get_adv(&adv_ptx_key).unwrap());
+        assert_eq!(&2, info.stats.cache_hits.get_adv(&adv_cubin_key).unwrap());
+        assert_eq!(&2, info.stats.cache_misses.get_adv(&adv_cuda_key).unwrap());
         assert_eq!(&2, info.stats.cache_misses.get_adv(&adv_ptx_key).unwrap());
         assert_eq!(&1, info.stats.cache_misses.get_adv(&adv_cubin_key).unwrap());
     });
@@ -831,13 +831,13 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
     trace!("compile cubin request stats");
     get_stats(|info| {
         assert_eq!(5, info.stats.compile_requests);
-        assert_eq!(14, info.stats.requests_executed);
-        assert_eq!(5, info.stats.cache_hits.all());
-        assert_eq!(7, info.stats.cache_misses.all());
+        assert_eq!(17, info.stats.requests_executed);
+        assert_eq!(7, info.stats.cache_hits.all());
+        assert_eq!(5, info.stats.cache_misses.all());
         assert_eq!(&1, info.stats.cache_hits.get("CUDA").unwrap());
-        assert_eq!(&2, info.stats.cache_hits.get("PTX").unwrap());
-        assert_eq!(&2, info.stats.cache_hits.get("CUBIN").unwrap());
-        assert_eq!(&4, info.stats.cache_misses.get("CUDA").unwrap());
+        assert_eq!(&3, info.stats.cache_hits.get("PTX").unwrap());
+        assert_eq!(&3, info.stats.cache_hits.get("CUBIN").unwrap());
+        assert_eq!(&2, info.stats.cache_misses.get("CUDA").unwrap());
         assert_eq!(&2, info.stats.cache_misses.get("PTX").unwrap());
         assert_eq!(&1, info.stats.cache_misses.get("CUBIN").unwrap());
         assert!(info.stats.cache_misses.get("C/C++").is_none());
@@ -845,9 +845,9 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
         let adv_ptx_key = adv_key_kind("ptx", compiler.name);
         let adv_cubin_key = adv_key_kind("cubin", compiler.name);
         assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_cuda_key).unwrap());
-        assert_eq!(&2, info.stats.cache_hits.get_adv(&adv_ptx_key).unwrap());
-        assert_eq!(&2, info.stats.cache_hits.get_adv(&adv_cubin_key).unwrap());
-        assert_eq!(&4, info.stats.cache_misses.get_adv(&adv_cuda_key).unwrap());
+        assert_eq!(&3, info.stats.cache_hits.get_adv(&adv_ptx_key).unwrap());
+        assert_eq!(&3, info.stats.cache_hits.get_adv(&adv_cubin_key).unwrap());
+        assert_eq!(&2, info.stats.cache_misses.get_adv(&adv_cuda_key).unwrap());
         assert_eq!(&2, info.stats.cache_misses.get_adv(&adv_ptx_key).unwrap());
         assert_eq!(&1, info.stats.cache_misses.get_adv(&adv_cubin_key).unwrap());
     });
@@ -914,14 +914,14 @@ fn test_nvcc_proper_lang_stat_tracking(compiler: Compiler, tempdir: &Path) {
     trace!("request stats");
     get_stats(|info| {
         assert_eq!(4, info.stats.compile_requests);
-        assert_eq!(8, info.stats.requests_executed);
-        assert_eq!(3, info.stats.cache_hits.all());
+        assert_eq!(12, info.stats.requests_executed);
+        assert_eq!(5, info.stats.cache_hits.all());
         assert_eq!(3, info.stats.cache_misses.all());
-        assert_eq!(&1, info.stats.cache_hits.get("C/C++").unwrap());
-        assert_eq!(&1, info.stats.cache_hits.get("CUDA").unwrap());
-        assert_eq!(&1, info.stats.cache_hits.get("CUBIN").unwrap());
-        assert_eq!(&1, info.stats.cache_misses.get("C/C++").unwrap());
-        assert_eq!(&1, info.stats.cache_misses.get("CUDA").unwrap());
+        assert!(info.stats.cache_hits.get("C/C++").is_none());
+        assert_eq!(&2, info.stats.cache_hits.get("CUDA").unwrap());
+        assert_eq!(&2, info.stats.cache_hits.get("CUBIN").unwrap());
+        assert!(info.stats.cache_misses.get("C/C++").is_none());
+        assert_eq!(&2, info.stats.cache_misses.get("CUDA").unwrap());
         assert_eq!(&1, info.stats.cache_misses.get("PTX").unwrap());
     });
 }
