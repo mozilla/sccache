@@ -163,9 +163,11 @@ pub struct ParsedArguments {
     dep_info: Option<PathBuf>,
     /// If profile info is being emitted, the path of the profile.
     ///
-    /// This could be filled while `-Cprofile-generate` or `-Cprofile-use` been enabled.
+    /// This could be filled while `-Cprofile-use` been enabled.
     ///
     /// We need to add the profile into our outputs to enable distributed compilation.
+    /// We don't need to track `profile-generate` since it's users work to make sure
+    /// the `profdata` been generated from profraw files.
     ///
     /// For more information, see https://doc.rust-lang.org/rustc/profile-guided-optimization.html
     profile: Option<PathBuf>,
@@ -1133,7 +1135,6 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                 match (opt.as_ref(), value) {
                     ("extra-filename", Some(value)) => extra_filename = Some(value.to_owned()),
                     ("extra-filename", None) => cannot_cache!("extra-filename"),
-                    ("profile-generate", Some(v)) => profile = Some(v.to_string()),
                     ("profile-use", Some(v)) => profile = Some(v.to_string()),
                     // Incremental compilation makes a mess of sccache's entire world
                     // view. It produces additional compiler outputs that we don't cache,
