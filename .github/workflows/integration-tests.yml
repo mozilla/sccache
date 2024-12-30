@@ -821,17 +821,20 @@ jobs:
       RUST_TEST_TOOLCHAIN: nightly-2024-11-01
 
     steps:
+      - name: Clone repository
+        uses: actions/checkout@v4
+
+      - name: Install rust
+        uses: ./.github/actions/rust-toolchain
+        with:
+          toolchain: ${{ env.RUST_TEST_TOOLCHAIN }}
+
       - uses: actions/download-artifact@v4
         with:
           name: integration-tests
           path: /home/runner/.cargo/bin/
       - name: Chmod for binary
         run: chmod +x ${SCCACHE_PATH}
-
-      - name: Install rust
-        uses: ./.github/actions/rust-toolchain
-        with:
-          toolchain: ${{ env.RUST_TEST_TOOLCHAIN }}
 
       - name: "Coverage test #1"
         run: cargo +${{ env.RUST_TEST_TOOLCHAIN }} clean && cargo +${{ env.RUST_TEST_TOOLCHAIN }} build
