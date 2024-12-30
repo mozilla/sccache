@@ -225,6 +225,7 @@ fn run(command: Command) -> Result<i32> {
             builder,
             cache_dir,
             public_addr,
+            bind_address,
             scheduler_url,
             scheduler_auth,
             toolchain_cache_size,
@@ -288,7 +289,7 @@ fn run(command: Command) -> Result<i32> {
             let server = Server::new(builder, &cache_dir, toolchain_cache_size)
                 .context("Failed to create sccache server instance")?;
             let http_server = dist::http::Server::new(
-                public_addr,
+                bind_address.unwrap_or(public_addr),
                 scheduler_url.to_url(),
                 scheduler_auth,
                 server,

@@ -1207,6 +1207,7 @@ pub mod server {
         pub builder: BuilderType,
         pub cache_dir: PathBuf,
         pub public_addr: SocketAddr,
+        pub bind_address: Option<SocketAddr>,
         pub scheduler_url: HTTPUrl,
         pub scheduler_auth: SchedulerAuth,
         #[serde(default = "default_toolchain_cache_size")]
