@@ -3728,11 +3728,10 @@ proc_macro false
             "--emit=dep-info,link",
             "--out-dir",
             "/out",
-            "-C",
-            "profile-generate=."
+            "-Zprofile"
         );
 
-        assert_eq!(h.profile, Some("foo.profraw".into()));
+        assert_eq!(h.gcno, Some("foo.gcno".into()));
 
         let h = parses!(
             "--crate-name",
@@ -3745,10 +3744,9 @@ proc_macro false
             "extra-filename=-a1b6419f8321841f",
             "--out-dir",
             "/out",
-            "-C",
-            "profile-generate=."
+            "-Zprofile"
         );
 
-        assert_eq!(h.profile, Some("foo-a1b6419f8321841f.profraw".into()));
+        assert_eq!(h.gcno, Some("foo-a1b6419f8321841f.gcno".into()));
     }
 }
