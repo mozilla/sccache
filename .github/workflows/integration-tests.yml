@@ -824,30 +824,28 @@ jobs:
       - name: Chmod for binary
         run: chmod +x ${SCCACHE_PATH}
 
-      - name: Prepare
-        run: |
-          # The last nightly rust that still support "-Zprofile"
-          #
-          # See https://github.com/rust-lang/rust/pull/131829
-          rustup toolchain install nightly-2024-11-01
-          cargo new coverage-test
-          cd coverage-test
-          echo "serde = { version = \"1.0\", features = [\"derive\"] }" >> Cargo.toml
+      # The last nightly rust that still support "-Zprofile"
+      #
+      # See https://github.com/rust-lang/rust/pull/131829
+      - name: Install rust
+        uses: ./.github/actions/rust-toolchain
+        with:
+          toolchain: "nightly-2024-11-01"
 
       - name: "Coverage test #1"
-        working-directory: ./coverage-test
-        run: cargo clean && cargo +nightly-2024-11-01 test
-
-      - name: Output
-        run: ${SCCACHE_PATH} --show-stats
-
-      - name: "Coverage test #2"
-        working-directory: ./coverage-test
-        run: cargo clean && cargo +nightly-2024-11-01 test
+        run: cargo +nightly-2024-11-01 clean && cargo +nightly-2024-11-01 build
 
       - name: Output
         run: |
           ${SCCACHE_PATH} --show-stats
+
+      - name: "Coverage test #2"
+        run: cargo +nightly-2024-11-01 clean && cargo +nightly-2024-11-01 build
+
+      - name: Output
+        run: |
+          ${SCCACHE_PATH} --show-stats
+
           ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"
 
   zstd-compression-level:
