@@ -805,14 +805,15 @@ jobs:
 
           ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"
 
-  rust-test-coverage:
+  # The test cargo "cargo build -Zprofile"
+  rust-test-Z-profile:
     runs-on: ubuntu-latest
     needs: build
 
     env:
       RUSTC_WRAPPER: /home/runner/.cargo/bin/sccache
       CARGO_INCREMENTAL: "0"
-      RUSTFLAGS: "-Ccodegen-units=1 -Copt-level=0 -Clink-dead-code -Coverflow-checks=off -Zpanic_abort_tests -Cpanic=abort"
+      RUSTFLAGS: "-Ccodegen-units=1 -Copt-level=0 -Clink-dead-code -Coverflow-checks=off -Zpanic_abort_tests -Cpanic=abort -Zprofile"
       RUSTDOCFLAGS: "-Cpanic=abort"
 
     steps:
@@ -825,21 +826,24 @@ jobs:
 
       - name: Prepare
         run: |
-          rustup toolchain install nightly
+          # The last nightly rust that still support "-Zprofile"
+          #
+          # See https://github.com/rust-lang/rust/pull/131829
+          rustup toolchain install nightly-2024-11-01
           cargo new coverage-test
           cd coverage-test
           echo "serde = { version = \"1.0\", features = [\"derive\"] }" >> Cargo.toml
 
       - name: "Coverage test #1"
         working-directory: ./coverage-test
-        run: cargo clean && cargo +nightly test
+        run: cargo clean && cargo +nightly-2024-11-01 test
 
       - name: Output
         run: ${SCCACHE_PATH} --show-stats
 
       - name: "Coverage test #2"
         working-directory: ./coverage-test
-        run: cargo clean && cargo +nightly test
+        run: cargo clean && cargo +nightly-2024-11-01 test
 
       - name: Output
         run: |
