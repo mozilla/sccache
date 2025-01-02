@@ -289,7 +289,8 @@ fn run(command: Command) -> Result<i32> {
             let server = Server::new(builder, &cache_dir, toolchain_cache_size)
                 .context("Failed to create sccache server instance")?;
             let http_server = dist::http::Server::new(
-                bind_address.unwrap_or(public_addr),
+                public_addr,
+                bind_address,
                 scheduler_url.to_url(),
                 scheduler_auth,
                 server,
