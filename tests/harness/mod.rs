@@ -195,7 +195,7 @@ fn sccache_server_cfg(
         },
         cache_dir: Path::new(CONFIGS_CONTAINER_PATH).join(relpath),
         public_addr: SocketAddr::new(server_ip, SERVER_PORT),
-        bind_address: Some(SocketAddr::from(([0, 0, 0, 0], SCHEDULER_PORT))),
+        bind_address: Some(SocketAddr::from(([0, 0, 0, 0], SERVER_PORT))),
         scheduler_url,
         scheduler_auth: sccache::config::server::SchedulerAuth::Token {
             token: DIST_SERVER_TOKEN.to_owned(),
