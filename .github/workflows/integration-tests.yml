@@ -805,17 +805,30 @@ jobs:
 
           ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"
 
-  rust-test-coverage:
+  # The test cargo "cargo build -Zprofile"
+  rust-test-Z-profile:
     runs-on: ubuntu-latest
     needs: build
 
     env:
       RUSTC_WRAPPER: /home/runner/.cargo/bin/sccache
       CARGO_INCREMENTAL: "0"
-      RUSTFLAGS: "-Ccodegen-units=1 -Copt-level=0 -Clink-dead-code -Coverflow-checks=off -Zpanic_abort_tests -Cpanic=abort"
+      RUSTFLAGS: "-Ccodegen-units=1 -Copt-level=0 -Clink-dead-code -Coverflow-checks=off -Zpanic_abort_tests -Cpanic=abort -Zprofile"
       RUSTDOCFLAGS: "-Cpanic=abort"
+      # The last nightly rust that still support "-Zprofile"
+      #
+      # See https://github.com/rust-lang/rust/pull/131829
+      RUST_TEST_TOOLCHAIN: nightly-2024-11-01
 
     steps:
+      - name: Clone repository
+        uses: actions/checkout@v4
+
+      - name: Install rust
+        uses: ./.github/actions/rust-toolchain
+        with:
+          toolchain: ${{ env.RUST_TEST_TOOLCHAIN }}
+
       - uses: actions/download-artifact@v4
         with:
           name: integration-tests
@@ -823,27 +836,20 @@ jobs:
       - name: Chmod for binary
         run: chmod +x ${SCCACHE_PATH}
 
-      - name: Prepare
-        run: |
-          rustup toolchain install nightly
-          cargo new coverage-test
-          cd coverage-test
-          echo "serde = { version = \"1.0\", features = [\"derive\"] }" >> Cargo.toml
-
       - name: "Coverage test #1"
-        working-directory: ./coverage-test
-        run: cargo clean && cargo +nightly test
-
-      - name: Output
-        run: ${SCCACHE_PATH} --show-stats
-
-      - name: "Coverage test #2"
-        working-directory: ./coverage-test
-        run: cargo clean && cargo +nightly test
+        run: cargo +${{ env.RUST_TEST_TOOLCHAIN }} clean && cargo +${{ env.RUST_TEST_TOOLCHAIN }} build
 
       - name: Output
         run: |
           ${SCCACHE_PATH} --show-stats
+
+      - name: "Coverage test #2"
+        run: cargo +${{ env.RUST_TEST_TOOLCHAIN }} clean && cargo +${{ env.RUST_TEST_TOOLCHAIN }} build
+
+      - name: Output
+        run: |
+          ${SCCACHE_PATH} --show-stats
+
           ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"
 
   zstd-compression-level:

@@ -842,6 +842,7 @@ impl<'a> Hasher for HashToDigest<'a> {
 /// Pipe `cmd`'s stdio to `/dev/null`, unless a specific env var is set.
 #[cfg(not(windows))]
 pub fn daemonize() -> Result<()> {
+    use crate::jobserver::discard_inherited_jobserver;
     use daemonize::Daemonize;
     use std::env;
     use std::mem;
@@ -851,6 +852,10 @@ pub fn daemonize() -> Result<()> {
         _ => {
             Daemonize::new().start().context("failed to daemonize")?;
         }
+    }
+
+    unsafe {
+        discard_inherited_jobserver();
     }
 
     static mut PREV_SIGSEGV: *mut libc::sigaction = 0 as *mut _;

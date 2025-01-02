@@ -161,8 +161,26 @@ pub struct ParsedArguments {
     crate_types: CrateTypes,
     /// If dependency info is being emitted, the name of the dep info file.
     dep_info: Option<PathBuf>,
-    /// If profile info is being emitted, the name of the profile file.
+    /// If profile info is being emitted, the path of the profile.
+    ///
+    /// This could be filled while `-Cprofile-use` been enabled.
+    ///
+    /// We need to add the profile into our outputs to enable distributed compilation.
+    /// We don't need to track `profile-generate` since it's users work to make sure
+    /// the `profdata` been generated from profraw files.
+    ///
+    /// For more information, see https://doc.rust-lang.org/rustc/profile-guided-optimization.html
     profile: Option<PathBuf>,
+    /// If `-Z profile` has been enabled, we will use a GCC-compatible, gcov-based
+    /// coverage implementation.
+    ///
+    /// This is not supported in latest stable rust anymore, but we still keep it here
+    /// for the old nightly rustc.
+    ///
+    /// We need to add the profile into our outputs to enable distributed compilation.
+    ///
+    /// For more information, see https://doc.rust-lang.org/rustc/instrument-coverage.html
+    gcno: Option<PathBuf>,
     /// rustc says that emits .rlib for --emit=metadata
     /// https://github.com/rust-lang/rust/issues/54852
     emit: HashSet<String>,
@@ -998,6 +1016,7 @@ ArgData! {
     CodeGen(ArgCodegen),
     PassThrough(OsString),
     Target(ArgTarget),
+    Unstable(ArgUnstable),
 }
 
 use self::ArgData::*;
@@ -1039,6 +1058,7 @@ counted_array!(static ARGS: [ArgInfo<ArgData>; _] = [
     take_arg!("-L", ArgLinkPath, CanBeSeparated, LinkPath),
     flag!("-V", NotCompilationFlag),
     take_arg!("-W", OsString, CanBeSeparated, PassThrough),
+    take_arg!("-Z", ArgUnstable, CanBeSeparated, Unstable),
     take_arg!("-l", ArgLinkLibrary, CanBeSeparated, LinkLibrary),
     take_arg!("-o", PathBuf, CanBeSeparated, TooHardPath),
 ]);
@@ -1061,7 +1081,8 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
     let mut static_link_paths: Vec<PathBuf> = vec![];
     let mut color_mode = ColorMode::Auto;
     let mut has_json = false;
-    let mut profile = false;
+    let mut profile = None;
+    let mut gcno = false;
     let mut target_json = None;
 
     for arg in ArgsIter::new(arguments.iter().cloned(), &ARGS[..]) {
@@ -1117,7 +1138,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                 match (opt.as_ref(), value) {
                     ("extra-filename", Some(value)) => extra_filename = Some(value.to_owned()),
                     ("extra-filename", None) => cannot_cache!("extra-filename"),
-                    ("profile-generate", Some(_)) => profile = true,
+                    ("profile-use", Some(v)) => profile = Some(v.to_string()),
                     // Incremental compilation makes a mess of sccache's entire world
                     // view. It produces additional compiler outputs that we don't cache,
                     // and just letting rustc do its work in incremental mode is likely
@@ -1130,6 +1151,12 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                     (_, _) => (),
                 }
             }
+            Some(Unstable(ArgUnstable { opt, value })) => match value.as_deref() {
+                Some("y") | Some("yes") | Some("on") | None if opt == "profile" => {
+                    gcno = true;
+                }
+                _ => (),
+            },
             Some(Color(value)) => {
                 // We'll just assume the last specified value wins.
                 color_mode = match value.as_ref() {
@@ -1219,15 +1246,17 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
         None
     };
 
-    // Figure out the profile filename, if producing profile files with `-C profile-generate`.
-    let profile = if profile && emit.contains("link") {
-        let mut profile = crate_name.clone();
+    // Ignore profile is `link` is not in emit which means we are running `cargo check`.
+    let profile = if emit.contains("link") { profile } else { None };
+
+    // Figure out the gcno filename, if producing gcno files with `-Zprofile`.
+    let gcno = if gcno && emit.contains("link") {
+        let mut gcno = crate_name.clone();
         if let Some(extra_filename) = extra_filename {
-            profile.push_str(&extra_filename[..]);
+            gcno.push_str(&extra_filename[..]);
         }
-        // LLVM will append ".profraw" to the filename.
-        profile.push_str(".profraw");
-        Some(profile)
+        gcno.push_str(".gcno");
+        Some(gcno)
     } else {
         None
     };
@@ -1268,6 +1297,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
         crate_name,
         dep_info: dep_info.map(|s| s.into()),
         profile: profile.map(|s| s.into()),
+        gcno: gcno.map(|s| s.into()),
         emit,
         color_mode,
         has_json,
@@ -1313,6 +1343,7 @@ where
                     emit,
                     has_json,
                     profile,
+                    gcno,
                     target_json,
                     ..
                 },
@@ -1569,6 +1600,16 @@ where
             let p = output_dir.join(&profile);
             outputs.insert(
                 profile.to_string_lossy().into_owned(),
+                ArtifactDescriptor {
+                    path: p,
+                    optional: true,
+                },
+            );
+        }
+        if let Some(gcno) = gcno {
+            let p = output_dir.join(&gcno);
+            outputs.insert(
+                gcno.to_string_lossy().into_owned(),
                 ArtifactDescriptor {
                     path: p,
                     optional: true,
@@ -2348,12 +2389,6 @@ impl RlibDepReader {
             stderr,
         } = cmd.output()?;
 
-        if !status.success() {
-            bail!(
-                "Failed to compile a minimal rlib with {}",
-                executable.display()
-            )
-        }
         if !stdout.is_empty() {
             bail!(
                 "rustc stdout non-empty when compiling a minimal rlib: {:?}",
@@ -2364,6 +2399,12 @@ impl RlibDepReader {
             bail!(
                 "rustc stderr non-empty when compiling a minimal rlib: {:?}",
                 String::from_utf8_lossy(&stderr)
+            )
+        }
+        if !status.success() {
+            bail!(
+                "Failed to compile a minimal rlib with {}",
+                executable.display()
             )
         }
 
@@ -3203,11 +3244,20 @@ proc_macro false
         let cargo_home = std::env::var("CARGO_HOME");
         assert!(cargo_home.is_ok());
 
+        let mut env_vars = vec![];
+        if let Some(rustup_home) = std::env::var_os("RUSTUP_HOME") {
+            env_vars.push(("RUSTUP_HOME".into(), rustup_home));
+        }
+
         let mut rustc_path = PathBuf::from(cargo_home.unwrap());
         rustc_path.push("bin");
         rustc_path.push("rustc");
-        let rlib_dep_reader = RlibDepReader::new_with_check(rustc_path, &[]);
-        assert!(rlib_dep_reader.is_ok());
+
+        let rlib_dep_reader = RlibDepReader::new_with_check(rustc_path, &env_vars);
+        let is_ok = rlib_dep_reader.is_ok();
+        // Unwrap so the error is reported in the test output
+        let _ = rlib_dep_reader.unwrap();
+        assert!(is_ok);
     }
 
     #[cfg(feature = "dist-client")]
@@ -3365,6 +3415,7 @@ proc_macro false
                 color_mode: ColorMode::Auto,
                 has_json: false,
                 profile: None,
+                gcno: None,
                 target_json: None,
             },
         });
@@ -3713,11 +3764,10 @@ proc_macro false
             "--emit=dep-info,link",
             "--out-dir",
             "/out",
-            "-C",
-            "profile-generate=."
+            "-Zprofile"
         );
 
-        assert_eq!(h.profile, Some("foo.profraw".into()));
+        assert_eq!(h.gcno, Some("foo.gcno".into()));
 
         let h = parses!(
             "--crate-name",
@@ -3730,11 +3780,10 @@ proc_macro false
             "extra-filename=-a1b6419f8321841f",
             "--out-dir",
             "/out",
-            "-C",
-            "profile-generate=."
+            "-Zprofile"
         );
 
-        assert_eq!(h.profile, Some("foo-a1b6419f8321841f.profraw".into()));
+        assert_eq!(h.gcno, Some("foo-a1b6419f8321841f.gcno".into()));
     }
 
     #[test]
