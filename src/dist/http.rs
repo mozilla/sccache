@@ -870,7 +870,7 @@ mod server {
     }
 
     pub struct Server<S> {
-        public_addr: SocketAddr,
+        bind_address: SocketAddr,
         scheduler_url: reqwest::Url,
         scheduler_auth: String,
         // HTTPS pieces all the builders will use for connection encryption
@@ -887,6 +887,7 @@ mod server {
     impl<S: dist::ServerIncoming + 'static> Server<S> {
         pub fn new(
             public_addr: SocketAddr,
+            bind_address: Option<SocketAddr>,
             scheduler_url: reqwest::Url,
             scheduler_auth: String,
             handler: S,
@@ -899,7 +900,7 @@ mod server {
             let server_nonce = ServerNonce::new();
 
             Ok(Self {
-                public_addr,
+                bind_address: bind_address.unwrap_or(public_addr),
                 scheduler_url,
                 scheduler_auth,
                 cert_digest,
@@ -913,7 +914,7 @@ mod server {
 
         pub fn start(self) -> Result<Infallible> {
             let Self {
-                public_addr,
+                bind_address,
                 scheduler_url,
                 scheduler_auth,
                 cert_digest,
@@ -963,10 +964,10 @@ mod server {
                 }
             });
 
-            info!("Server listening for clients on {}", public_addr);
+            info!("Server listening for clients on {}", bind_address);
             let request_count = atomic::AtomicUsize::new(0);
 
-            let server = rouille::Server::new_ssl(public_addr, move |request| {
+            let server = rouille::Server::new_ssl(bind_address, move |request| {
                 let req_id = request_count.fetch_add(1, atomic::Ordering::SeqCst);
                 trace!("Req {} ({}): {:?}", req_id, request.remote_addr(), request);
                 let response = (|| router!(request,

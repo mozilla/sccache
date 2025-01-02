@@ -195,6 +195,7 @@ fn sccache_server_cfg(
         },
         cache_dir: Path::new(CONFIGS_CONTAINER_PATH).join(relpath),
         public_addr: SocketAddr::new(server_ip, SERVER_PORT),
+        bind_address: Some(SocketAddr::from(([0, 0, 0, 0], SERVER_PORT))),
         scheduler_url,
         scheduler_auth: sccache::config::server::SchedulerAuth::Token {
             token: DIST_SERVER_TOKEN.to_owned(),
@@ -409,9 +410,14 @@ impl DistSystem {
             listener.local_addr().unwrap()
         };
         let token = create_server_token(ServerId::new(server_addr), DIST_SERVER_TOKEN);
-        let server =
-            dist::http::Server::new(server_addr, self.scheduler_url().to_url(), token, handler)
-                .unwrap();
+        let server = dist::http::Server::new(
+            server_addr,
+            Some(SocketAddr::from(([0, 0, 0, 0], server_addr.port()))),
+            self.scheduler_url().to_url(),
+            token,
+            handler,
+        )
+        .unwrap();
         let pid = match unsafe { nix::unistd::fork() }.unwrap() {
             ForkResult::Parent { child } => {
                 self.server_pids.push(child);
