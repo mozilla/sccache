@@ -1466,12 +1466,21 @@ where
             .collect();
         env_vars.sort();
         for (var, val) in env_vars.iter() {
-            // CARGO_MAKEFLAGS will have jobserver info which is extremely non-cacheable.
-            if var.starts_with("CARGO_") && var != "CARGO_MAKEFLAGS" {
-                var.hash(&mut HashToDigest { digest: &mut m });
-                m.update(b"=");
-                val.hash(&mut HashToDigest { digest: &mut m });
+            if !var.starts_with("CARGO_") {
+                continue;
             }
+
+            // CARGO_MAKEFLAGS will have jobserver info which is extremely non-cacheable.
+            // CARGO_REGISTRIES_*_TOKEN contains non-cacheable secrets.
+            // Registry override config doesn't need to be hashed, because deps' package IDs
+            // already uniquely identify the relevant registries.
+            if var == "CARGO_MAKEFLAGS" || var.starts_with("CARGO_REGISTRIES_") {
+                continue;
+            }
+
+            var.hash(&mut HashToDigest { digest: &mut m });
+            m.update(b"=");
+            val.hash(&mut HashToDigest { digest: &mut m });
         }
         // 8. The cwd of the compile. This will wind up in the rlib.
         cwd.hash(&mut HashToDigest { digest: &mut m });
@@ -3397,6 +3406,10 @@ proc_macro false
                     (OsString::from("CARGO_PKG_NAME"), OsString::from("foo")),
                     (OsString::from("FOO"), OsString::from("bar")),
                     (OsString::from("CARGO_BLAH"), OsString::from("abc")),
+                    (
+                        OsString::from("CARGO_REGISTRIES_A_TOKEN"),
+                        OsString::from("ignored"),
+                    ),
                 ]
                 .to_vec(),
                 false,
