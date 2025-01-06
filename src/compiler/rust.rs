@@ -188,6 +188,8 @@ pub struct ParsedArguments {
     color_mode: ColorMode,
     /// Whether `--json` was passed to this invocation.
     has_json: bool,
+    /// A `--target` parameter that specifies a path to a JSON file.
+    target_json: Option<PathBuf>,
 }
 
 /// A struct on which to hang a `Compilation` impl.
@@ -1081,6 +1083,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
     let mut has_json = false;
     let mut profile = None;
     let mut gcno = false;
+    let mut target_json = None;
 
     for arg in ArgsIter::new(arguments.iter().cloned(), &ARGS[..]) {
         let arg = try_or_cannot_cache!(arg, "argument parse");
@@ -1167,7 +1170,8 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
             }
             Some(PassThrough(_)) => (),
             Some(Target(target)) => match target {
-                ArgTarget::Path(_) | ArgTarget::Unsure(_) => cannot_cache!("target"),
+                ArgTarget::Path(json_path) => target_json = Some(json_path.to_owned()),
+                ArgTarget::Unsure(_) => cannot_cache!("target unsure"),
                 ArgTarget::Name(_) => (),
             },
             None => {
@@ -1297,6 +1301,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
         emit,
         color_mode,
         has_json,
+        target_json,
     })
 }
 
@@ -1339,6 +1344,7 @@ where
                     has_json,
                     profile,
                     gcno,
+                    target_json,
                     ..
                 },
         } = *self;
@@ -1394,11 +1400,33 @@ where
         let abs_staticlibs = staticlibs.iter().map(|s| cwd.join(s)).collect::<Vec<_>>();
         let staticlib_hashes = hash_all_archives(&abs_staticlibs, pool);
 
-        let ((source_files, source_hashes, mut env_deps), extern_hashes, staticlib_hashes) = futures::try_join!(
+        // Hash the content of the specified target json file, if any.
+        let mut target_json_files = Vec::new();
+        if let Some(path) = &target_json {
+            trace!(
+                "[{}]: hashing target json file {}",
+                crate_name,
+                path.display()
+            );
+            let abs_target_json = cwd.join(path);
+            target_json_files.push(abs_target_json);
+        }
+
+        let target_json_hash = hash_all(&target_json_files, pool);
+
+        // Perform all hashing operations on the files.
+        let (
+            (source_files, source_hashes, mut env_deps),
+            extern_hashes,
+            staticlib_hashes,
+            target_json_hash,
+        ) = futures::try_join!(
             source_files_and_hashes_and_env_deps,
             extern_hashes,
-            staticlib_hashes
+            staticlib_hashes,
+            target_json_hash
         )?;
+
         // If you change any of the inputs to the hash, you should change `CACHE_VERSION`.
         let mut m = Digest::new();
         // Hash inputs:
@@ -1424,6 +1452,10 @@ where
                 // in those paths (rlibs and static libs used in the compilation) are used as hash
                 // inputs below.
                 .filter(|&(arg, _)| !(arg == "--extern" || arg == "-L" || arg == "--out-dir"))
+                // We also exclude `--target` if it specifies a path to a .json file. The file content
+                // is used as hash input below.
+                // If `--target` specifies a string, it continues to be hashed as part of the arguments.
+                .filter(|&(arg, _)| target_json.is_none() || arg != "--target")
                 // A few argument types were not passed in a deterministic order
                 // by older versions of cargo: --extern, -L, --cfg. We'll filter the rest of those
                 // out, sort them, and append them to the rest of the arguments.
@@ -1441,14 +1473,16 @@ where
         // 4. The digest of all source files (this includes src file from cmdline).
         // 5. The digest of all files listed on the commandline (self.externs).
         // 6. The digest of all static libraries listed on the commandline (self.staticlibs).
+        // 7. The digest of the content of the target json file specified via `--target` (if any).
         for h in source_hashes
             .into_iter()
             .chain(extern_hashes)
             .chain(staticlib_hashes)
+            .chain(target_json_hash)
         {
             m.update(h.as_bytes());
         }
-        // 7. Environment variables: Hash all environment variables listed in the rustc dep-info
+        // 8. Environment variables: Hash all environment variables listed in the rustc dep-info
         //    output. Additionally also has all environment variables starting with `CARGO_`,
         //    since those are not listed in dep-info but affect cacheability.
         env_deps.sort();
@@ -1482,9 +1516,9 @@ where
             m.update(b"=");
             val.hash(&mut HashToDigest { digest: &mut m });
         }
-        // 8. The cwd of the compile. This will wind up in the rlib.
+        // 9. The cwd of the compile. This will wind up in the rlib.
         cwd.hash(&mut HashToDigest { digest: &mut m });
-        // 9. The version of the compiler.
+        // 10. The version of the compiler.
         version.hash(&mut HashToDigest { digest: &mut m });
 
         // Turn arguments into a simple Vec<OsString> to calculate outputs.
@@ -3391,6 +3425,7 @@ proc_macro false
                 has_json: false,
                 profile: None,
                 gcno: None,
+                target_json: None,
             },
         });
         let creator = new_creator();
@@ -3762,5 +3797,48 @@ proc_macro false
         );
 
         assert_eq!(h.gcno, Some("foo-a1b6419f8321841f.gcno".into()));
+    }
+
+    #[test]
+    fn test_parse_target() {
+        // Parse a --target argument that is a string (not a path to a .json file).
+        let h = parses!(
+            "--crate-name",
+            "foo",
+            "--crate-type",
+            "lib",
+            "./src/lib.rs",
+            "--emit=dep-info,link",
+            "--out-dir",
+            "/out",
+            "--target",
+            "string"
+        );
+        assert!(h.arguments.contains(&Argument::WithValue(
+            "--target",
+            ArgData::Target(ArgTarget::Name("string".to_owned())),
+            ArgDisposition::Separated
+        )));
+        assert!(h.target_json.is_none());
+
+        // Parse a --target argument that is a path.
+        let h = parses!(
+            "--crate-name",
+            "foo",
+            "--crate-type",
+            "lib",
+            "./src/lib.rs",
+            "--emit=dep-info,link",
+            "--out-dir",
+            "/out",
+            "--target",
+            "/path/to/target.json"
+        );
+        assert!(h.arguments.contains(&Argument::WithValue(
+            "--target",
+            ArgData::Target(ArgTarget::Path(PathBuf::from("/path/to/target.json"))),
+            ArgDisposition::Separated
+        )));
+        assert_eq!(h.target_json, Some(PathBuf::from("/path/to/target.json")));
     }
 }
