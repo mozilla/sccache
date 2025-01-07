@@ -2544,7 +2544,6 @@ dependencies = [
  "http-body-util",
  "hyper 1.1.0",
  "hyper-util",
- "is-terminal",
  "itertools",
  "jobserver",
  "jsonwebtoken",

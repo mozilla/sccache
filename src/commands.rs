@@ -25,11 +25,10 @@ use crate::util::daemonize;
 use byteorder::{BigEndian, ByteOrder};
 use fs::{File, OpenOptions};
 use fs_err as fs;
-use is_terminal::IsTerminal;
 use log::Level::Trace;
 use std::env;
 use std::ffi::{OsStr, OsString};
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 #[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
