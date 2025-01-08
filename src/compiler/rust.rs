@@ -3799,6 +3799,34 @@ proc_macro false
     }
 
     #[test]
+    fn test_parse_remap_path_prefix() {
+        let h = parses!(
+            "--crate-name",
+            "foo",
+            "--crate-type",
+            "lib",
+            "./src/lib.rs",
+            "--emit=dep-info,link",
+            "--out-dir",
+            "/out",
+            "--remap-path-prefix",
+            "/home/test=~",
+            "--remap-path-prefix",
+            "/root=~"
+        );
+        assert!(h.arguments.contains(&Argument::WithValue(
+            "--remap-path-prefix",
+            ArgData::PassThrough(OsString::from("/home/test=~")),
+            ArgDisposition::Separated
+        )));
+        assert!(h.arguments.contains(&Argument::WithValue(
+            "--remap-path-prefix",
+            ArgData::PassThrough(OsString::from("/root=~")),
+            ArgDisposition::Separated
+        )));
+    }
+
+    #[test]
     fn test_parse_target() {
         // Parse a --target argument that is a string (not a path to a .json file).
         let h = parses!(
