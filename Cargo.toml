@@ -121,6 +121,7 @@ rouille = { version = "3.6", optional = true, default-features = false, features
 ] }
 syslog = { version = "6", optional = true }
 version-compare = { version = "0.1.1", optional = true }
+close_fds = "0.3.2"
 
 [dev-dependencies]
 assert_cmd = "2.0.13"

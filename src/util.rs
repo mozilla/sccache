@@ -841,7 +841,7 @@ impl<'a> Hasher for HashToDigest<'a> {
 
 /// Pipe `cmd`'s stdio to `/dev/null`, unless a specific env var is set.
 #[cfg(not(windows))]
-pub fn daemonize() -> Result<()> {
+pub fn daemonize(log_file: Option<File>) -> Result<()> {
     use crate::jobserver::discard_inherited_jobserver;
     use daemonize::Daemonize;
     use std::env;
@@ -850,7 +850,16 @@ pub fn daemonize() -> Result<()> {
     match env::var("SCCACHE_NO_DAEMON") {
         Ok(ref val) if val == "1" => {}
         _ => {
-            Daemonize::new().start().context("failed to daemonize")?;
+            Daemonize::new()
+                .stderr(log_file
+                    .map(|f| f.into_parts().0.into())
+                    .unwrap_or_else(|| daemonize::Stdio::devnull())
+                )
+                .start().context("failed to daemonize")?;
+            // Be extra-zealous and clase all non-stdio file descriptors.
+            unsafe {
+                close_fds::close_open_fds(3, &[]);
+            }
         }
     }
 
