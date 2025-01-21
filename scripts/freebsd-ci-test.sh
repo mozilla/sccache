@@ -24,8 +24,8 @@
 # $HOME/.potcache
 #
 #     mkdir $HOME/.potcache
-#     fetch -o $HOME/.potcache/13.2-RELEASE_base.txz \
-#     https://ftp.freebsd.org/pub/FreeBSD/releases/amd64/13.2-RELEASE/base.txz
+#     fetch -o $HOME/.potcache/14.1-RELEASE_base.txz \
+#     https://ftp.freebsd.org/pub/FreeBSD/releases/amd64/14.1-RELEASE/base.txz
 #
 # This script can be run from a github action. When run locally, make
 # sure to install the required packages:

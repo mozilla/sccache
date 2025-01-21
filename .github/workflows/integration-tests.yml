@@ -1,5 +1,5 @@
 name: integration-tests
-on: [push, pull_request]
+on: [ push, pull_request ]
 
 env:
   RUST_BACKTRACE: full
@@ -594,6 +594,7 @@ jobs:
     env:
       LLVM_VERSION: "16"
       SCCACHE_GHA_ENABLED: "on"
+      SCCACHE_SERVER_UDS: "\\x00sccache.socket"
 
     steps:
       - uses: actions/checkout@v4
@@ -715,6 +716,7 @@ jobs:
 
     env:
       SCCACHE_GHA_ENABLED: "on"
+      SCCACHE_SERVER_UDS: "/home/runner/sccache.socket"
 
     steps:
       - uses: actions/checkout@v4
@@ -867,17 +869,30 @@ jobs:
 
           ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"
 
-  rust-test-coverage:
+  # The test cargo "cargo build -Zprofile"
+  rust-test-Z-profile:
     runs-on: ubuntu-latest
     needs: build
 
     env:
       RUSTC_WRAPPER: /home/runner/.cargo/bin/sccache
       CARGO_INCREMENTAL: "0"
-      RUSTFLAGS: "-Zprofile -Ccodegen-units=1 -Copt-level=0 -Clink-dead-code -Coverflow-checks=off -Zpanic_abort_tests -Cpanic=abort"
+      RUSTFLAGS: "-Ccodegen-units=1 -Copt-level=0 -Clink-dead-code -Coverflow-checks=off -Zpanic_abort_tests -Cpanic=abort -Zprofile"
       RUSTDOCFLAGS: "-Cpanic=abort"
+      # The last nightly rust that still support "-Zprofile"
+      #
+      # See https://github.com/rust-lang/rust/pull/131829
+      RUST_TEST_TOOLCHAIN: nightly-2024-11-01
 
     steps:
+      - name: Clone repository
+        uses: actions/checkout@v4
+
+      - name: Install rust
+        uses: ./.github/actions/rust-toolchain
+        with:
+          toolchain: ${{ env.RUST_TEST_TOOLCHAIN }}
+
       - uses: actions/download-artifact@v4
         with:
           name: integration-tests
@@ -885,27 +900,20 @@ jobs:
       - name: Chmod for binary
         run: chmod +x ${SCCACHE_PATH}
 
-      - name: Prepare
-        run: |
-          rustup toolchain install nightly
-          cargo new coverage-test
-          cd coverage-test
-          echo "serde = { version = \"1.0\", features = [\"derive\"] }" >> Cargo.toml
-
       - name: "Coverage test #1"
-        working-directory: ./coverage-test
-        run: cargo clean && cargo +nightly test
-
-      - name: Output
-        run: ${SCCACHE_PATH} --show-stats
-
-      - name: "Coverage test #2"
-        working-directory: ./coverage-test
-        run: cargo clean && cargo +nightly test
+        run: cargo +${{ env.RUST_TEST_TOOLCHAIN }} clean && cargo +${{ env.RUST_TEST_TOOLCHAIN }} build
 
       - name: Output
         run: |
           ${SCCACHE_PATH} --show-stats
+
+      - name: "Coverage test #2"
+        run: cargo +${{ env.RUST_TEST_TOOLCHAIN }} clean && cargo +${{ env.RUST_TEST_TOOLCHAIN }} build
+
+      - name: Output
+        run: |
+          ${SCCACHE_PATH} --show-stats
+
           ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"
 
   zstd-compression-level:
@@ -958,3 +966,44 @@ jobs:
           cargo clean && cargo build
       - name: lv10-stats-use
         run: ${SCCACHE_PATH} --show-stats
+
+  xcode:
+    runs-on: macos-latest
+    env:
+      SCCACHE_PATH: target/debug/sccache
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@v4
+
+      - name: Install rust
+        uses: ./.github/actions/rust-toolchain
+        with:
+          toolchain: "stable"
+
+      - name: Build sccache
+        run: |
+          cargo build
+
+      - name: Start server
+        run: ${SCCACHE_PATH} --start-server
+
+      - name: Test compile xcode
+        working-directory: tests/xcode
+        run: |
+          xcodebuild -version
+          xcodebuild -xcconfig sccache.xcconfig
+
+      - name: Output
+        run: |
+          ${SCCACHE_PATH} --show-stats
+
+      - name: Test compile xcode cached
+        working-directory: tests/xcode
+        run: |
+          xcodebuild clean
+          xcodebuild -xcconfig sccache.xcconfig
+
+      - name: Output
+        run: |
+          ${SCCACHE_PATH} --show-stats
+          ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"

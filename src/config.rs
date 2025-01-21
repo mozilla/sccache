@@ -1342,22 +1342,25 @@ fn test_s3_no_credentials_conflict_0() {
 
 #[test]
 #[serial]
-fn test_s3_no_credentials_conflict_1() {
+#[cfg(feature = "s3")]
+fn test_s3_no_credentials_conflict() {
     env::set_var("SCCACHE_S3_NO_CREDENTIALS", "true");
     env::set_var("SCCACHE_BUCKET", "my-bucket");
     env::set_var("AWS_ACCESS_KEY_ID", "aws-access-key-id");
     env::set_var("AWS_SECRET_ACCESS_KEY", "aws-secret-access-key");
 
-    let error = config_from_env().unwrap_err();
-    assert_eq!(
-        "If setting S3 credentials, SCCACHE_S3_NO_CREDENTIALS must not be set.",
-        error.to_string()
-    );
+    let cfg = config_from_env();
 
     env::remove_var("SCCACHE_S3_NO_CREDENTIALS");
     env::remove_var("SCCACHE_BUCKET");
     env::remove_var("AWS_ACCESS_KEY_ID");
     env::remove_var("AWS_SECRET_ACCESS_KEY");
+
+    let error = cfg.unwrap_err();
+    assert_eq!(
+        "If setting S3 credentials, SCCACHE_S3_NO_CREDENTIALS must not be set.",
+        error.to_string()
+    );
 }
 
 #[test]
@@ -1366,14 +1369,16 @@ fn test_s3_no_credentials_invalid() {
     env::set_var("SCCACHE_S3_NO_CREDENTIALS", "yes");
     env::set_var("SCCACHE_BUCKET", "my-bucket");
 
-    let error = config_from_env().unwrap_err();
+    let cfg = config_from_env();
+
+    env::remove_var("SCCACHE_S3_NO_CREDENTIALS");
+    env::remove_var("SCCACHE_BUCKET");
+
+    let error = cfg.unwrap_err();
     assert_eq!(
         "SCCACHE_S3_NO_CREDENTIALS must be 'true', 'on', '1', 'false', 'off' or '0'.",
         error.to_string()
     );
-
-    env::remove_var("SCCACHE_S3_NO_CREDENTIALS");
-    env::remove_var("SCCACHE_BUCKET");
 }
 
 #[test]
@@ -1382,7 +1387,12 @@ fn test_s3_no_credentials_valid_true() {
     env::set_var("SCCACHE_S3_NO_CREDENTIALS", "true");
     env::set_var("SCCACHE_BUCKET", "my-bucket");
 
-    let env_cfg = config_from_env().unwrap();
+    let cfg = config_from_env();
+
+    env::remove_var("SCCACHE_S3_NO_CREDENTIALS");
+    env::remove_var("SCCACHE_BUCKET");
+
+    let env_cfg = cfg.unwrap();
     match env_cfg.cache.s3 {
         Some(S3CacheConfig {
             ref bucket,
@@ -1394,9 +1404,6 @@ fn test_s3_no_credentials_valid_true() {
         }
         None => unreachable!(),
     };
-
-    env::remove_var("SCCACHE_S3_NO_CREDENTIALS");
-    env::remove_var("SCCACHE_BUCKET");
 }
 
 #[test]
@@ -1405,7 +1412,12 @@ fn test_s3_no_credentials_valid_false() {
     env::set_var("SCCACHE_S3_NO_CREDENTIALS", "false");
     env::set_var("SCCACHE_BUCKET", "my-bucket");
 
-    let env_cfg = config_from_env().unwrap();
+    let cfg = config_from_env();
+
+    env::remove_var("SCCACHE_S3_NO_CREDENTIALS");
+    env::remove_var("SCCACHE_BUCKET");
+
+    let env_cfg = cfg.unwrap();
     match env_cfg.cache.s3 {
         Some(S3CacheConfig {
             ref bucket,
@@ -1417,18 +1429,23 @@ fn test_s3_no_credentials_valid_false() {
         }
         None => unreachable!(),
     };
-
-    env::remove_var("SCCACHE_S3_NO_CREDENTIALS");
-    env::remove_var("SCCACHE_BUCKET");
 }
 
 #[test]
+#[serial]
+#[cfg(feature = "gcs")]
 fn test_gcs_service_account() {
     env::set_var("SCCACHE_GCS_BUCKET", "my-bucket");
     env::set_var("SCCACHE_GCS_SERVICE_ACCOUNT", "my@example.com");
     env::set_var("SCCACHE_GCS_RW_MODE", "READ_WRITE");
 
-    let env_cfg = config_from_env().unwrap();
+    let cfg = config_from_env();
+
+    env::remove_var("SCCACHE_GCS_BUCKET");
+    env::remove_var("SCCACHE_GCS_SERVICE_ACCOUNT");
+    env::remove_var("SCCACHE_GCS_RW_MODE");
+
+    let env_cfg = cfg.unwrap();
     match env_cfg.cache.gcs {
         Some(GCSCacheConfig {
             ref bucket,
@@ -1442,10 +1459,6 @@ fn test_gcs_service_account() {
         }
         None => unreachable!(),
     };
-
-    env::remove_var("SCCACHE_GCS_BUCKET");
-    env::remove_var("SCCACHE_GCS_SERVICE_ACCOUNT");
-    env::remove_var("SCCACHE_GCS_RW_MODE");
 }
 
 #[test]

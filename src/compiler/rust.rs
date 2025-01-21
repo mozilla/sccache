@@ -15,8 +15,9 @@
 use crate::cache::{FileObjectSource, Storage};
 use crate::compiler::args::*;
 use crate::compiler::{
-    c::ArtifactDescriptor, Cacheable, ColorMode, Compilation, CompileCommand, Compiler,
-    CompilerArguments, CompilerHasher, CompilerKind, CompilerProxy, HashResult, Language,
+    c::ArtifactDescriptor, CCompileCommand, Cacheable, ColorMode, Compilation, CompileCommand,
+    Compiler, CompilerArguments, CompilerHasher, CompilerKind, CompilerProxy, HashResult, Language,
+    SingleCompileCommand,
 };
 #[cfg(feature = "dist-client")]
 use crate::compiler::{DistPackagers, OutputsRewriter};
@@ -34,6 +35,7 @@ use fs_err as fs;
 use log::Level::Trace;
 use once_cell::sync::Lazy;
 #[cfg(feature = "dist-client")]
+use semver::Version;
 #[cfg(feature = "dist-client")]
 use std::borrow::Borrow;
 use std::borrow::Cow;
@@ -159,7 +161,25 @@ pub struct ParsedArguments {
     crate_types: CrateTypes,
     /// If dependency info is being emitted, the name of the dep info file.
     dep_info: Option<PathBuf>,
-    /// If gcno info is being emitted, the name of the gcno file.
+    /// If profile info is being emitted, the path of the profile.
+    ///
+    /// This could be filled while `-Cprofile-use` been enabled.
+    ///
+    /// We need to add the profile into our outputs to enable distributed compilation.
+    /// We don't need to track `profile-generate` since it's users work to make sure
+    /// the `profdata` been generated from profraw files.
+    ///
+    /// For more information, see https://doc.rust-lang.org/rustc/profile-guided-optimization.html
+    profile: Option<PathBuf>,
+    /// If `-Z profile` has been enabled, we will use a GCC-compatible, gcov-based
+    /// coverage implementation.
+    ///
+    /// This is not supported in latest stable rust anymore, but we still keep it here
+    /// for the old nightly rustc.
+    ///
+    /// We need to add the profile into our outputs to enable distributed compilation.
+    ///
+    /// For more information, see https://doc.rust-lang.org/rustc/instrument-coverage.html
     gcno: Option<PathBuf>,
     /// rustc says that emits .rlib for --emit=metadata
     /// https://github.com/rust-lang/rust/issues/54852
@@ -168,6 +188,8 @@ pub struct ParsedArguments {
     color_mode: ColorMode,
     /// Whether `--json` was passed to this invocation.
     has_json: bool,
+    /// A `--target` parameter that specifies a path to a JSON file.
+    target_json: Option<PathBuf>,
 }
 
 /// A struct on which to hang a `Compilation` impl.
@@ -978,7 +1000,6 @@ impl IntoArg for ArgTarget {
 
 ArgData! {
     TooHardFlag,
-    TooHard(OsString),
     TooHardPath(PathBuf),
     NotCompilationFlag,
     NotCompilation(OsString),
@@ -1023,7 +1044,7 @@ counted_array!(static ARGS: [ArgInfo<ArgData>; _] = [
     take_arg!("--out-dir", PathBuf, CanBeSeparated('='), OutDir),
     take_arg!("--pretty", OsString, CanBeSeparated('='), NotCompilation),
     take_arg!("--print", OsString, CanBeSeparated('='), NotCompilation),
-    take_arg!("--remap-path-prefix", OsString, CanBeSeparated('='), TooHard),
+    take_arg!("--remap-path-prefix", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("--sysroot", PathBuf, CanBeSeparated('='), TooHardPath),
     take_arg!("--target", ArgTarget, CanBeSeparated('='), Target),
     take_arg!("--unpretty", OsString, CanBeSeparated('='), NotCompilation),
@@ -1059,12 +1080,14 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
     let mut static_link_paths: Vec<PathBuf> = vec![];
     let mut color_mode = ColorMode::Auto;
     let mut has_json = false;
-    let mut profile = false;
+    let mut profile = None;
+    let mut gcno = false;
+    let mut target_json = None;
 
     for arg in ArgsIter::new(arguments.iter().cloned(), &ARGS[..]) {
         let arg = try_or_cannot_cache!(arg, "argument parse");
         match arg.get_data() {
-            Some(TooHardFlag) | Some(TooHard(_)) | Some(TooHardPath(_)) => {
+            Some(TooHardFlag) | Some(TooHardPath(_)) => {
                 cannot_cache!(arg.flag_str().expect("Can't be Argument::Raw/UnknownFlag",))
             }
             Some(NotCompilationFlag) | Some(NotCompilation(_)) => {
@@ -1114,6 +1137,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                 match (opt.as_ref(), value) {
                     ("extra-filename", Some(value)) => extra_filename = Some(value.to_owned()),
                     ("extra-filename", None) => cannot_cache!("extra-filename"),
+                    ("profile-use", Some(v)) => profile = Some(v.to_string()),
                     // Incremental compilation makes a mess of sccache's entire world
                     // view. It produces additional compiler outputs that we don't cache,
                     // and just letting rustc do its work in incremental mode is likely
@@ -1128,7 +1152,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
             }
             Some(Unstable(ArgUnstable { opt, value })) => match value.as_deref() {
                 Some("y") | Some("yes") | Some("on") | None if opt == "profile" => {
-                    profile = true;
+                    gcno = true;
                 }
                 _ => (),
             },
@@ -1145,7 +1169,8 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
             }
             Some(PassThrough(_)) => (),
             Some(Target(target)) => match target {
-                ArgTarget::Path(_) | ArgTarget::Unsure(_) => cannot_cache!("target"),
+                ArgTarget::Path(json_path) => target_json = Some(json_path.to_owned()),
+                ArgTarget::Unsure(_) => cannot_cache!("target unsure"),
                 ArgTarget::Name(_) => (),
             },
             None => {
@@ -1220,8 +1245,11 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
         None
     };
 
+    // Ignore profile is `link` is not in emit which means we are running `cargo check`.
+    let profile = if emit.contains("link") { profile } else { None };
+
     // Figure out the gcno filename, if producing gcno files with `-Zprofile`.
-    let gcno = if profile && emit.contains("link") {
+    let gcno = if gcno && emit.contains("link") {
         let mut gcno = crate_name.clone();
         if let Some(extra_filename) = extra_filename {
             gcno.push_str(&extra_filename[..]);
@@ -1267,10 +1295,12 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
         staticlibs,
         crate_name,
         dep_info: dep_info.map(|s| s.into()),
+        profile: profile.map(|s| s.into()),
         gcno: gcno.map(|s| s.into()),
         emit,
         color_mode,
         has_json,
+        target_json,
     })
 }
 
@@ -1290,7 +1320,7 @@ where
         _rewrite_includes_only: bool,
         _storage: Arc<dyn Storage>,
         _cache_control: CacheControl,
-    ) -> Result<HashResult> {
+    ) -> Result<HashResult<T>> {
         let RustHasher {
             executable,
             host,
@@ -1311,7 +1341,9 @@ where
                     dep_info,
                     emit,
                     has_json,
+                    profile,
                     gcno,
+                    target_json,
                     ..
                 },
         } = *self;
@@ -1367,11 +1399,33 @@ where
         let abs_staticlibs = staticlibs.iter().map(|s| cwd.join(s)).collect::<Vec<_>>();
         let staticlib_hashes = hash_all_archives(&abs_staticlibs, pool);
 
-        let ((source_files, source_hashes, mut env_deps), extern_hashes, staticlib_hashes) = futures::try_join!(
+        // Hash the content of the specified target json file, if any.
+        let mut target_json_files = Vec::new();
+        if let Some(path) = &target_json {
+            trace!(
+                "[{}]: hashing target json file {}",
+                crate_name,
+                path.display()
+            );
+            let abs_target_json = cwd.join(path);
+            target_json_files.push(abs_target_json);
+        }
+
+        let target_json_hash = hash_all(&target_json_files, pool);
+
+        // Perform all hashing operations on the files.
+        let (
+            (source_files, source_hashes, mut env_deps),
+            extern_hashes,
+            staticlib_hashes,
+            target_json_hash,
+        ) = futures::try_join!(
             source_files_and_hashes_and_env_deps,
             extern_hashes,
-            staticlib_hashes
+            staticlib_hashes,
+            target_json_hash
         )?;
+
         // If you change any of the inputs to the hash, you should change `CACHE_VERSION`.
         let mut m = Digest::new();
         // Hash inputs:
@@ -1397,6 +1451,10 @@ where
                 // in those paths (rlibs and static libs used in the compilation) are used as hash
                 // inputs below.
                 .filter(|&(arg, _)| !(arg == "--extern" || arg == "-L" || arg == "--out-dir"))
+                // We also exclude `--target` if it specifies a path to a .json file. The file content
+                // is used as hash input below.
+                // If `--target` specifies a string, it continues to be hashed as part of the arguments.
+                .filter(|&(arg, _)| target_json.is_none() || arg != "--target")
                 // A few argument types were not passed in a deterministic order
                 // by older versions of cargo: --extern, -L, --cfg. We'll filter the rest of those
                 // out, sort them, and append them to the rest of the arguments.
@@ -1414,14 +1472,16 @@ where
         // 4. The digest of all source files (this includes src file from cmdline).
         // 5. The digest of all files listed on the commandline (self.externs).
         // 6. The digest of all static libraries listed on the commandline (self.staticlibs).
+        // 7. The digest of the content of the target json file specified via `--target` (if any).
         for h in source_hashes
             .into_iter()
             .chain(extern_hashes)
             .chain(staticlib_hashes)
+            .chain(target_json_hash)
         {
             m.update(h.as_bytes());
         }
-        // 7. Environment variables: Hash all environment variables listed in the rustc dep-info
+        // 8. Environment variables: Hash all environment variables listed in the rustc dep-info
         //    output. Additionally also has all environment variables starting with `CARGO_`,
         //    since those are not listed in dep-info but affect cacheability.
         env_deps.sort();
@@ -1439,16 +1499,25 @@ where
             .collect();
         env_vars.sort();
         for (var, val) in env_vars.iter() {
-            // CARGO_MAKEFLAGS will have jobserver info which is extremely non-cacheable.
-            if var.starts_with("CARGO_") && var != "CARGO_MAKEFLAGS" {
-                var.hash(&mut HashToDigest { digest: &mut m });
-                m.update(b"=");
-                val.hash(&mut HashToDigest { digest: &mut m });
+            if !var.starts_with("CARGO_") {
+                continue;
             }
+
+            // CARGO_MAKEFLAGS will have jobserver info which is extremely non-cacheable.
+            // CARGO_REGISTRIES_*_TOKEN contains non-cacheable secrets.
+            // Registry override config doesn't need to be hashed, because deps' package IDs
+            // already uniquely identify the relevant registries.
+            if var == "CARGO_MAKEFLAGS" || var.starts_with("CARGO_REGISTRIES_") {
+                continue;
+            }
+
+            var.hash(&mut HashToDigest { digest: &mut m });
+            m.update(b"=");
+            val.hash(&mut HashToDigest { digest: &mut m });
         }
-        // 8. The cwd of the compile. This will wind up in the rlib.
+        // 9. The cwd of the compile. This will wind up in the rlib.
         cwd.hash(&mut HashToDigest { digest: &mut m });
-        // 9. The version of the compiler.
+        // 10. The version of the compiler.
         version.hash(&mut HashToDigest { digest: &mut m });
 
         // Turn arguments into a simple Vec<OsString> to calculate outputs.
@@ -1535,6 +1604,16 @@ where
         } else {
             None
         };
+        if let Some(profile) = profile {
+            let p = output_dir.join(&profile);
+            outputs.insert(
+                profile.to_string_lossy().into_owned(),
+                ArtifactDescriptor {
+                    path: p,
+                    optional: true,
+                },
+            );
+        }
         if let Some(gcno) = gcno {
             let p = output_dir.join(&gcno);
             outputs.insert(
@@ -1600,12 +1679,16 @@ where
     }
 }
 
-impl Compilation for RustCompilation {
+impl<T: CommandCreatorSync> Compilation<T> for RustCompilation {
     fn generate_compile_commands(
         &self,
         path_transformer: &mut dist::PathTransformer,
         _rewrite_includes_only: bool,
-    ) -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)> {
+    ) -> Result<(
+        Box<dyn CompileCommand<T>>,
+        Option<dist::CompileCommand>,
+        Cacheable,
+    )> {
         let RustCompilation {
             ref executable,
             ref arguments,
@@ -1627,7 +1710,7 @@ impl Compilation for RustCompilation {
 
         trace!("[{}]: compile", crate_name);
 
-        let command = CompileCommand {
+        let command = SingleCompileCommand {
             executable: executable.to_owned(),
             arguments: arguments
                 .iter()
@@ -1742,7 +1825,7 @@ impl Compilation for RustCompilation {
             })
         })();
 
-        Ok((command, dist_command, Cacheable::Yes))
+        Ok((CCompileCommand::new(command), dist_command, Cacheable::Yes))
     }
 
     #[cfg(feature = "dist-client")]
@@ -2288,6 +2371,7 @@ impl Meter<PathBuf, RlibDepsDetail> for DepsSize {
 struct RlibDepReader {
     cache: Mutex<LruCache<PathBuf, RlibDepsDetail, RandomState, DepsSize>>,
     executable: PathBuf,
+    ls_arg: String,
 }
 
 #[cfg(feature = "dist-client")]
@@ -2313,12 +2397,6 @@ impl RlibDepReader {
             stderr,
         } = cmd.output()?;
 
-        if !status.success() {
-            bail!(
-                "Failed to compile a minimal rlib with {}",
-                executable.display()
-            )
-        }
         if !stdout.is_empty() {
             bail!(
                 "rustc stdout non-empty when compiling a minimal rlib: {:?}",
@@ -2331,6 +2409,12 @@ impl RlibDepReader {
                 String::from_utf8_lossy(&stderr)
             )
         }
+        if !status.success() {
+            bail!(
+                "Failed to compile a minimal rlib with {}",
+                executable.display()
+            )
+        }
 
         // The goal of this cache is to avoid repeated lookups when building a single project. Let's budget 3MB.
         // Allowing for a 100 byte path, 50 dependencies per rlib and 20 characters per crate name, this roughly
@@ -2341,16 +2425,68 @@ impl RlibDepReader {
         // can cache information from about 570 rlibs - easily enough for a single project.
         const CACHE_SIZE: u64 = 3 * 1024 * 1024;
         let cache = LruCache::with_meter(CACHE_SIZE, DepsSize);
+        let rustc_version = Self::get_rustc_version(&executable, env_vars)?;
 
         let rlib_dep_reader = RlibDepReader {
             cache: Mutex::new(cache),
             executable,
+            ls_arg: Self::get_correct_ls_arg(rustc_version),
         };
         if let Err(e) = rlib_dep_reader.discover_rlib_deps(env_vars, &temp_rlib) {
             bail!("Failed to read deps from minimal rlib: {}", e)
         }
 
         Ok(rlib_dep_reader)
+    }
+
+    fn get_rustc_version(
+        executable: &PathBuf,
+        env_vars: &[(OsString, OsString)],
+    ) -> Result<Version> {
+        let mut cmd = process::Command::new(executable);
+        cmd.arg("--version").env_clear().envs(env_vars.to_vec());
+
+        let process::Output {
+            status,
+            stdout,
+            stderr,
+        } = cmd.output()?;
+
+        if !status.success() {
+            bail!("Failed to get rustc version with {}", executable.display())
+        }
+        if stdout.is_empty() {
+            bail!("rustc stdout empty when parsing version")
+        }
+        if !stderr.is_empty() {
+            bail!(
+                "rustc stderr non-empty when parsing version: {:?}",
+                String::from_utf8_lossy(&stderr)
+            )
+        }
+
+        Self::parse_rustc_version(&stdout)
+    }
+
+    fn parse_rustc_version(stdout: &[u8]) -> Result<Version> {
+        let stdout_string = String::from_utf8_lossy(stdout);
+        let rustc_version: Vec<&str> = stdout_string.split_whitespace().collect();
+        if rustc_version[0] != "rustc" {
+            bail!(
+                "Expected rustc string in rustc version with {:?}",
+                String::from_utf8_lossy(stdout)
+            )
+        }
+
+        Ok(Version::parse(rustc_version[1])?)
+    }
+
+    fn get_correct_ls_arg(version: Version) -> String {
+        if version.major <= 1 && version.minor <= 74 {
+            String::from("ls")
+        } else {
+            String::from("ls=root")
+        }
     }
 
     fn discover_rlib_deps(
@@ -2374,7 +2510,7 @@ impl RlibDepReader {
         trace!("Discovering dependencies of {}", rlib.display());
 
         let mut cmd = process::Command::new(&self.executable);
-        cmd.args(["-Z", "ls"])
+        cmd.args(["-Z", &self.ls_arg])
             .arg(rlib)
             .env_clear()
             .envs(env_vars.to_vec())
@@ -3110,6 +3246,79 @@ proc_macro false
         assert_eq!(res[2], "lucet_runtime_macros");
     }
 
+    #[cfg(feature = "dist-client")]
+    #[test]
+    fn test_rlib_dep_reader_call() {
+        let cargo_home = std::env::var("CARGO_HOME");
+        assert!(cargo_home.is_ok());
+
+        let mut env_vars = vec![];
+        if let Some(rustup_home) = std::env::var_os("RUSTUP_HOME") {
+            env_vars.push(("RUSTUP_HOME".into(), rustup_home));
+        }
+
+        let mut rustc_path = PathBuf::from(cargo_home.unwrap());
+        rustc_path.push("bin");
+        rustc_path.push("rustc");
+
+        let rlib_dep_reader = RlibDepReader::new_with_check(rustc_path, &env_vars);
+        let is_ok = rlib_dep_reader.is_ok();
+        // Unwrap so the error is reported in the test output
+        let _ = rlib_dep_reader.unwrap();
+        assert!(is_ok);
+    }
+
+    #[cfg(feature = "dist-client")]
+    #[test]
+    fn test_rlib_dep_reader_parse_rustc_version() {
+        let v0 = RlibDepReader::parse_rustc_version("rustc 1.2.3 aaaa".as_bytes());
+        assert!(v0.is_ok());
+        let v0 = v0.unwrap();
+        assert_eq!(v0.major, 1);
+        assert_eq!(v0.minor, 2);
+        assert_eq!(v0.patch, 3);
+
+        assert!(RlibDepReader::parse_rustc_version("rutc 1.2.3 aaaa".as_bytes()).is_err());
+        assert!(RlibDepReader::parse_rustc_version("1.2.3".as_bytes()).is_err());
+    }
+
+    #[cfg(feature = "dist-client")]
+    #[test]
+    fn test_rlib_dep_reader_get_correct_ls_arg() {
+        assert_eq!(
+            RlibDepReader::get_correct_ls_arg(Version::new(0, 73, 0)),
+            "ls"
+        );
+        assert_eq!(
+            RlibDepReader::get_correct_ls_arg(Version::new(1, 73, 0)),
+            "ls"
+        );
+        assert_eq!(
+            RlibDepReader::get_correct_ls_arg(Version::new(1, 73, 1)),
+            "ls"
+        );
+        assert_eq!(
+            RlibDepReader::get_correct_ls_arg(Version::new(1, 74, 0)),
+            "ls"
+        );
+        assert_eq!(
+            RlibDepReader::get_correct_ls_arg(Version::new(1, 74, 1)),
+            "ls"
+        );
+        assert_eq!(
+            RlibDepReader::get_correct_ls_arg(Version::new(1, 75, 0)),
+            "ls=root"
+        );
+        assert_eq!(
+            RlibDepReader::get_correct_ls_arg(Version::new(2, 73, 0)),
+            "ls=root"
+        );
+        assert_eq!(
+            RlibDepReader::get_correct_ls_arg(Version::new(2, 74, 0)),
+            "ls=root"
+        );
+    }
+
     fn mock_dep_info(creator: &Arc<Mutex<MockCommandCreator>>, dep_srcs: &[&str]) {
         // Mock the `rustc --emit=dep-info` process by writing
         // a dep-info file.
@@ -3213,7 +3422,9 @@ proc_macro false
                 emit,
                 color_mode: ColorMode::Auto,
                 has_json: false,
+                profile: None,
                 gcno: None,
+                target_json: None,
             },
         });
         let creator = new_creator();
@@ -3229,6 +3440,10 @@ proc_macro false
                     (OsString::from("CARGO_PKG_NAME"), OsString::from("foo")),
                     (OsString::from("FOO"), OsString::from("bar")),
                     (OsString::from("CARGO_BLAH"), OsString::from("abc")),
+                    (
+                        OsString::from("CARGO_REGISTRIES_A_TOKEN"),
+                        OsString::from("ignored"),
+                    ),
                 ]
                 .to_vec(),
                 false,
@@ -3581,5 +3796,76 @@ proc_macro false
         );
 
         assert_eq!(h.gcno, Some("foo-a1b6419f8321841f.gcno".into()));
+    }
+
+    #[test]
+    fn test_parse_remap_path_prefix() {
+        let h = parses!(
+            "--crate-name",
+            "foo",
+            "--crate-type",
+            "lib",
+            "./src/lib.rs",
+            "--emit=dep-info,link",
+            "--out-dir",
+            "/out",
+            "--remap-path-prefix",
+            "/home/test=~",
+            "--remap-path-prefix",
+            "/root=~"
+        );
+        assert!(h.arguments.contains(&Argument::WithValue(
+            "--remap-path-prefix",
+            ArgData::PassThrough(OsString::from("/home/test=~")),
+            ArgDisposition::Separated
+        )));
+        assert!(h.arguments.contains(&Argument::WithValue(
+            "--remap-path-prefix",
+            ArgData::PassThrough(OsString::from("/root=~")),
+            ArgDisposition::Separated
+        )));
+    }
+
+    #[test]
+    fn test_parse_target() {
+        // Parse a --target argument that is a string (not a path to a .json file).
+        let h = parses!(
+            "--crate-name",
+            "foo",
+            "--crate-type",
+            "lib",
+            "./src/lib.rs",
+            "--emit=dep-info,link",
+            "--out-dir",
+            "/out",
+            "--target",
+            "string"
+        );
+        assert!(h.arguments.contains(&Argument::WithValue(
+            "--target",
+            ArgData::Target(ArgTarget::Name("string".to_owned())),
+            ArgDisposition::Separated
+        )));
+        assert!(h.target_json.is_none());
+
+        // Parse a --target argument that is a path.
+        let h = parses!(
+            "--crate-name",
+            "foo",
+            "--crate-type",
+            "lib",
+            "./src/lib.rs",
+            "--emit=dep-info,link",
+            "--out-dir",
+            "/out",
+            "--target",
+            "/path/to/target.json"
+        );
+        assert!(h.arguments.contains(&Argument::WithValue(
+            "--target",
+            ArgData::Target(ArgTarget::Path(PathBuf::from("/path/to/target.json"))),
+            ArgDisposition::Separated
+        )));
+        assert_eq!(h.target_json, Some(PathBuf::from("/path/to/target.json")));
     }
 }

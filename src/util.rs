@@ -636,15 +636,19 @@ pub fn decode_path(bytes: &[u8]) -> std::io::Result<PathBuf> {
 
 #[cfg(windows)]
 pub fn decode_path(bytes: &[u8]) -> std::io::Result<PathBuf> {
-    let codepage = winapi::um::winnls::CP_OEMCP;
-    let flags = winapi::um::winnls::MB_ERR_INVALID_CHARS;
+    use windows_sys::Win32::Globalization::{CP_OEMCP, MB_ERR_INVALID_CHARS};
+
+    let codepage = CP_OEMCP;
+    let flags = MB_ERR_INVALID_CHARS;
 
     Ok(OsString::from_wide(&multi_byte_to_wide_char(codepage, flags, bytes)?).into())
 }
 
 #[cfg(windows)]
 pub fn wide_char_to_multi_byte(wide_char_str: &[u16]) -> std::io::Result<Vec<u8>> {
-    let codepage = winapi::um::winnls::CP_OEMCP;
+    use windows_sys::Win32::Globalization::{WideCharToMultiByte, CP_OEMCP};
+
+    let codepage = CP_OEMCP;
     let flags = 0;
     // Empty string
     if wide_char_str.is_empty() {
@@ -652,7 +656,7 @@ pub fn wide_char_to_multi_byte(wide_char_str: &[u16]) -> std::io::Result<Vec<u8>
     }
     unsafe {
         // Get length of multibyte string
-        let len = winapi::um::stringapiset::WideCharToMultiByte(
+        let len = WideCharToMultiByte(
             codepage,
             flags,
             wide_char_str.as_ptr(),
@@ -666,7 +670,7 @@ pub fn wide_char_to_multi_byte(wide_char_str: &[u16]) -> std::io::Result<Vec<u8>
         if len > 0 {
             // Convert from UTF-16 to multibyte
             let mut astr: Vec<u8> = Vec::with_capacity(len as usize);
-            let len = winapi::um::stringapiset::WideCharToMultiByte(
+            let len = WideCharToMultiByte(
                 codepage,
                 flags,
                 wide_char_str.as_ptr(),
@@ -695,19 +699,21 @@ pub fn wide_char_to_multi_byte(wide_char_str: &[u16]) -> std::io::Result<Vec<u8>
 /// See https://msdn.microsoft.com/en-us/library/windows/desktop/dd319072(v=vs.85).aspx
 /// for more details.
 pub fn multi_byte_to_wide_char(
-    codepage: winapi::shared::minwindef::DWORD,
-    flags: winapi::shared::minwindef::DWORD,
+    codepage: u32,
+    flags: u32,
     multi_byte_str: &[u8],
 ) -> std::io::Result<Vec<u16>> {
+    use windows_sys::Win32::Globalization::MultiByteToWideChar;
+
     if multi_byte_str.is_empty() {
         return Ok(vec![]);
     }
     unsafe {
         // Get length of UTF-16 string
-        let len = winapi::um::stringapiset::MultiByteToWideChar(
+        let len = MultiByteToWideChar(
             codepage,
             flags,
-            multi_byte_str.as_ptr() as winapi::um::winnt::LPSTR,
+            multi_byte_str.as_ptr(),
             multi_byte_str.len() as i32,
             std::ptr::null_mut(),
             0,
@@ -715,10 +721,10 @@ pub fn multi_byte_to_wide_char(
         if len > 0 {
             // Convert to UTF-16
             let mut wstr: Vec<u16> = Vec::with_capacity(len as usize);
-            let len = winapi::um::stringapiset::MultiByteToWideChar(
+            let len = MultiByteToWideChar(
                 codepage,
                 flags,
-                multi_byte_str.as_ptr() as winapi::um::winnt::LPSTR,
+                multi_byte_str.as_ptr(),
                 multi_byte_str.len() as i32,
                 wstr.as_mut_ptr(),
                 len,
@@ -836,6 +842,7 @@ impl<'a> Hasher for HashToDigest<'a> {
 /// Pipe `cmd`'s stdio to `/dev/null`, unless a specific env var is set.
 #[cfg(not(windows))]
 pub fn daemonize() -> Result<()> {
+    use crate::jobserver::discard_inherited_jobserver;
     use daemonize::Daemonize;
     use std::env;
     use std::mem;
@@ -845,6 +852,10 @@ pub fn daemonize() -> Result<()> {
         _ => {
             Daemonize::new().start().context("failed to daemonize")?;
         }
+    }
+
+    unsafe {
+        discard_inherited_jobserver();
     }
 
     static mut PREV_SIGSEGV: *mut libc::sigaction = 0 as *mut _;
@@ -937,6 +948,67 @@ pub fn new_reqwest_blocking_client() -> reqwest::blocking::Client {
         .pool_max_idle_per_host(0)
         .build()
         .expect("http client must build with success")
+}
+
+fn unhex(b: u8) -> std::io::Result<u8> {
+    match b {
+        b'0'..=b'9' => Ok(b - b'0'),
+        b'a'..=b'f' => Ok(b - b'a' + 10),
+        b'A'..=b'F' => Ok(b - b'A' + 10),
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid hex digit",
+        )),
+    }
+}
+
+/// A reverse version of std::ascii::escape_default
+pub fn ascii_unescape_default(s: &[u8]) -> std::io::Result<Vec<u8>> {
+    let mut out = Vec::with_capacity(s.len() + 4);
+    let mut offset = 0;
+    while offset < s.len() {
+        let c = s[offset];
+        if c == b'\\' {
+            offset += 1;
+            if offset >= s.len() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "incomplete escape",
+                ));
+            }
+            let c = s[offset];
+            match c {
+                b'n' => out.push(b'\n'),
+                b'r' => out.push(b'\r'),
+                b't' => out.push(b'\t'),
+                b'\'' => out.push(b'\''),
+                b'"' => out.push(b'"'),
+                b'\\' => out.push(b'\\'),
+                b'x' => {
+                    offset += 1;
+                    if offset + 1 >= s.len() {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "incomplete hex escape",
+                        ));
+                    }
+                    let v = unhex(s[offset])? << 4 | unhex(s[offset + 1])?;
+                    out.push(v);
+                    offset += 1;
+                }
+                _ => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "invalid escape",
+                    ));
+                }
+            }
+        } else {
+            out.push(c);
+        }
+        offset += 1;
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -1048,5 +1120,47 @@ mod tests {
         assert!(!finder.found_timestamp());
         finder.find_time_macros(b"TIMESTAMP__ This is larger than the haystack");
         assert!(finder.found_timestamp());
+    }
+
+    #[test]
+    fn test_ascii_unescape_default() {
+        let mut alphabet = r#"\\'"\t\n\r"#.as_bytes().to_vec();
+        alphabet.push(b'a');
+        alphabet.push(b'1');
+        alphabet.push(0);
+        alphabet.push(0xff);
+        let mut input = vec![];
+        let mut output = vec![];
+        let mut alphabet_indexes = [0; 3];
+        let mut tested_cases = 0;
+        // Following loop may test duplicated inputs, but it's not a problem
+        loop {
+            input.clear();
+            output.clear();
+            for idx in alphabet_indexes {
+                if idx < alphabet.len() {
+                    input.push(alphabet[idx]);
+                }
+            }
+            if input.is_empty() {
+                break;
+            }
+            output.extend(input.as_slice().escape_ascii());
+            let result = super::ascii_unescape_default(&output).unwrap();
+            assert_eq!(input, result, "{:?}", output);
+            tested_cases += 1;
+            for idx in &mut alphabet_indexes {
+                *idx += 1;
+                if *idx > alphabet.len() {
+                    // Use `>` so we can test various input length.
+                    *idx = 0;
+                } else {
+                    break;
+                }
+            }
+        }
+        assert_eq!(tested_cases, (alphabet.len() + 1).pow(3) - 1);
+        let empty_result = super::ascii_unescape_default(&[]).unwrap();
+        assert!(empty_result.is_empty(), "{:?}", empty_result);
     }
 }

@@ -58,7 +58,7 @@ fn run_server_thread<T>(
     cache_dir: &Path,
     options: T,
 ) -> (
-    u16,
+    crate::net::SocketAddr,
     Sender<ServerMessage>,
     Arc<Mutex<MockCommandCreator>>,
     thread::JoinHandle<()>,
@@ -88,30 +88,30 @@ where
             CacheMode::ReadWrite,
         ));
 
-        let client = unsafe { Client::new() };
+        let client = Client::new();
         let srv = SccacheServer::new(0, runtime, client, dist_client, storage).unwrap();
-        let mut srv: SccacheServer<Arc<Mutex<MockCommandCreator>>> = srv;
-        assert!(srv.port() > 0);
+        let mut srv: SccacheServer<_, Arc<Mutex<MockCommandCreator>>> = srv;
+        let addr = srv.local_addr().unwrap();
+        assert!(matches!(addr, crate::net::SocketAddr::Net(a) if a.port() > 0));
         if let Some(options) = options {
             if let Some(timeout) = options.idle_timeout {
                 srv.set_idle_timeout(Duration::from_millis(timeout));
             }
         }
-        let port = srv.port();
         let creator = srv.command_creator().clone();
-        tx.send((port, creator)).unwrap();
+        tx.send((addr, creator)).unwrap();
         srv.run(shutdown_rx).unwrap();
     });
-    let (port, creator) = rx.recv().unwrap();
-    (port, shutdown_tx, creator, handle)
+    let (addr, creator) = rx.recv().unwrap();
+    (addr, shutdown_tx, creator, handle)
 }
 
 #[test]
 fn test_server_shutdown() {
     let f = TestFixture::new();
-    let (port, _sender, _storage, child) = run_server_thread(f.tempdir.path(), None);
+    let (addr, _sender, _storage, child) = run_server_thread(f.tempdir.path(), None);
     // Connect to the server.
-    let conn = connect_to_server(port).unwrap();
+    let conn = connect_to_server(&addr).unwrap();
     // Ask it to shut down
     request_shutdown(conn).unwrap();
     // Ensure that it shuts down.
@@ -123,7 +123,7 @@ fn test_server_shutdown() {
 fn test_server_shutdown_no_idle() {
     let f = TestFixture::new();
     // Set a ridiculously low idle timeout.
-    let (port, _sender, _storage, child) = run_server_thread(
+    let (addr, _sender, _storage, child) = run_server_thread(
         f.tempdir.path(),
         ServerOptions {
             idle_timeout: Some(0),
@@ -131,7 +131,7 @@ fn test_server_shutdown_no_idle() {
         },
     );
 
-    let conn = connect_to_server(port).unwrap();
+    let conn = connect_to_server(&addr).unwrap();
     request_shutdown(conn).unwrap();
     child.join().unwrap();
 }
@@ -157,9 +157,9 @@ fn test_server_idle_timeout() {
 #[test]
 fn test_server_stats() {
     let f = TestFixture::new();
-    let (port, sender, _storage, child) = run_server_thread(f.tempdir.path(), None);
+    let (addr, sender, _storage, child) = run_server_thread(f.tempdir.path(), None);
     // Connect to the server.
-    let conn = connect_to_server(port).unwrap();
+    let conn = connect_to_server(&addr).unwrap();
     // Ask it for stats.
     let info = request_stats(conn).unwrap();
     assert_eq!(0, info.stats.compile_requests);
@@ -174,9 +174,9 @@ fn test_server_stats() {
 #[test]
 fn test_server_unsupported_compiler() {
     let f = TestFixture::new();
-    let (port, sender, server_creator, child) = run_server_thread(f.tempdir.path(), None);
+    let (addr, sender, server_creator, child) = run_server_thread(f.tempdir.path(), None);
     // Connect to the server.
-    let conn = connect_to_server(port).unwrap();
+    let conn = connect_to_server(&addr).unwrap();
     {
         let mut c = server_creator.lock().unwrap();
         // fail rust driver check
@@ -226,13 +226,13 @@ fn test_server_compile() {
     let _ = env_logger::try_init();
     let f = TestFixture::new();
     let gcc = f.mk_bin("gcc").unwrap();
-    let (port, sender, server_creator, child) = run_server_thread(f.tempdir.path(), None);
+    let (addr, sender, server_creator, child) = run_server_thread(f.tempdir.path(), None);
     // Connect to the server.
     const PREPROCESSOR_STDOUT: &[u8] = b"preprocessor stdout";
     const PREPROCESSOR_STDERR: &[u8] = b"preprocessor stderr";
     const STDOUT: &[u8] = b"some stdout";
     const STDERR: &[u8] = b"some stderr";
-    let conn = connect_to_server(port).unwrap();
+    let conn = connect_to_server(&addr).unwrap();
     // Write a dummy input file so the preprocessor cache mode can work
     std::fs::write(f.tempdir.path().join("file.c"), "whatever").unwrap();
     {
@@ -308,6 +308,7 @@ fn test_server_port_in_use() {
             "SCCACHE_SERVER_PORT",
             listener.local_addr().unwrap().port().to_string(),
         )
+        .env_remove("SCCACHE_SERVER_UDS")
         .output()
         .unwrap();
     assert!(!output.status.success());

@@ -18,7 +18,7 @@ use crate::compiler::args::*;
 use crate::compiler::c::{ArtifactDescriptor, CCompilerImpl, CCompilerKind, ParsedArguments};
 use crate::compiler::gcc::ArgData::*;
 use crate::compiler::{
-    gcc, write_temp_file, Cacheable, CompileCommand, CompilerArguments, Language,
+    gcc, write_temp_file, CCompileCommand, Cacheable, CompileCommand, CompilerArguments, Language,
 };
 use crate::mock_command::{CommandCreator, CommandCreatorSync, RunCommand};
 use crate::util::{run_input_output, OsStrExt};
@@ -94,6 +94,7 @@ impl CCompilerImpl for Clang {
         &self,
         arguments: &[OsString],
         cwd: &Path,
+        _env_vars: &[(OsString, OsString)],
     ) -> CompilerArguments<ParsedArguments> {
         gcc::parse_arguments(
             arguments,
@@ -140,11 +141,12 @@ impl CCompilerImpl for Clang {
             self.kind(),
             rewrite_includes_only,
             ignorable_whitespace_flags,
+            language_to_clang_arg,
         )
         .await
     }
 
-    fn generate_compile_commands(
+    fn generate_compile_commands<T>(
         &self,
         path_transformer: &mut dist::PathTransformer,
         executable: &Path,
@@ -152,7 +154,14 @@ impl CCompilerImpl for Clang {
         cwd: &Path,
         env_vars: &[(OsString, OsString)],
         rewrite_includes_only: bool,
-    ) -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)> {
+    ) -> Result<(
+        Box<dyn CompileCommand<T>>,
+        Option<dist::CompileCommand>,
+        Cacheable,
+    )>
+    where
+        T: CommandCreatorSync,
+    {
         gcc::generate_compile_commands(
             path_transformer,
             executable,
@@ -161,7 +170,29 @@ impl CCompilerImpl for Clang {
             env_vars,
             self.kind(),
             rewrite_includes_only,
+            language_to_clang_arg,
         )
+        .map(|(command, dist_command, cacheable)| {
+            (CCompileCommand::new(command), dist_command, cacheable)
+        })
+    }
+}
+
+pub fn language_to_clang_arg(lang: Language) -> Option<&'static str> {
+    match lang {
+        Language::C => Some("c"),
+        Language::CHeader => Some("c-header"),
+        Language::Cxx => Some("c++"),
+        Language::CxxHeader => Some("c++-header"),
+        Language::ObjectiveC => Some("objective-c"),
+        Language::ObjectiveCxx => Some("objective-c++"),
+        Language::ObjectiveCxxHeader => Some("objective-c++-header"),
+        Language::Cuda => Some("cuda"),
+        Language::Ptx => None,
+        Language::Cubin => None,
+        Language::Rust => None, // Let the compiler decide
+        Language::Hip => Some("hip"),
+        Language::GenericHeader => None, // Let the compiler decide
     }
 }
 
@@ -176,12 +207,15 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("-MF", PathBuf, CanBeSeparated, DepArgumentPath),
     take_arg!("-MQ", OsString, CanBeSeparated, DepTarget),
     take_arg!("-MT", OsString, CanBeSeparated, DepTarget),
+    flag!("-Wno-unknown-cuda-version", PassThroughFlag),
+    flag!("-Wno-unused-parameter", PassThroughFlag),
     take_arg!("-Xclang", OsString, Separated, XClang),
     take_arg!("-add-plugin", OsString, Separated, PassThrough),
     take_arg!("-debug-info-kind", OsString, Concatenated('='), PassThrough),
     take_arg!("-dependency-file", PathBuf, Separated, DepArgumentPath),
     flag!("-emit-pch", PassThroughFlag),
     flag!("-fcolor-diagnostics", DiagnosticsColorFlag),
+    flag!("-fcuda-allow-variadic-functions", PassThroughFlag),
     flag!("-fcxx-modules", TooHardFlag),
     take_arg!("-fdebug-compilation-dir", OsString, Separated, PassThrough),
     take_arg!("-fembed-offload-object", PathBuf, Concatenated('='), ExtraHashFile),
@@ -237,6 +271,8 @@ mod test {
     use crate::compiler::gcc;
     use crate::compiler::*;
     use crate::mock_command::*;
+    use crate::server;
+    use crate::test::mock_storage::MockStorage;
     use crate::test::utils::*;
     use std::collections::HashMap;
     use std::future::Future;
@@ -249,7 +285,7 @@ mod test {
             is_appleclang: false,
             version: None,
         }
-        .parse_arguments(&arguments, &std::env::current_dir().unwrap())
+        .parse_arguments(&arguments, &std::env::current_dir().unwrap(), &[])
     }
 
     macro_rules! parses {
@@ -997,5 +1033,64 @@ mod test {
                 "-fno-profile-instr-generate"
             ])
         );
+    }
+
+    #[test]
+    fn test_compile_clang_cuda_does_not_dist_compile() {
+        let creator = new_creator();
+        let f = TestFixture::new();
+        let parsed_args = ParsedArguments {
+            input: "foo.cu".into(),
+            double_dash_input: false,
+            language: Language::Cuda,
+            compilation_flag: "-c".into(),
+            depfile: None,
+            outputs: vec![(
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.cu.o".into(),
+                    optional: false,
+                },
+            )]
+            .into_iter()
+            .collect(),
+            dependency_args: vec![],
+            preprocessor_args: vec![],
+            common_args: vec![],
+            arch_args: vec![],
+            unhashed_args: vec![],
+            extra_dist_files: vec![],
+            extra_hash_files: vec![],
+            msvc_show_includes: false,
+            profile_generate: false,
+            color_mode: ColorMode::Auto,
+            suppress_rewrite_includes_only: false,
+            too_hard_for_preprocessor_cache_mode: None,
+        };
+        let runtime = single_threaded_runtime();
+        let storage = MockStorage::new(None, false);
+        let storage: std::sync::Arc<MockStorage> = std::sync::Arc::new(storage);
+        let service = server::SccacheService::mock_with_storage(storage, runtime.handle().clone());
+        let compiler = &f.bins[0];
+        // Compiler invocation.
+        next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
+        let mut path_transformer = dist::PathTransformer::new();
+        let (command, dist_command, cacheable) = gcc::generate_compile_commands(
+            &mut path_transformer,
+            compiler,
+            &parsed_args,
+            f.tempdir.path(),
+            &[],
+            CCompilerKind::Clang,
+            false,
+            language_to_clang_arg,
+        )
+        .unwrap();
+        // ClangCUDA cannot be dist-compiled
+        assert!(dist_command.is_none());
+        let _ = command.execute(&service, &creator).wait();
+        assert_eq!(Cacheable::Yes, cacheable);
+        // Ensure that we ran all processes.
+        assert_eq!(0, creator.lock().unwrap().children.len());
     }
 }

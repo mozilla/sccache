@@ -15,7 +15,8 @@
 use crate::compiler::args::*;
 use crate::compiler::c::{ArtifactDescriptor, CCompilerImpl, CCompilerKind, ParsedArguments};
 use crate::compiler::{
-    clang, gcc, write_temp_file, Cacheable, ColorMode, CompileCommand, CompilerArguments, Language,
+    clang, gcc, write_temp_file, CCompileCommand, Cacheable, ColorMode, CompileCommand,
+    CompilerArguments, Language, SingleCompileCommand,
 };
 use crate::mock_command::{CommandCreatorSync, RunCommand};
 use crate::util::{encode_path, run_input_output, OsStrExt};
@@ -58,6 +59,7 @@ impl CCompilerImpl for Msvc {
         &self,
         arguments: &[OsString],
         cwd: &Path,
+        _env_vars: &[(OsString, OsString)],
     ) -> CompilerArguments<ParsedArguments> {
         parse_arguments(arguments, cwd, self.is_clang)
     }
@@ -91,7 +93,7 @@ impl CCompilerImpl for Msvc {
         .await
     }
 
-    fn generate_compile_commands(
+    fn generate_compile_commands<T>(
         &self,
         path_transformer: &mut dist::PathTransformer,
         executable: &Path,
@@ -99,8 +101,19 @@ impl CCompilerImpl for Msvc {
         cwd: &Path,
         env_vars: &[(OsString, OsString)],
         _rewrite_includes_only: bool,
-    ) -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)> {
-        generate_compile_commands(path_transformer, executable, parsed_args, cwd, env_vars)
+    ) -> Result<(
+        Box<dyn CompileCommand<T>>,
+        Option<dist::CompileCommand>,
+        Cacheable,
+    )>
+    where
+        T: CommandCreatorSync,
+    {
+        generate_compile_commands(path_transformer, executable, parsed_args, cwd, env_vars).map(
+            |(command, dist_command, cacheable)| {
+                (CCompileCommand::new(command), dist_command, cacheable)
+            },
+        )
     }
 }
 
@@ -112,8 +125,10 @@ fn from_local_codepage(multi_byte_str: &[u8]) -> io::Result<String> {
 
 #[cfg(windows)]
 pub fn from_local_codepage(multi_byte_str: &[u8]) -> io::Result<String> {
-    let codepage = winapi::um::winnls::CP_OEMCP;
-    let flags = winapi::um::winnls::MB_ERR_INVALID_CHARS;
+    use windows_sys::Win32::Globalization::{MultiByteToWideChar, CP_OEMCP, MB_ERR_INVALID_CHARS};
+
+    let codepage = CP_OEMCP;
+    let flags = MB_ERR_INVALID_CHARS;
 
     // Empty string
     if multi_byte_str.is_empty() {
@@ -121,7 +136,7 @@ pub fn from_local_codepage(multi_byte_str: &[u8]) -> io::Result<String> {
     }
     unsafe {
         // Get length of UTF-16 string
-        let len = winapi::um::stringapiset::MultiByteToWideChar(
+        let len = MultiByteToWideChar(
             codepage,
             flags,
             multi_byte_str.as_ptr() as _,
@@ -132,7 +147,7 @@ pub fn from_local_codepage(multi_byte_str: &[u8]) -> io::Result<String> {
         if len > 0 {
             // Convert to UTF-16
             let mut wstr: Vec<u16> = Vec::with_capacity(len as usize);
-            let len = winapi::um::stringapiset::MultiByteToWideChar(
+            let len = MultiByteToWideChar(
                 codepage,
                 flags,
                 multi_byte_str.as_ptr() as _,
@@ -664,8 +679,9 @@ pub fn parse_arguments(
                 | Some(PassThrough(_))
                 | Some(PassThroughPath(_))
                 | Some(PedanticFlag)
-                | Some(Standard(_)) => &mut common_args,
-                Some(Unhashed(_)) => &mut unhashed_args,
+                | Some(Standard(_))
+                | Some(SerializeDiagnostics(_)) => &mut common_args,
+                Some(UnhashedFlag) | Some(Unhashed(_)) => &mut unhashed_args,
 
                 Some(ProfileGenerate) => {
                     profile_generate = true;
@@ -817,6 +833,7 @@ pub fn parse_arguments(
         common_args,
         arch_args: vec![],
         unhashed_args,
+        extra_dist_files: vec![],
         extra_hash_files,
         msvc_show_includes: show_includes,
         profile_generate,
@@ -832,10 +849,10 @@ fn normpath(path: &str) -> String {
     use std::os::windows::ffi::OsStringExt;
     use std::os::windows::io::AsRawHandle;
     use std::ptr;
-    use winapi::um::fileapi::GetFinalPathNameByHandleW;
+    use windows_sys::Win32::Storage::FileSystem::GetFinalPathNameByHandleW;
     File::open(path)
         .and_then(|f| {
-            let handle = f.as_raw_handle();
+            let handle = f.as_raw_handle() as _;
             let size = unsafe { GetFinalPathNameByHandleW(handle, ptr::null_mut(), 0, 0) };
             if size == 0 {
                 return Err(io::Error::last_os_error());
@@ -906,7 +923,8 @@ pub fn preprocess_cmd<T>(
         }
         // Windows SDK generates C4668 during preprocessing, but compiles fine.
         // Read for more info: https://github.com/mozilla/sccache/issues/1725
-        cmd.arg("/wd4668");
+        // And here: https://github.com/mozilla/sccache/issues/2250
+        cmd.arg("/WX-");
     }
 
     if rewrite_includes_only && is_clang {
@@ -1023,7 +1041,11 @@ fn generate_compile_commands(
     parsed_args: &ParsedArguments,
     cwd: &Path,
     env_vars: &[(OsString, OsString)],
-) -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)> {
+) -> Result<(
+    SingleCompileCommand,
+    Option<dist::CompileCommand>,
+    Cacheable,
+)> {
     #[cfg(not(feature = "dist-client"))]
     let _ = path_transformer;
 
@@ -1059,7 +1081,7 @@ fn generate_compile_commands(
         arguments.push("--".into());
     }
     arguments.push(parsed_args.input.clone().into());
-    let command = CompileCommand {
+    let command = SingleCompileCommand {
         executable: executable.to_owned(),
         arguments,
         env_vars: env_vars.to_owned(),
@@ -1356,6 +1378,8 @@ mod test {
     use super::*;
     use crate::compiler::*;
     use crate::mock_command::*;
+    use crate::server;
+    use crate::test::mock_storage::MockStorage;
     use crate::test::utils::*;
 
     fn parse_arguments(arguments: Vec<OsString>) -> CompilerArguments<ParsedArguments> {
@@ -2440,6 +2464,7 @@ mod test {
             common_args: vec![],
             arch_args: vec![],
             unhashed_args: vec![],
+            extra_dist_files: vec![],
             extra_hash_files: vec![],
             msvc_show_includes: false,
             profile_generate: false,
@@ -2447,6 +2472,10 @@ mod test {
             suppress_rewrite_includes_only: false,
             too_hard_for_preprocessor_cache_mode: None,
         };
+        let runtime = single_threaded_runtime();
+        let storage = MockStorage::new(None, false);
+        let storage: std::sync::Arc<MockStorage> = std::sync::Arc::new(storage);
+        let service = server::SccacheService::mock_with_storage(storage, runtime.handle().clone());
         let compiler = &f.bins[0];
         // Compiler invocation.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
@@ -2463,7 +2492,7 @@ mod test {
         assert!(dist_command.is_some());
         #[cfg(not(feature = "dist-client"))]
         assert!(dist_command.is_none());
-        let _ = command.execute(&creator).wait();
+        let _ = command.execute(&service, &creator).wait();
         assert_eq!(Cacheable::Yes, cacheable);
         // Ensure that we ran all processes.
         assert_eq!(0, creator.lock().unwrap().children.len());
@@ -2525,6 +2554,7 @@ mod test {
             common_args: vec![],
             arch_args: vec![],
             unhashed_args: vec![],
+            extra_dist_files: vec![],
             extra_hash_files: vec![],
             msvc_show_includes: false,
             profile_generate: false,
@@ -2532,6 +2562,10 @@ mod test {
             suppress_rewrite_includes_only: false,
             too_hard_for_preprocessor_cache_mode: None,
         };
+        let runtime = single_threaded_runtime();
+        let storage = MockStorage::new(None, false);
+        let storage: std::sync::Arc<MockStorage> = std::sync::Arc::new(storage);
+        let service = server::SccacheService::mock_with_storage(storage, runtime.handle().clone());
         let compiler = &f.bins[0];
         // Compiler invocation.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
@@ -2548,7 +2582,7 @@ mod test {
         assert!(dist_command.is_some());
         #[cfg(not(feature = "dist-client"))]
         assert!(dist_command.is_none());
-        let _ = command.execute(&creator).wait();
+        let _ = command.execute(&service, &creator).wait();
         assert_eq!(Cacheable::No, cacheable);
         // Ensure that we ran all processes.
         assert_eq!(0, creator.lock().unwrap().children.len());
@@ -2582,7 +2616,7 @@ mod test {
     #[cfg(windows)]
     fn local_oem_codepage_conversions() {
         use crate::util::wide_char_to_multi_byte;
-        use winapi::um::winnls::GetOEMCP;
+        use windows_sys::Win32::Globalization::GetOEMCP;
 
         let current_oemcp = unsafe { GetOEMCP() };
         // We don't control the local OEM codepage so test only if it is one of:

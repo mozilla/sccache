@@ -22,6 +22,8 @@ use reqwest::Client;
 use serde::Deserialize;
 use url::Url;
 
+use super::http_client::set_user_agent;
+
 fn rw_to_scope(mode: CacheMode) -> &'static str {
     match mode {
         CacheMode::ReadOnly => "https://www.googleapis.com/auth/devstorage.read_only",
@@ -42,24 +44,25 @@ impl GCSCache {
         rw_mode: CacheMode,
         credential_url: Option<&str>,
     ) -> Result<Operator> {
-        let mut builder = Gcs::default();
-        builder.bucket(bucket);
-        builder.root(key_prefix);
-        builder.scope(rw_to_scope(rw_mode));
+        let mut builder = Gcs::default()
+            .bucket(bucket)
+            .root(key_prefix)
+            .scope(rw_to_scope(rw_mode))
+            .http_client(set_user_agent());
 
         if let Some(service_account) = service_account {
-            builder.service_account(service_account);
+            builder = builder.service_account(service_account);
         }
 
         if let Some(path) = cred_path {
-            builder.credential_path(path);
+            builder = builder.credential_path(path);
         }
 
         if let Some(cred_url) = credential_url {
             let _ = Url::parse(cred_url)
                 .map_err(|err| anyhow!("gcs credential url is invalid: {err:?}"))?;
 
-            builder.customed_token_loader(Box::new(TaskClusterTokenLoader {
+            builder = builder.customized_token_loader(Box::new(TaskClusterTokenLoader {
                 scope: rw_to_scope(rw_mode).to_string(),
                 url: cred_url.to_string(),
             }));

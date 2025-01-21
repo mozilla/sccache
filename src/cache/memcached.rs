@@ -32,18 +32,18 @@ impl MemcachedCache {
         key_prefix: &str,
         expiration: u32,
     ) -> Result<Operator> {
-        let mut builder = Memcached::default();
-        builder.endpoint(url);
+        let mut builder = Memcached::default().endpoint(url);
 
         if let Some(username) = username {
-            builder.username(username);
+            builder = builder.username(username);
         }
         if let Some(password) = password {
-            builder.password(password);
+            builder = builder.password(password);
         }
 
-        builder.root(key_prefix);
-        builder.default_ttl(Duration::from_secs(expiration.into()));
+        builder = builder
+            .root(key_prefix)
+            .default_ttl(Duration::from_secs(expiration.into()));
 
         let op = Operator::new(builder)?
             .layer(LoggingLayer::default())

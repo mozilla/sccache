@@ -11,12 +11,12 @@
 // limitations under the License.
 
 use opendal::layers::LoggingLayer;
-use opendal::raw::HttpClient;
 use opendal::services::S3;
 use opendal::Operator;
-use reqwest::ClientBuilder;
 
 use crate::errors::*;
+
+use super::http_client::set_user_agent;
 
 pub struct S3Cache;
 
@@ -33,10 +33,10 @@ impl S3Cache {
         access_key_id: Option<&str>,
         secret_access_key: Option<&str>,
     ) -> Result<Operator> {
-        let mut builder = S3::default();
-        builder.http_client(set_user_agent());
-        builder.bucket(bucket);
-        builder.root(key_prefix);
+        let mut builder = S3::default()
+            .http_client(set_user_agent())
+            .bucket(bucket)
+            .root(key_prefix);
 
         match (access_key_id, secret_access_key) {
             (Some(access_key_id), Some(secret_access_key)) => {
@@ -50,27 +50,28 @@ impl S3Cache {
         }
 
         if let Some(region) = region {
-            builder.region(region);
+            builder = builder.region(region);
         }
 
         if no_credentials {
-            builder.disable_config_load();
-            // Disable EC2 metadata to avoid OpenDAL trying to load
-            // credentials from EC2 metadata.
-            //
-            // A.k.a, don't try to visit `http://169.254.169.254`
-            builder.disable_ec2_metadata();
-            // Allow anonymous access to S3 so that OpenDAL will not
-            // throw error when no credentials are provided.
-            builder.allow_anonymous();
+            builder = builder
+                .disable_config_load()
+                // Disable EC2 metadata to avoid OpenDAL trying to load
+                // credentials from EC2 metadata.
+                //
+                // A.k.a, don't try to visit `http://169.254.169.254`
+                .disable_ec2_metadata()
+                // Allow anonymous access to S3 so that OpenDAL will not
+                // throw error when no credentials are provided.
+                .allow_anonymous();
         }
 
         if let Some(endpoint) = endpoint {
-            builder.endpoint(&endpoint_resolver(endpoint, use_ssl)?);
+            builder = builder.endpoint(&endpoint_resolver(endpoint, use_ssl)?);
         }
 
         if server_side_encryption.unwrap_or_default() {
-            builder.server_side_encryption_with_s3_key();
+            builder = builder.server_side_encryption_with_s3_key();
         }
 
         let op = Operator::new(builder)?
@@ -78,13 +79,6 @@ impl S3Cache {
             .finish();
         Ok(op)
     }
-}
-
-/// Set the user agent (helps with monitoring on the server side)
-fn set_user_agent() -> HttpClient {
-    let user_agent = format!("{}/{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
-    let client_builder = ClientBuilder::new().user_agent(user_agent);
-    HttpClient::build(client_builder).unwrap()
 }
 
 /// Resolve given endpoint along with use_ssl settings.

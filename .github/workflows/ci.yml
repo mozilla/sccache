@@ -66,6 +66,10 @@ jobs:
       matrix:
         include:
           - os: ubuntu-20.04
+            # Oldest tested CUDA Toolkit version. Older CTKs might work, but they're
+            # difficult to test without Ubuntu18.04 GHA runners or containerized jobs.
+            cuda: "11.1"
+            extra_desc: cuda11.1
             # Oldest supported version, keep in sync with README.md
             rustc: "1.75.0"
           - os: ubuntu-22.04
@@ -86,21 +90,53 @@ jobs:
             extra_args: --no-default-features
             allow_failure: true
           - os: ubuntu-22.04
-          - os: macos-13
-          # M1 CPU
-          - os: macos-14
-          - os: windows-2019
+            cuda: "11.8"
+            extra_desc: cuda11.8
+          - os: ubuntu-24.04
+            cuda: "12.6"
             # Oldest supported version, keep in sync with README.md
             rustc: "1.75.0"
+            extra_desc: cuda12.6
+          - os: macos-13
+          # # M1 CPU
+          - os: macos-14
           - os: windows-2019
+            cuda: "11.1"
+            # Oldest supported version, keep in sync with README.md
+            rustc: "1.75.0"
+            extra_args: --no-fail-fast
+            extra_desc: cuda11.1
+          - os: windows-2019
+            cuda: "11.8"
             rustc: nightly
             allow_failure: true
             extra_args: --features=unstable
+            extra_desc: cuda11.8
           - os: windows-2019
+            cuda: "11.8"
             rustc: beta
+            extra_desc: cuda11.8
+          - os: windows-2022
+            cuda: "12.6"
+            # Oldest supported version, keep in sync with README.md
+            rustc: "1.75.0"
+            extra_args: --no-fail-fast
+            extra_desc: cuda12.6
+          - os: windows-2022
+            cuda: "12.6"
+            rustc: nightly
+            allow_failure: true
+            extra_args: --features=unstable
+            extra_desc: cuda12.6
+          - os: windows-2022
+            cuda: "12.6"
+            rustc: beta
+            extra_desc: cuda12.6
     env:
       RUST_BACKTRACE: 1
     steps:
+      - uses: ilammy/msvc-dev-cmd@v1
+
       - name: Clone repository
         uses: actions/checkout@v4
 
@@ -109,9 +145,35 @@ jobs:
         with:
           toolchain: ${{ matrix.rustc }}
 
-      - name: Install gcc & clang for tests
-        run: sudo apt-get install -y clang gcc
-        if: ${{ matrix.os == 'ubuntu-20.04' || matrix.os == 'ubuntu-22.04' }}
+      - if: ${{ contains(matrix.os, 'ubuntu') }}
+        name: Install gcc & clang for tests
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -x
+          # Conflicts with clang-cuda
+          if dpkg -s gcc-14 >/dev/null 2>&1; then
+            sudo apt remove -y gcc-14 g++-14
+            sudo apt autoremove -y
+          fi
+          # Ubuntu20.04's clang-10 is too old for CTK 11+, so install clang-12 instead
+          if test "${{ matrix.os }}" = "ubuntu-20.04" && test -n "${{ matrix.cuda }}"; then
+            sudo apt install -y --no-install-recommends gcc clang-12
+            sudo ln -sf $(which clang-12) /usr/bin/clang
+            sudo ln -sf $(which clang++-12) /usr/bin/clang++
+          else
+            sudo apt install -y --no-install-recommends gcc clang
+          fi
+          echo 'gcc version:'
+          gcc --version
+          echo 'clang version:'
+          clang --version
+
+      - if: matrix.cuda != '' && contains(fromJSON('["Linux", "Windows"]'), runner.os)
+        name: Install nvcc
+        uses: ./.github/actions/nvcc-toolchain
+        with:
+          cuda-version: ${{ matrix.cuda }}
 
       - name: Build tests
         run: cargo test --no-run --locked --all-targets ${{ matrix.extra_args }}
@@ -160,6 +222,9 @@ jobs:
           - os: windows-2019
             target: x86_64-pc-windows-msvc
             rustflags: -Ctarget-feature=+crt-static
+          - os: windows-2019
+            target: aarch64-pc-windows-msvc
+            rustflags: -Ctarget-feature=+crt-static
     steps:
       - name: Clone repository
         uses: actions/checkout@v4
@@ -203,7 +268,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-20.04
+          - os: ubuntu-22.04
+            cuda: "11.8"
             rustc: nightly
             allow_failure: true
             extra_args: --features=unstable
@@ -228,6 +294,12 @@ jobs:
         run: sudo apt-get install -y clang gcc
         if: ${{ matrix.os == 'ubuntu-20.04' }}
 
+      - if: matrix.cuda != '' && contains(fromJSON('["Linux", "Windows"]'), runner.os)
+        name: Install nvcc
+        uses: ./.github/actions/nvcc-toolchain
+        with:
+          cuda-version: ${{ matrix.cuda }}
+
       - name: "`grcov` ~ install"
         run: cargo install grcov
 
@@ -236,7 +308,7 @@ jobs:
         env:
           CARGO_INCREMENTAL: "0"
           RUSTC_WRAPPER: ""
-          RUSTFLAGS: "-Zprofile -Ccodegen-units=1 -Copt-level=0 -Clink-dead-code -Coverflow-checks=off"
+          RUSTFLAGS: "-Ccodegen-units=1 -Copt-level=0 -Clink-dead-code -Coverflow-checks=off -Cprofile-generate=target/debug"
 
       - name: Generate coverage data (via `grcov`)
         id: coverage
@@ -255,7 +327,7 @@ jobs:
           echo "report=${COVERAGE_REPORT_FILE}" >> $GITHUB_OUTPUT
 
       - name: Upload coverage results (to Codecov.io)
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v5
         with:
           file: ${{ steps.coverage.outputs.report }}
           ## flags: IntegrationTests, UnitTests, ${{ steps.vars.outputs.CODECOV_FLAGS }}
@@ -264,7 +336,7 @@ jobs:
           fail_ci_if_error: false
 
   test_freebsd:
-    name: test freebsd-13.2 rust stable
+    name: test freebsd-14.1 rust stable
     runs-on: ${{ matrix.job.os }}
     timeout-minutes: 70
     strategy:
@@ -275,7 +347,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Prepare, build and test
-        uses: vmactions/freebsd-vm@v1.0.7
+        uses: vmactions/freebsd-vm@v1
         with:
           mem: 8192
           usesh: true
@@ -323,7 +395,7 @@ jobs:
         if: failure()
         uses: ./.github/actions/artifact_failure
         with:
-          name: test-freebsd-13.2-stable
+          name: test-freebsd-14.1-stable
 
   release:
     name: release

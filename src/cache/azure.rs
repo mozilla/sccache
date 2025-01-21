@@ -20,13 +20,16 @@ use opendal::services::Azblob;
 
 use crate::errors::*;
 
+use super::http_client::set_user_agent;
+
 pub struct AzureBlobCache;
 
 impl AzureBlobCache {
     pub fn build(connection_string: &str, container: &str, key_prefix: &str) -> Result<Operator> {
-        let mut builder = Azblob::from_connection_string(connection_string)?;
-        builder.container(container);
-        builder.root(key_prefix);
+        let builder = Azblob::from_connection_string(connection_string)?
+            .container(container)
+            .root(key_prefix)
+            .http_client(set_user_agent());
 
         let op = Operator::new(builder)?
             .layer(LoggingLayer::default())

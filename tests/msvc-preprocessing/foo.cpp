@@ -10,6 +10,14 @@ __pragma(warning(disable: 4668))
 #endif
 __pragma(warning(pop))
 
+// Minimal reproducible example for errors from user code
+// More information: https://github.com/mozilla/sccache/issues/2250
+#pragma warning(disable : 4002)
+
+#define F(x, y)
+
 int main() {
+  F(2, , , , , , 3, , , , , , ) // C4002
+
   return 0;
 }
