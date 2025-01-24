@@ -309,7 +309,8 @@ fn init_logging() {
     }
 }
 
-const MAX_PER_CORE_LOAD: f64 = 10f64;
+// Maximum number of jobs per core - only occurs for one core, usually less, see load_weight()
+const MAX_PER_CORE_LOAD: f64 = 2f64;
 const SERVER_REMEMBER_ERROR_TIMEOUT: Duration = Duration::from_secs(300);
 const UNCLAIMED_PENDING_TIMEOUT: Duration = Duration::from_secs(300);
 const UNCLAIMED_READY_TIMEOUT: Duration = Duration::from_secs(60);
@@ -399,6 +400,20 @@ impl Default for Scheduler {
     }
 }
 
+fn load_weight(job_count: usize, core_count: usize) -> f64 {
+    // Oversubscribe cores just a little to make up for network and I/O latency. This formula is
+    // not based on hard data but an extrapolation to high core counts of the conventional wisdom
+    // that slightly more jobs than cores achieve the shortest compile time. Which is originally
+    // about local compiles and this is over the network, so be slightly less conservative.
+    let cores_plus_slack = core_count + 1 + core_count / 8;
+    // Note >=, not >, because the question is "can we add another job"?
+    if job_count >= cores_plus_slack {
+        MAX_PER_CORE_LOAD + 1f64 // no new jobs for now
+    } else {
+        job_count as f64 / core_count as f64
+    }
+}
+
 impl SchedulerIncoming for Scheduler {
     fn handle_alloc_job(
         &self,
@@ -415,7 +430,7 @@ impl SchedulerIncoming for Scheduler {
                 let mut best_load: f64 = MAX_PER_CORE_LOAD;
                 let now = Instant::now();
                 for (&server_id, details) in servers.iter_mut() {
-                    let load = details.jobs_assigned.len() as f64 / details.num_cpus as f64;
+                    let load = load_weight(details.jobs_assigned.len(), details.num_cpus);
 
                     if let Some(last_error) = details.last_error {
                         if load < MAX_PER_CORE_LOAD {
