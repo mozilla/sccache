@@ -8,7 +8,7 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Clone repository
         uses: actions/checkout@v4
@@ -28,7 +28,7 @@ jobs:
           path: ./target/debug/sccache
 
   redis-deprecated:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: build
 
     services:
@@ -76,7 +76,7 @@ jobs:
           ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"
 
   redis:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: build
 
     services:
@@ -124,7 +124,7 @@ jobs:
           ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"
 
   s3_minio:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: build
 
     # Setup minio server
@@ -184,7 +184,7 @@ jobs:
           ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"
 
   azblob_azurite:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: build
 
     # Setup azurite server
@@ -240,7 +240,7 @@ jobs:
           ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"
 
   gha:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: build
 
     env:
@@ -289,7 +289,7 @@ jobs:
           ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"
 
   memcached-deprecated:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: build
 
     # Setup memcached server
@@ -344,7 +344,7 @@ jobs:
           ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"
 
   memcached:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: build
 
     # Setup memcached server
@@ -399,7 +399,7 @@ jobs:
           ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"
 
   webdav:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: build
 
     env:
@@ -455,7 +455,7 @@ jobs:
     env:
       TARGET: x86_64-pc-windows-msvc
       SCCACHE_EXE: ${{ github.workspace }}\\target\\x86_64-pc-windows-msvc\\debug\\sccache.exe
-      SCCACHE_LOG: "trace"
+      SCCACHE_LOG: "debug"
       SCCACHE_ERROR_LOG: "${{ github.workspace }}\\server_log.txt"
 
     steps:
@@ -471,7 +471,7 @@ jobs:
           target: $TARGET
 
       - name: Build
-        run: cargo build --bin sccache --target $env:TARGET --features=openssl/vendored
+        run: cargo build --bin sccache --target $env:TARGET --features=vendored-openssl
 
       - name: Compile MSVC (no cache)
         shell: bash
@@ -524,7 +524,7 @@ jobs:
         run: cat "$SCCACHE_ERROR_LOG"
 
   clang:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: build
 
     env:
@@ -578,10 +578,10 @@ jobs:
   hip:
     # Probably wouldn't matter anyway since we run in a container, but staying
     # close to the version is better than not.
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     needs: build
     container:
-      image: rocm/dev-ubuntu-22.04:6.0
+      image: rocm/dev-ubuntu-24.04:6.3
 
     env:
       # SCCACHE_GHA_ENABLED: "on"
@@ -647,7 +647,7 @@ jobs:
           ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"
 
   gcc:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: build
 
     env:
@@ -692,7 +692,7 @@ jobs:
           ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"
 
   autotools:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: build
 
     env:
@@ -748,7 +748,7 @@ jobs:
           ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"
 
   cmake:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: build
 
     env:
@@ -807,7 +807,7 @@ jobs:
 
   # The test cargo "cargo build -Zprofile"
   rust-test-Z-profile:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: build
 
     env:
@@ -853,7 +853,7 @@ jobs:
           ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"
 
   zstd-compression-level:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: build
 
     env:
