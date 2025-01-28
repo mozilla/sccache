@@ -93,10 +93,10 @@ jobs:
             cuda: "11.8"
             extra_desc: cuda11.8
           - os: ubuntu-24.04
-            cuda: "12.6"
+            cuda: "12.8"
             # Oldest supported version, keep in sync with README.md
             rustc: "1.75.0"
-            extra_desc: cuda12.6
+            extra_desc: cuda12.8
           - os: macos-13
           # # M1 CPU
           - os: macos-14
@@ -117,21 +117,21 @@ jobs:
             rustc: beta
             extra_desc: cuda11.8
           - os: windows-2022
-            cuda: "12.6"
+            cuda: "12.8"
             # Oldest supported version, keep in sync with README.md
             rustc: "1.75.0"
             extra_args: --no-fail-fast
-            extra_desc: cuda12.6
+            extra_desc: cuda12.8
           - os: windows-2022
-            cuda: "12.6"
+            cuda: "12.8"
             rustc: nightly
             allow_failure: true
             extra_args: --features=unstable
-            extra_desc: cuda12.6
+            extra_desc: cuda12.8
           - os: windows-2022
-            cuda: "12.6"
+            cuda: "12.8"
             rustc: beta
-            extra_desc: cuda12.6
+            extra_desc: cuda12.8
     env:
       RUST_BACKTRACE: 1
     steps:
