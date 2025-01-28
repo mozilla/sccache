@@ -59,7 +59,7 @@ impl CCompilerImpl for Ptxas {
         cwd: &Path,
         _env_vars: &[(OsString, OsString)],
     ) -> CompilerArguments<ParsedArguments> {
-        cicc::parse_arguments(arguments, cwd, Language::Cubin, &ARGS[..])
+        cicc::parse_arguments(arguments, cwd, Language::Cubin, &ARGS[..], 3)
     }
     #[allow(clippy::too_many_arguments)]
     async fn preprocess<T>(

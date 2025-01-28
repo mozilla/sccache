@@ -454,6 +454,7 @@ pub fn generate_compile_commands(
         num_parallel,
         executable: executable.to_owned(),
         arguments,
+        compilation_flag: parsed_args.compilation_flag.clone(),
         env_vars,
         cwd: cwd.to_owned(),
         host_compiler: host_compiler.clone(),
@@ -484,6 +485,7 @@ pub struct NvccCompileCommand {
     pub num_parallel: usize,
     pub executable: PathBuf,
     pub arguments: Vec<OsString>,
+    pub compilation_flag: OsString,
     pub env_vars: Vec<(OsString, OsString)>,
     pub cwd: PathBuf,
     pub host_compiler: NvccHostCompiler,
@@ -519,6 +521,7 @@ impl CompileCommandImpl for NvccCompileCommand {
             num_parallel,
             executable,
             arguments,
+            compilation_flag,
             env_vars,
             cwd,
             host_compiler,
@@ -529,6 +532,7 @@ impl CompileCommandImpl for NvccCompileCommand {
             creator,
             executable,
             arguments,
+            compilation_flag,
             cwd,
             temp_dir.as_path(),
             keep_dir.clone(),
@@ -625,6 +629,7 @@ async fn group_nvcc_subcommands_by_compilation_stage<T>(
     creator: &T,
     executable: &Path,
     arguments: &[OsString],
+    compilation_flag: &OsStr,
     cwd: &Path,
     tmp: &Path,
     keep_dir: Option<PathBuf>,
@@ -738,6 +743,19 @@ where
             ),
             // cicc and ptxas are cacheable
             Some("cicc") => {
+                match compilation_flag.to_str() {
+                    // Fix for CTK < 12.8:
+                    // If `nvcc` is invoked with `-c` (or any of its variants), remove the
+                    // `--gen_module_id_file` flag. In this mode, we instruct `cudafe++`
+                    // to generate this file, so cicc shouldn't generate it again.
+                    Some("-c") | Some("--compile") | Some("-dc") | Some("--device-c")
+                    | Some("-dw") | Some("--device-w") => {
+                        if let Some(idx) = args.iter().position(|x| x == &gen_module_id_file_flag) {
+                            args.splice(idx..(idx + 1), []);
+                        }
+                    }
+                    _ => {}
+                }
                 let group = device_compile_groups.get_mut(&args[args.len() - 3]);
                 (env_vars.clone(), Cacheable::Yes, group)
             }
@@ -752,7 +770,7 @@ where
                 });
                 (env_vars.clone(), Cacheable::Yes, group)
             }
-            // cudafe++ is not cacheable
+            // cudafe++ _must be_ cached, because the `.module_id` file is unique to each invocation (new in CTK 12.8)
             Some("cudafe++") => {
                 // Fix for CTK < 12.0:
                 // Add `--gen_module_id_file` if the cudafe++ args include `--module_id_file_name`
@@ -764,7 +782,7 @@ where
                 }
                 (
                     env_vars.clone(),
-                    Cacheable::No,
+                    Cacheable::Yes,
                     Some(&mut cuda_front_end_group),
                 )
             }

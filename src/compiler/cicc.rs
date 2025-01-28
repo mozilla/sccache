@@ -58,7 +58,7 @@ impl CCompilerImpl for Cicc {
         cwd: &Path,
         _env_vars: &[(OsString, OsString)],
     ) -> CompilerArguments<ParsedArguments> {
-        parse_arguments(arguments, cwd, Language::Ptx, &ARGS[..])
+        parse_arguments(arguments, cwd, Language::Ptx, &ARGS[..], 3)
     }
     #[allow(clippy::too_many_arguments)]
     async fn preprocess<T>(
@@ -106,12 +106,13 @@ pub fn parse_arguments<S>(
     cwd: &Path,
     language: Language,
     arg_info: S,
+    input_arg_offset_from_end: usize,
 ) -> CompilerArguments<ParsedArguments>
 where
     S: SearchableArgInfo<ArgData>,
 {
     let mut args = arguments.to_vec();
-    let input_loc = arguments.len() - 3;
+    let input_loc = arguments.len() - input_arg_offset_from_end;
     let input = args.splice(input_loc..input_loc + 1, []).next().unwrap();
 
     let mut take_next = false;
@@ -143,14 +144,18 @@ where
                         );
                         continue;
                     }
-                    Some(UnhashedGenModuleIdFileFlag) => {
+                    Some(GenModuleIdFileFlag) => {
                         take_next = false;
                         gen_module_id_file = true;
-                        &mut unhashed_args
+                        &mut common_args
                     }
-                    Some(UnhashedModuleIdFileName(o)) => {
+                    Some(ModuleIdFileName(o)) => {
                         take_next = false;
                         module_id_file_name = Some(cwd.join(o));
+                        &mut common_args
+                    }
+                    Some(UnhashedPassThrough(o)) => {
+                        take_next = false;
                         &mut unhashed_args
                     }
                     Some(UnhashedOutput(o)) => {
@@ -220,8 +225,8 @@ where
         common_args,
         arch_args: vec![],
         unhashed_args,
-        extra_dist_files,
-        extra_hash_files: vec![],
+        extra_dist_files: extra_dist_files.clone(),
+        extra_hash_files: extra_dist_files,
         msvc_show_includes: false,
         profile_generate: false,
         color_mode: ColorMode::Off,
@@ -262,8 +267,6 @@ pub fn generate_compile_commands(
     {
         let _ = path_transformer;
     }
-
-    trace!("compile");
 
     let lang_str = &parsed_args.language.as_str();
     let out_file = match parsed_args.outputs.get("obj") {
@@ -329,8 +332,9 @@ ArgData! { pub
     Output(PathBuf),
     PassThrough(OsString),
     UnhashedFlag,
-    UnhashedGenModuleIdFileFlag,
-    UnhashedModuleIdFileName(PathBuf),
+    GenModuleIdFileFlag,
+    ModuleIdFileName(PathBuf),
+    UnhashedPassThrough(OsString),
     UnhashedOutput(PathBuf),
 }
 
@@ -339,9 +343,9 @@ use self::ArgData::*;
 counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     take_arg!("--gen_c_file_name", PathBuf, Separated, UnhashedOutput),
     take_arg!("--gen_device_file_name", PathBuf, Separated, UnhashedOutput),
-    flag!("--gen_module_id_file", UnhashedGenModuleIdFileFlag),
+    flag!("--gen_module_id_file", GenModuleIdFileFlag),
     take_arg!("--include_file_name", OsString, Separated, PassThrough),
-    take_arg!("--module_id_file_name", PathBuf, Separated, UnhashedModuleIdFileName),
+    take_arg!("--module_id_file_name", PathBuf, Separated, ModuleIdFileName),
     take_arg!("--stub_file_name", PathBuf, Separated, UnhashedOutput),
     take_arg!("-o", PathBuf, Separated, Output),
 ]);

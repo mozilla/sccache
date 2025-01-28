@@ -692,6 +692,7 @@ pub fn language_to_gcc_arg(lang: Language) -> Option<&'static str> {
         Language::ObjectiveCxx => Some("objective-c++"),
         Language::ObjectiveCxxHeader => Some("objective-c++-header"),
         Language::Cuda => Some("cu"),
+        Language::CudaFE => None,
         Language::Ptx => None,
         Language::Cubin => None,
         Language::Rust => None, // Let the compiler decide
