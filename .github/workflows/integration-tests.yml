@@ -528,7 +528,7 @@ jobs:
     needs: build
 
     env:
-      LLVM_VERSION: "16"
+      LLVM_VERSION: "19"
       SCCACHE_GHA_ENABLED: "on"
       SCCACHE_SERVER_UDS: "\\x00sccache.socket"
 
