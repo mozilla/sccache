@@ -573,6 +573,56 @@ fn test_compile_with_define(compiler: Compiler, tempdir: &Path) {
         .stderr(predicates::str::contains("warning:").from_utf8().not());
 }
 
+fn test_gcc_clang_depfile(compiler: Compiler, tempdir: &Path) {
+    let Compiler {
+        name,
+        exe,
+        env_vars,
+    } = compiler;
+    println!("test_gcc_clang_depfile: {}", name);
+    copy_to_tempdir(&[INPUT], tempdir);
+    fs::copy(tempdir.join(INPUT), tempdir.join("same-content.c")).unwrap();
+
+    trace!("compile");
+    sccache_command()
+        .args(compile_cmdline(
+            name,
+            exe.clone(),
+            INPUT,
+            OUTPUT,
+            Vec::new(),
+        ))
+        .args(vec_from!(OsString, "-MD", "-MF", "first.d"))
+        .current_dir(tempdir)
+        .envs(env_vars.clone())
+        .assert()
+        .success();
+    sccache_command()
+        .args(compile_cmdline(
+            name,
+            exe,
+            "same-content.c",
+            "same-content.o",
+            Vec::new(),
+        ))
+        .args(vec_from!(OsString, "-MD", "-MF", "second.d"))
+        .current_dir(tempdir)
+        .envs(env_vars)
+        .assert()
+        .success();
+    let mut first = String::new();
+    let mut second = String::new();
+    File::open(tempdir.join("first.d"))
+        .unwrap()
+        .read_to_string(&mut first)
+        .unwrap();
+    File::open(tempdir.join("second.d"))
+        .unwrap()
+        .read_to_string(&mut second)
+        .unwrap();
+    assert_ne!(first, second);
+}
+
 fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path, preprocessor_cache_mode: bool) {
     if compiler.name != "clang++" {
         test_basic_compile(compiler.clone(), tempdir);
@@ -589,6 +639,7 @@ fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path, preprocessor_ca
     if compiler.name == "clang" || compiler.name == "gcc" {
         test_gcc_clang_no_warnings_from_macro_expansion(compiler.clone(), tempdir);
         test_split_dwarf_object_generate_output_dir_changes(compiler.clone(), tempdir);
+        test_gcc_clang_depfile(compiler.clone(), tempdir);
     }
     if compiler.name == "clang++" {
         test_clang_multicall(compiler.clone(), tempdir);
