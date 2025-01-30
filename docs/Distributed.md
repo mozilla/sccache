@@ -285,6 +285,10 @@ the heartbeat. If a client does not have the appropriate certificate for communi
 securely with a server (after receiving a job allocation from the scheduler), the
 certificate will be requested from the scheduler.
 
+## Configuration
+
+A detailed description of the configuration files can be found in the [distributed configuration](DistributedConfiguration.md) guide.
+
 # Building the Distributed Server Binaries
 
 Until these binaries [are included in releases](https://github.com/mozilla/sccache/issues/393) I've put together a Docker container that can be used to easily build a release binary:
