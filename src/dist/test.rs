@@ -4,22 +4,11 @@ use super::*;
 
 use crate::dist::http::server::create_https_cert_and_privkey_inner;
 use chrono::{NaiveDateTime, Utc};
-use once_cell::sync::Lazy;
-use picky::{key::PrivateKey, signature::SignatureAlgorithm, x509::Cert};
+use picky::{key::PrivateKey, x509::Cert};
 
-use rand::{rngs::OsRng, RngCore};
-use rouille::accept;
-use serde::Serialize;
-use std::convert::Infallible;
-use std::io::Read;
-use std::net::{IpAddr, SocketAddr};
-use std::result::Result as StdResult;
-use std::sync::atomic;
-use std::sync::Mutex;
-use std::{
-    collections::HashMap,
-    net::{Ipv4Addr, SocketAddrV4},
-};
+use rand::rngs::OsRng;
+use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddrV4};
 
 /// Replicates previous generation behaviour, but uses sha256 since sha1 is not included in some openssl distributions
 fn create_https_cert_and_privkey_legacy_openssl(
@@ -109,6 +98,7 @@ fn create_https_cert_and_privkey_legacy_openssl(
     Ok((cert_digest, cert_pem, privkey_pem))
 }
 
+#[allow(dead_code)]
 #[derive(Default, Debug, Clone, Copy)]
 struct FlipperRng(u8);
 
@@ -122,6 +112,7 @@ impl FlipperRng {
     }
 
     fn fill_array<const N: usize>(&mut self, dest: &mut [u8; N]) {
+        #[allow(clippy::needless_range_loop)]
         for i in 0..N {
             dest[i] = self.next_byte();
         }
@@ -149,7 +140,8 @@ impl RngCore for FlipperRng {
     }
 
     fn try_fill_bytes(&mut self, dest: &mut [u8]) -> std::result::Result<(), rand::Error> {
-        Ok(self.fill_bytes(dest))
+        self.fill_bytes(dest);
+        Ok(())
     }
 }
 
@@ -157,7 +149,7 @@ impl RngCore for FlipperRng {
 fn certificate_compatibility_assurance() {
     let now: NaiveDateTime = Utc::now().naive_utc();
     let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 32452));
-    let mut rng = OsRng;
+    let rng = OsRng;
     //FlipperRng::default();
 
     fn parse<'a>(digest: &'a [u8], cert: &[u8], sk: &[u8]) -> Result<(&'a [u8], Cert, PrivateKey)> {
@@ -172,7 +164,7 @@ fn certificate_compatibility_assurance() {
     }
 
     eprintln!("picky start");
-    let (digest, cert, sk) = create_https_cert_and_privkey_inner(&mut rng, now, addr).unwrap();
+    let (digest, cert, sk) = create_https_cert_and_privkey_inner(rng, now, addr).unwrap();
     let (digest, cert, sk) = parse(&digest, &cert, &sk).unwrap();
     eprintln!("picky end");
 
