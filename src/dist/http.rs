@@ -362,10 +362,10 @@ pub(crate) mod server {
                 let mut octets = Vec::with_capacity(8);
 
                 let ip: [u8; 4] = inner.octets();
-                let mask: [u8; 4] = [0xFF, 0xFF, 0xFF, 0x00];
+                let _mask: [u8; 4] = [0xFF, 0xFF, 0xFF, 0x00];
 
                 octets.extend_from_slice(&ip);
-                octets.extend_from_slice(&mask);
+                // octets.extend_from_slice(&mask);
 
                 octets
             }
@@ -375,13 +375,13 @@ pub(crate) mod server {
                 let mut octets = Vec::with_capacity(32);
 
                 let ip: [u8; 16] = inner.octets();
-                let mask: [u8; 16] = [
+                let _mask: [u8; 16] = [
                     0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
                     0xFF, 0xFF, 0x00,
                 ];
 
                 octets.extend_from_slice(&ip);
-                octets.extend_from_slice(&mask);
+                // octets.extend_from_slice(&mask);
 
                 octets
             }
