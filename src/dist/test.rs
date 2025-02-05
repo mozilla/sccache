@@ -98,53 +98,6 @@ fn create_https_cert_and_privkey_legacy_openssl(
     Ok((cert_digest, cert_pem, privkey_pem))
 }
 
-#[allow(dead_code)]
-#[derive(Default, Debug, Clone, Copy)]
-struct FlipperRng(u8);
-
-use rand::CryptoRng;
-
-impl FlipperRng {
-    fn next_byte(&mut self) -> u8 {
-        let v = self.0;
-        self.0 = self.0.wrapping_add(17);
-        v
-    }
-
-    fn fill_array<const N: usize>(&mut self, dest: &mut [u8; N]) {
-        #[allow(clippy::needless_range_loop)]
-        for i in 0..N {
-            dest[i] = self.next_byte();
-        }
-    }
-}
-impl CryptoRng for FlipperRng {}
-
-impl RngCore for FlipperRng {
-    fn next_u32(&mut self) -> u32 {
-        let mut v = [0u8; 4];
-        self.fill_array(&mut v);
-        u32::from_le_bytes(v)
-    }
-
-    fn next_u64(&mut self) -> u64 {
-        let mut v = [0u8; 8];
-        self.fill_array(&mut v);
-        u64::from_le_bytes(v)
-    }
-
-    fn fill_bytes(&mut self, dest: &mut [u8]) {
-        for byte in dest {
-            *byte = self.next_byte();
-        }
-    }
-
-    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> std::result::Result<(), rand::Error> {
-        self.fill_bytes(dest);
-        Ok(())
-    }
-}
-
 #[test]
 fn certificate_compatibility_assurance() {
     let now: NaiveDateTime = Utc::now().naive_utc();
