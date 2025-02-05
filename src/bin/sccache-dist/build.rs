@@ -511,7 +511,7 @@ impl DockerBuilder {
             .context("Unable to list all Docker containers")?;
         if !containers.is_empty() {
             let mut containers_to_rm = vec![];
-            for line in containers.split(|c| c == '\n') {
+            for line in containers.split('\n') {
                 let mut iter = line.splitn(2, ' ');
                 let container_id = iter
                     .next()
@@ -541,7 +541,7 @@ impl DockerBuilder {
             .context("Failed to list all docker images")?;
         if !images.is_empty() {
             let mut images_to_rm = vec![];
-            for line in images.split(|c| c == '\n') {
+            for line in images.split('\n') {
                 let mut iter = line.splitn(2, ' ');
                 let image_id = iter
                     .next()
@@ -609,7 +609,7 @@ impl DockerBuilder {
         let diff = docker_diff(cid)?;
         if !diff.is_empty() {
             let mut lastpath = None;
-            for line in diff.split(|c| c == '\n') {
+            for line in diff.split('\n') {
                 let mut iter = line.splitn(2, ' ');
                 let changetype = iter
                     .next()

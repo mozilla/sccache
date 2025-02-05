@@ -167,7 +167,7 @@ pub struct Iter<'a, T> {
     emitted: usize,
 }
 
-impl<'a, T: ArgumentValue> Iterator for Iter<'a, T> {
+impl<T: ArgumentValue> Iterator for Iter<'_, T> {
     type Item = OsString;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -218,7 +218,7 @@ pub struct IterStrings<'a, T, F> {
 }
 
 #[cfg(feature = "dist-client")]
-impl<'a, T: ArgumentValue, F: FnMut(&Path) -> Option<String>> Iterator for IterStrings<'a, T, F> {
+impl<T: ArgumentValue, F: FnMut(&Path) -> Option<String>> Iterator for IterStrings<'_, T, F> {
     type Item = ArgToStringResult;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -671,7 +671,7 @@ macro_rules! take_arg {
         ArgInfo::TakeArg(
             $s,
             |arg: OsString| $vtype::process(arg).map($variant),
-            ArgDisposition::$d(Some($x as u8)),
+            ArgDisposition::$d(Some(b'=')),
         )
     };
 }
@@ -700,7 +700,7 @@ mod tests {
             Argument::$name($x, $v($y.into()), ArgDisposition::$d(None))
         };
         ($name:ident($x:expr, $v:ident($y:expr), $d:ident($z:expr))) => {
-            Argument::$name($x, $v($y.into()), ArgDisposition::$d(Some($z as u8)))
+            Argument::$name($x, $v($y.into()), ArgDisposition::$d(Some(b'=')))
         };
 
         ($name:ident($x:expr, $v:ident::$w:ident)) => {
@@ -716,7 +716,7 @@ mod tests {
             Argument::$name($x, $v::$w($y.into()), ArgDisposition::$d(None))
         };
         ($name:ident($x:expr, $v:ident::$w:ident($y:expr), $d:ident($z:expr))) => {
-            Argument::$name($x, $v::$w($y.into()), ArgDisposition::$d(Some($z as u8)))
+            Argument::$name($x, $v::$w($y.into()), ArgDisposition::$d(Some(b'=')))
         };
     }
 

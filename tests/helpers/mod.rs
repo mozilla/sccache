@@ -1,3 +1,5 @@
+#![allow(clippy::result_large_err)]
+
 use anyhow::{Context, Result};
 use assert_cmd::assert::OutputAssertExt;
 use chrono::Local;

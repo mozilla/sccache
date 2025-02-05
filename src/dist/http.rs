@@ -565,7 +565,7 @@ pub(crate) mod server {
     fn bearer_http_auth(request: &rouille::Request) -> Option<&str> {
         let header = request.header("Authorization")?;
 
-        let mut split = header.splitn(2, |c| c == ' ');
+        let mut split = header.splitn(2, ' ');
 
         let authtype = split.next()?;
         if authtype != "Bearer" {
