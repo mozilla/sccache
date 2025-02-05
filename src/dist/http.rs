@@ -242,7 +242,7 @@ pub mod urls {
 }
 
 #[cfg(feature = "dist-server")]
-mod server {
+pub(crate) mod server {
     use crate::util::new_reqwest_blocking_client;
     use byteorder::{BigEndian, ReadBytesExt};
     use chrono::{Datelike, Timelike};
@@ -312,7 +312,16 @@ mod server {
     }
 
     fn create_https_cert_and_privkey(addr: SocketAddr) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
-        let mut rng = OsRng;
+        create_https_cert_and_privkey_inner(OsRng, chrono::Utc::now().naive_utc(), addr)
+    }
+
+    pub(crate) fn create_https_cert_and_privkey_inner<
+        R: rand::RngCore + rand::prelude::CryptoRng,
+    >(
+        mut rng: R,
+        now: chrono::NaiveDateTime,
+        addr: SocketAddr,
+    ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
         let rsa_key = rsa::RsaPrivateKey::new(&mut rng, 2048)?;
 
         let line_ending = rsa::pkcs8::LineEnding::default();
@@ -323,15 +332,14 @@ mod server {
         // convert to picky
         let sk = PrivateKey::from_pem_str(sk_pkcs8.as_str())?;
         let pk = PublicKey::from_pem_str(pk_pkcs8.as_str())?;
-        let today = chrono::Utc::now().naive_utc();
-        let expires = today + chrono::Duration::days(365);
+        let expires = now + chrono::Days::new(365);
         let start = UTCDate::new(
-            today.year() as u16,
-            today.month() as u8,
-            today.day() as u8,
-            today.time().hour() as u8,
-            today.time().minute() as u8,
-            today.time().second() as u8,
+            now.year() as u16,
+            now.month() as u8,
+            now.day() as u8,
+            now.time().hour() as u8,
+            now.time().minute() as u8,
+            now.time().second() as u8,
         )
         .unwrap();
         let end = UTCDate::new(
@@ -385,7 +393,7 @@ mod server {
             .subject(subject_name, pk)
             .subject_alt_name(subject_alt_name)
             .serial_number(vec![1]) // cannot be 0 according to picky internal notes
-            .signature_hash_type(SignatureAlgorithm::RsaPkcs1v15(HashAlgorithm::SHA1))
+            .signature_hash_type(SignatureAlgorithm::RsaPkcs1v15(HashAlgorithm::SHA2_256))
             .extended_key_usage(extended_key_usage)
             .self_signed(issuer_name, &sk)
             .build()?;
