@@ -228,9 +228,15 @@ fn create_server_token(server_id: ServerId, auth_token: &str) -> String {
 
 #[cfg(feature = "dist-server")]
 pub enum ServerHandle {
-    Container { cid: String, url: HTTPUrl },
+    Container {
+        cid: String,
+        url: HTTPUrl,
+    },
     #[allow(dead_code)]
-    Process { pid: Pid, url: HTTPUrl },
+    Process {
+        pid: Pid,
+        url: HTTPUrl,
+    },
 }
 
 #[cfg(feature = "dist-server")]
