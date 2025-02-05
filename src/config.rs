@@ -579,7 +579,7 @@ pub fn try_read_config_file<T: DeserializeOwned>(path: &Path) -> Result<Option<T
         }
     }
 
-    let res = if path.extension().map_or(false, |e| e == "json") {
+    let res = if path.extension().is_some_and(|e| e == "json") {
         serde_json::from_str(&string)
             .with_context(|| format!("Failed to load json config file from {}", path.display()))?
     } else {
