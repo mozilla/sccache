@@ -145,6 +145,7 @@ test-case = "3.3.1"
 thirtyfour_sync = { version = "0.27", default-features = false, features = [
   "reqwest-rustls-tls",
 ] }
+openssl = { version = "=0.10.64" }
 
 [target.'cfg(unix)'.dependencies]
 daemonize = "0.5"
