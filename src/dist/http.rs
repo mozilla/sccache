@@ -801,7 +801,7 @@ mod server {
                     (POST) (/api/v1/scheduler/heartbeat_server) => {
                         let server_id = check_server_auth_or_err!(request);
                         let heartbeat_server = try_or_400_log!(req_id, bincode_input(request));
-                        trace!("Req {}: heartbeat_server: {:?}", req_id, heartbeat_server);
+                        trace!(target: "sccache_heartbeat", "Req {}: heartbeat_server: {:?}", req_id, heartbeat_server);
 
                         let HeartbeatServerHttpRequest { num_cpus, jwt_key, server_nonce, cert_digest, cert_pem } = heartbeat_server;
                         try_or_500_log!(req_id, maybe_update_certs(
@@ -943,7 +943,7 @@ mod server {
             thread::spawn(move || {
                 let client = new_reqwest_blocking_client();
                 loop {
-                    trace!("Performing heartbeat");
+                    trace!(target: "sccache_heartbeat", "Performing heartbeat");
                     match bincode_req(
                         client
                             .post(heartbeat_url.clone())
@@ -952,12 +952,12 @@ mod server {
                             .expect("failed to serialize heartbeat"),
                     ) {
                         Ok(HeartbeatServerResult { is_new }) => {
-                            trace!("Heartbeat success is_new={}", is_new);
+                            trace!(target: "sccache_heartbeat", "Heartbeat success is_new={}", is_new);
                             // TODO: if is_new, terminate all running jobs
                             thread::sleep(HEARTBEAT_INTERVAL)
                         }
                         Err(e) => {
-                            error!("Failed to send heartbeat to server: {}", e);
+                            error!(target: "sccache_heartbeat", "Failed to send heartbeat to server: {}", e);
                             thread::sleep(HEARTBEAT_ERROR_INTERVAL)
                         }
                     }
