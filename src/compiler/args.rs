@@ -671,7 +671,7 @@ macro_rules! take_arg {
         ArgInfo::TakeArg(
             $s,
             |arg: OsString| $vtype::process(arg).map($variant),
-            ArgDisposition::$d(Some(b'=')),
+            ArgDisposition::$d(Some($x as u8)),
         )
     };
 }
@@ -700,7 +700,7 @@ mod tests {
             Argument::$name($x, $v($y.into()), ArgDisposition::$d(None))
         };
         ($name:ident($x:expr, $v:ident($y:expr), $d:ident($z:expr))) => {
-            Argument::$name($x, $v($y.into()), ArgDisposition::$d(Some(b'=')))
+            Argument::$name($x, $v($y.into()), ArgDisposition::$d(Some($z as u8)))
         };
 
         ($name:ident($x:expr, $v:ident::$w:ident)) => {
@@ -716,7 +716,7 @@ mod tests {
             Argument::$name($x, $v::$w($y.into()), ArgDisposition::$d(None))
         };
         ($name:ident($x:expr, $v:ident::$w:ident($y:expr), $d:ident($z:expr))) => {
-            Argument::$name($x, $v::$w($y.into()), ArgDisposition::$d(Some(b'=')))
+            Argument::$name($x, $v::$w($y.into()), ArgDisposition::$d(Some($z as u8)))
         };
     }
 
