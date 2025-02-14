@@ -310,6 +310,7 @@ pub fn try_parse() -> Result<Command> {
                         && k != "MINICOM"
                         && k != "DESTDIR"
                         && k != "RPM_PACKAGE_VERSION"
+                        && k != "CARGO_MAKEFLAGS"
                 });
 
                 let cmd = matches
