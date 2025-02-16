@@ -14,8 +14,7 @@ use sccache::dist::{
     ServerNonce, ServerOutgoing, SubmitToolchainResult, TcCache, Toolchain, ToolchainReader,
     UpdateJobStateResult,
 };
-use sccache::util::daemonize;
-use sccache::util::BASE64_URL_SAFE_ENGINE;
+use sccache::util::{daemonize, num_cpus, BASE64_URL_SAFE_ENGINE};
 use serde::{Deserialize, Serialize};
 use std::collections::{btree_map, BTreeMap, HashMap, HashSet};
 use std::env;
@@ -134,6 +133,15 @@ fn check_jwt_server_token(
         .ok()
 }
 
+fn default_core_count_this_machine() -> usize {
+    let core_count = num_cpus();
+    // Oversubscribe cores just a little to make up for network and I/O latency. This formula is
+    // not based on hard data but an extrapolation to high core counts of the conventional wisdom
+    // that slightly more jobs than cores achieve the shortest compile time. Which is originally
+    // about local compiles and this is over the network, so be slightly less conservative.
+    core_count + 1 + core_count / 8
+}
+
 fn run(command: Command) -> Result<i32> {
     match command {
         Command::Auth(AuthSubcommand::Base64 { num_bytes }) => {
@@ -229,6 +237,7 @@ fn run(command: Command) -> Result<i32> {
             scheduler_url,
             scheduler_auth,
             toolchain_cache_size,
+            core_count,
         }) => {
             let builder: Box<dyn dist::BuilderIncoming> = match builder {
                 #[cfg(not(target_os = "freebsd"))]
@@ -293,6 +302,7 @@ fn run(command: Command) -> Result<i32> {
                 bind_address,
                 scheduler_url.to_url(),
                 scheduler_auth,
+                core_count.unwrap_or(default_core_count_this_machine()),
                 server,
             )
             .context("Failed to create sccache HTTP server instance")?;
@@ -403,13 +413,8 @@ impl Default for Scheduler {
 }
 
 fn load_weight(job_count: usize, core_count: usize) -> f64 {
-    // Oversubscribe cores just a little to make up for network and I/O latency. This formula is
-    // not based on hard data but an extrapolation to high core counts of the conventional wisdom
-    // that slightly more jobs than cores achieve the shortest compile time. Which is originally
-    // about local compiles and this is over the network, so be slightly less conservative.
-    let cores_plus_slack = core_count + 1 + core_count / 8;
     // Note >=, not >, because the question is "can we add another job"?
-    if job_count >= cores_plus_slack {
+    if job_count >= core_count {
         MAX_PER_CORE_LOAD + 1f64 // no new jobs for now
     } else {
         job_count as f64 / core_count as f64

@@ -355,6 +355,9 @@ type = "DANGEROUSLY_INSECURE"
 
 
 ```toml
+# The maximum number of cores to be used for build jobs.
+# If unspecified, slightly higher than the number of CPU cores (including SMT "cores").
+#core_count = 16
 # This is where client toolchains will be stored.
 cache_dir = "/tmp/toolchains"
 # The maximum size of the toolchain cache, in bytes.
