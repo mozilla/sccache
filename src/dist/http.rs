@@ -873,6 +873,7 @@ mod server {
         bind_address: SocketAddr,
         scheduler_url: reqwest::Url,
         scheduler_auth: String,
+        core_count: usize,
         // HTTPS pieces all the builders will use for connection encryption
         cert_digest: Vec<u8>,
         cert_pem: Vec<u8>,
@@ -890,6 +891,7 @@ mod server {
             bind_address: Option<SocketAddr>,
             scheduler_url: reqwest::Url,
             scheduler_auth: String,
+            core_count: usize,
             handler: S,
         ) -> Result<Self> {
             let (cert_digest, cert_pem, privkey_pem) =
@@ -903,6 +905,7 @@ mod server {
                 bind_address: bind_address.unwrap_or(public_addr),
                 scheduler_url,
                 scheduler_auth,
+                core_count,
                 cert_digest,
                 cert_pem,
                 privkey_pem,
@@ -914,7 +917,7 @@ mod server {
 
         pub fn start(self) -> Result<Infallible> {
             let heartbeat_req = HeartbeatServerHttpRequest {
-                num_cpus: num_cpus(),
+                num_cpus: self.core_count,
                 jwt_key: self.jwt_key.clone(),
                 server_nonce: self.server_nonce,
                 cert_digest: self.cert_digest,

@@ -68,6 +68,9 @@ The build server requires [bubblewrap](https://github.com/projectatomic/bubblewr
 
 Create a server.conf file to configure authentication, storage locations, network addresses and the path to bubblewrap. A minimal example looks like:
 ```toml
+# The maximum number of cores to be used for build jobs.
+# If unspecified, slightly higher than the number of CPU cores (including SMT "cores").
+#core_count = 16
 # This is where client toolchains will be stored.
 cache_dir = "/tmp/toolchains"
 # The maximum size of the toolchain cache, in bytes.
