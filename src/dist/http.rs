@@ -954,7 +954,9 @@ mod server {
                         Ok(HeartbeatServerResult { is_new }) => {
                             trace!(target: "sccache_heartbeat", "Heartbeat success is_new={}", is_new);
                             // TODO: if is_new, terminate all running jobs
-                            if is_new {info!("Server connected to scheduler");}
+                            if is_new {
+                                info!("Server connected to scheduler");
+                            }
                             thread::sleep(HEARTBEAT_INTERVAL)
                         }
                         Err(e) => {
