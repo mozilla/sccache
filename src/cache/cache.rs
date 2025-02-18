@@ -689,6 +689,7 @@ pub fn storage_from_config(
                     c.endpoint.as_deref(),
                     c.use_ssl,
                     c.server_side_encryption,
+                    c.enable_virtual_host_style,
                 )
                 .map_err(|err| anyhow!("create s3 cache failed: {err:?}"))?;
 
