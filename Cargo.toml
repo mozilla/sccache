@@ -138,7 +138,6 @@ cc = "1.0"
 chrono = "0.4.33"
 filetime = "0.2"
 itertools = "0.12"
-openssl = { version = "=0.10.64", features = ["vendored"] }
 predicates = "=3.1.0"
 serial_test = "3.1"
 temp-env = "0.3.6"
