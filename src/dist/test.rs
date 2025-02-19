@@ -98,7 +98,6 @@ fn create_https_cert_and_privkey_legacy_openssl(
     Ok((cert_digest, cert_pem, privkey_pem))
 }
 
-
 /// The compatibility _cannot_ be tested, since the originally generated certificates were not valid
 /// in regards to the spec, and hence `picky` will fail.
 #[ignore]
