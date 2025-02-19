@@ -49,7 +49,7 @@ gzp = { version = "0.11.3", default-features = false, features = [
 http = "1.0"
 http-body-util = { version = "0.1", optional = true }
 # hyper used here must be kept in sync of the one used in reqwest
-hickory-resolver = { version = "0.24", features = [
+hickory-resolver = { version = "^0.24.4", features = [
   "dnssec-ring",
   "dns-over-rustls",
   "dns-over-https-rustls",
