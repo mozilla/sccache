@@ -168,6 +168,11 @@ impl Storage for DiskCache {
         Ok(self.rw_mode)
     }
 
+    async fn timestamp_cache_hit(&self, _key: &str) -> Result<Option<Duration>> {
+        // Not supported.
+        Ok(None)
+    }
+
     fn location(&self) -> String {
         format!("Local disk: {:?}", self.lru.lock().unwrap().path())
     }

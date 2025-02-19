@@ -65,6 +65,9 @@ impl Storage for MockStorage {
             Duration::from_secs(0)
         })
     }
+    async fn timestamp_cache_hit(&self, _key: &str) -> Result<Duration> {
+        Ok(Duration::from_secs(0))
+    }
     fn location(&self) -> String {
         "Mock Storage".to_string()
     }
