@@ -69,7 +69,7 @@ pub fn stop_local_daemon() -> bool {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .map_or(false, |status| status.success())
+        .is_ok_and(|status| status.success())
 }
 
 pub fn get_stats<F: 'static + Fn(ServerInfo)>(f: F) {
@@ -214,8 +214,15 @@ fn create_server_token(server_id: ServerId, auth_token: &str) -> String {
 
 #[cfg(feature = "dist-server")]
 pub enum ServerHandle {
-    Container { cid: String, url: HTTPUrl },
-    Process { pid: Pid, url: HTTPUrl },
+    Container {
+        cid: String,
+        url: HTTPUrl,
+    },
+    #[allow(dead_code)]
+    Process {
+        pid: Pid,
+        url: HTTPUrl,
+    },
 }
 
 #[cfg(feature = "dist-server")]

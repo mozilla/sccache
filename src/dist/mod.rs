@@ -34,8 +34,6 @@ mod cache;
 pub mod client_auth;
 #[cfg(any(feature = "dist-client", feature = "dist-server"))]
 pub mod http;
-#[cfg(test)]
-mod test;
 
 #[cfg(any(feature = "dist-client", feature = "dist-server"))]
 pub use crate::dist::cache::TcCache;
@@ -621,14 +619,14 @@ pub struct BuildResult {
 // structs
 
 pub struct ToolchainReader<'a>(Box<dyn Read + 'a>);
-impl<'a> Read for ToolchainReader<'a> {
+impl Read for ToolchainReader<'_> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.0.read(buf)
     }
 }
 
 pub struct InputsReader<'a>(Box<dyn Read + Send + 'a>);
-impl<'a> Read for InputsReader<'a> {
+impl Read for InputsReader<'_> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.0.read(buf)
     }

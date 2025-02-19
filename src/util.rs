@@ -829,7 +829,7 @@ pub struct HashToDigest<'a> {
     pub digest: &'a mut Digest,
 }
 
-impl<'a> Hasher for HashToDigest<'a> {
+impl Hasher for HashToDigest<'_> {
     fn write(&mut self, bytes: &[u8]) {
         self.digest.update(bytes)
     }
@@ -931,6 +931,36 @@ pub fn daemonize() -> Result<()> {
 pub fn daemonize() -> Result<()> {
     Ok(())
 }
+
+#[cfg(any(feature = "dist-server", feature = "dist-client"))]
+mod reqwest_dns_resolver {
+    use std::{net::SocketAddr, sync::Arc};
+
+    use hickory_resolver::TokioAsyncResolver;
+    use once_cell::sync::OnceCell;
+    use reqwest::dns::{Addrs, Resolve};
+
+    #[derive(Debug, Default, Clone)]
+    pub struct HickoryResolver(Arc<OnceCell<TokioAsyncResolver>>);
+
+    impl Resolve for HickoryResolver {
+        fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+            let resolver = self.clone();
+            Box::pin(async move {
+                let resolver = resolver
+                    .0
+                    .get_or_try_init(TokioAsyncResolver::tokio_from_system_conf)?;
+
+                let lookup = resolver.lookup_ip(name.as_str()).await?;
+                let addrs: Addrs = Box::new(lookup.into_iter().map(|ip| SocketAddr::new(ip, 0)));
+                Ok(addrs)
+            })
+        }
+    }
+}
+
+#[cfg(any(feature = "dist-server", feature = "dist-client"))]
+pub use reqwest_dns_resolver::HickoryResolver;
 
 /// Disable connection pool to avoid broken connection between runtime
 ///
