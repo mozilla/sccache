@@ -180,6 +180,7 @@ fn compile_hip_cmdline<T: AsRef<OsStr>>(
 }
 
 const INPUT: &str = "test.c";
+const INPUT_HEADER: &str = "test.h";
 const INPUT_CLANG_MULTICALL: &str = "test_clang_multicall.c";
 const INPUT_WITH_WHITESPACE: &str = "test_whitespace.c";
 const INPUT_WITH_WHITESPACE_ALT: &str = "test_whitespace_alt.c";
@@ -672,11 +673,15 @@ fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path, preprocessor_ca
             ),
         };
         test_clang_cache_whitespace_normalization(
-            compiler,
+            compiler.clone(),
             tempdir,
             !is_appleclang && major >= 14,
             preprocessor_cache_mode,
         );
+
+        if is_appleclang {
+            test_clang_xarch_flags(compiler, tempdir)
+        }
     } else {
         test_clang_cache_whitespace_normalization(
             compiler,
@@ -1718,6 +1723,39 @@ fn test_clang_cache_whitespace_normalization(
             assert_eq!(2, info.stats.cache_misses.all());
         });
     }
+}
+
+// Checks that the -include$PWD/test.h flag does not get re-ordered and
+// placed somewhere other than directly after the -Xarch_<arch> flag.
+// If it gets re-ordered, the compilation will fail.
+fn test_clang_xarch_flags(compiler: Compiler, tempdir: &Path) {
+    let Compiler {
+        name,
+        exe,
+        env_vars,
+    } = compiler;
+    println!("test_clang_xarch_flags: {}", name);
+    // Compile a source file.
+    copy_to_tempdir(&[INPUT, INPUT_HEADER], tempdir);
+
+    let test_header_path = tempdir.join(INPUT_HEADER);
+    let include_arg = format!("-include{}", test_header_path.display());
+
+    let mut current_host_arch = std::env::consts::ARCH;
+    if current_host_arch == "aarch64" {
+        current_host_arch = "arm64";
+    }
+    let xarch_flag = format!("-Xarch_{}", current_host_arch);
+
+    let extra_args = vec![xarch_flag.into(), include_arg.into()];
+
+    debug!("compile xarch_flags");
+    sccache_command()
+        .args(compile_cmdline(name, exe, INPUT, OUTPUT, extra_args))
+        .current_dir(tempdir)
+        .envs(env_vars)
+        .assert()
+        .success();
 }
 
 #[cfg(unix)]

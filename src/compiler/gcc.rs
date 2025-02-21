@@ -325,7 +325,8 @@ where
         match arg {
             Argument::WithValue(_, ref v, ArgDisposition::Separated)
             | Argument::WithValue(_, ref v, ArgDisposition::CanBeConcatenated(_))
-            | Argument::WithValue(_, ref v, ArgDisposition::CanBeSeparated(_)) => {
+            | Argument::WithValue(_, ref v, ArgDisposition::CanBeSeparated(_))
+            | Argument::WithValue(_, ref v, ArgDisposition::ConcatenatedAndSeparated(_)) => {
                 if v.clone().into_arg_os_string().starts_with("@") {
                     cannot_cache!("@");
                 }
