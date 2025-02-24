@@ -7,7 +7,8 @@ extern crate sccache;
 extern crate serde_json;
 
 use crate::harness::{
-    get_stats, sccache_command, start_local_daemon, stop_local_daemon, write_json_cfg, write_source,
+    cargo_command, get_stats, init_cargo, sccache_command, start_local_daemon, stop_local_daemon,
+    write_json_cfg, write_source,
 };
 use assert_cmd::prelude::*;
 use sccache::config::HTTPUrl;
@@ -17,6 +18,7 @@ use sccache::dist::{
 };
 use std::ffi::OsStr;
 use std::path::Path;
+use std::process::Output;
 
 use sccache::errors::*;
 
@@ -46,6 +48,48 @@ fn basic_compile(tmpdir: &Path, sccache_cfg_path: &Path, sccache_cached_cfg_path
         .envs(envs)
         .assert()
         .success();
+}
+
+fn rust_compile(tmpdir: &Path, sccache_cfg_path: &Path, sccache_cached_cfg_path: &Path) -> Output {
+    let sccache_path = assert_cmd::cargo::cargo_bin("sccache").into_os_string();
+    let envs: Vec<(_, &OsStr)> = vec![
+        ("RUSTC_WRAPPER", sccache_path.as_ref()),
+        ("CARGO_TARGET_DIR", "target".as_ref()),
+        ("RUST_BACKTRACE", "1".as_ref()),
+        ("SCCACHE_LOG", "debug".as_ref()),
+        ("SCCACHE_CONF", sccache_cfg_path.as_ref()),
+        ("SCCACHE_CACHED_CONF", sccache_cached_cfg_path.as_ref()),
+    ];
+    let cargo_name = "sccache-dist-test";
+    let cargo_path = init_cargo(tmpdir, cargo_name);
+
+    let manifest_file = "Cargo.toml";
+    let source_file = "src/main.rs";
+
+    write_source(
+        &cargo_path,
+        manifest_file,
+        r#"[package]
+        name = "sccache-dist-test"
+        version = "0.1.0"
+        edition = "2021"
+        [dependencies]
+        libc = "0.2.169""#,
+    );
+    write_source(
+        &cargo_path,
+        source_file,
+        r#"fn main() {
+        println!("Hello, world!");
+}"#,
+    );
+
+    cargo_command()
+        .current_dir(cargo_path)
+        .args(["build", "--release"])
+        .envs(envs)
+        .output()
+        .unwrap()
 }
 
 pub fn dist_test_sccache_client_cfg(
@@ -219,6 +263,76 @@ fn test_dist_failingserver() {
         assert_eq!(0, info.stats.dist_compiles.values().sum::<usize>());
         assert_eq!(1, info.stats.dist_errors);
         assert_eq!(1, info.stats.compile_requests);
+        assert_eq!(1, info.stats.requests_executed);
+        assert_eq!(0, info.stats.cache_hits.all());
+        assert_eq!(1, info.stats.cache_misses.all());
+    });
+}
+
+#[test]
+#[cfg_attr(not(feature = "dist-tests"), ignore)]
+fn test_dist_cargo_build() {
+    let tmpdir = tempfile::Builder::new()
+        .prefix("sccache_dist_test")
+        .tempdir()
+        .unwrap();
+    let tmpdir = tmpdir.path();
+    let sccache_dist = harness::sccache_dist_path();
+
+    let mut system = harness::DistSystem::new(&sccache_dist, tmpdir);
+    system.add_scheduler();
+    let _server_handle = system.add_server();
+
+    let sccache_cfg = dist_test_sccache_client_cfg(tmpdir, system.scheduler_url());
+    let sccache_cfg_path = tmpdir.join("sccache-cfg.json");
+    write_json_cfg(tmpdir, "sccache-cfg.json", &sccache_cfg);
+    let sccache_cached_cfg_path = tmpdir.join("sccache-cached-cfg");
+
+    stop_local_daemon();
+    start_local_daemon(&sccache_cfg_path, &sccache_cached_cfg_path);
+    rust_compile(tmpdir, &sccache_cfg_path, &sccache_cached_cfg_path)
+        .assert()
+        .success();
+    get_stats(|info| {
+        assert_eq!(1, info.stats.dist_compiles.values().sum::<usize>());
+        assert_eq!(0, info.stats.dist_errors);
+        assert_eq!(5, info.stats.compile_requests);
+        assert_eq!(1, info.stats.requests_executed);
+        assert_eq!(0, info.stats.cache_hits.all());
+        assert_eq!(1, info.stats.cache_misses.all());
+    });
+}
+
+#[test]
+#[cfg_attr(not(feature = "dist-tests"), ignore)]
+fn test_dist_cargo_makeflags() {
+    let tmpdir = tempfile::Builder::new()
+        .prefix("sccache_dist_test")
+        .tempdir()
+        .unwrap();
+    let tmpdir = tmpdir.path();
+    let sccache_dist = harness::sccache_dist_path();
+
+    let mut system = harness::DistSystem::new(&sccache_dist, tmpdir);
+    system.add_scheduler();
+    let _server_handle = system.add_server();
+
+    let sccache_cfg = dist_test_sccache_client_cfg(tmpdir, system.scheduler_url());
+    let sccache_cfg_path = tmpdir.join("sccache-cfg.json");
+    write_json_cfg(tmpdir, "sccache-cfg.json", &sccache_cfg);
+    let sccache_cached_cfg_path = tmpdir.join("sccache-cached-cfg");
+
+    stop_local_daemon();
+    start_local_daemon(&sccache_cfg_path, &sccache_cached_cfg_path);
+    let compile_output = rust_compile(tmpdir, &sccache_cfg_path, &sccache_cached_cfg_path);
+
+    assert!(!String::from_utf8_lossy(&compile_output.stderr)
+        .contains("warning: failed to connect to jobserver from environment variable"));
+
+    get_stats(|info| {
+        assert_eq!(1, info.stats.dist_compiles.values().sum::<usize>());
+        assert_eq!(0, info.stats.dist_errors);
+        assert_eq!(5, info.stats.compile_requests);
         assert_eq!(1, info.stats.requests_executed);
         assert_eq!(0, info.stats.cache_hits.all());
         assert_eq!(1, info.stats.cache_misses.all());
