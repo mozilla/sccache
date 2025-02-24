@@ -288,10 +288,10 @@ impl DistSystem {
                 "--network",
                 "host",
                 "-v",
-                &format!("{}:/sccache-dist", self.sccache_dist.to_str().unwrap()),
+                &format!("{}:/sccache-dist:z", self.sccache_dist.to_str().unwrap()),
                 "-v",
                 &format!(
-                    "{}:{}",
+                    "{}:{}:z",
                     self.tmpdir.to_str().unwrap(),
                     CONFIGS_CONTAINER_PATH
                 ),
@@ -356,10 +356,10 @@ impl DistSystem {
                 "--network",
                 "host",
                 "-v",
-                &format!("{}:/sccache-dist", self.sccache_dist.to_str().unwrap()),
+                &format!("{}:/sccache-dist:z", self.sccache_dist.to_str().unwrap()),
                 "-v",
                 &format!(
-                    "{}:{}",
+                    "{}:{}:z",
                     self.tmpdir.to_str().unwrap(),
                     CONFIGS_CONTAINER_PATH
                 ),
