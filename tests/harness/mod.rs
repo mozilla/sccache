@@ -69,7 +69,7 @@ pub fn stop_local_daemon() -> bool {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .map_or(false, |status| status.success())
+        .is_ok_and(|status| status.success())
 }
 
 pub fn get_stats<F: 'static + Fn(ServerInfo)>(f: F) {

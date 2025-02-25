@@ -399,7 +399,7 @@ impl<'a> ExpandAtArgs<'a> {
     }
 }
 
-impl<'a> Iterator for ExpandAtArgs<'a> {
+impl Iterator for ExpandAtArgs<'_> {
     type Item = OsString;
 
     fn next(&mut self) -> Option<OsString> {

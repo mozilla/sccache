@@ -829,7 +829,7 @@ pub struct HashToDigest<'a> {
     pub digest: &'a mut Digest,
 }
 
-impl<'a> Hasher for HashToDigest<'a> {
+impl Hasher for HashToDigest<'_> {
     fn write(&mut self, bytes: &[u8]) {
         self.digest.update(bytes)
     }

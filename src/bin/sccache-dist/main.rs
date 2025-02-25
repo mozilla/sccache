@@ -85,7 +85,7 @@ fn create_server_token(server_id: ServerId, auth_token: &str) -> String {
     format!("{} {}", server_id.addr(), auth_token)
 }
 fn check_server_token(server_token: &str, auth_token: &str) -> Option<ServerId> {
-    let mut split = server_token.splitn(2, |c| c == ' ');
+    let mut split = server_token.splitn(2, ' ');
     let server_addr = split.next().and_then(|addr| addr.parse().ok())?;
     match split.next() {
         Some(t) if t == auth_token => Some(ServerId::new(server_addr)),

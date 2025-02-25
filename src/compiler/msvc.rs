@@ -1184,7 +1184,7 @@ impl<'a> ExpandIncludeFile<'a> {
     }
 }
 
-impl<'a> Iterator for ExpandIncludeFile<'a> {
+impl Iterator for ExpandIncludeFile<'_> {
     type Item = OsString;
 
     fn next(&mut self) -> Option<OsString> {
@@ -1197,10 +1197,7 @@ impl<'a> Iterator for ExpandIncludeFile<'a> {
             }
 
             // Visit the next argument provided by the original command iterator.
-            let arg = match self.args.pop() {
-                Some(arg) => arg,
-                None => return None,
-            };
+            let arg = self.args.pop()?;
             let file_arg = match arg.split_prefix("@") {
                 Some(file_arg) => file_arg,
                 None => return Some(arg),
@@ -1290,7 +1287,7 @@ where
     }
 }
 
-impl<'a> SplitMsvcResponseFileArgs<'a> {
+impl SplitMsvcResponseFileArgs<'_> {
     /// Appends backslashes to `target` by decrementing `count`.
     /// If `step` is >1, then `count` is decremented by `step`, resulting in 1 backslash appended for every `step`.
     fn append_backslashes_to(target: &mut String, count: &mut usize, step: usize) {
@@ -1301,7 +1298,7 @@ impl<'a> SplitMsvcResponseFileArgs<'a> {
     }
 }
 
-impl<'a> Iterator for SplitMsvcResponseFileArgs<'a> {
+impl Iterator for SplitMsvcResponseFileArgs<'_> {
     type Item = String;
 
     fn next(&mut self) -> Option<String> {
