@@ -969,15 +969,12 @@ impl<'a> ExpandIncludeFile<'a> {
     }
 }
 
-impl<'a> Iterator for ExpandIncludeFile<'a> {
+impl Iterator for ExpandIncludeFile<'_> {
     type Item = OsString;
 
     fn next(&mut self) -> Option<OsString> {
         loop {
-            let arg = match self.stack.pop() {
-                Some(arg) => arg,
-                None => return None,
-            };
+            let arg = self.stack.pop()?;
             let file = match arg.split_prefix("@") {
                 Some(arg) => self.cwd.join(arg),
                 None => return Some(arg),
