@@ -18,33 +18,68 @@ use crate::errors::*;
 
 use super::http_client::set_user_agent;
 
-pub struct S3Cache;
+pub struct S3Cache {
+    bucket: String,
+    region: Option<String>,
+    key_prefix: String,
+    no_credentials: bool,
+    endpoint: Option<String>,
+    use_ssl: Option<bool>,
+    server_side_encryption: Option<bool>,
+    enable_virtual_host_style: Option<bool>,
+}
 
 impl S3Cache {
-    pub fn build(
-        bucket: &str,
-        region: Option<&str>,
-        key_prefix: &str,
-        no_credentials: bool,
-        endpoint: Option<&str>,
-        use_ssl: Option<bool>,
-        server_side_encryption: Option<bool>,
+    pub fn new(bucket: String, key_prefix: String, no_credentials: bool) -> Self {
+        Self {
+            bucket,
+            region: None,
+            key_prefix,
+            no_credentials,
+            endpoint: None,
+            use_ssl: None,
+            server_side_encryption: None,
+            enable_virtual_host_style: None,
+        }
+    }
+    pub fn with_region(mut self, region: Option<String>) -> Self {
+        self.region = region;
+        self
+    }
+    pub fn with_endpoint(mut self, endpoint: Option<String>) -> Self {
+        self.endpoint = endpoint;
+        self
+    }
+    pub fn with_use_ssl(mut self, use_ssl: Option<bool>) -> Self {
+        self.use_ssl = use_ssl;
+        self
+    }
+    pub fn with_server_side_encryption(mut self, server_side_encryption: Option<bool>) -> Self {
+        self.server_side_encryption = server_side_encryption;
+        self
+    }
+    pub fn with_enable_virtual_host_style(
+        mut self,
         enable_virtual_host_style: Option<bool>,
-    ) -> Result<Operator> {
+    ) -> Self {
+        self.enable_virtual_host_style = enable_virtual_host_style;
+        self
+    }
+    pub fn build(self) -> Result<Operator> {
         let mut builder = S3::default()
             .http_client(set_user_agent())
-            .bucket(bucket)
-            .root(key_prefix);
+            .bucket(&self.bucket)
+            .root(&self.key_prefix);
 
-        if let Some(region) = region {
+        if let Some(region) = &self.region {
             builder = builder.region(region);
         }
 
-        if let Some(true) = enable_virtual_host_style {
+        if let Some(true) = &self.enable_virtual_host_style {
             builder = builder.enable_virtual_host_style();
         }
 
-        if no_credentials {
+        if self.no_credentials {
             builder = builder
                 .disable_config_load()
                 // Disable EC2 metadata to avoid OpenDAL trying to load
@@ -57,11 +92,11 @@ impl S3Cache {
                 .allow_anonymous();
         }
 
-        if let Some(endpoint) = endpoint {
-            builder = builder.endpoint(&endpoint_resolver(endpoint, use_ssl)?);
+        if let Some(endpoint) = &self.endpoint {
+            builder = builder.endpoint(&endpoint_resolver(endpoint, self.use_ssl)?);
         }
 
-        if server_side_encryption.unwrap_or_default() {
+        if self.server_side_encryption.unwrap_or_default() {
             builder = builder.server_side_encryption_with_s3_key();
         }
 

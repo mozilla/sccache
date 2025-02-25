@@ -680,18 +680,16 @@ pub fn storage_from_config(
                     "Init s3 cache with bucket {}, endpoint {:?}",
                     c.bucket, c.endpoint
                 );
-
-                let storage = S3Cache::build(
-                    &c.bucket,
-                    c.region.as_deref(),
-                    &c.key_prefix,
-                    c.no_credentials,
-                    c.endpoint.as_deref(),
-                    c.use_ssl,
-                    c.server_side_encryption,
-                    c.enable_virtual_host_style,
-                )
-                .map_err(|err| anyhow!("create s3 cache failed: {err:?}"))?;
+                let storage_builder =
+                    S3Cache::new(c.bucket.clone(), c.key_prefix.clone(), c.no_credentials);
+                let storage = storage_builder
+                    .with_region(c.region.clone())
+                    .with_endpoint(c.endpoint.clone())
+                    .with_use_ssl(c.use_ssl)
+                    .with_server_side_encryption(c.server_side_encryption)
+                    .with_enable_virtual_host_style(c.enable_virtual_host_style)
+                    .build()
+                    .map_err(|err| anyhow!("create s3 cache failed: {err:?}"))?;
 
                 return Ok(Arc::new(storage));
             }
