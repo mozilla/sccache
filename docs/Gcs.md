@@ -65,6 +65,16 @@ export SCCACHE_GCS_KEY_PATH=secret-gcp-storage.json
 Cache location                  GCS, bucket: Bucket(name=<bucket name in GCP>), key_prefix: (none)
 ```
 
+## Lifecycle management
+
+Sccache updates the `CustomTime` metadata field of cache objects every time
+there was a cache hit.
+This can be used to implement automatic cleanup in GCS using the
+["Custom time before"](https://cloud.google.com/storage/docs/lifecycle#customtimebefore)
+or ["Days since custom time"](https://cloud.google.com/storage/docs/lifecycle#dayssincecustomtime)
+conditions on the bucket in order to remove cache entries which have not been
+actively used for a certain amount of time.
+
 ## Deprecation
 
 `SCCACHE_GCS_OAUTH_URL` have been deprecated and not supported, please use `SCCACHE_GCS_SERVICE_ACCOUNT` instead.
