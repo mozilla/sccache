@@ -92,6 +92,8 @@ endpoint = "s3-us-east-1.amazonaws.com"
 use_ssl = true
 key_prefix = "s3prefix"
 server_side_encryption = false
+access_key_id = "aws_access_key_id"
+secret_access_key = "aws_secret_access_key"
 
 [cache.webdav]
 endpoint = "http://192.168.10.42:80/some/webdav.php"
@@ -154,6 +156,8 @@ configuration variables
 * `SCCACHE_REGION` s3 region, required if using AWS S3
 * `SCCACHE_S3_USE_SSL` s3 endpoint requires TLS, set this to `true`
 * `SCCACHE_S3_KEY_PREFIX` s3 key prefix (optional)
+* `SCCACHE_AWS_ACCESS_KEY_ID` AWS access key (optional). If not specified, sccache will attempt to load credentials from other sources (see [S3 credentials](S3.md#credentials))
+* `SCCACHE_AWS_SECRET_ACCESS_KEY` AWS secret key (optional). If not specified, sccache will attempt to load credentials from other sources (see [S3 credentials](S3.md#credentials))
 
 The endpoint used then becomes `${SCCACHE_BUCKET}.s3-{SCCACHE_REGION}.amazonaws.com`.
 If you are not using the default endpoint and `SCCACHE_REGION` is undefined, it

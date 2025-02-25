@@ -21,6 +21,7 @@ use super::http_client::set_user_agent;
 pub struct S3Cache;
 
 impl S3Cache {
+    #[allow(clippy::too_many_arguments)]
     pub fn build(
         bucket: &str,
         region: Option<&str>,
@@ -29,11 +30,24 @@ impl S3Cache {
         endpoint: Option<&str>,
         use_ssl: Option<bool>,
         server_side_encryption: Option<bool>,
+        access_key_id: Option<&str>,
+        secret_access_key: Option<&str>,
     ) -> Result<Operator> {
         let mut builder = S3::default()
             .http_client(set_user_agent())
             .bucket(bucket)
             .root(key_prefix);
+
+        match (access_key_id, secret_access_key) {
+            (Some(access_key_id), Some(secret_access_key)) => {
+                builder.access_key_id(access_key_id);
+                builder.secret_access_key(secret_access_key);
+            }
+            (None, None) => (),
+            _ => {
+                bail!("Both access_key_id and secret_access_key must be set or both must be unset.")
+            }
+        }
 
         if let Some(region) = region {
             builder = builder.region(region);

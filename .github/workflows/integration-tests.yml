@@ -183,6 +183,70 @@ jobs:
 
           ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"
 
+  s3_minio_alternative:
+    runs-on: ubuntu-latest
+    needs: build
+
+    # Setup minio server
+    services:
+      minio:
+        image: wktk/minio-server
+        ports:
+          - 9000:9000
+        env:
+          MINIO_ACCESS_KEY: "minioadmin"
+          MINIO_SECRET_KEY: "minioadmin"
+
+    env:
+      SCCACHE_BUCKET: test
+      SCCACHE_ENDPOINT: http://127.0.0.1:9000/
+      SCCACHE_REGION: us-east-1
+      SCCACHE_AWS_ACCESS_KEY_ID: "minioadmin"
+      SCCACHE_AWS_SECRET_ACCESS_KEY: "minioadmin"
+      AWS_EC2_METADATA_DISABLED: "true"
+      RUSTC_WRAPPER: /home/runner/.cargo/bin/sccache
+
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@v4
+
+      - name: Setup test bucket
+        # AWS credentials for aws command
+        env:
+          AWS_ACCESS_KEY_ID: minioadmin
+          AWS_SECRET_ACCESS_KEY: minioadmin
+        run: aws --endpoint-url http://127.0.0.1:9000/ s3 mb s3://test
+
+      - name: Install rust
+        uses: ./.github/actions/rust-toolchain
+        with:
+          toolchain: "stable"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: integration-tests
+          path: /home/runner/.cargo/bin/
+      - name: Chmod for binary
+        run: chmod +x ${SCCACHE_PATH}
+
+      - name: Test
+        run: cargo clean && cargo build
+
+      - name: Output
+        run: |
+          ${SCCACHE_PATH} --show-stats
+
+          ${SCCACHE_PATH} --show-stats | grep s3
+
+      - name: Test Twice for Cache Read
+        run: cargo clean && cargo build
+
+      - name: Output
+        run: |
+          ${SCCACHE_PATH} --show-stats
+
+          ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"
+
   azblob_azurite:
     runs-on: ubuntu-24.04
     needs: build
