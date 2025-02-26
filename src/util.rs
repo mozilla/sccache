@@ -1011,6 +1011,10 @@ pub fn ascii_unescape_default(s: &[u8]) -> std::io::Result<Vec<u8>> {
     Ok(out)
 }
 
+pub fn num_cpus() -> usize {
+    std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{OsStrExt, TimeMacroFinder};
