@@ -2582,7 +2582,6 @@ dependencies = [
  "memmap2",
  "mime",
  "nix 0.28.0",
- "num_cpus",
  "number_prefix",
  "object",
  "once_cell",

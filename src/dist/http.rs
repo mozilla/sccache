@@ -243,7 +243,7 @@ pub mod urls {
 
 #[cfg(feature = "dist-server")]
 mod server {
-    use crate::util::new_reqwest_blocking_client;
+    use crate::util::{new_reqwest_blocking_client, num_cpus};
     use byteorder::{BigEndian, ReadBytesExt};
     use flate2::read::ZlibDecoder as ZlibReadDecoder;
     use once_cell::sync::Lazy;
@@ -843,7 +843,7 @@ mod server {
             // This limit is rouille's default for `start_server_with_pool`, which
             // we would use, except that interface doesn't permit any sort of
             // error handling to be done.
-            let server = server.pool_size(num_cpus::get() * 8);
+            let server = server.pool_size(num_cpus() * 8);
             server.run();
 
             panic!("Rouille server terminated")
@@ -925,7 +925,7 @@ mod server {
                 handler,
             } = self;
             let heartbeat_req = HeartbeatServerHttpRequest {
-                num_cpus: num_cpus::get(),
+                num_cpus: num_cpus(),
                 jwt_key: jwt_key.clone(),
                 server_nonce,
                 cert_digest,
@@ -1022,7 +1022,7 @@ mod server {
             // This limit is rouille's default for `start_server_with_pool`, which
             // we would use, except that interface doesn't permit any sort of
             // error handling to be done.
-            let server = server.pool_size(num_cpus::get() * 8);
+            let server = server.pool_size(num_cpus() * 8);
             server.run();
 
             panic!("Rouille server terminated")
