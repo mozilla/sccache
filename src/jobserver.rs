@@ -83,7 +83,7 @@ pub struct Acquired {
 
 impl Client {
     pub fn new() -> Client {
-        Client::new_num(num_cpus::get())
+        Client::new_num(crate::util::num_cpus())
     }
 
     pub fn new_num(num: usize) -> Client {
