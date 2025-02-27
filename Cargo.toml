@@ -96,7 +96,7 @@ tokio = { version = "1", features = [
   "process",
   "macros",
 ] }
-tokio-serde = "0.8"
+tokio-serde = "0.9"
 tokio-util = { version = "0.7", features = ["codec", "io"] }
 toml = "0.8"
 tower = "0.4"
