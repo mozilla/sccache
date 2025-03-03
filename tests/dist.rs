@@ -102,6 +102,7 @@ pub fn dist_test_sccache_client_cfg(
     sccache_cfg
 }
 
+#[serial_test::serial]
 #[test]
 #[cfg_attr(not(feature = "dist-tests"), ignore)]
 fn test_dist_basic() {
@@ -135,6 +136,7 @@ fn test_dist_basic() {
     });
 }
 
+#[serial_test::serial]
 #[test]
 #[cfg_attr(not(feature = "dist-tests"), ignore)]
 fn test_dist_restartedserver() {
@@ -171,6 +173,7 @@ fn test_dist_restartedserver() {
     });
 }
 
+#[serial_test::serial]
 #[test]
 #[cfg_attr(not(feature = "dist-tests"), ignore)]
 fn test_dist_nobuilder() {
@@ -236,6 +239,7 @@ impl ServerIncoming for FailingServer {
     }
 }
 
+#[serial_test::serial]
 #[test]
 #[cfg_attr(not(feature = "dist-tests"), ignore)]
 fn test_dist_failingserver() {
