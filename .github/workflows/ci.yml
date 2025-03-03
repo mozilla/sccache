@@ -281,6 +281,11 @@ jobs:
     #            rustc: nightly
     env:
       RUST_BACKTRACE: 1
+      COVERAGE_REPORT_DIR: "target/debug"
+      COVERAGE_REPORT_FILE: "target/debug/lcov.info"
+      BINARY_DIR: "target/debug"
+      GRCOV_IGNORE_OPTION: '--ignore build.rs --ignore "/*" --ignore "[a-zA-Z]:/*"'
+      GRCOV_EXCLUDE_OPTION: '--excl-br-line "^\s*((debug_)?assert(_eq|_ne)?!|#\[derive\()"'
     steps:
       - name: Clone repository
         uses: actions/checkout@v4
@@ -289,6 +294,7 @@ jobs:
         uses: ./.github/actions/rust-toolchain
         with:
           toolchain: ${{ matrix.rustc }}
+          components: llvm-tools-preview
 
       - name: Install gcc & clang for tests
         run: sudo apt-get install -y clang gcc
@@ -308,32 +314,34 @@ jobs:
         env:
           CARGO_INCREMENTAL: "0"
           RUSTC_WRAPPER: ""
-          RUSTFLAGS: "-Ccodegen-units=1 -Copt-level=0 -Clink-dead-code -Coverflow-checks=off -Cprofile-generate=target/debug"
+          RUSTFLAGS: "-Cinstrument-coverage -Ccodegen-units=1 -Copt-level=0 -Coverflow-checks=off"
+
+
+      - name: Display coverage files
+        shell: bash
+        run:
+          grcov . -s . --binary-path $BINARY_DIR --output-type files $GRCOV_IGNORE_OPTION $GRCOV_EXCLUDE_OPTION | sort --unique
 
       - name: Generate coverage data (via `grcov`)
         id: coverage
         shell: bash
         run: |
-          ## Generate coverage data
-          COVERAGE_REPORT_DIR="target/debug"
-          COVERAGE_REPORT_FILE="${COVERAGE_REPORT_DIR}/lcov.info"
-          # GRCOV_IGNORE_OPTION='--ignore build.rs --ignore "/*" --ignore "[a-zA-Z]:/*"' ## `grcov` ignores these params when passed as an environment variable (why?)
-          # GRCOV_EXCLUDE_OPTION='--excl-br-line "^\s*((debug_)?assert(_eq|_ne)?!|#\[derive\()"' ## `grcov` ignores these params when passed as an environment variable (why?)
           mkdir -p "${COVERAGE_REPORT_DIR}"
-          # display coverage files
-          grcov . --output-type files --ignore build.rs --ignore "/*" --ignore "[a-zA-Z]:/*" --excl-br-line "^\s*((debug_)?assert(_eq|_ne)?!|#\[derive\()" | sort --unique
-          # generate coverage report
-          grcov . --output-type lcov --output-path "${COVERAGE_REPORT_FILE}" --branch --ignore build.rs --ignore "/*" --ignore "[a-zA-Z]:/*" --excl-br-line "^\s*((debug_)?assert(_eq|_ne)?!|#\[derive\()"
+          grcov . -s . --binary-path $BINARY_DIR --output-type lcov --output-path "${COVERAGE_REPORT_FILE}" --branch $GRCOV_IGNORE_OPTION $GRCOV_EXCLUDE_OPTION
           echo "report=${COVERAGE_REPORT_FILE}" >> $GITHUB_OUTPUT
+
 
       - name: Upload coverage results (to Codecov.io)
         uses: codecov/codecov-action@v5
         with:
-          file: ${{ steps.coverage.outputs.report }}
+          files: ${{ steps.coverage.outputs.report }}
           ## flags: IntegrationTests, UnitTests, ${{ steps.vars.outputs.CODECOV_FLAGS }}
           flags: ${{ steps.vars.outputs.CODECOV_FLAGS }}
           name: codecov-umbrella
           fail_ci_if_error: false
+          # verbose: true
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
   test_freebsd:
     name: test freebsd-14.1 rust stable
