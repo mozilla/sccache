@@ -237,7 +237,7 @@ jobs:
         if: ${{ !matrix.container }}
 
       - name: Build
-        run: cargo build --locked --release --bin ${{ matrix.binary || 'sccache' }} --target ${{ matrix.target }} --features=openssl/vendored ${{ matrix.extra_args }}
+        run: cargo build --locked --release --bin ${{ matrix.binary || 'sccache' }} --target ${{ matrix.target }} ${{ matrix.extra_args }}
         env:
           MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macosx_deployment_target }}
           DEVELOPER_DIR: ${{ matrix.developer_dir }}
