@@ -313,6 +313,12 @@ jobs:
       - name: "`grcov` ~ install"
         run: cargo install grcov
 
+      - name: Create config for testing
+        run: |
+          mkdir -p .cargo
+          echo '[env]
+          LLVM_PROFILE_FILE = { value = "target/debug/coverage/default-%p-%8m.profraw", relative = true }' >> .cargo/config.toml
+
       - name: Execute tests
         run: cargo test --no-fail-fast --locked --all-targets ${{ matrix.extra_args }}
         env:
