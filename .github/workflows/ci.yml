@@ -65,27 +65,20 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-20.04
-            # Oldest tested CUDA Toolkit version. Older CTKs might work, but they're
-            # difficult to test without Ubuntu18.04 GHA runners or containerized jobs.
-            cuda: "11.1"
-            extra_desc: cuda11.1
-            # Oldest supported version, keep in sync with README.md
-            rustc: "1.75.0"
           - os: ubuntu-22.04
             # Oldest supported version, keep in sync with README.md
             rustc: "1.75.0"
             extra_desc: dist-server
             extra_args: --no-default-features --features=dist-tests test_dist_ -- --test-threads 1
-          - os: ubuntu-20.04
+          - os: ubuntu-22.04
             rustc: stable
-          - os: ubuntu-20.04
+          - os: ubuntu-22.04
             rustc: beta
-          - os: ubuntu-20.04
+          - os: ubuntu-22.04
             rustc: nightly
             allow_failure: true
             extra_args: --features=unstable
-          - os: ubuntu-20.04
+          - os: ubuntu-22.04
             extra_desc: no-default-features
             extra_args: --no-default-features
             allow_failure: true
@@ -156,14 +149,7 @@ jobs:
             sudo apt remove -y gcc-14 g++-14
             sudo apt autoremove -y
           fi
-          # Ubuntu20.04's clang-10 is too old for CTK 11+, so install clang-12 instead
-          if test "${{ matrix.os }}" = "ubuntu-20.04" && test -n "${{ matrix.cuda }}"; then
-            sudo apt install -y --no-install-recommends gcc clang-12
-            sudo ln -sf $(which clang-12) /usr/bin/clang
-            sudo ln -sf $(which clang++-12) /usr/bin/clang++
-          else
-            sudo apt install -y --no-install-recommends gcc clang
-          fi
+          sudo apt install -y --no-install-recommends gcc clang
           echo 'gcc version:'
           gcc --version
           echo 'clang version:'
@@ -196,21 +182,21 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-20.04
+          - os: ubuntu-22.04
             target: x86_64-unknown-linux-musl
             container: '{"image": "messense/rust-musl-cross:x86_64-musl"}'
-          - os: ubuntu-20.04
+          - os: ubuntu-22.04
             binary: sccache-dist
             extra_args: --no-default-features --features="dist-server"
             target: x86_64-unknown-linux-musl
             container: '{"image": "messense/rust-musl-cross:x86_64-musl"}'
-          - os: ubuntu-20.04
+          - os: ubuntu-22.04
             target: aarch64-unknown-linux-musl
             container: '{"image": "messense/rust-musl-cross:aarch64-musl"}'
-          - os: ubuntu-20.04
+          - os: ubuntu-22.04
             target: armv7-unknown-linux-musleabi
             container: '{"image": "messense/rust-musl-cross:armv7-musleabi"}'
-          - os: ubuntu-20.04
+          - os: ubuntu-22.04
             target: i686-unknown-linux-musl
             container: '{"image": "messense/rust-musl-cross:i686-musl"}'
           - os: macos-13
