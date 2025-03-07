@@ -56,6 +56,8 @@ jobs:
       - name: Check
         run: npx --yes @taplo/cli fmt --check
 
+
+
   test:
     name: test ${{ matrix.os }} rust ${{ matrix.rustc || 'stable' }} ${{ matrix.extra_desc }}
     runs-on: ${{ matrix.os }}
@@ -91,6 +93,7 @@ jobs:
             rustc: "1.75.0"
             extra_desc: cuda12.8
           - os: macos-13
+            no_coverage: true
           # # M1 CPU
           - os: macos-14
           - os: windows-2019
@@ -105,6 +108,7 @@ jobs:
             allow_failure: true
             extra_args: --features=unstable
             extra_desc: cuda11.8
+            no_coverage: true
           - os: windows-2019
             cuda: "11.8"
             rustc: beta
@@ -125,8 +129,14 @@ jobs:
             cuda: "12.8"
             rustc: beta
             extra_desc: cuda12.8
+            no_coverage: true
     env:
       RUST_BACKTRACE: 1
+      COVERAGE_REPORT_DIR: "target/debug"
+      COVERAGE_REPORT_FILE: "target/debug/lcov.info"
+      BINARY_DIR: "target/debug"
+      GRCOV_IGNORE_OPTION: '--ignore build.rs --ignore "/*" --ignore "[a-zA-Z]:/*"'
+      GRCOV_EXCLUDE_OPTION: '--excl-br-line "^\s*((debug_)?assert(_eq|_ne)?!|#\[derive\()"'
     steps:
       - uses: ilammy/msvc-dev-cmd@v1
 
@@ -137,6 +147,7 @@ jobs:
         uses: ./.github/actions/rust-toolchain
         with:
           toolchain: ${{ matrix.rustc }}
+          components: llvm-tools-preview
 
       - if: ${{ contains(matrix.os, 'ubuntu') }}
         name: Install gcc & clang for tests
@@ -161,17 +172,61 @@ jobs:
         with:
           cuda-version: ${{ matrix.cuda }}
 
-      - name: Build tests
-        run: cargo test --no-run --locked --all-targets ${{ matrix.extra_args }}
+      - name: "`grcov` ~ install"
+        if: ${{ ! matrix.no_coverage }}
+        run: cargo install grcov
 
-      - name: Run tests
+      - name: Create config for testing
+        if: ${{ ! matrix.no_coverage }}
+        run: |
+          mkdir -p .cargo
+          echo '[env]
+          LLVM_PROFILE_FILE = { value = "target/debug/coverage/default-%p-%8m.profraw", relative = true }' >> .cargo/config.toml
+
+
+      - name: Execute tests
         run: cargo test --locked --all-targets ${{ matrix.extra_args }}
+        env:
+          CARGO_INCREMENTAL: "0"
+          RUSTC_WRAPPER: ""
+          RUSTFLAGS: "-Cinstrument-coverage -Ccodegen-units=1 -Copt-level=0 -Coverflow-checks=off"
 
       - name: Upload failure
         if: failure()
         uses: ./.github/actions/artifact_failure
         with:
           name: test-${{ matrix.os }}-${{ matrix.rustc || 'stable' }}-${{ matrix.extra_desc }}
+
+  # coverage:
+      - name: Display coverage files
+        if: ${{ ! matrix.no_coverage }}
+        shell: bash
+        run:
+          grcov . -s . --binary-path $BINARY_DIR --output-type files $GRCOV_IGNORE_OPTION $GRCOV_EXCLUDE_OPTION | sort --unique
+
+      - name: Generate coverage data (via `grcov`)
+        if: ${{ ! matrix.no_coverage }}
+        id: coverage
+        shell: bash
+        run: |
+          mkdir -p "${COVERAGE_REPORT_DIR}"
+          grcov . -s . --binary-path $BINARY_DIR --output-type lcov --output-path "${COVERAGE_REPORT_FILE}" --branch $GRCOV_IGNORE_OPTION $GRCOV_EXCLUDE_OPTION
+          echo "report=${COVERAGE_REPORT_FILE}" >> $GITHUB_OUTPUT
+
+      - name: Upload coverage results (to Codecov.io)
+        if: ${{ ! matrix.no_coverage }}
+        uses: codecov/codecov-action@v5
+        with:
+          files: ${{ steps.coverage.outputs.report }}
+          ## flags: IntegrationTests, UnitTests, ${{ steps.vars.outputs.CODECOV_FLAGS }}
+          flags: ${{ steps.vars.outputs.CODECOV_FLAGS }}
+          name: codecov-umbrella-${{ matrix.os }}-rust_${{ matrix.rustc || 'stable' }}-${{ matrix.extra_desc }}
+          fail_ci_if_error: true
+          # verbose: true
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+
 
   build:
     name: build ${{ matrix.binary || 'sccache' }} ${{ matrix.target }}
@@ -245,99 +300,6 @@ jobs:
           path: target/${{ matrix.target }}/release/${{ matrix.binary || 'sccache' }}${{ endsWith(matrix.target, '-msvc') && '.exe' || '' }}
           if-no-files-found: error
 
-  coverage:
-    name: coverage ${{ matrix.os }} rust ${{ matrix.rustc || 'stable' }} ${{ matrix.extra_desc }}
-    runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.allow_failure || false }}
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-22.04
-            cuda: "11.8"
-            rustc: nightly
-            allow_failure: true
-            extra_args: --features=unstable
-          - os: ubuntu-22.04
-            rustc: "1.75.0"
-            extra_desc: dist-server
-            extra_args: --no-default-features --features=dist-tests test_dist_ -- --test-threads 1
-          - os: macos-13
-            rustc: nightly
-    # Disable on Windows for now as it fails with:
-    # found invalid metadata files for crate `vte_generate_state_changes`
-    #          - os: windows-2019
-    #            rustc: nightly
-    env:
-      RUST_BACKTRACE: 1
-      COVERAGE_REPORT_DIR: "target/debug"
-      COVERAGE_REPORT_FILE: "target/debug/lcov.info"
-      BINARY_DIR: "target/debug"
-      GRCOV_IGNORE_OPTION: '--ignore build.rs --ignore "/*" --ignore "[a-zA-Z]:/*"'
-      GRCOV_EXCLUDE_OPTION: '--excl-br-line "^\s*((debug_)?assert(_eq|_ne)?!|#\[derive\()"'
-    steps:
-      - name: Clone repository
-        uses: actions/checkout@v4
-
-      - name: Install rust
-        uses: ./.github/actions/rust-toolchain
-        with:
-          toolchain: ${{ matrix.rustc }}
-          components: llvm-tools-preview
-
-      - name: Install gcc & clang for tests
-        run: sudo apt-get install -y clang gcc
-        if: ${{ matrix.os == 'ubuntu-20.04' }}
-
-      - if: matrix.cuda != '' && contains(fromJSON('["Linux", "Windows"]'), runner.os)
-        name: Install nvcc
-        uses: ./.github/actions/nvcc-toolchain
-        with:
-          cuda-version: ${{ matrix.cuda }}
-
-      - name: "`grcov` ~ install"
-        run: cargo install grcov
-
-      - name: Create config for testing
-        run: |
-          mkdir -p .cargo
-          echo '[env]
-          LLVM_PROFILE_FILE = { value = "target/debug/coverage/default-%p-%8m.profraw", relative = true }' >> .cargo/config.toml
-
-      - name: Execute tests
-        run: cargo test --no-fail-fast --locked --all-targets ${{ matrix.extra_args }}
-        env:
-          CARGO_INCREMENTAL: "0"
-          RUSTC_WRAPPER: ""
-          RUSTFLAGS: "-Cinstrument-coverage -Ccodegen-units=1 -Copt-level=0 -Coverflow-checks=off"
-
-
-      - name: Display coverage files
-        shell: bash
-        run:
-          grcov . -s . --binary-path $BINARY_DIR --output-type files $GRCOV_IGNORE_OPTION $GRCOV_EXCLUDE_OPTION | sort --unique
-
-      - name: Generate coverage data (via `grcov`)
-        id: coverage
-        shell: bash
-        run: |
-          mkdir -p "${COVERAGE_REPORT_DIR}"
-          grcov . -s . --binary-path $BINARY_DIR --output-type lcov --output-path "${COVERAGE_REPORT_FILE}" --branch $GRCOV_IGNORE_OPTION $GRCOV_EXCLUDE_OPTION
-          echo "report=${COVERAGE_REPORT_FILE}" >> $GITHUB_OUTPUT
-
-
-      - name: Upload coverage results (to Codecov.io)
-        uses: codecov/codecov-action@v5
-        with:
-          files: ${{ steps.coverage.outputs.report }}
-          ## flags: IntegrationTests, UnitTests, ${{ steps.vars.outputs.CODECOV_FLAGS }}
-          flags: ${{ steps.vars.outputs.CODECOV_FLAGS }}
-          name: codecov-umbrella
-          fail_ci_if_error: false
-          # verbose: true
-        env:
-          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
   test_freebsd:
     name: test freebsd-14.1 rust stable
