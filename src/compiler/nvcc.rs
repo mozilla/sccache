@@ -1395,6 +1395,8 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     flag!("--expt-relaxed-constexpr", PreprocessorArgumentFlag),
     flag!("--extended-lambda", PreprocessorArgumentFlag),
     flag!("--fatbin", DoCompilation),
+    take_arg!("--fdevice-time-trace", OsString, CanBeSeparated, TooHard),
+    take_arg!("--fdevice-time-trace=", OsString, Concatenated, TooHard),
     take_arg!("--generate-code", OsString, CanBeSeparated('='), PassThrough),
     flag!("--generate-dependencies-with-compile", NeedDepTarget),
     flag!("--generate-nonsystem-dependencies-with-compile", NeedDepTarget),
@@ -1415,6 +1417,8 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     flag!("--save-temps", UnhashedFlag),
     take_arg!("--system-include", PathBuf, CanBeSeparated('='), PreprocessorArgumentPath),
     take_arg!("--threads", OsString, CanBeSeparated('='), Unhashed),
+    take_arg!("--time", OsString, CanBeSeparated, TooHard),
+    take_arg!("--time=", OsString, Concatenated, TooHard),
     take_arg!("--x", OsString, CanBeSeparated('='), Language),
 
     take_arg!("-Werror", OsString, CanBeSeparated('='), PreprocessorArgument),
@@ -1434,6 +1438,8 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     flag!("-expt-relaxed-constexpr", PreprocessorArgumentFlag),
     flag!("-extended-lambda", PreprocessorArgumentFlag),
     flag!("-fatbin", DoCompilation),
+    take_arg!("-fdevice-time-trace", OsString, CanBeSeparated, TooHard),
+    take_arg!("-fdevice-time-trace=", OsString, Concatenated, TooHard),
     take_arg!("-gencode", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("-isystem", PathBuf, CanBeSeparated('='), PreprocessorArgumentPath),
     flag!("-keep", UnhashedFlag),
@@ -1446,6 +1452,8 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     flag!("-save-temps", UnhashedFlag),
     take_arg!("-t", OsString, CanBeSeparated, Unhashed),
     take_arg!("-t=", OsString, Concatenated, Unhashed),
+    take_arg!("-time", OsString, CanBeSeparated, TooHard),
+    take_arg!("-time=", OsString, Concatenated, TooHard),
     take_arg!("-x", OsString, CanBeSeparated('='), Language),
 ]);
 
@@ -1955,6 +1963,7 @@ mod test {
             ])
         );
     }
+
     #[test]
     fn test_parse_cant_cache_flags() {
         assert_eq!(
@@ -1982,5 +1991,52 @@ mod test {
             CompilerArguments::CannotCache("-M", None),
             parse_arguments_nvc(stringvec!["-x", "cu", "-c", "foo.c", "-o", "foo.o", "-M"])
         );
+
+        // nvcc arg parsing is very permissive, so all these are valid and should yield CannotCache
+        for arg in [
+            "-fdevice-time-trace",
+            "--fdevice-time-trace",
+            "-time",
+            "--time",
+        ] {
+            // {-,--}fdevice-time-trace
+            assert_eq!(
+                CompilerArguments::CannotCache(arg, None),
+                parse_arguments_gcc(stringvec![arg])
+            );
+            // {-,--}fdevice-time-trace -
+            assert_eq!(
+                CompilerArguments::CannotCache(arg, None),
+                parse_arguments_msvc(stringvec![arg, "-"])
+            );
+            // {-,--}fdevice-time-trace-
+            assert_eq!(
+                CompilerArguments::CannotCache(arg, None),
+                parse_arguments_msvc(stringvec![format!("{arg}-")])
+            );
+            // {-,--}fdevice-time-trace flamegraph.json
+            assert_eq!(
+                CompilerArguments::CannotCache(arg, None),
+                parse_arguments_nvc(stringvec![arg, "flamegraph.json"])
+            );
+        }
+
+        for arg_with_separator in [
+            "-fdevice-time-trace=",
+            "--fdevice-time-trace=",
+            "-time=",
+            "--time=",
+        ] {
+            // {-,--}fdevice-time-trace=-
+            assert_eq!(
+                CompilerArguments::CannotCache(arg_with_separator, None),
+                parse_arguments_msvc(stringvec![format!("{arg_with_separator}-")])
+            );
+            // {-,--}fdevice-time-trace=flamegraph.json
+            assert_eq!(
+                CompilerArguments::CannotCache(arg_with_separator, None),
+                parse_arguments_nvc(stringvec![format!("{arg_with_separator}flamegraph.json")])
+            );
+        }
     }
 }
