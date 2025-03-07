@@ -689,8 +689,14 @@ fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path, preprocessor_ca
     }
 }
 
-fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
+fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path, with_debug_flags: bool) {
     let mut stats = server_info().stats;
+
+    let extra_args = if with_debug_flags {
+        vec!["-G".into()]
+    } else {
+        vec![]
+    };
 
     let Compiler {
         name,
@@ -712,7 +718,7 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
             INPUT_FOR_CUDA_A,
             // relative path for output
             out_file.file_name().unwrap().to_string_lossy().as_ref(),
-            &[],
+            &extra_args,
         ))
         .current_dir(tempdir)
         .envs(env_vars.clone())
@@ -759,7 +765,7 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
             INPUT_FOR_CUDA_A,
             // absolute path for output
             out_file.to_string_lossy().as_ref(),
-            &[],
+            &extra_args,
         ))
         .current_dir(tempdir)
         .envs(env_vars.clone())
@@ -806,7 +812,7 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
             &tempdir.join(INPUT_FOR_CUDA_B).to_string_lossy(),
             // absolute path for output
             out_file.to_string_lossy().as_ref(),
-            &[],
+            &extra_args,
         ))
         .current_dir(tempdir)
         .envs(env_vars.clone())
@@ -815,8 +821,8 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
     assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
     fs::remove_file(&out_file).unwrap();
     trace!("compile B request stats");
-    stats.cache_writes += 3;
-    stats.compilations += 4;
+    stats.cache_writes += 3 + (with_debug_flags as u64);
+    stats.compilations += 4 + (with_debug_flags as u64);
     stats.compile_requests += 1;
     stats.requests_executed += 5;
     stats.non_cacheable_compilations += 1;
@@ -829,9 +835,15 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
     stats
         .cache_misses
         .increment(&CompilerKind::C(CCompilerKind::Cicc), &Language::Ptx);
-    stats
-        .cache_hits
-        .increment(&CompilerKind::C(CCompilerKind::Ptxas), &Language::Cubin);
+    if with_debug_flags {
+        stats
+            .cache_misses
+            .increment(&CompilerKind::C(CCompilerKind::Ptxas), &Language::Cubin);
+    } else {
+        stats
+            .cache_hits
+            .increment(&CompilerKind::C(CCompilerKind::Ptxas), &Language::Cubin);
+    }
     assert_eq!(
         stats,
         ServerStats {
@@ -852,7 +864,7 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
             INPUT_FOR_CUDA_A,
             // relative path for output
             out_file.file_name().unwrap().to_string_lossy().as_ref(),
-            &[],
+            &extra_args,
         ))
         .current_dir(tempdir)
         .envs(env_vars.clone())
@@ -889,7 +901,7 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
             INPUT_FOR_CUDA_A,
             // absolute path for output
             out_file.to_string_lossy().as_ref(),
-            &[],
+            &extra_args,
         ))
         .current_dir(tempdir)
         .envs(env_vars.clone())
@@ -898,17 +910,23 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
     assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
     fs::remove_file(&out_file).unwrap();
     trace!("compile cubin request stats");
-    stats.cache_writes += 1;
-    stats.compilations += 2;
+    stats.cache_writes += 1 + (with_debug_flags as u64);
+    stats.compilations += 2 + (with_debug_flags as u64);
     stats.compile_requests += 1;
     stats.requests_executed += 3;
     stats.non_cacheable_compilations += 1;
     stats
         .cache_misses
         .increment(&CompilerKind::C(CCompilerKind::Cicc), &Language::Ptx);
-    stats
-        .cache_hits
-        .increment(&CompilerKind::C(CCompilerKind::Ptxas), &Language::Cubin);
+    if with_debug_flags {
+        stats
+            .cache_misses
+            .increment(&CompilerKind::C(CCompilerKind::Ptxas), &Language::Cubin);
+    } else {
+        stats
+            .cache_hits
+            .increment(&CompilerKind::C(CCompilerKind::Ptxas), &Language::Cubin);
+    }
     assert_eq!(
         stats,
         ServerStats {
@@ -954,7 +972,7 @@ int main(int argc, char** argv) {
                 .unwrap()
                 .to_string_lossy()
                 .as_ref(),
-            &[],
+            &extra_args,
         ))
         .current_dir(tempdir)
         .envs(env_vars.clone())
@@ -1007,7 +1025,7 @@ int main(int argc, char** argv) {
                 .unwrap()
                 .to_string_lossy()
                 .as_ref(),
-            &[],
+            &extra_args,
         ))
         .current_dir(tempdir)
         .envs(env_vars.clone())
@@ -1061,7 +1079,7 @@ int main(int argc, char** argv) {
                 .unwrap()
                 .to_string_lossy()
                 .as_ref(),
-            &[],
+            &extra_args,
         ))
         .current_dir(tempdir)
         .envs(env_vars.clone())
@@ -1099,8 +1117,18 @@ int main(int argc, char** argv) {
     );
 }
 
-fn test_nvcc_proper_lang_stat_tracking(compiler: &Compiler, tempdir: &Path) {
+fn test_nvcc_proper_lang_stat_tracking(
+    compiler: &Compiler,
+    tempdir: &Path,
+    with_debug_flags: bool,
+) {
     let mut stats = server_info().stats;
+
+    let extra_args = if with_debug_flags {
+        vec!["--device-debug".into()]
+    } else {
+        vec![]
+    };
 
     let Compiler {
         name,
@@ -1121,7 +1149,7 @@ fn test_nvcc_proper_lang_stat_tracking(compiler: &Compiler, tempdir: &Path) {
             exe,
             INPUT_FOR_CUDA_C,
             OUTPUT,
-            Vec::new(),
+            extra_args.clone(),
         ))
         .current_dir(tempdir)
         .envs(env_vars.clone())
@@ -1129,8 +1157,8 @@ fn test_nvcc_proper_lang_stat_tracking(compiler: &Compiler, tempdir: &Path) {
         .success();
     fs::remove_file(&out_file).unwrap();
 
-    stats.cache_writes += 3;
-    stats.compilations += 4;
+    stats.cache_writes += 3 + (with_debug_flags as u64);
+    stats.compilations += 4 + (with_debug_flags as u64);
     stats.compile_requests += 1;
     stats.requests_executed += 5;
     stats.non_cacheable_compilations += 1;
@@ -1143,9 +1171,15 @@ fn test_nvcc_proper_lang_stat_tracking(compiler: &Compiler, tempdir: &Path) {
     stats
         .cache_misses
         .increment(&CompilerKind::C(CCompilerKind::Cicc), &Language::Ptx);
-    stats
-        .cache_hits
-        .increment(&CompilerKind::C(CCompilerKind::Ptxas), &Language::Cubin);
+    if with_debug_flags {
+        stats
+            .cache_misses
+            .increment(&CompilerKind::C(CCompilerKind::Ptxas), &Language::Cubin);
+    } else {
+        stats
+            .cache_hits
+            .increment(&CompilerKind::C(CCompilerKind::Ptxas), &Language::Cubin);
+    }
     assert_eq!(
         stats,
         ServerStats {
@@ -1163,7 +1197,7 @@ fn test_nvcc_proper_lang_stat_tracking(compiler: &Compiler, tempdir: &Path) {
             exe,
             INPUT_FOR_CUDA_C,
             OUTPUT,
-            Vec::new(),
+            extra_args.clone(),
         ))
         .current_dir(tempdir)
         .envs(env_vars.clone())
@@ -1199,7 +1233,13 @@ fn test_nvcc_proper_lang_stat_tracking(compiler: &Compiler, tempdir: &Path) {
 
     trace!("compile C++ A");
     sccache_command()
-        .args(compile_cmdline(name, exe, INPUT, OUTPUT, Vec::new()))
+        .args(compile_cmdline(
+            name,
+            exe,
+            INPUT,
+            OUTPUT,
+            extra_args.clone(),
+        ))
         .current_dir(tempdir)
         .envs(env_vars.clone())
         .assert()
@@ -1226,7 +1266,13 @@ fn test_nvcc_proper_lang_stat_tracking(compiler: &Compiler, tempdir: &Path) {
 
     trace!("compile C++ A");
     sccache_command()
-        .args(compile_cmdline(name, exe, INPUT, OUTPUT, Vec::new()))
+        .args(compile_cmdline(
+            name,
+            exe,
+            INPUT,
+            OUTPUT,
+            extra_args.clone(),
+        ))
         .current_dir(tempdir)
         .envs(env_vars.clone())
         .assert()
@@ -1251,13 +1297,19 @@ fn test_nvcc_proper_lang_stat_tracking(compiler: &Compiler, tempdir: &Path) {
     );
 }
 
-fn run_sccache_nvcc_cuda_command_tests(compiler: Compiler, tempdir: &Path) {
-    test_nvcc_cuda_compiles(&compiler, tempdir);
-    test_nvcc_proper_lang_stat_tracking(&compiler, tempdir);
+fn run_sccache_nvcc_cuda_command_tests(compiler: Compiler, tempdir: &Path, with_debug_flags: bool) {
+    test_nvcc_cuda_compiles(&compiler, tempdir, with_debug_flags);
+    test_nvcc_proper_lang_stat_tracking(&compiler, tempdir, with_debug_flags);
 }
 
-fn test_clang_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
+fn test_clang_cuda_compiles(compiler: &Compiler, tempdir: &Path, with_debug_flags: bool) {
     let mut stats = server_info().stats;
+
+    let extra_args = if with_debug_flags {
+        vec!["-g".into(), "--cuda-noopt-device-debug".into()]
+    } else {
+        vec![]
+    };
 
     let Compiler {
         name,
@@ -1277,7 +1329,7 @@ fn test_clang_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
             "-c",
             INPUT_FOR_CUDA_A,
             OUTPUT,
-            &[],
+            &extra_args,
         ))
         .current_dir(tempdir)
         .envs(env_vars.clone())
@@ -1311,7 +1363,7 @@ fn test_clang_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
             "-c",
             INPUT_FOR_CUDA_A,
             OUTPUT,
-            &[],
+            &extra_args,
         ))
         .current_dir(tempdir)
         .envs(env_vars.clone())
@@ -1344,7 +1396,7 @@ fn test_clang_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
             "-c",
             INPUT_FOR_CUDA_B,
             OUTPUT,
-            &[],
+            &extra_args,
         ))
         .current_dir(tempdir)
         .envs(env_vars.clone())
@@ -1370,8 +1422,18 @@ fn test_clang_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
     );
 }
 
-fn test_clang_proper_lang_stat_tracking(compiler: &Compiler, tempdir: &Path) {
+fn test_clang_proper_lang_stat_tracking(
+    compiler: &Compiler,
+    tempdir: &Path,
+    with_debug_flags: bool,
+) {
     let mut stats = server_info().stats;
+
+    let extra_args = if with_debug_flags {
+        vec!["-g".into(), "--cuda-noopt-device-debug".into()]
+    } else {
+        vec![]
+    };
 
     let Compiler {
         name,
@@ -1392,7 +1454,7 @@ fn test_clang_proper_lang_stat_tracking(compiler: &Compiler, tempdir: &Path) {
             "-c",
             INPUT_FOR_CUDA_C,
             OUTPUT,
-            &[],
+            &extra_args,
         ))
         .current_dir(tempdir)
         .envs(env_vars.clone())
@@ -1424,7 +1486,7 @@ fn test_clang_proper_lang_stat_tracking(compiler: &Compiler, tempdir: &Path) {
             "-c",
             INPUT_FOR_CUDA_C,
             OUTPUT,
-            &[],
+            &extra_args,
         ))
         .current_dir(tempdir)
         .envs(env_vars.clone())
@@ -1448,7 +1510,13 @@ fn test_clang_proper_lang_stat_tracking(compiler: &Compiler, tempdir: &Path) {
 
     trace!("compile C++ A");
     sccache_command()
-        .args(compile_cmdline(name, exe, INPUT, OUTPUT, Vec::new()))
+        .args(compile_cmdline(
+            name,
+            exe,
+            INPUT,
+            OUTPUT,
+            extra_args.clone(),
+        ))
         .current_dir(tempdir)
         .envs(env_vars.clone())
         .assert()
@@ -1473,7 +1541,13 @@ fn test_clang_proper_lang_stat_tracking(compiler: &Compiler, tempdir: &Path) {
 
     trace!("compile C++ A");
     sccache_command()
-        .args(compile_cmdline(name, exe, INPUT, OUTPUT, Vec::new()))
+        .args(compile_cmdline(
+            name,
+            exe,
+            INPUT,
+            OUTPUT,
+            extra_args.clone(),
+        ))
         .current_dir(tempdir)
         .envs(env_vars.clone())
         .assert()
@@ -1495,9 +1569,13 @@ fn test_clang_proper_lang_stat_tracking(compiler: &Compiler, tempdir: &Path) {
     );
 }
 
-fn run_sccache_clang_cuda_command_tests(compiler: Compiler, tempdir: &Path) {
-    test_clang_cuda_compiles(&compiler, tempdir);
-    test_clang_proper_lang_stat_tracking(&compiler, tempdir);
+fn run_sccache_clang_cuda_command_tests(
+    compiler: Compiler,
+    tempdir: &Path,
+    with_debug_flags: bool,
+) {
+    test_clang_cuda_compiles(&compiler, tempdir, with_debug_flags);
+    test_clang_proper_lang_stat_tracking(&compiler, tempdir, with_debug_flags);
 }
 
 fn test_hip_compiles(compiler: &Compiler, tempdir: &Path) {
@@ -1949,11 +2027,13 @@ fn test_stats_no_server() {
     );
 }
 
-#[test_case(true ; "with preprocessor cache")]
-#[test_case(false ; "without preprocessor cache")]
+#[test_case(true, false ; "with preprocessor cache")]
+#[test_case(false, false ; "without preprocessor cache")]
+#[test_case(true, true ; "with preprocessor cache and device debug")]
+#[test_case(false, true ; "without preprocessor cache and device debug")]
 #[serial]
 #[cfg(any(unix, target_env = "msvc"))]
-fn test_cuda_sccache_command(preprocessor_cache_mode: bool) {
+fn test_cuda_sccache_command(preprocessor_cache_mode: bool, with_debug_flags: bool) {
     let _ = env_logger::try_init();
     let tempdir = tempfile::Builder::new()
         .prefix("sccache_system_test")
@@ -1992,8 +2072,12 @@ fn test_cuda_sccache_command(preprocessor_cache_mode: bool) {
         );
         for compiler in compilers {
             match compiler.name {
-                "nvcc" => run_sccache_nvcc_cuda_command_tests(compiler, tempdir_path),
-                "clang++" => run_sccache_clang_cuda_command_tests(compiler, tempdir_path),
+                "nvcc" => {
+                    run_sccache_nvcc_cuda_command_tests(compiler, tempdir_path, with_debug_flags)
+                }
+                "clang++" => {
+                    run_sccache_clang_cuda_command_tests(compiler, tempdir_path, with_debug_flags)
+                }
                 _ => {}
             }
         }
