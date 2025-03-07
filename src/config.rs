@@ -556,8 +556,17 @@ impl Default for DistConfig {
 pub struct FileConfig {
     pub cache: CacheConfigs,
     pub dist: DistConfig,
+    // pub timing: ServerTimingConfig,
     pub server_startup_timeout_ms: Option<u64>,
+    pub server_shutdown_timeout_ms: Option<u64>,
+    pub port: Option<u16>,
 }
+
+// #[derive(Debug, Default, Serialize, Deserialize, Eq, PartialEq)]
+// pub struct ServerTimingConfig {
+//     pub server_startup_timeout_ms: Option<u64>,
+//     pub server_shutdown_timeout_ms: Option<u64>,
+// }
 
 // If the file doesn't exist or we can't read it, log the issue and proceed. If the
 // config exists but doesn't parse then something is wrong - return an error.
@@ -948,7 +957,14 @@ pub struct Config {
     pub cache: Option<CacheType>,
     pub fallback_cache: DiskCacheConfig,
     pub dist: DistConfig,
-    pub server_startup_timeout: Option<std::time::Duration>,
+    pub server_timing: ServerTiming,
+    pub port: Option<u16>,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ServerTiming {
+    pub startup_timeout: Option<std::time::Duration>,
+    pub shutdown_timeout: Option<std::time::Duration>,
 }
 
 impl Config {
@@ -970,11 +986,19 @@ impl Config {
             cache,
             dist,
             server_startup_timeout_ms,
+            server_shutdown_timeout_ms,
+            port,
         } = file_conf;
         conf_caches.merge(cache);
 
         let server_startup_timeout =
             server_startup_timeout_ms.map(std::time::Duration::from_millis);
+        let server_shutdown_timeout =
+            server_shutdown_timeout_ms.map(std::time::Duration::from_millis);
+        let server_timing = ServerTiming {
+            startup_timeout: server_startup_timeout,
+            shutdown_timeout: server_shutdown_timeout,
+        };
 
         let EnvConfig { cache } = env_conf;
         conf_caches.merge(cache);
@@ -984,7 +1008,8 @@ impl Config {
             cache: caches,
             fallback_cache,
             dist,
-            server_startup_timeout,
+            server_timing,
+            port,
         }
     }
 }
@@ -1285,6 +1310,8 @@ fn config_overrides() {
         },
         dist: Default::default(),
         server_startup_timeout_ms: None,
+        server_shutdown_timeout_ms: None,
+        port: None,
     };
 
     assert_eq!(
@@ -1306,7 +1333,8 @@ fn config_overrides() {
                 rw_mode: CacheModeConfig::ReadWrite,
             },
             dist: Default::default(),
-            server_startup_timeout: None,
+            server_timing: Default::default(),
+            port: None,
         }
     );
 }
@@ -1595,7 +1623,41 @@ no_credentials = true
                 toolchain_cache_size: 5368709120,
                 rewrite_includes_only: false,
             },
-            server_startup_timeout_ms: Some(10000),
+            server_startup_timeout_ms: Some(10_000),
+            server_shutdown_timeout_ms: None,
+            port: None,
+        }
+    )
+}
+
+#[test]
+fn test_port_config() {
+    const CONFIG_STR: &str = "port = 8080";
+    let file_config: FileConfig = toml::from_str(CONFIG_STR).expect("Is valid toml.");
+    assert_eq!(
+        file_config,
+        FileConfig {
+            cache: Default::default(),
+            dist: Default::default(),
+            server_startup_timeout_ms: None,
+            server_shutdown_timeout_ms: None,
+            port: Some(8080),
+        }
+    )
+}
+
+#[test]
+fn test_shutdown_config() {
+    const CONFIG_STR: &str = "server_shutdown_timeout_ms = 10000";
+    let file_config: FileConfig = toml::from_str(CONFIG_STR).expect("Is valid toml.");
+    assert_eq!(
+        file_config,
+        FileConfig {
+            cache: Default::default(),
+            dist: Default::default(),
+            server_startup_timeout_ms: None,
+            server_shutdown_timeout_ms: Some(10_000),
+            port: None,
         }
     )
 }
