@@ -1390,6 +1390,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     flag!("--cubin", DoCompilation),
     take_arg!("--default-stream", OsString, CanBeSeparated('='), PassThrough),
     flag!("--device-c", DoCompilation),
+    flag!("--device-debug", PassThroughFlag),
     flag!("--device-w", DoCompilation),
     flag!("--expt-extended-lambda", PreprocessorArgumentFlag),
     flag!("--expt-relaxed-constexpr", PreprocessorArgumentFlag),
@@ -1421,6 +1422,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("--time=", OsString, Concatenated, TooHard),
     take_arg!("--x", OsString, CanBeSeparated('='), Language),
 
+    flag!("-G", PassThroughFlag),
     take_arg!("-Werror", OsString, CanBeSeparated('='), PreprocessorArgument),
     take_arg!("-Xarchive", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("-Xcompiler", OsString, CanBeSeparated('='), PreprocessorArgument),
@@ -2038,5 +2040,66 @@ mod test {
                 parse_arguments_nvc(stringvec![format!("{arg_with_separator}flamegraph.json")])
             );
         }
+    }
+
+    #[test]
+    fn test_parse_device_debug_flag_short_cu() {
+        let a = parses!(
+            "-x", "cu", "-c", "foo.c", "-G", "-MD", "-MT", "foo.o", "-MF", "foo.o.d", "-o", "foo.o"
+        );
+        assert_eq!(Some("foo.c"), a.input.to_str());
+        assert_eq!(Language::Cuda, a.language);
+        assert_eq!(Some("-c"), a.compilation_flag.to_str());
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
+        assert_eq!(
+            ovec!["-MD", "-MF", "foo.o.d", "-MT", "foo.o"],
+            a.dependency_args
+        );
+        assert_eq!(ovec!["-G", "-c"], a.common_args);
+    }
+
+    #[test]
+    fn test_parse_device_debug_flag_long_cu() {
+        let a = parses!(
+            "-x",
+            "cu",
+            "-c",
+            "foo.c",
+            "--device-debug",
+            "-MD",
+            "-MT",
+            "foo.o",
+            "-MF",
+            "foo.o.d",
+            "-o",
+            "foo.o"
+        );
+        assert_eq!(Some("foo.c"), a.input.to_str());
+        assert_eq!(Language::Cuda, a.language);
+        assert_eq!(Some("-c"), a.compilation_flag.to_str());
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
+        assert_eq!(
+            ovec!["-MD", "-MF", "foo.o.d", "-MT", "foo.o"],
+            a.dependency_args
+        );
+        assert_eq!(ovec!["--device-debug", "-c"], a.common_args);
     }
 }
