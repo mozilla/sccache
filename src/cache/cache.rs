@@ -16,7 +16,7 @@
 use crate::cache::azure::AzureBlobCache;
 use crate::cache::disk::DiskCache;
 #[cfg(feature = "gcs")]
-use crate::cache::gcs::GCSCache;
+use crate::cache::gcs;
 #[cfg(feature = "gha")]
 use crate::cache::gha::GHACache;
 #[cfg(feature = "memcached")]
@@ -51,7 +51,9 @@ use std::io::{self, Cursor, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::Instant;
 use tempfile::NamedTempFile;
+use tokio::sync::RwLock as TokioRwLock;
 use zip::write::FileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
@@ -355,7 +357,8 @@ pub trait Storage: Send + Sync {
     ///
     /// - `Ok(CacheMode::ReadOnly)` means cache can only be used to `get`
     ///   cache.
-    /// - `Ok(CacheMode::ReadWrite)` means cache can do both `get` and `put`.
+    /// - `Ok(CacheMode::ReadWrite)` means cache can do all `get`, `put`, and
+    ///   `timestamp_cache_hit` methods.
     /// - `Err(err)` means cache is not setup correctly or not match with
     ///   users input (for example, user try to use `ReadWrite` but cache
     ///   is `ReadOnly`).
@@ -366,6 +369,21 @@ pub trait Storage: Send + Sync {
     async fn check(&self) -> Result<CacheMode> {
         Ok(CacheMode::ReadWrite)
     }
+
+    /// Stamp the custom "access time" or "custom time" record for an entry in
+    /// the cache, if present.
+    ///
+    /// It is not always generally possible or practical to query this
+    /// information within sccache itself.
+    ///
+    /// Returns a `Future` that will provide the result or error when the stamp
+    /// request finished. In case the operation is supported and successfully
+    /// completed, an `Ok(Some(Duration)` will be present as a `Result`. In case
+    /// the operation can not be performed for configuration reasons an
+    /// `Ok(None)` will be returned. In a context where it is assumed that the
+    /// operation will succeed and any kind of error occurs, the `Err` is
+    /// returned as the `Result`.
+    async fn timestamp_cache_hit(&self, key: &str) -> Result<Option<Duration>>;
 
     /// Get the storage location.
     fn location(&self) -> String;
@@ -400,6 +418,32 @@ pub trait Storage: Send + Sync {
     ) -> Result<()> {
         Ok(())
     }
+}
+
+/// An interface to least recent usage time (`atime`-like) timestamp updates.
+#[async_trait]
+pub trait TimestampUpdater: Send + Sync {
+    /// Returns whether the current implementation can update the timestamp.
+    /// This might be `false` due to configuration reasons, or the lack of
+    /// necessary rights.
+    fn can_update(&self) -> bool {
+        true
+    }
+
+    /// Returns whether the `TimestampUpdater` needs (re-)initialization.
+    /// A `true` value should indicate that a reinitialization is required or
+    /// it can not be determined if such a reinitialization is required.
+    /// A `false` value shall only be returned if it is deterministically
+    /// known that reinitialization can be skipped.
+    async fn needs_init(&self) -> Result<bool>;
+
+    /// (Re-)initializes the timestamp updater's runtime data, such as
+    /// authentication tokens.
+    async fn init(&mut self) -> Result<()>;
+
+    /// Updates the least recent use timestamp (if applicable) of the cache
+    /// entry identified by `key` to the current timestamp.
+    async fn update(&self, key: &str) -> Result<()>;
 }
 
 /// Configuration switches for preprocessor cache mode.
@@ -453,10 +497,9 @@ impl PreprocessorCacheModeConfig {
     }
 }
 
-/// Implement storage for operator.
+/// Implement `Storage` for `opendal::Operator`.
 #[cfg(any(
     feature = "azure",
-    feature = "gcs",
     feature = "gha",
     feature = "memcached",
     feature = "redis",
@@ -480,7 +523,7 @@ impl Storage for opendal::Operator {
     }
 
     async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration> {
-        let start = std::time::Instant::now();
+        let start = Instant::now();
 
         self.write(&normalize_key(key), entry.finish()?).await?;
 
@@ -533,6 +576,29 @@ impl Storage for opendal::Operator {
         Ok(mode)
     }
 
+    #[cfg(any(
+        feature = "azure",
+        feature = "gha",
+        feature = "memcached",
+        feature = "redis",
+        feature = "s3",
+        feature = "webdav",
+    ))]
+    async fn timestamp_cache_hit(&self, _key: &str) -> Result<Option<Duration>> {
+        let scheme = self.info().scheme();
+        match scheme {
+            #[allow(unreachable_patterns)]
+            // If we build only with `cargo build --no-default-features`, we
+            // only want to use sccache with a local cache and no remote storage
+            // support. Also, lack of support for `timestamp_cache_hit` is not
+            // a problem for provider cases non-implemented in here.
+            _ => {
+                debug!("timestamp_cache_hit is not supported for {scheme}");
+                Err(anyhow!("Not implemented."))
+            }
+        }
+    }
+
     fn location(&self) -> String {
         let meta = self.info();
         format!(
@@ -551,6 +617,92 @@ impl Storage for opendal::Operator {
         Ok(None)
     }
 }
+
+/// Wrapper object for `Storage` implementations where a `TimestampUpdater`
+/// implementation is also available.
+#[derive(Debug)]
+pub struct TimestampUpdatingStorage<S: Storage, U: TimestampUpdater> {
+    pub storage: S,
+    pub updater: Arc<TokioRwLock<U>>,
+}
+
+/// Implement `Storage` for `opendal::Operator` that also retained a
+/// `TimestampUpdater`.
+///
+/// Normally, this implementation calls the usual `Storage` trait methods.
+#[cfg(any(
+    feature = "gcs",
+))]
+#[async_trait]
+impl<U: TimestampUpdater> Storage
+for TimestampUpdatingStorage<opendal::Operator, U> {
+    async fn get(&self, key: &str) -> Result<Cache> {
+        self.storage.get(key).await
+    }
+
+    async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration> {
+        self.storage.put(key, entry).await
+    }
+
+    async fn check(&self) -> Result<CacheMode> {
+        let as_storage: &dyn Storage = &self.storage;
+        as_storage.check().await
+    }
+
+    #[cfg(any(
+        feature = "gcs",
+    ))]
+    async fn timestamp_cache_hit(&self, key: &str) -> Result<Option<Duration>> {
+        let scheme = self.storage.info().scheme();
+        match scheme {
+            #[cfg(feature = "gcs")]
+            opendal::Scheme::Gcs => {
+                let start = Instant::now();
+                {
+                    // Try to run the update without reinitialization if
+                    // possible. This saves us taking the exclusive write lock
+                    // and speeds up overall performance if everyone can take
+                    // a const reference to `updater`.
+                    let updater = self.updater.read().await;
+                    if !updater.can_update() {
+                        //.The inability to update the cache, if from a known
+                        // and verifiable property, is not an error.
+                        return Ok(None);
+                    }
+                    if !updater.needs_init().await? {
+                        updater.update(key).await?;
+                        return Ok(Some(start.elapsed()));
+                    }
+                }
+
+                {
+                    let mut updater = self.updater.write().await;
+                    updater.init().await?;
+                    updater.update(key).await?;
+
+                    Ok(Some(start.elapsed()))
+                }
+            }
+            #[allow(unreachable_patterns)]
+            _ => {
+                self.storage.timestamp_cache_hit(key).await
+            }
+        }
+    }
+
+    fn location(&self) -> String {
+        self.storage.location()
+    }
+
+    async fn current_size(&self) -> Result<Option<u64>> {
+        self.storage.current_size().await
+    }
+
+    async fn max_size(&self) -> Result<Option<u64>> {
+        self.storage.max_size().await
+    }
+}
+
 
 /// Normalize key `abcdef` into `a/b/c/abcdef`
 pub(in crate::cache) fn normalize_key(key: &str) -> String {
@@ -587,7 +739,7 @@ pub fn storage_from_config(
             }) => {
                 debug!("Init gcs cache with bucket {bucket}, key_prefix {key_prefix}");
 
-                let storage = GCSCache::build(
+                let storage = gcs::GCSCache::build(
                     bucket,
                     key_prefix,
                     cred_path.as_deref(),
@@ -596,8 +748,21 @@ pub fn storage_from_config(
                     credential_url.as_deref(),
                 )
                 .map_err(|err| anyhow!("create gcs cache failed: {err:?}"))?;
+                let updater = gcs::GCSCustomTimeUpdater::new(
+                    bucket,
+                    key_prefix,
+                    cred_path.as_deref(),
+                    service_account.as_deref(),
+                    (*rw_mode).into(),
+                    credential_url.as_deref(),
+                );
 
-                return Ok(Arc::new(storage));
+                let storage_with_updater = TimestampUpdatingStorage {
+                    storage,
+                    updater: Arc::new(TokioRwLock::new(updater)),
+                };
+
+                return Ok(Arc::new(storage_with_updater));
             }
             #[cfg(feature = "gha")]
             CacheType::GHA(config::GHACacheConfig { ref version, .. }) => {
