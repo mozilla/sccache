@@ -314,11 +314,7 @@ pub fn generate_compile_commands(
                 .position(|x| x == "-keep-dir" || x == "--keep-dir")
             {
                 let dir = PathBuf::from(unhashed_args[idx + 1].as_os_str());
-                let dir = if dir.is_absolute() {
-                    dir
-                } else {
-                    cwd.join(dir)
-                };
+                let dir = cwd.join(dir);
                 unhashed_args.splice(idx..(idx + 2), []);
                 keep_dir = Some(dir);
                 continue;
@@ -439,14 +435,7 @@ pub fn generate_compile_commands(
     // preprocessor embeds the name of the input file in comments, so without
     // canonicalizing here, cicc will get cache misses on otherwise identical
     // input that should produce a cache hit.
-    arguments.push(
-        (if parsed_args.input.is_absolute() {
-            parsed_args.input.clone()
-        } else {
-            cwd.join(&parsed_args.input).canonicalize().unwrap()
-        })
-        .into(),
-    );
+    arguments.push(cwd.join(&parsed_args.input).canonicalize().unwrap().into());
 
     let command = NvccCompileCommand {
         temp_dir,

@@ -232,13 +232,7 @@ where
 }
 
 pub async fn preprocess(cwd: &Path, parsed_args: &ParsedArguments) -> Result<process::Output> {
-    // cicc and ptxas expect input to be an absolute path
-    let input = if parsed_args.input.is_absolute() {
-        parsed_args.input.clone()
-    } else {
-        cwd.join(&parsed_args.input)
-    };
-    std::fs::read(input)
+    std::fs::read(cwd.join(&parsed_args.input))
         .map_err(anyhow::Error::new)
         .map(|s| process::Output {
             status: process::ExitStatus::default(),
