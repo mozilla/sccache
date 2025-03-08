@@ -397,6 +397,13 @@ pub fn generate_compile_commands(
         .unwrap()
         .path;
 
+    let compile_to_object = matches!(
+        parsed_args.compilation_flag.to_str(),
+        Some("-c") | Some("--compile") // compile to object
+        | Some("-dc") | Some("--device-c") // compile to object with -rdc=true
+        | Some("-dw") | Some("--device-w") // compile to object with -rdc=false
+    );
+
     arguments.extend(vec![
         "-o".into(),
         // Canonicalize the output path if the compile flag indicates we won't
@@ -404,18 +411,10 @@ pub fn generate_compile_commands(
         // but we run the host compiler in `cwd` (the dir from which sccache was
         // executed), cicc/ptxas `-o` argument should point at the real out path
         // that's potentially relative to `cwd`.
-        match parsed_args.compilation_flag.to_str() {
-            Some("-c") | Some("--compile") // compile to object
-            | Some("-dc") | Some("--device-c") // compile to object with -rdc=true
-            | Some("-dw") | Some("--device-w") // compile to object with -rdc=false
-            => output.clone().into(),
-            _ => {
-                if output.is_absolute() {
-                    output.clone().into()
-                } else {
-                    cwd.join(output).into()
-                }
-            }
+        if compile_to_object {
+            output.clone().into()
+        } else {
+            cwd.join(output).into()
         },
     ]);
 
@@ -443,7 +442,7 @@ pub fn generate_compile_commands(
         num_parallel,
         executable: executable.to_owned(),
         arguments,
-        compilation_flag: parsed_args.compilation_flag.clone(),
+        compile_to_object,
         env_vars,
         cwd: cwd.to_owned(),
         host_compiler: host_compiler.clone(),
@@ -474,7 +473,7 @@ pub struct NvccCompileCommand {
     pub num_parallel: usize,
     pub executable: PathBuf,
     pub arguments: Vec<OsString>,
-    pub compilation_flag: OsString,
+    pub compile_to_object: bool,
     pub env_vars: Vec<(OsString, OsString)>,
     pub cwd: PathBuf,
     pub host_compiler: NvccHostCompiler,
@@ -510,7 +509,7 @@ impl CompileCommandImpl for NvccCompileCommand {
             num_parallel,
             executable,
             arguments,
-            compilation_flag,
+            compile_to_object,
             env_vars,
             cwd,
             host_compiler,
@@ -521,7 +520,7 @@ impl CompileCommandImpl for NvccCompileCommand {
             creator,
             executable,
             arguments,
-            compilation_flag,
+            *compile_to_object,
             cwd,
             temp_dir.as_path(),
             keep_dir.clone(),
@@ -618,7 +617,7 @@ async fn group_nvcc_subcommands_by_compilation_stage<T>(
     creator: &T,
     executable: &Path,
     arguments: &[OsString],
-    compilation_flag: &OsStr,
+    compile_to_object: bool,
     cwd: &Path,
     tmp: &Path,
     keep_dir: Option<PathBuf>,
@@ -732,18 +731,14 @@ where
             ),
             // cicc and ptxas are cacheable
             Some("cicc") => {
-                match compilation_flag.to_str() {
+                if compile_to_object {
                     // Fix for CTK < 12.8:
                     // If `nvcc` is invoked with `-c` (or any of its variants), remove the
                     // `--gen_module_id_file` flag. In this mode, we instruct `cudafe++`
                     // to generate this file, so cicc shouldn't generate it again.
-                    Some("-c") | Some("--compile") | Some("-dc") | Some("--device-c")
-                    | Some("-dw") | Some("--device-w") => {
-                        if let Some(idx) = args.iter().position(|x| x == &gen_module_id_file_flag) {
-                            args.splice(idx..(idx + 1), []);
-                        }
+                    if let Some(idx) = args.iter().position(|x| x == &gen_module_id_file_flag) {
+                        args.splice(idx..(idx + 1), []);
                     }
-                    _ => {}
                 }
                 let group = device_compile_groups.get_mut(&args[args.len() - 3]);
                 (env_vars.clone(), Cacheable::Yes, group)
