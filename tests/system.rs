@@ -707,8 +707,87 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path, with_debug_flags
     // Compile multiple source files.
     copy_to_tempdir(&[INPUT_FOR_CUDA_A, INPUT_FOR_CUDA_B], tempdir);
 
-    let out_file = tempdir.join(OUTPUT);
+    trace!("compile A ptx");
+    let out_file = tempdir.join("test.ptx");
+    sccache_command()
+        .args(compile_cuda_cmdline(
+            name,
+            exe,
+            "-ptx",
+            // relative path for input
+            INPUT_FOR_CUDA_A,
+            // relative path for output
+            out_file.file_name().unwrap().to_string_lossy().as_ref(),
+            &extra_args,
+        ))
+        .current_dir(tempdir)
+        .envs(env_vars.clone())
+        .assert()
+        .success();
+    assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
+    fs::remove_file(&out_file).unwrap();
+    trace!("compile A ptx request stats");
+    stats.cache_writes += 1;
+    stats.compilations += 2;
+    stats.compile_requests += 1;
+    stats.requests_executed += 2;
+    stats.non_cacheable_compilations += 1;
+    stats
+        .cache_misses
+        .increment(&CompilerKind::C(CCompilerKind::Cicc), &Language::Ptx);
+    assert_eq!(
+        stats,
+        ServerStats {
+            cache_write_duration: stats.cache_write_duration,
+            cache_read_hit_duration: stats.cache_read_hit_duration,
+            compiler_write_duration: stats.compiler_write_duration,
+            ..server_info().stats
+        }
+    );
+
+    trace!("compile A cubin");
+    let out_file = tempdir.join("test.cubin");
+    sccache_command()
+        .args(compile_cuda_cmdline(
+            name,
+            exe,
+            "-cubin",
+            // relative path for input
+            INPUT_FOR_CUDA_A,
+            // absolute path for output
+            out_file.to_string_lossy().as_ref(),
+            &extra_args,
+        ))
+        .current_dir(tempdir)
+        .envs(env_vars.clone())
+        .assert()
+        .success();
+    assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
+    fs::remove_file(&out_file).unwrap();
+    trace!("compile A cubin request stats");
+    stats.cache_writes += 1;
+    stats.compilations += 2;
+    stats.compile_requests += 1;
+    stats.requests_executed += 3;
+    stats.non_cacheable_compilations += 1;
+    stats
+        .cache_hits
+        .increment(&CompilerKind::C(CCompilerKind::Cicc), &Language::Ptx);
+    stats
+        .cache_misses
+        .increment(&CompilerKind::C(CCompilerKind::Ptxas), &Language::Cubin);
+    assert_eq!(
+        stats,
+        ServerStats {
+            cache_write_duration: stats.cache_write_duration,
+            cache_read_hit_duration: stats.cache_read_hit_duration,
+            compiler_write_duration: stats.compiler_write_duration,
+            ..server_info().stats
+        }
+    );
+
     trace!("compile A");
+    let out_file = tempdir.join(OUTPUT);
     sccache_command()
         .args(compile_cuda_cmdline(
             name,
@@ -727,9 +806,8 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path, with_debug_flags
     assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
     fs::remove_file(&out_file).unwrap();
     trace!("compile A request stats");
-
-    stats.cache_writes += 4;
-    stats.compilations += 5;
+    stats.cache_writes += 2;
+    stats.compilations += 3;
     stats.compile_requests += 1;
     stats.requests_executed += 5;
     stats.non_cacheable_compilations += 1;
@@ -740,10 +818,10 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path, with_debug_flags
         .cache_misses
         .increment(&CompilerKind::C(CCompilerKind::CudaFE), &Language::CudaFE);
     stats
-        .cache_misses
+        .cache_hits
         .increment(&CompilerKind::C(CCompilerKind::Cicc), &Language::Ptx);
     stats
-        .cache_misses
+        .cache_hits
         .increment(&CompilerKind::C(CCompilerKind::Ptxas), &Language::Cubin);
     assert_eq!(
         stats,
@@ -755,7 +833,8 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path, with_debug_flags
         }
     );
 
-    trace!("compile A");
+    trace!("compile A (cached)");
+    let out_file = tempdir.join(OUTPUT);
     sccache_command()
         .args(compile_cuda_cmdline(
             name,
@@ -821,8 +900,8 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path, with_debug_flags
     assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
     fs::remove_file(&out_file).unwrap();
     trace!("compile B request stats");
-    stats.cache_writes += 3 + (with_debug_flags as u64);
-    stats.compilations += 4 + (with_debug_flags as u64);
+    stats.cache_writes += 4;
+    stats.compilations += 5;
     stats.compile_requests += 1;
     stats.requests_executed += 5;
     stats.non_cacheable_compilations += 1;
@@ -835,98 +914,9 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path, with_debug_flags
     stats
         .cache_misses
         .increment(&CompilerKind::C(CCompilerKind::Cicc), &Language::Ptx);
-    if with_debug_flags {
-        stats
-            .cache_misses
-            .increment(&CompilerKind::C(CCompilerKind::Ptxas), &Language::Cubin);
-    } else {
-        stats
-            .cache_hits
-            .increment(&CompilerKind::C(CCompilerKind::Ptxas), &Language::Cubin);
-    }
-    assert_eq!(
-        stats,
-        ServerStats {
-            cache_write_duration: stats.cache_write_duration,
-            cache_read_hit_duration: stats.cache_read_hit_duration,
-            compiler_write_duration: stats.compiler_write_duration,
-            ..server_info().stats
-        }
-    );
-
-    trace!("compile ptx");
-    let out_file = tempdir.join("test.ptx");
-    sccache_command()
-        .args(compile_cuda_cmdline(
-            name,
-            exe,
-            "-ptx",
-            INPUT_FOR_CUDA_A,
-            // relative path for output
-            out_file.file_name().unwrap().to_string_lossy().as_ref(),
-            &extra_args,
-        ))
-        .current_dir(tempdir)
-        .envs(env_vars.clone())
-        .assert()
-        .success();
-    assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
-    fs::remove_file(&out_file).unwrap();
-    trace!("compile ptx request stats");
-    stats.cache_writes += 1;
-    stats.compilations += 2;
-    stats.compile_requests += 1;
-    stats.requests_executed += 2;
-    stats.non_cacheable_compilations += 1;
     stats
         .cache_misses
-        .increment(&CompilerKind::C(CCompilerKind::Cicc), &Language::Ptx);
-    assert_eq!(
-        stats,
-        ServerStats {
-            cache_write_duration: stats.cache_write_duration,
-            cache_read_hit_duration: stats.cache_read_hit_duration,
-            compiler_write_duration: stats.compiler_write_duration,
-            ..server_info().stats
-        }
-    );
-
-    trace!("compile cubin");
-    let out_file = tempdir.join("test.cubin");
-    sccache_command()
-        .args(compile_cuda_cmdline(
-            name,
-            exe,
-            "-cubin",
-            INPUT_FOR_CUDA_A,
-            // absolute path for output
-            out_file.to_string_lossy().as_ref(),
-            &extra_args,
-        ))
-        .current_dir(tempdir)
-        .envs(env_vars.clone())
-        .assert()
-        .success();
-    assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
-    fs::remove_file(&out_file).unwrap();
-    trace!("compile cubin request stats");
-    stats.cache_writes += 1 + (with_debug_flags as u64);
-    stats.compilations += 2 + (with_debug_flags as u64);
-    stats.compile_requests += 1;
-    stats.requests_executed += 3;
-    stats.non_cacheable_compilations += 1;
-    stats
-        .cache_misses
-        .increment(&CompilerKind::C(CCompilerKind::Cicc), &Language::Ptx);
-    if with_debug_flags {
-        stats
-            .cache_misses
-            .increment(&CompilerKind::C(CCompilerKind::Ptxas), &Language::Cubin);
-    } else {
-        stats
-            .cache_hits
-            .increment(&CompilerKind::C(CCompilerKind::Ptxas), &Language::Cubin);
-    }
+        .increment(&CompilerKind::C(CCompilerKind::Ptxas), &Language::Cubin);
     assert_eq!(
         stats,
         ServerStats {
@@ -1115,6 +1105,170 @@ int main(int argc, char** argv) {
             ..server_info().stats
         }
     );
+
+    // Test compiling a multiarch object
+    trace!("compile A sm_80,sm_86");
+    let out_file = tempdir.join(OUTPUT);
+    sccache_command()
+        .args(compile_cuda_cmdline(
+            name,
+            exe,
+            "-c",
+            // relative path for input
+            INPUT_FOR_CUDA_A,
+            // relative path for output
+            out_file.file_name().unwrap().to_string_lossy().as_ref(),
+            &[
+                extra_args.as_slice(),
+                &[
+                    "-gencode=arch=compute_80,code=[sm_80]".into(),
+                    "-gencode=arch=compute_86,code=[compute_86,sm_86]".into(),
+                ],
+            ]
+            .concat(),
+        ))
+        .current_dir(tempdir)
+        .envs(env_vars.clone())
+        .assert()
+        .success();
+    assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
+    fs::remove_file(&out_file).unwrap();
+    trace!("compile A sm_80,sm_86 request stats");
+    stats.cache_writes += 6;
+    stats.compilations += 7;
+    stats.compile_requests += 1;
+    stats.requests_executed += 7;
+    stats.non_cacheable_compilations += 1;
+
+    stats
+        .cache_misses
+        .increment(&CompilerKind::C(CCompilerKind::Nvcc), &Language::Cuda);
+    stats
+        .cache_misses
+        .increment(&CompilerKind::C(CCompilerKind::CudaFE), &Language::CudaFE);
+    stats
+        .cache_misses
+        .increment(&CompilerKind::C(CCompilerKind::Cicc), &Language::Ptx);
+    stats
+        .cache_misses
+        .increment(&CompilerKind::C(CCompilerKind::Ptxas), &Language::Cubin);
+    stats
+        .cache_misses
+        .increment(&CompilerKind::C(CCompilerKind::Cicc), &Language::Ptx);
+    stats
+        .cache_misses
+        .increment(&CompilerKind::C(CCompilerKind::Ptxas), &Language::Cubin);
+
+    assert_eq!(
+        stats,
+        ServerStats {
+            cache_write_duration: stats.cache_write_duration,
+            cache_read_hit_duration: stats.cache_read_hit_duration,
+            compiler_write_duration: stats.compiler_write_duration,
+            ..server_info().stats
+        }
+    );
+
+    // Test that compiling a single-arch object where the arch is a subset of
+    // a previous multi-arch compilation produces cache hits on the underlying
+    // PTX and cubin compilations.
+    trace!("compile A sm_80");
+    let out_file = tempdir.join(OUTPUT);
+    sccache_command()
+        .args(compile_cuda_cmdline(
+            name,
+            exe,
+            "-c",
+            // relative path for input
+            INPUT_FOR_CUDA_A,
+            // relative path for output
+            out_file.file_name().unwrap().to_string_lossy().as_ref(),
+            &[
+                extra_args.as_slice(),
+                &["-gencode=arch=compute_80,code=[compute_80,sm_80]".into()],
+            ]
+            .concat(),
+        ))
+        .current_dir(tempdir)
+        .envs(env_vars.clone())
+        .assert()
+        .success();
+    assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
+    fs::remove_file(&out_file).unwrap();
+    trace!("compile A sm_80 request stats");
+    stats.cache_writes += 2;
+    stats.compilations += 3;
+    stats.compile_requests += 1;
+    stats.requests_executed += 5;
+    stats.non_cacheable_compilations += 1;
+    stats
+        .cache_misses
+        .increment(&CompilerKind::C(CCompilerKind::Nvcc), &Language::Cuda);
+    stats
+        .cache_misses
+        .increment(&CompilerKind::C(CCompilerKind::CudaFE), &Language::CudaFE);
+    stats
+        .cache_hits
+        .increment(&CompilerKind::C(CCompilerKind::Cicc), &Language::Ptx);
+    stats
+        .cache_hits
+        .increment(&CompilerKind::C(CCompilerKind::Ptxas), &Language::Cubin);
+    assert_eq!(
+        stats,
+        ServerStats {
+            cache_write_duration: stats.cache_write_duration,
+            cache_read_hit_duration: stats.cache_read_hit_duration,
+            compiler_write_duration: stats.compiler_write_duration,
+            ..server_info().stats
+        }
+    );
+
+    // Test that compiling a single-arch cubin where the arch is a subset of
+    // a previous multi-arch compilation produces cache hits on the underlying
+    // PTX and cubin compilations.
+    trace!("compile cubin sm_80");
+    let out_file = tempdir.join("test.cubin");
+    sccache_command()
+        .args(compile_cuda_cmdline(
+            name,
+            exe,
+            "-cubin",
+            // relative path for input
+            INPUT_FOR_CUDA_A,
+            // absolute path for output
+            out_file.to_string_lossy().as_ref(),
+            &[
+                extra_args.as_slice(),
+                &["-gencode=arch=compute_80,code=[sm_80]".into()],
+            ]
+            .concat(),
+        ))
+        .current_dir(tempdir)
+        .envs(env_vars.clone())
+        .assert()
+        .success();
+    assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
+    fs::remove_file(&out_file).unwrap();
+    trace!("compile cubin sm_80 request stats");
+    stats.compilations += 1;
+    stats.compile_requests += 1;
+    stats.requests_executed += 3;
+    stats.non_cacheable_compilations += 1;
+    stats
+        .cache_hits
+        .increment(&CompilerKind::C(CCompilerKind::Cicc), &Language::Ptx);
+    stats
+        .cache_hits
+        .increment(&CompilerKind::C(CCompilerKind::Ptxas), &Language::Cubin);
+    assert_eq!(
+        stats,
+        ServerStats {
+            cache_write_duration: stats.cache_write_duration,
+            cache_read_hit_duration: stats.cache_read_hit_duration,
+            compiler_write_duration: stats.compiler_write_duration,
+            ..server_info().stats
+        }
+    );
 }
 
 fn test_nvcc_proper_lang_stat_tracking(
@@ -1142,7 +1296,7 @@ fn test_nvcc_proper_lang_stat_tracking(
 
     let out_file = tempdir.join(OUTPUT);
 
-    trace!("compile CUDA A");
+    trace!("compile CUDA C");
     sccache_command()
         .args(compile_cmdline(
             name,
@@ -1190,7 +1344,7 @@ fn test_nvcc_proper_lang_stat_tracking(
         }
     );
 
-    trace!("compile CUDA A");
+    trace!("compile CUDA C");
     sccache_command()
         .args(compile_cmdline(
             name,
@@ -1231,7 +1385,7 @@ fn test_nvcc_proper_lang_stat_tracking(
         }
     );
 
-    trace!("compile C++ A");
+    trace!("compile C++");
     sccache_command()
         .args(compile_cmdline(
             name,
@@ -1264,7 +1418,7 @@ fn test_nvcc_proper_lang_stat_tracking(
         }
     );
 
-    trace!("compile C++ A");
+    trace!("compile C++");
     sccache_command()
         .args(compile_cmdline(
             name,

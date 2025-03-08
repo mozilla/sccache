@@ -295,7 +295,7 @@ impl CCompilerImpl for Nvcc {
     }
 }
 
-pub fn generate_compile_commands(
+fn generate_compile_commands(
     parsed_args: &ParsedArguments,
     executable: &Path,
     cwd: &Path,
@@ -397,12 +397,18 @@ pub fn generate_compile_commands(
         .unwrap()
         .path;
 
-    let compile_to_object = matches!(
-        parsed_args.compilation_flag.to_str(),
-        Some("-c") | Some("--compile") // compile to object
+    let compile_flag = match parsed_args.compilation_flag.to_str() {
+        Some("") // compile to executable
+        | Some("-c") | Some("--compile") // compile to object
         | Some("-dc") | Some("--device-c") // compile to object with -rdc=true
         | Some("-dw") | Some("--device-w") // compile to object with -rdc=false
-    );
+        => NvccCompileFlag::Device,
+        Some("-cubin") | Some("--cubin") => NvccCompileFlag::Cubin,
+        Some("-ptx") | Some("--ptx") => NvccCompileFlag::Ptx,
+        Some("-cuda") | Some("--cuda") => NvccCompileFlag::Preprocess,
+        Some("-fatbin") | Some("--fatbin") => NvccCompileFlag::Fatbin,
+        _ => unreachable!()
+    };
 
     arguments.extend(vec![
         "-o".into(),
@@ -411,7 +417,7 @@ pub fn generate_compile_commands(
         // but we run the host compiler in `cwd` (the dir from which sccache was
         // executed), cicc/ptxas `-o` argument should point at the real out path
         // that's potentially relative to `cwd`.
-        if compile_to_object {
+        if compile_flag == NvccCompileFlag::Device {
             output.clone().into()
         } else {
             cwd.join(output).into()
@@ -442,7 +448,7 @@ pub fn generate_compile_commands(
         num_parallel,
         executable: executable.to_owned(),
         arguments,
-        compile_to_object,
+        compile_flag,
         env_vars,
         cwd: cwd.to_owned(),
         host_compiler: host_compiler.clone(),
@@ -466,14 +472,23 @@ pub fn generate_compile_commands(
     ))
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum NvccCompileFlag {
+    Cubin,
+    Device,
+    Fatbin,
+    Preprocess,
+    Ptx,
+}
+
 #[derive(Clone, Debug)]
-pub struct NvccCompileCommand {
+struct NvccCompileCommand {
     pub temp_dir: PathBuf,
     pub keep_dir: Option<PathBuf>,
     pub num_parallel: usize,
     pub executable: PathBuf,
     pub arguments: Vec<OsString>,
-    pub compile_to_object: bool,
+    pub compile_flag: NvccCompileFlag,
     pub env_vars: Vec<(OsString, OsString)>,
     pub cwd: PathBuf,
     pub host_compiler: NvccHostCompiler,
@@ -509,7 +524,7 @@ impl CompileCommandImpl for NvccCompileCommand {
             num_parallel,
             executable,
             arguments,
-            compile_to_object,
+            compile_flag,
             env_vars,
             cwd,
             host_compiler,
@@ -520,7 +535,7 @@ impl CompileCommandImpl for NvccCompileCommand {
             creator,
             executable,
             arguments,
-            *compile_to_object,
+            compile_flag,
             cwd,
             temp_dir.as_path(),
             keep_dir.clone(),
@@ -617,7 +632,7 @@ async fn group_nvcc_subcommands_by_compilation_stage<T>(
     creator: &T,
     executable: &Path,
     arguments: &[OsString],
-    compile_to_object: bool,
+    compile_flag: &NvccCompileFlag,
     cwd: &Path,
     tmp: &Path,
     keep_dir: Option<PathBuf>,
@@ -659,14 +674,13 @@ where
     let is_nvcc_exe =
         |exe: &str| matches!(exe, "cicc" | "ptxas" | "cudafe++" | "nvlink" | "fatbinary");
 
-    let (nvcc_commands, host_commands) = futures::future::try_join(
+    let (mut nvcc_commands, mut host_commands) = futures::future::try_join(
         // Get the nvcc compile command lines with paths relative to `tmp`
         select_nvcc_subcommands(
             creator,
             executable,
             cwd,
             &mut env_vars_1,
-            keep_dir.is_none(),
             arguments,
             is_nvcc_exe,
             host_compiler,
@@ -678,7 +692,6 @@ where
             executable,
             cwd,
             &mut env_vars_2,
-            keep_dir.is_none(),
             &[arguments, &["--keep-dir".into(), tmp.into()][..]].concat(),
             |exe| !is_nvcc_exe(exe),
             host_compiler,
@@ -689,6 +702,46 @@ where
 
     drop(env_vars_2);
     let env_vars = env_vars_1;
+
+    //
+    // Remap nvcc's generated file names to deterministic names.
+    // nvcc generates different file names depending on whether it's compiling one vs. many archs.
+    //
+    // For example, both of these commands generate PTX for sm60, so we should get a cicc cache hit:
+    // 1. `nvcc -x cu -c x.cu -o x.cu.o -gencode=arch=compute_60,code=[compute_60,sm_60]`
+    // 2. `nvcc -x cu -c x.cu -o x.cu.o -gencode=arch=compute_60,code=[sm_60] -gencode=arch=compute_70,code=[compute_70,sm_70]`
+    //
+    // The first command generates:
+    // ```
+    // cicc --gen_c_file_name x.cudafe1.c \
+    //      --stub_file_name x.cudafe1.stub.c \
+    //      --gen_device_file_name x.cudafe1.gpu \
+    //      -o x.ptx
+    // ```
+    //
+    // The second command generates:
+    // ```
+    // cicc --gen_c_file_name x.compute_60.cudafe1.c \
+    //      --stub_file_name x.compute_60.cudafe1.stub.c \
+    //      --gen_device_file_name x.compute_60.cudafe1.gpu \
+    //      -o x.compute_60.ptx
+    // ```
+    //
+    // The second command yields a false-positive cache miss because the names are different.
+    //
+    // This matters because CI jobs will often compile .cu files in "many-arch" mode, but devs
+    // who have just one GPU locally prefer to only compile for their specific GPU arch. It is
+    // preferrable if they can reuse the PTX populated by "many-arch" CI jobs.
+    //
+    // So to avoid this, we detect these "single-arch" compilations and rewrite the names to
+    // match what nvcc generates for "many-arch" compilations.
+    //
+    if compile_flag != &NvccCompileFlag::Preprocess {
+        if let Some(arch) = find_last_compute_arch(&nvcc_commands) {
+            host_commands = remap_generated_filenames(&arch, compile_flag, &host_commands);
+            nvcc_commands = remap_generated_filenames(&arch, compile_flag, &nvcc_commands);
+        }
+    }
 
     // Now zip the two lists of commands again by sorting on original line index.
     // Transform to tuples that include the dir in which each command should run.
@@ -715,6 +768,10 @@ where
     .to_owned();
 
     let gen_module_id_file_flag = "--gen_module_id_file".to_owned();
+    let gen_c_file_name_flag = "--gen_c_file_name".to_owned();
+    let gen_device_file_name_flag = "--gen_device_file_name".to_owned();
+    let module_id_file_name_flag = "--module_id_file_name".to_owned();
+    let stub_file_name_flag = "--stub_file_name".to_owned();
     let mut cuda_front_end_group = Vec::<NvccGeneratedSubcommand>::new();
     let mut final_assembly_group = Vec::<NvccGeneratedSubcommand>::new();
     let mut device_compile_groups = HashMap::<String, Vec<NvccGeneratedSubcommand>>::new();
@@ -731,15 +788,45 @@ where
             ),
             // cicc and ptxas are cacheable
             Some("cicc") => {
-                if compile_to_object {
-                    // Fix for CTK < 12.8:
-                    // If `nvcc` is invoked with `-c` (or any of its variants), remove the
-                    // `--gen_module_id_file` flag. In this mode, we instruct `cudafe++`
-                    // to generate this file, so cicc shouldn't generate it again.
-                    if let Some(idx) = args.iter().position(|x| x == &gen_module_id_file_flag) {
-                        args.splice(idx..(idx + 1), []);
+                // Add `--gen_module_id_file` if the cicc args include `--module_id_file_name`.
+                //
+                // From emperical observation, it seems if this file has already been created
+                // by `cudafe++`, cicc will use the existing file. If the file doesn't exist,
+                // cicc should create it. In both cases, the `.module_id` file should be
+                // cached alongside the `.ptx` output.
+                if let Some(idx) = args.iter().position(|x| x == &module_id_file_name_flag) {
+                    // Add `--gen_module_id_file` if necessary
+                    if !args.contains(&gen_module_id_file_flag) {
+                        // Insert `--gen_module_id_file` just before `--module_id_file_name` to match nvcc behavior
+                        args.splice(idx..idx, [gen_module_id_file_flag.clone()]);
                     }
                 }
+
+                // Add these flags if they're missing:
+                // * `--gen_c_file_name test_a.compute_XX.cudafe1.c`
+                // * `--stub_file_name test_a.compute_XX.cudafe1.stub.c`
+                // * `--gen_device_file_name test_a.compute_XX.cudafe1.gpu`
+                //
+                // This ensures the same `cicc` command is generated regardless
+                // of whether the compilation flag is `-c`, `-ptx`, or `-cubin`
+
+                // e.g. test_a.compute_XX.cpp1.ii
+                let mut nidx = args.len() - 3;
+                let name = args[nidx].clone();
+                // test_a.compute_XX.cpp1.ii -> test_a.compute_XX
+                let name = name.split(".cpp1.ii").next().unwrap();
+
+                for (flag, name) in [
+                    (&gen_c_file_name_flag, format!("{name}.cudafe1.c")),
+                    (&stub_file_name_flag, format!("{name}.cudafe1.stub.c")),
+                    (&gen_device_file_name_flag, format!("{name}.cudafe1.gpu")),
+                ] {
+                    if !args.contains(flag) {
+                        args.splice(nidx..nidx, [flag.clone(), name]);
+                        nidx = args.len() - 3;
+                    }
+                }
+
                 let group = device_compile_groups.get_mut(&args[args.len() - 3]);
                 (env_vars.clone(), Cacheable::Yes, group)
             }
@@ -758,8 +845,8 @@ where
             Some("cudafe++") => {
                 // Fix for CTK < 12.0:
                 // Add `--gen_module_id_file` if the cudafe++ args include `--module_id_file_name`
-                if !args.contains(&gen_module_id_file_flag) {
-                    if let Some(idx) = args.iter().position(|x| x == "--module_id_file_name") {
+                if let Some(idx) = args.iter().position(|x| x == &module_id_file_name_flag) {
+                    if !args.contains(&gen_module_id_file_flag) {
                         // Insert `--gen_module_id_file` just before `--module_id_file_name` to match nvcc behavior
                         args.splice(idx..idx, [gen_module_id_file_flag.clone()]);
                     }
@@ -898,7 +985,6 @@ async fn select_nvcc_subcommands<T, F>(
     executable: &Path,
     cwd: &Path,
     env_vars: &mut Vec<(OsString, OsString)>,
-    remap_filenames: bool,
     arguments: &[OsString],
     select_subcommand: F,
     host_compiler: &NvccHostCompiler,
@@ -932,8 +1018,6 @@ where
 
     let nvcc_dryrun_output = run_input_output(nvcc_dryrun_cmd, None).await?;
 
-    let mut ext_counts = HashMap::<String, i32>::new();
-    let mut old_to_new = HashMap::<String, String>::new();
     let is_valid_line_re = Regex::new(r"^#\$ (.*)$").unwrap();
     let is_envvar_line_re = Regex::new(r"^([_A-Z]+)=(.*)$").unwrap();
 
@@ -966,15 +1050,10 @@ where
             host_compiler,
         )?;
 
-        let (exe, mut args) = match maybe_exe_and_args {
+        let (exe, args) = match maybe_exe_and_args {
             Some(exe_and_args) => exe_and_args,
             _ => continue,
         };
-
-        // Remap nvcc's generated file names to deterministic names
-        if remap_filenames {
-            args = remap_generated_filenames(&args, &mut old_to_new, &mut ext_counts);
-        }
 
         match exe.file_stem().and_then(|s| s.to_str()) {
             None => continue,
@@ -1098,104 +1177,213 @@ fn fold_env_vars_or_split_into_exe_and_args(
     Ok(Some((exe.clone(), args.to_vec())))
 }
 
-fn remap_generated_filenames(
-    args: &[String],
-    old_to_new: &mut HashMap<String, String>,
-    ext_counts: &mut HashMap<String, i32>,
-) -> Vec<String> {
-    args.iter()
-        .map(|arg| {
-            // Special case for MSVC's preprocess output file name flag
-            let arg_is_msvc_preprocessor_output = arg.starts_with("-Fi");
-
-            let arg = if arg_is_msvc_preprocessor_output {
-                arg.trim_start_matches("-Fi").to_owned()
-            } else {
-                arg.to_owned()
-            };
-
-            // If the argument doesn't start with `-` and is a file that
-            // ends in one of the below extensions, rename the file to an
-            // auto-incrementing stable name
-            let maybe_extension = (!arg.starts_with('-'))
-                .then(|| {
-                    [
-                        ".cpp1.ii",
-                        ".cpp4.ii",
-                        ".cudafe1.c",
-                        ".cudafe1.cpp",
-                        ".cudafe1.stub.c",
-                    ]
-                    .iter()
-                    .find(|ext| arg.ends_with(*ext))
-                    .copied()
-                })
-                .unwrap_or(None);
-
-            // If the argument is a file that ends in one of the above extensions:
-            // * If it's our first time seeing this file, create a unique name for it
-            // * If we've seen this file before, lookup its unique name in the hash map
-            //
-            // This ensures stable names are in cudafe++ output and #include directives,
-            // eliminating one source of false-positive cache misses.
-            let arg = match maybe_extension {
-                Some(extension) => {
-                    old_to_new
-                        .entry(arg)
-                        .or_insert_with_key(|arg| {
-                            // Initialize or update the number of files with a given extension:
-                            // compute_70.cudafe1.stub.c -> x_0.cudafe1.stub.c
-                            // compute_60.cudafe1.stub.c -> x_1.cudafe1.stub.c
-                            // etc.
-                            let count = ext_counts
-                                .entry(extension.into())
-                                .and_modify(|c| *c += 1)
-                                .or_insert(0)
-                                .to_string();
-                            // Return `/tmp/dir/x_{count}.{ext}` as the new name, i.e. `/tmp/dir/x_0.cudafe1.stub.c`
-                            PathBuf::from(arg)
-                                .parent()
-                                .unwrap_or(Path::new(""))
-                                // Don't use the count as the first character of the file name, because the file name
-                                // may be used as an identifier (via the __FILE__ macro) and identifiers with leading
-                                // digits are not valid in C/C++, i.e. `x_0.cudafe1.cpp` instead of `0.cudafe1.cpp`.
-                                .join("x_".to_owned() + &count + extension)
-                                .to_string_lossy()
-                                .to_string()
-                        })
-                        .to_owned()
+fn find_last_compute_arch(lines: &[(usize, PathBuf, Vec<String>)]) -> Option<String> {
+    for (_, _, args) in lines.iter().rev() {
+        if let Some(idx) = args.iter().position(|arg| arg == "-arch") {
+            if let Some(val) = args.get(idx + 1) {
+                if let Some((_, arch)) = val.split_once('_') {
+                    return Some(arch.to_owned());
                 }
-                None => {
-                    // If the argument isn't a file name with one of our extensions,
-                    // it may _reference_ files we've renamed. Go through and replace
-                    // all old names with their new stable names.
-                    //
-                    // Sort by string length descending so we don't accidentally replace
-                    // `zzz.cudafe1.cpp` with the new name for `zzz.cudafe1.c`.
-                    //
-                    // For example, if we have these renames:
-                    //
-                    //   compute_70.cudafe1.cpp -> x_0.cudafe1.cpp
-                    //   compute_70.cudafe1.c   -> x_2.cudafe1.c
-                    //
-                    // `compute_70.cudafe1.cpp` should be replaced with `x_0.cudafe1.cpp`, not `x_2.cudafe1.c`
-                    //
-                    let mut arg = arg.clone();
-                    for (old, new) in old_to_new
-                        .iter()
-                        .sorted_by(|a, b| b.0.len().cmp(&a.0.len()))
-                    {
-                        arg = arg.replace(old, new);
-                    }
-                    arg
-                }
-            };
-
-            if arg_is_msvc_preprocessor_output {
-                format!("-Fi{}", arg)
-            } else {
-                arg
             }
+        }
+    }
+    None
+}
+
+fn remap_generated_filenames(
+    last_arch: &str,
+    compile_flag: &NvccCompileFlag,
+    lines: &[(usize, PathBuf, Vec<String>)],
+) -> Vec<(usize, PathBuf, Vec<String>)> {
+    let mut old_to_new = HashMap::<String, String>::new();
+    let mut extensions = vec![
+        ".cpp1.ii",
+        ".cudafe1.c",
+        ".cudafe1.cpp",
+        ".cudafe1.gpu",
+        ".cudafe1.stub.c",
+    ];
+
+    match compile_flag {
+        // Rewrite PTX names if the compile flag is `-cubin`
+        NvccCompileFlag::Cubin => {
+            extensions.push(".ptx");
+        }
+        // Rewrite both PTX and cubin names if the compile flag is `-c` or `-fatbin`
+        NvccCompileFlag::Device | NvccCompileFlag::Fatbin => {
+            extensions.push(".ptx");
+            extensions.push(".cubin");
+        }
+        _ => {}
+    }
+
+    let has_sm_in_name_re = Regex::new(r"^(.*).sm_([0-9A-Za-z]+).(.*)$").unwrap();
+    let has_compute_in_name_re = Regex::new(r"^(.*).compute_([0-9A-Za-z]+).(.*)$").unwrap();
+
+    lines
+        .iter()
+        .map(|(idx, exe, args)| {
+            (
+                *idx,
+                exe.clone(),
+                args.iter()
+                    .map(|arg| {
+                        // Special case for MSVC's preprocess output file name flag
+                        let arg_is_msvc_preprocessor_output = arg.starts_with("-Fi");
+
+                        let arg = if arg_is_msvc_preprocessor_output {
+                            arg.trim_start_matches("-Fi").to_owned()
+                        } else {
+                            arg.to_owned()
+                        };
+
+                        // If the argument doesn't start with `-` and is a file that
+                        // ends in one of these extensions, rename the file to a
+                        // stable name that includes the compute architecture.
+                        let maybe_extension = (!arg.starts_with('-'))
+                            .then(|| extensions.iter().find(|ext| arg.ends_with(*ext)).copied())
+                            .unwrap_or(None);
+
+                        // If the argument is a file that ends in one of the above extensions:
+                        // * If it's our first time seeing this file, compute a stable name for it
+                        // * If we've seen this file before, lookup its stable name in the hash map
+                        //
+                        // This ensures stable names are in cudafe++ output and #include directives,
+                        // eliminating one source of false-positive cache misses.
+                        let arg = match maybe_extension {
+                            // nvcc generates different cubin names under different conditions:
+                            // 1. `x.cubin` with one `-gencode` arg and *not* embedding sm_XX PTX
+                            // 2. `x.sm_XX.cubin` with one `-gencode` arg and embedding sm_XX PTX
+                            // 2. `x.compute_XX.cubin` with multiple `-gencode` args and *not* embedding sm_XX PTX
+                            // 3. `x.compute_XX.sm_XX.cubin` with multiple `-gencode` args and embedding sm_XX PTX
+                            //
+                            // Since the output cubin is identical, rewrite the first three forms
+                            // to match the fourth form so we get more cache hits.
+                            Some(".cubin") => {
+                                old_to_new
+                                    .entry(arg)
+                                    .or_insert_with_key(|arg| {
+                                        let mut path = PathBuf::from(arg);
+
+                                        let cubin_arch = path
+                                            .file_name()
+                                            .and_then(|name| name.to_str())
+                                            .and_then(|name| {
+                                                let mut pair = if has_sm_in_name_re.is_match(name) {
+                                                    name.split(".sm_")
+                                                } else if has_compute_in_name_re.is_match(name) {
+                                                    name.split(".compute_")
+                                                } else {
+                                                    return None;
+                                                };
+                                                // Ignore everything before `.sm_` or `.compute_`
+                                                let _ = pair.next().unwrap();
+                                                // Take everything after `.sm_` or `_.compute`, i.e. `{arch}.cubin`
+                                                let s = pair.next().unwrap();
+                                                // This is the arch number
+                                                let (s, _) = s.split_once('.').unwrap();
+                                                Some(s)
+                                            })
+                                            .unwrap_or(last_arch)
+                                            .to_owned();
+
+                                        // Add the `sm_{arch}` component if necessary
+                                        if let Some(name) = path
+                                            .file_name()
+                                            .and_then(|name| name.to_str())
+                                            .and_then(|name| {
+                                                (!has_sm_in_name_re.is_match(name)).then_some(name)
+                                            })
+                                        {
+                                            // test_a.cubin -> (test_a, cubin)
+                                            // test_a.compute_60.cubin -> (test_a.compute_60, cubin)
+                                            let mut pair = name.split(".cubin");
+                                            let lhs = pair.next().unwrap();
+                                            // test_a.cubin -> test_a.sm_60.cubin
+                                            // test_a.compute_60.cubin -> test_a.compute_60.sm_60.cubin
+                                            let name = format!("{lhs}.sm_{cubin_arch}.cubin");
+                                            path.set_file_name(name);
+                                        }
+
+                                        // Add the `compute_{arch}` component if necessary
+                                        if let Some(name) = path
+                                            .file_name()
+                                            .and_then(|name| name.to_str())
+                                            .and_then(|name| {
+                                                (!has_compute_in_name_re.is_match(name))
+                                                    .then_some(name)
+                                            })
+                                        {
+                                            // test_a.sm_60.cubin -> (test_a, sm_60.cubin)
+                                            let (lhs, rhs) = name.split_once('.').unwrap();
+                                            // test_a.sm_60.cubin -> test_a.compute_60.sm_60.cubin
+                                            let name = format!("{lhs}.compute_{cubin_arch}.{rhs}");
+                                            path.set_file_name(name);
+                                        }
+                                        path.into_os_string().into_string().unwrap()
+                                    })
+                                    .to_owned()
+                            }
+                            Some(extension) => {
+                                old_to_new
+                                    .entry(arg)
+                                    .or_insert_with_key(|arg| {
+                                        let mut path = PathBuf::from(arg);
+                                        // Add the `compute_{arch}` component if necessary
+                                        if let Some(name) = path
+                                            .file_name()
+                                            .and_then(|name| name.to_str())
+                                            .and_then(|name| {
+                                                (!has_compute_in_name_re.is_match(name))
+                                                    .then_some(name)
+                                            })
+                                        {
+                                            // test_a.cudafe1.c -> (test_a, cudafe1.c)
+                                            let (lhs, rhs) = arg.split_once('.').unwrap();
+                                            // test_a.cudafe1.c -> test_a.compute_60.cudafe1.c
+                                            let name = format!("{lhs}.compute_{last_arch}.{rhs}");
+                                            path.set_file_name(name);
+                                        }
+                                        path.into_os_string().into_string().unwrap()
+                                    })
+                                    .to_owned()
+                            }
+                            None => {
+                                // If the argument isn't a file name with one of our extensions,
+                                // it may _reference_ files we've renamed. Go through and replace
+                                // all old names with their new stable names.
+                                //
+                                // Sort by string length descending so we don't accidentally replace
+                                // `test_a.cudafe1.cpp` with the new name for `test_a.cudafe1.c`.
+                                //
+                                // For example, if we have these renames:
+                                //
+                                //   test_a.cudafe1.cpp -> test_a.compute_70.cudafe1.cpp
+                                //   test_a.cudafe1.c   -> test_a.compute_70.cudafe1.c
+                                //
+                                // `test_a.cudafe1.cpp` should be replaced with
+                                // `test_a.compute_70.cudafe1.cpp`, not
+                                // `test_a.compute_70.cudafe1.c`
+                                //
+                                let mut arg = arg.clone();
+                                for (old, new) in old_to_new
+                                    .iter()
+                                    .sorted_by(|a, b| b.0.len().cmp(&a.0.len()))
+                                {
+                                    arg = arg.replace(old, new);
+                                }
+                                arg
+                            }
+                        };
+
+                        if arg_is_msvc_preprocessor_output {
+                            format!("-Fi{}", arg)
+                        } else {
+                            arg
+                        }
+                    })
+                    .collect::<Vec<_>>(),
+            )
         })
         .collect::<Vec<_>>()
 }

@@ -2,9 +2,19 @@
 #include <stdio.h>
 #include "cuda_runtime.h"
 
-__global__ void cuda_entry_point(int*, int*) {}
-__device__ void cuda_device_func(int*, int*) {}
+__device__ void cuda_device_func(int* a) {
+  a[0] = 1;
+}
+
+__global__ void cuda_entry_point(int* a) {
+  cuda_device_func(a);
+}
 
 int main() {
-  printf("%s says hello world\n", __FILE__);
+  int* a{nullptr};
+  cudaMalloc(&a, sizeof(int));
+  cuda_entry_point<<<1,1,1>>>(a);
+  int b{};
+  cudaMemcpy(&b, &a, sizeof(int), cudaMemcpyDefault);
+  printf("%s says hello world, result=%d\n", __FILE__, b);
 }
