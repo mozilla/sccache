@@ -2,8 +2,11 @@
 #include "cuda_runtime.h"
 
 __device__ void cuda_device_func(int* a) {
-  a[0] = 1;
-  a[1] = 2;
+  #  if __CUDA_ARCH__ < 860
+  a[0] = 3;
+  #  else
+  a[0] = 2;
+  #  endif
 }
 
 __global__ void cuda_entry_point(int* a) {
@@ -12,7 +15,7 @@ __global__ void cuda_entry_point(int* a) {
 
 int main() {
   int* a;
-  cudaMalloc(&a, sizeof(int) * 2);
+  cudaMalloc(&a, sizeof(int));
   cuda_entry_point<<<1,1>>>(a);
   int b;
   cudaMemcpy(&b, a, sizeof(int), cudaMemcpyDeviceToHost);

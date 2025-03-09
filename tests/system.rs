@@ -1038,7 +1038,64 @@ int main(int argc, char** argv) {
         },
     );
 
-    // Test compiling a multiarch object
+    // Precompile sm_86 PTX and cubin so their cache entries potentially have a different .module_id file
+    trace!("compile A cubin sm_86");
+    run_cuda_test(
+        "-cubin",
+        Path::new(INPUT_FOR_CUDA_A), // relative path for input
+        Path::new(OUTPUT),           // relative path for output
+        &[
+            extra_args.as_slice(),
+            &["-gencode=arch=compute_86,code=[sm_86]".into()],
+        ]
+        .concat(),
+        AdditionalStats {
+            cache_writes: Some(2),
+            compilations: Some(3),
+            compile_requests: Some(1),
+            requests_executed: Some(3),
+            cache_misses: Some(vec![
+                (CCompilerKind::Cicc, Language::Ptx, 1),
+                (CCompilerKind::Ptxas, Language::Cubin, 1),
+            ]),
+            ..Default::default()
+        },
+    );
+
+    // Test compiling a file whose PTX yields a cache hit for a cubin from another file (`test_a.cu`)
+    trace!("compile B cubin sm_86");
+    run_cuda_test(
+        "-cubin",
+        Path::new(INPUT_FOR_CUDA_B), // relative path for input
+        Path::new(OUTPUT),           // relative path for output
+        &[
+            extra_args.as_slice(),
+            &["-gencode=arch=compute_86,code=[sm_86]".into()],
+        ]
+        .concat(),
+        AdditionalStats {
+            cache_writes: Some(1 + with_debug_flags as u64),
+            compilations: Some(2 + with_debug_flags as u64),
+            compile_requests: Some(1),
+            requests_executed: Some(3),
+            cache_hits: Some(vec![(
+                CCompilerKind::Ptxas,
+                Language::Cubin,
+                !with_debug_flags as u64,
+            )]),
+            cache_misses: Some(vec![
+                (CCompilerKind::Cicc, Language::Ptx, 1),
+                (
+                    CCompilerKind::Ptxas,
+                    Language::Cubin,
+                    with_debug_flags as u64,
+                ),
+            ]),
+            ..Default::default()
+        },
+    );
+
+    // Test compiling a multiarch object where the PTX and cubin for one of the archs is cached
     trace!("compile A sm_80,sm_86");
     run_cuda_test(
         "-c",
@@ -1053,15 +1110,90 @@ int main(int argc, char** argv) {
         ]
         .concat(),
         AdditionalStats {
-            cache_writes: Some(6),
-            compilations: Some(7),
+            cache_writes: Some(4),
+            compilations: Some(5),
             compile_requests: Some(1),
             requests_executed: Some(7),
+            cache_hits: Some(vec![
+                (CCompilerKind::Cicc, Language::Ptx, 1),
+                (CCompilerKind::Ptxas, Language::Cubin, 1),
+            ]),
+            cache_misses: Some(vec![
+                (CCompilerKind::Nvcc, Language::Cuda, 1),
+                (CCompilerKind::CudaFE, Language::CudaFE, 1),
+                (CCompilerKind::Cicc, Language::Ptx, 1),
+                (CCompilerKind::Ptxas, Language::Cubin, 1),
+            ]),
+            ..Default::default()
+        },
+    );
+
+    // Test compiling a multiarch object of a different source file, but
+    // whose device code is the same as a previously-compiled files'
+    trace!("compile A (copy) sm_80,sm_86");
+    run_cuda_test(
+        "-c",
+        Path::new(INPUT_FOR_CUDA_A_COPY), // relative path for input
+        Path::new(OUTPUT),                // relative path for output
+        &[
+            extra_args.as_slice(),
+            &[
+                "-gencode=arch=compute_80,code=[sm_80]".into(),
+                "-gencode=arch=compute_86,code=[compute_86,sm_86]".into(),
+            ],
+        ]
+        .concat(),
+        AdditionalStats {
+            cache_writes: Some(4 + 2 * with_debug_flags as u64),
+            compilations: Some(5 + 2 * with_debug_flags as u64),
+            compile_requests: Some(1),
+            requests_executed: Some(7),
+            cache_hits: Some(vec![(
+                CCompilerKind::Ptxas,
+                Language::Cubin,
+                2 * !with_debug_flags as u64,
+            )]),
             cache_misses: Some(vec![
                 (CCompilerKind::Nvcc, Language::Cuda, 1),
                 (CCompilerKind::CudaFE, Language::CudaFE, 1),
                 (CCompilerKind::Cicc, Language::Ptx, 2),
-                (CCompilerKind::Ptxas, Language::Cubin, 2),
+                (
+                    CCompilerKind::Ptxas,
+                    Language::Cubin,
+                    2 * with_debug_flags as u64,
+                ),
+            ]),
+            ..Default::default()
+        },
+    );
+
+    trace!("compile B sm_80,sm_86");
+    run_cuda_test(
+        "-c",
+        Path::new(INPUT_FOR_CUDA_B), // relative path for input
+        Path::new(OUTPUT),           // relative path for output
+        &[
+            extra_args.as_slice(),
+            &[
+                "-gencode=arch=compute_80,code=[sm_80]".into(),
+                "-gencode=arch=compute_86,code=[compute_86,sm_86]".into(),
+            ],
+        ]
+        .concat(),
+        AdditionalStats {
+            cache_writes: Some(4),
+            compilations: Some(5),
+            compile_requests: Some(1),
+            requests_executed: Some(7),
+            cache_hits: Some(vec![
+                (CCompilerKind::Cicc, Language::Ptx, 1),
+                (CCompilerKind::Ptxas, Language::Cubin, 1),
+            ]),
+            cache_misses: Some(vec![
+                (CCompilerKind::Nvcc, Language::Cuda, 1),
+                (CCompilerKind::CudaFE, Language::CudaFE, 1),
+                (CCompilerKind::Cicc, Language::Ptx, 1),
+                (CCompilerKind::Ptxas, Language::Cubin, 1),
             ]),
             ..Default::default()
         },
@@ -1097,13 +1229,62 @@ int main(int argc, char** argv) {
         },
     );
 
+    trace!("compile B sm_80");
+    run_cuda_test(
+        "-c",
+        Path::new(INPUT_FOR_CUDA_B), // relative path for input
+        Path::new(OUTPUT),           // relative path for output
+        &[
+            extra_args.as_slice(),
+            &["-gencode=arch=compute_80,code=[compute_80,sm_80]".into()],
+        ]
+        .concat(),
+        AdditionalStats {
+            cache_writes: Some(2),
+            compilations: Some(3),
+            compile_requests: Some(1),
+            requests_executed: Some(5),
+            cache_misses: Some(vec![
+                (CCompilerKind::Nvcc, Language::Cuda, 1),
+                (CCompilerKind::CudaFE, Language::CudaFE, 1),
+            ]),
+            cache_hits: Some(vec![
+                (CCompilerKind::Cicc, Language::Ptx, 1),
+                (CCompilerKind::Ptxas, Language::Cubin, 1),
+            ]),
+            ..Default::default()
+        },
+    );
+
     // Test that compiling a single-arch cubin where the arch is a subset of
     // a previous multi-arch compilation produces cache hits on the underlying
     // PTX and cubin compilations.
-    trace!("compile cubin sm_80");
+    trace!("compile A cubin sm_80");
     run_cuda_test(
         "-cubin",
         &tempdir.join(INPUT_FOR_CUDA_A), // absolute path for input
+        &tempdir.join("test.cubin"),     // absolute path for output
+        &[
+            extra_args.as_slice(),
+            &["-gencode=arch=compute_80,code=[sm_80]".into()],
+        ]
+        .concat(),
+        AdditionalStats {
+            compilations: Some(1),
+            compile_requests: Some(1),
+            requests_executed: Some(3),
+            cache_hits: Some(vec![
+                (CCompilerKind::Cicc, Language::Ptx, 1),
+                (CCompilerKind::Ptxas, Language::Cubin, 1),
+            ]),
+            ..Default::default()
+        },
+    );
+
+    trace!("compile B cubin sm_80");
+    run_cuda_test(
+        "-cubin",
+        &tempdir.join(INPUT_FOR_CUDA_B), // absolute path for input
         &tempdir.join("test.cubin"),     // absolute path for output
         &[
             extra_args.as_slice(),
@@ -1129,17 +1310,24 @@ int main(int argc, char** argv) {
             "",
             Path::new(INPUT_FOR_CUDA_A), // relative path for input
             Path::new("test_a"),         // relative path for output
-            &extra_args,
+            &[
+                extra_args.as_slice(),
+                &[
+                    "-gencode=arch=compute_80,code=[sm_80]".into(),
+                    "-gencode=arch=compute_86,code=[compute_86,sm_86]".into(),
+                ],
+            ]
+            .concat(),
             AdditionalStats {
                 cache_writes: Some(1),
                 compilations: Some(2),
                 compile_requests: Some(1),
-                requests_executed: Some(6),
+                requests_executed: Some(8),
                 cache_hits: Some(vec![
                     (CCompilerKind::Nvcc, Language::Cuda, 1),
                     (CCompilerKind::CudaFE, Language::CudaFE, 1),
-                    (CCompilerKind::Cicc, Language::Ptx, 1),
-                    (CCompilerKind::Ptxas, Language::Cubin, 1),
+                    (CCompilerKind::Cicc, Language::Ptx, 2),
+                    (CCompilerKind::Ptxas, Language::Cubin, 2),
                 ]),
                 cache_misses: Some(vec![(CCompilerKind::Nvcc, Language::Cuda, 1)]),
                 ..Default::default()
@@ -1152,17 +1340,54 @@ int main(int argc, char** argv) {
             "",
             Path::new(INPUT_FOR_CUDA_A_COPY), // relative path for input
             Path::new("test_a_copy"),         // relative path for output
-            &extra_args,
+            &[
+                extra_args.as_slice(),
+                &[
+                    "-gencode=arch=compute_80,code=[sm_80]".into(),
+                    "-gencode=arch=compute_86,code=[compute_86,sm_86]".into(),
+                ],
+            ]
+            .concat(),
             AdditionalStats {
                 cache_writes: Some(1),
                 compilations: Some(2),
                 compile_requests: Some(1),
-                requests_executed: Some(6),
+                requests_executed: Some(8),
                 cache_hits: Some(vec![
                     (CCompilerKind::Nvcc, Language::Cuda, 1),
                     (CCompilerKind::CudaFE, Language::CudaFE, 1),
-                    (CCompilerKind::Cicc, Language::Ptx, 1),
-                    (CCompilerKind::Ptxas, Language::Cubin, 1),
+                    (CCompilerKind::Cicc, Language::Ptx, 2),
+                    (CCompilerKind::Ptxas, Language::Cubin, 2),
+                ]),
+                cache_misses: Some(vec![(CCompilerKind::Nvcc, Language::Cuda, 1)]),
+                ..Default::default()
+            },
+        );
+
+        // Test compiling an executable (`nvcc -x cu test_b.cu -o test_b`)
+        trace!("compile B to executable");
+        run_cuda_test(
+            "",
+            Path::new(INPUT_FOR_CUDA_B), // relative path for input
+            Path::new("test_b"),         // relative path for output
+            &[
+                extra_args.as_slice(),
+                &[
+                    "-gencode=arch=compute_80,code=[sm_80]".into(),
+                    "-gencode=arch=compute_86,code=[compute_86,sm_86]".into(),
+                ],
+            ]
+            .concat(),
+            AdditionalStats {
+                cache_writes: Some(1),
+                compilations: Some(2),
+                compile_requests: Some(1),
+                requests_executed: Some(8),
+                cache_hits: Some(vec![
+                    (CCompilerKind::Nvcc, Language::Cuda, 1),
+                    (CCompilerKind::CudaFE, Language::CudaFE, 1),
+                    (CCompilerKind::Cicc, Language::Ptx, 2),
+                    (CCompilerKind::Ptxas, Language::Cubin, 2),
                 ]),
                 cache_misses: Some(vec![(CCompilerKind::Nvcc, Language::Cuda, 1)]),
                 ..Default::default()
