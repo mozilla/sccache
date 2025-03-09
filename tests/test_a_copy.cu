@@ -10,10 +10,10 @@ __global__ void cuda_entry_point(int* a) {
 }
 
 int main() {
-  int* a{nullptr};
+  int* a;
   cudaMalloc(&a, sizeof(int));
   cuda_entry_point<<<1,1>>>(a);
-  int b{};
+  int b;
   cudaMemcpy(&b, a, sizeof(int), cudaMemcpyDeviceToHost);
   printf("%s says hello world, result=%d\n", __FILE__, b);
 }

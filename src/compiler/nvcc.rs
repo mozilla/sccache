@@ -863,10 +863,13 @@ where
                 // in the CTK that we don't know about, or a line like `rm x_dlink.reg.c`
                 // that nvcc generates in certain cases.
                 if !args.iter().any(|arg| {
-                    arg.starts_with("-D__CUDACC__")
-                        || arg.starts_with("-D__NVCC__")
-                        || arg.starts_with("-D__CUDA_ARCH__")
+                    arg.starts_with("-D__CUDA_ARCH__")
                         || arg.starts_with("-D__CUDA_ARCH_LIST__")
+                        || arg.starts_with("-D__CUDACC__")
+                        || arg.starts_with("-D__CUDACC_VER")
+                        || arg.starts_with("-D__NVCC__")
+                        || arg.starts_with("-lcudart")
+                        || arg.starts_with("-lcudadevrt")
                 }) {
                     continue;
                 }
@@ -1404,6 +1407,30 @@ where
         stderr: vec![],
     };
 
+    async fn run_subcommand<T>(cmd: &NvccGeneratedSubcommand, creator: &T) -> process::Output
+    where
+        T: CommandCreatorSync,
+    {
+        let NvccGeneratedSubcommand {
+            exe,
+            args,
+            cwd,
+            env_vars,
+            cacheable,
+        } = cmd;
+
+        let mut cmd = creator.clone().new_command_sync(exe);
+
+        cmd.args(args)
+            .current_dir(cwd)
+            .env_clear()
+            .envs(env_vars.to_vec());
+
+        run_input_output(cmd, None)
+            .await
+            .unwrap_or_else(error_to_output)
+    }
+
     for cmd in commands {
         let NvccGeneratedSubcommand {
             exe,
@@ -1428,18 +1455,7 @@ where
         }
 
         let out = match cacheable {
-            Cacheable::No => {
-                let mut cmd = creator.clone().new_command_sync(exe);
-
-                cmd.args(args)
-                    .current_dir(cwd)
-                    .env_clear()
-                    .envs(env_vars.to_vec());
-
-                run_input_output(cmd, None)
-                    .await
-                    .unwrap_or_else(error_to_output)
-            }
+            Cacheable::No => run_subcommand(cmd, creator).await,
             Cacheable::Yes => {
                 let srvc = service.clone();
                 let args = dist::strings_to_osstrings(args);
@@ -1450,16 +1466,17 @@ where
                 {
                     Err(err) => error_to_output(err),
                     Ok(compiler) => match compiler.parse_arguments(&args, cwd, env_vars) {
-                        CompilerArguments::NotCompilation => Err(anyhow!("Not compilation")),
-                        CompilerArguments::CannotCache(why, extra_info) => Err(extra_info
-                            .map_or_else(
+                        CompilerArguments::NotCompilation => run_subcommand(cmd, creator).await,
+                        CompilerArguments::CannotCache(why, extra_info) => {
+                            error_to_output(extra_info.map_or_else(
                                 || anyhow!("Cannot cache({}): {:?} {:?}", why, exe, args),
                                 |desc| {
                                     anyhow!("Cannot cache({}, {}): {:?} {:?}", why, desc, exe, args)
                                 },
-                            )),
-                        CompilerArguments::Ok(hasher) => {
-                            srvc.start_compile_task(
+                            ))
+                        }
+                        CompilerArguments::Ok(hasher) => srvc
+                            .start_compile_task(
                                 compiler,
                                 hasher,
                                 args,
@@ -1471,9 +1488,8 @@ where
                                     .collect::<Vec<_>>(),
                             )
                             .await
-                        }
-                    }
-                    .map_or_else(error_to_output, |res| compile_result_to_output(exe, res)),
+                            .map_or_else(error_to_output, |res| compile_result_to_output(exe, res)),
+                    },
                 }
             }
         };
@@ -1563,6 +1579,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("--default-stream", OsString, CanBeSeparated('='), PassThrough),
     flag!("--device-c", DoCompilation),
     flag!("--device-debug", PassThroughFlag),
+    flag!("--device-link", NotCompilationFlag),
     flag!("--device-w", DoCompilation),
     flag!("--expt-extended-lambda", PreprocessorArgumentFlag),
     flag!("--expt-relaxed-constexpr", PreprocessorArgumentFlag),
@@ -1607,6 +1624,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     flag!("-cubin", DoCompilation),
     flag!("-dc", DoCompilation),
     take_arg!("-default-stream", OsString, CanBeSeparated('='), PassThrough),
+    flag!("-dlink", NotCompilationFlag),
     flag!("-dw", DoCompilation),
     flag!("-expt-extended-lambda", PreprocessorArgumentFlag),
     flag!("-expt-relaxed-constexpr", PreprocessorArgumentFlag),

@@ -134,6 +134,7 @@ jobs:
             extra_desc: cuda12.8
     env:
       RUST_BACKTRACE: 1
+      SCCACHE_DEBUG: 1
     steps:
       - uses: ilammy/msvc-dev-cmd@v1
 

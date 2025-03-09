@@ -151,7 +151,7 @@ fn compile_cuda_cmdline<T: AsRef<OsStr>>(
     if !extra_args.is_empty() {
         arg.append(&mut extra_args.to_vec())
     }
-    arg
+    arg.iter().filter(|x| *x != "").cloned().collect::<Vec<_>>()
 }
 
 // TODO: This will fail if gcc/clang is actually a ccache wrapper, as it is the
@@ -717,7 +717,6 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path, with_debug_flags
     } = compiler;
     println!("test_nvcc_cuda_compiles: {}", name);
     // Compile multiple source files.
-    copy_to_tempdir(&[INPUT_FOR_CUDA_A, INPUT_FOR_CUDA_B], tempdir);
     copy_to_tempdir(
         &[INPUT_FOR_CUDA_A, INPUT_FOR_CUDA_A_COPY, INPUT_FOR_CUDA_B],
         tempdir,
@@ -1122,6 +1121,54 @@ int main(int argc, char** argv) {
             ..Default::default()
         },
     );
+
+    if !cfg!(target_os = "windows") {
+        // Test compiling an executable (`nvcc -x cu test_a.cu -o test_a`)
+        trace!("compile A to executable");
+        run_cuda_test(
+            "",
+            Path::new(INPUT_FOR_CUDA_A), // relative path for input
+            Path::new("test_a"),         // relative path for output
+            &extra_args,
+            AdditionalStats {
+                cache_writes: Some(1),
+                compilations: Some(2),
+                compile_requests: Some(1),
+                requests_executed: Some(6),
+                cache_hits: Some(vec![
+                    (CCompilerKind::Nvcc, Language::Cuda, 1),
+                    (CCompilerKind::CudaFE, Language::CudaFE, 1),
+                    (CCompilerKind::Cicc, Language::Ptx, 1),
+                    (CCompilerKind::Ptxas, Language::Cubin, 1),
+                ]),
+                cache_misses: Some(vec![(CCompilerKind::Nvcc, Language::Cuda, 1)]),
+                ..Default::default()
+            },
+        );
+
+        // Test compiling an executable (`nvcc -x cu test_a_copy.cu -o test_a_copy`)
+        trace!("compile A (copy) to executable");
+        run_cuda_test(
+            "",
+            Path::new(INPUT_FOR_CUDA_A_COPY), // relative path for input
+            Path::new("test_a_copy"),         // relative path for output
+            &extra_args,
+            AdditionalStats {
+                cache_writes: Some(1),
+                compilations: Some(2),
+                compile_requests: Some(1),
+                requests_executed: Some(6),
+                cache_hits: Some(vec![
+                    (CCompilerKind::Nvcc, Language::Cuda, 1),
+                    (CCompilerKind::CudaFE, Language::CudaFE, 1),
+                    (CCompilerKind::Cicc, Language::Ptx, 1),
+                    (CCompilerKind::Ptxas, Language::Cubin, 1),
+                ]),
+                cache_misses: Some(vec![(CCompilerKind::Nvcc, Language::Cuda, 1)]),
+                ..Default::default()
+            },
+        );
+    }
 }
 
 fn test_nvcc_proper_lang_stat_tracking(
