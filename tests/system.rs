@@ -189,6 +189,7 @@ const INPUT_ERR: &str = "test_err.c";
 const INPUT_MACRO_EXPANSION: &str = "test_macro_expansion.c";
 const INPUT_WITH_DEFINE: &str = "test_with_define.c";
 const INPUT_FOR_CUDA_A: &str = "test_a.cu";
+const INPUT_FOR_CUDA_A_COPY: &str = "test_a_copy.cu";
 const INPUT_FOR_CUDA_B: &str = "test_b.cu";
 const INPUT_FOR_CUDA_C: &str = "test_c.cu";
 const INPUT_FOR_HIP_A: &str = "test_a.hip";
@@ -695,6 +696,7 @@ struct AdditionalStats {
     compilations: Option<u64>,
     compile_requests: Option<u64>,
     requests_executed: Option<u64>,
+    requests_not_compile: Option<u64>,
     cache_hits: Option<Vec<(CCompilerKind, Language, u64)>>,
     cache_misses: Option<Vec<(CCompilerKind, Language, u64)>>,
 }
@@ -716,6 +718,10 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path, with_debug_flags
     println!("test_nvcc_cuda_compiles: {}", name);
     // Compile multiple source files.
     copy_to_tempdir(&[INPUT_FOR_CUDA_A, INPUT_FOR_CUDA_B], tempdir);
+    copy_to_tempdir(
+        &[INPUT_FOR_CUDA_A, INPUT_FOR_CUDA_A_COPY, INPUT_FOR_CUDA_B],
+        tempdir,
+    );
 
     let mut run_cuda_test = |compile_flag: &str,
                              input: &Path,
@@ -746,6 +752,7 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path, with_debug_flags
         stats.compilations += additional_stats.compilations.unwrap_or(0);
         stats.compile_requests += additional_stats.compile_requests.unwrap_or(0);
         stats.requests_executed += additional_stats.requests_executed.unwrap_or(0);
+        stats.requests_not_compile += additional_stats.requests_not_compile.unwrap_or(0);
         stats.non_cacheable_compilations += 1;
 
         for (kind, lang, count) in additional_stats.cache_hits.unwrap_or_default() {
@@ -776,10 +783,8 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path, with_debug_flags
     trace!("compile A ptx");
     run_cuda_test(
         "-ptx",
-        // relative path for input
-        Path::new(INPUT_FOR_CUDA_A),
-        // relative path for output
-        Path::new("test.ptx"),
+        Path::new(INPUT_FOR_CUDA_A), // relative path for input
+        Path::new("test.ptx"),       // relative path for output
         &extra_args,
         AdditionalStats {
             cache_writes: Some(1),
@@ -794,10 +799,8 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path, with_debug_flags
     trace!("compile A cubin");
     run_cuda_test(
         "-cubin",
-        // relative path for input
-        Path::new(INPUT_FOR_CUDA_A),
-        // absolute path for output
-        &tempdir.join("test.cubin"),
+        Path::new(INPUT_FOR_CUDA_A), // relative path for input
+        &tempdir.join("test.cubin"), // absolute path for output
         &extra_args,
         AdditionalStats {
             cache_writes: Some(1),
@@ -806,6 +809,7 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path, with_debug_flags
             requests_executed: Some(3),
             cache_hits: Some(vec![(CCompilerKind::Cicc, Language::Ptx, 1)]),
             cache_misses: Some(vec![(CCompilerKind::Ptxas, Language::Cubin, 1)]),
+            ..Default::default()
         },
     );
 
@@ -813,7 +817,7 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path, with_debug_flags
     run_cuda_test(
         "-c",
         Path::new(INPUT_FOR_CUDA_A), // relative path for input
-        Path::new(OUTPUT), // relative path for output
+        Path::new(OUTPUT),           // relative path for output
         &extra_args,
         AdditionalStats {
             cache_writes: Some(2),
@@ -828,14 +832,68 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path, with_debug_flags
                 (CCompilerKind::Nvcc, Language::Cuda, 1),
                 (CCompilerKind::CudaFE, Language::CudaFE, 1),
             ]),
+            ..Default::default()
         },
     );
 
     trace!("compile A (cached)");
     run_cuda_test(
         "-c",
-        Path::new(INPUT_FOR_CUDA_A), // relative path for input
-        &tempdir.join(OUTPUT), // absolute path for output
+        &tempdir.join(INPUT_FOR_CUDA_A), // absolute path for input
+        &tempdir.join(OUTPUT),           // absolute path for output
+        &extra_args,
+        AdditionalStats {
+            compilations: Some(1),
+            compile_requests: Some(1),
+            requests_executed: Some(5),
+            cache_hits: Some(vec![
+                (CCompilerKind::Nvcc, Language::Cuda, 1),
+                (CCompilerKind::CudaFE, Language::CudaFE, 1),
+                (CCompilerKind::Cicc, Language::Ptx, 1),
+                (CCompilerKind::Ptxas, Language::Cubin, 1),
+            ]),
+            ..Default::default()
+        },
+    );
+
+    // Compile a copy of `test_a.cu` to ensure we get cache hits for identical PTX across different files.
+    trace!("compile A (copy)");
+    run_cuda_test(
+        "-c",
+        Path::new(INPUT_FOR_CUDA_A_COPY), // relative path for input
+        Path::new(OUTPUT),                // relative path for output
+        &extra_args,
+        // Since `test_a_copy.cu` is a copy of `test_a.cu`, its PTX will be identical when *not* using -G.
+        // But -G causes cudafe++ and cicc to embed the source path their output, and we get cache misses.
+        AdditionalStats {
+            cache_writes: Some(3 + with_debug_flags as u64),
+            compilations: Some(4 + with_debug_flags as u64),
+            compile_requests: Some(1),
+            requests_executed: Some(5),
+            cache_hits: Some(vec![(
+                CCompilerKind::Ptxas,
+                Language::Cubin,
+                !with_debug_flags as u64,
+            )]),
+            cache_misses: Some(vec![
+                (CCompilerKind::Nvcc, Language::Cuda, 1),
+                (CCompilerKind::CudaFE, Language::CudaFE, 1),
+                (CCompilerKind::Cicc, Language::Ptx, 1),
+                (
+                    CCompilerKind::Ptxas,
+                    Language::Cubin,
+                    with_debug_flags as u64,
+                ),
+            ]),
+            ..Default::default()
+        },
+    );
+
+    trace!("compile A (copy) (cached)");
+    run_cuda_test(
+        "-c",
+        &tempdir.join(INPUT_FOR_CUDA_A_COPY), // absolute path for input
+        &tempdir.join(OUTPUT),                // absolute path for output
         &extra_args,
         AdditionalStats {
             compilations: Some(1),
@@ -856,8 +914,8 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path, with_debug_flags
     trace!("compile B");
     run_cuda_test(
         "-c",
-        &tempdir.join(INPUT_FOR_CUDA_B), // absolute path for input
-        &tempdir.join(OUTPUT), // absolute path for output
+        Path::new(INPUT_FOR_CUDA_B), // relative path for input
+        Path::new(OUTPUT),           // relative path for output
         &extra_args,
         AdditionalStats {
             cache_writes: Some(4),
@@ -865,6 +923,26 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path, with_debug_flags
             compile_requests: Some(1),
             requests_executed: Some(5),
             cache_misses: Some(vec![
+                (CCompilerKind::Nvcc, Language::Cuda, 1),
+                (CCompilerKind::CudaFE, Language::CudaFE, 1),
+                (CCompilerKind::Cicc, Language::Ptx, 1),
+                (CCompilerKind::Ptxas, Language::Cubin, 1),
+            ]),
+            ..Default::default()
+        },
+    );
+
+    trace!("compile B (cached)");
+    run_cuda_test(
+        "-c",
+        &tempdir.join(INPUT_FOR_CUDA_B), // absolute path for input
+        &tempdir.join(OUTPUT),           // absolute path for output
+        &extra_args,
+        AdditionalStats {
+            compilations: Some(1),
+            compile_requests: Some(1),
+            requests_executed: Some(5),
+            cache_hits: Some(vec![
                 (CCompilerKind::Nvcc, Language::Cuda, 1),
                 (CCompilerKind::CudaFE, Language::CudaFE, 1),
                 (CCompilerKind::Cicc, Language::Ptx, 1),
@@ -934,7 +1012,8 @@ int main(int argc, char** argv) {
             cache_hits: Some(vec![
                 (CCompilerKind::Cicc, Language::Ptx, 1),
                 (CCompilerKind::Ptxas, Language::Cubin, 1),
-            ])
+            ]),
+            ..Default::default()
         },
     );
 
@@ -943,8 +1022,8 @@ int main(int argc, char** argv) {
     trace!("compile test_2299.cu (3)");
     run_cuda_test(
         "-c",
-        Path::new(test_2299_src_name), // relative path for input
-        Path::new(test_2299_out_name), // relative path for output
+        &tempdir.join(test_2299_src_name), // absolute path for input
+        &tempdir.join(test_2299_out_name), // absolute path for output
         &extra_args,
         AdditionalStats {
             compilations: Some(1),
@@ -965,7 +1044,7 @@ int main(int argc, char** argv) {
     run_cuda_test(
         "-c",
         Path::new(INPUT_FOR_CUDA_A), // relative path for input
-        Path::new(OUTPUT), // relative path for output
+        Path::new(OUTPUT),           // relative path for output
         &[
             extra_args.as_slice(),
             &[
@@ -996,7 +1075,7 @@ int main(int argc, char** argv) {
     run_cuda_test(
         "-c",
         Path::new(INPUT_FOR_CUDA_A), // relative path for input
-        Path::new(OUTPUT), // relative path for output
+        Path::new(OUTPUT),           // relative path for output
         &[
             extra_args.as_slice(),
             &["-gencode=arch=compute_80,code=[compute_80,sm_80]".into()],
@@ -1014,7 +1093,8 @@ int main(int argc, char** argv) {
             cache_hits: Some(vec![
                 (CCompilerKind::Cicc, Language::Ptx, 1),
                 (CCompilerKind::Ptxas, Language::Cubin, 1),
-            ])
+            ]),
+            ..Default::default()
         },
     );
 
@@ -1024,8 +1104,8 @@ int main(int argc, char** argv) {
     trace!("compile cubin sm_80");
     run_cuda_test(
         "-cubin",
-        Path::new(INPUT_FOR_CUDA_A), // relative path for input
-        &tempdir.join("test.cubin"), // absolute path for output
+        &tempdir.join(INPUT_FOR_CUDA_A), // absolute path for input
+        &tempdir.join("test.cubin"),     // absolute path for output
         &[
             extra_args.as_slice(),
             &["-gencode=arch=compute_80,code=[sm_80]".into()],
@@ -1084,8 +1164,8 @@ fn test_nvcc_proper_lang_stat_tracking(
         .success();
     fs::remove_file(&out_file).unwrap();
 
-    stats.cache_writes += 3 + (with_debug_flags as u64);
-    stats.compilations += 4 + (with_debug_flags as u64);
+    stats.cache_writes += 4;
+    stats.compilations += 5;
     stats.compile_requests += 1;
     stats.requests_executed += 5;
     stats.non_cacheable_compilations += 1;
@@ -1098,15 +1178,9 @@ fn test_nvcc_proper_lang_stat_tracking(
     stats
         .cache_misses
         .increment(&CompilerKind::C(CCompilerKind::Cicc), &Language::Ptx);
-    if with_debug_flags {
-        stats
-            .cache_misses
-            .increment(&CompilerKind::C(CCompilerKind::Ptxas), &Language::Cubin);
-    } else {
-        stats
-            .cache_hits
-            .increment(&CompilerKind::C(CCompilerKind::Ptxas), &Language::Cubin);
-    }
+    stats
+        .cache_misses
+        .increment(&CompilerKind::C(CCompilerKind::Ptxas), &Language::Cubin);
     assert_eq!(
         stats,
         ServerStats {
