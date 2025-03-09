@@ -12,7 +12,6 @@ use std::str::{self, FromStr};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use assert_cmd::prelude::*;
 #[cfg(feature = "dist-server")]
 use nix::{
     sys::{
@@ -21,7 +20,6 @@ use nix::{
     },
     unistd::{ForkResult, Pid},
 };
-use predicates::prelude::*;
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -41,23 +39,35 @@ const SERVER_PORT: u16 = 12345; // arbitrary
 const TC_CACHE_SIZE: u64 = 1024 * 1024 * 1024; // 1 gig
 
 pub fn start_local_daemon(cfg_path: &Path, cached_cfg_path: &Path) {
+    let mut cmd = sccache_command();
+
+    cmd.arg("--start-server");
+
+    // Send daemon logs to a file if SCCACHE_DEBUG is defined
+    if env::var("SCCACHE_DEBUG").is_ok() {
+        cmd.env(
+            "SCCACHE_LOG",
+            // Allow overriding log level
+            env::var("SCCACHE_LOG").unwrap_or("sccache=trace".into()),
+        )
+        .env("RUST_LOG_STYLE", "never")
+        .env(
+            "SCCACHE_ERROR_LOG",
+            // Allow overriding log output path
+            env::var_os("SCCACHE_ERROR_LOG").unwrap_or(
+                env::temp_dir()
+                    .join("sccache_local_daemon.txt")
+                    .into_os_string(),
+            ),
+        );
+    }
+
+    cmd.env("SCCACHE_CONF", cfg_path)
+        .env("SCCACHE_CACHED_CONF", cached_cfg_path);
+
     // Don't run this with run() because on Windows `wait_with_output`
     // will hang because the internal server process is not detached.
-    if !sccache_command()
-        .arg("--start-server")
-        // Uncomment following lines to debug locally.
-        // .env("SCCACHE_LOG", "sccache=trace")
-        // .env("RUST_LOG_STYLE", "never")
-        // .env(
-        //     "SCCACHE_ERROR_LOG",
-        //     env::temp_dir().join("sccache_local_daemon.txt"),
-        // )
-        .env("SCCACHE_CONF", cfg_path)
-        .env("SCCACHE_CACHED_CONF", cached_cfg_path)
-        .status()
-        .unwrap()
-        .success()
-    {
+    if !cmd.status().unwrap().success() {
         panic!("Failed to start local daemon");
     }
 }
@@ -72,18 +82,21 @@ pub fn stop_local_daemon() -> bool {
         .is_ok_and(|status| status.success())
 }
 
-pub fn get_stats<F: 'static + Fn(ServerInfo)>(f: F) {
-    sccache_command()
+pub fn server_info() -> ServerInfo {
+    let output = sccache_command()
         .args(["--show-stats", "--stats-format=json"])
-        .assert()
-        .success()
-        .stdout(predicate::function(move |output: &[u8]| {
-            let s = str::from_utf8(output).expect("Output not UTF-8");
-            let stats = serde_json::from_str(s).expect("Failed to parse JSON stats");
-            eprintln!("get server stats: {stats:?}");
-            f(stats);
-            true
-        }));
+        .output()
+        .expect("`sccache --show-stats --stats-format=json` failed")
+        .stdout;
+
+    let s = str::from_utf8(&output).expect("Output not UTF-8");
+    serde_json::from_str(s).expect("Failed to parse JSON stats")
+}
+
+pub fn get_stats<F: 'static + Fn(ServerInfo)>(f: F) {
+    let info = server_info();
+    eprintln!("get server stats: {info:?}");
+    f(info);
 }
 
 #[allow(unused)]

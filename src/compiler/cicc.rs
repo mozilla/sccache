@@ -128,6 +128,20 @@ where
         match arg {
             Ok(arg) => {
                 let args = match arg.get_data() {
+                    Some(ExtraOutput(o)) => {
+                        take_next = false;
+                        let path = cwd.join(o);
+                        if let Some(flag) = arg.flag_str() {
+                            outputs.insert(
+                                flag,
+                                ArtifactDescriptor {
+                                    path,
+                                    optional: false,
+                                },
+                            );
+                        }
+                        &mut common_args
+                    }
                     Some(PassThrough(_)) => {
                         take_next = false;
                         &mut common_args
@@ -155,24 +169,6 @@ where
                         &mut common_args
                     }
                     Some(UnhashedPassThrough(o)) => {
-                        take_next = false;
-                        &mut unhashed_args
-                    }
-                    Some(UnhashedOutput(o)) => {
-                        take_next = false;
-                        let path = cwd.join(o);
-                        if let Some(flag) = arg.flag_str() {
-                            outputs.insert(
-                                flag,
-                                ArtifactDescriptor {
-                                    path,
-                                    optional: false,
-                                },
-                            );
-                        }
-                        &mut unhashed_args
-                    }
-                    Some(UnhashedFlag) => {
                         take_next = false;
                         &mut unhashed_args
                     }
@@ -236,13 +232,7 @@ where
 }
 
 pub async fn preprocess(cwd: &Path, parsed_args: &ParsedArguments) -> Result<process::Output> {
-    // cicc and ptxas expect input to be an absolute path
-    let input = if parsed_args.input.is_absolute() {
-        parsed_args.input.clone()
-    } else {
-        cwd.join(&parsed_args.input)
-    };
-    std::fs::read(input)
+    std::fs::read(cwd.join(&parsed_args.input))
         .map_err(anyhow::Error::new)
         .map(|s| process::Output {
             status: process::ExitStatus::default(),
@@ -329,23 +319,22 @@ pub fn generate_compile_commands(
 }
 
 ArgData! { pub
-    Output(PathBuf),
-    PassThrough(OsString),
-    UnhashedFlag,
+    ExtraOutput(PathBuf),
     GenModuleIdFileFlag,
     ModuleIdFileName(PathBuf),
+    Output(PathBuf),
+    PassThrough(OsString),
     UnhashedPassThrough(OsString),
-    UnhashedOutput(PathBuf),
 }
 
 use self::ArgData::*;
 
 counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
-    take_arg!("--gen_c_file_name", PathBuf, Separated, UnhashedOutput),
-    take_arg!("--gen_device_file_name", PathBuf, Separated, UnhashedOutput),
+    take_arg!("--gen_c_file_name", PathBuf, Separated, ExtraOutput),
+    take_arg!("--gen_device_file_name", PathBuf, Separated, ExtraOutput),
     flag!("--gen_module_id_file", GenModuleIdFileFlag),
     take_arg!("--include_file_name", OsString, Separated, PassThrough),
     take_arg!("--module_id_file_name", PathBuf, Separated, ModuleIdFileName),
-    take_arg!("--stub_file_name", PathBuf, Separated, UnhashedOutput),
+    take_arg!("--stub_file_name", PathBuf, Separated, ExtraOutput),
     take_arg!("-o", PathBuf, Separated, Output),
 ]);
