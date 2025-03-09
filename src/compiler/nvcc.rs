@@ -33,6 +33,7 @@ use fs_err as fs;
 use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt};
 use itertools::Itertools;
 use log::Level::Trace;
+use once_cell::sync::Lazy;
 use regex::Regex;
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
@@ -45,6 +46,12 @@ use std::process;
 use which::which_in;
 
 use crate::errors::*;
+
+static IS_VALID_LINE_RE: Lazy<Regex> = regex_static::lazy_regex!(r"^#\$ (.*)$");
+static IS_ENVVAR_LINE_RE: Lazy<Regex> = regex_static::lazy_regex!(r"^([_A-Z]+)=(.*)$");
+static HAS_SM_IN_NAME_RE: Lazy<Regex> = regex_static::lazy_regex!(r"^(.*).sm_([0-9A-Za-z]+).(.*)$");
+static HAS_COMPUTE_IN_NAME_RE: Lazy<Regex> =
+    regex_static::lazy_regex!(r"^(.*).compute_([0-9A-Za-z]+).(.*)$");
 
 /// A unit struct on which to implement `CCompilerImpl`.
 #[derive(Clone, Debug)]
@@ -1021,9 +1028,6 @@ where
 
     let nvcc_dryrun_output = run_input_output(nvcc_dryrun_cmd, None).await?;
 
-    let is_valid_line_re = Regex::new(r"^#\$ (.*)$").unwrap();
-    let is_envvar_line_re = Regex::new(r"^([_A-Z]+)=(.*)$").unwrap();
-
     let mut dryrun_env_vars = Vec::<(OsString, OsString)>::new();
     let mut dryrun_env_vars_re_map = HashMap::<String, regex::Regex>::new();
 
@@ -1037,7 +1041,7 @@ where
     for pair in reader.lines().enumerate() {
         let (idx, line) = pair;
         // Select lines that match the `#$ ` prefix from nvcc --dryrun
-        let line = match select_valid_dryrun_lines(&is_valid_line_re, &line?) {
+        let line = match select_valid_dryrun_lines(&IS_VALID_LINE_RE, &line?) {
             Ok(line) => line,
             // Ignore lines that don't start with `#$ `. For some reason, nvcc
             // on Windows prints the name of the input file without the prefix
@@ -1045,7 +1049,7 @@ where
         };
 
         let maybe_exe_and_args = fold_env_vars_or_split_into_exe_and_args(
-            &is_envvar_line_re,
+            &IS_ENVVAR_LINE_RE,
             &mut dryrun_env_vars,
             &mut dryrun_env_vars_re_map,
             cwd,
@@ -1220,9 +1224,6 @@ fn remap_generated_filenames(
         _ => {}
     }
 
-    let has_sm_in_name_re = Regex::new(r"^(.*).sm_([0-9A-Za-z]+).(.*)$").unwrap();
-    let has_compute_in_name_re = Regex::new(r"^(.*).compute_([0-9A-Za-z]+).(.*)$").unwrap();
-
     lines
         .iter()
         .map(|(idx, exe, args)| {
@@ -1272,9 +1273,9 @@ fn remap_generated_filenames(
                                             .file_name()
                                             .and_then(|name| name.to_str())
                                             .and_then(|name| {
-                                                let mut pair = if has_sm_in_name_re.is_match(name) {
+                                                let mut pair = if HAS_SM_IN_NAME_RE.is_match(name) {
                                                     name.split(".sm_")
-                                                } else if has_compute_in_name_re.is_match(name) {
+                                                } else if HAS_COMPUTE_IN_NAME_RE.is_match(name) {
                                                     name.split(".compute_")
                                                 } else {
                                                     return None;
@@ -1295,7 +1296,7 @@ fn remap_generated_filenames(
                                             .file_name()
                                             .and_then(|name| name.to_str())
                                             .and_then(|name| {
-                                                (!has_sm_in_name_re.is_match(name)).then_some(name)
+                                                (!HAS_SM_IN_NAME_RE.is_match(name)).then_some(name)
                                             })
                                         {
                                             // test_a.cubin -> (test_a, cubin)
@@ -1313,7 +1314,7 @@ fn remap_generated_filenames(
                                             .file_name()
                                             .and_then(|name| name.to_str())
                                             .and_then(|name| {
-                                                (!has_compute_in_name_re.is_match(name))
+                                                (!HAS_COMPUTE_IN_NAME_RE.is_match(name))
                                                     .then_some(name)
                                             })
                                         {
@@ -1337,7 +1338,7 @@ fn remap_generated_filenames(
                                             .file_name()
                                             .and_then(|name| name.to_str())
                                             .and_then(|name| {
-                                                (!has_compute_in_name_re.is_match(name))
+                                                (!HAS_COMPUTE_IN_NAME_RE.is_match(name))
                                                     .then_some(name)
                                             })
                                         {
