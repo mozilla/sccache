@@ -8,13 +8,13 @@ The local storage only supports a single sccache server at a time. Multiple conc
 
 ## Preprocessor cache mode
 
-This is inspired by [ccache's direct mode](https://ccache.dev/manual/3.7.9.html#_the_direct_mode) and works roughly the same.
+This is inspired by [ccache's direct mode](https://ccache.dev/manual/3.7.9.html#_the_direct_mode) and works roughly the same. It allows to skip the preprocessor for cached results when compiling C/C++.
 
 [preprocessor cache] mode is controlled by a configuration option which is true by default, as well as additional conditions described below.
 
-In preprocessor cache mode, sccache caches the preprocessor step for C/C++ whenever possible. This can make the compilation much faster, since the preprocessor step takes a non-negligible amount of the entire compile time.
+In non-preprocessor cache mode, sccache's compilation pipeline for one C/C++ source file is inputs → preprocessing → cache lookup → (return outputs if cached / compilation otherwise). In preprocessor cache mode, the compilation pipeline is inputs → cache lookup → (return outputs if cached / preprocessing → compilation otherwise). This can make it much faster to return compilation outputs from cache.
 
-In order to cache the preprocessor step, [sccache] needs to remember, among other things, all files included by a given input file. To quote ccache's documentation:
+To ensure that the cached outputs for a source file correspond to the un-preprocessed inputs, [sccache] needs to remember, among other things, all files included by that source file (i.e. the complete set of inputs). To quote ccache's documentation:
 
 > There is a catch with the [preprocessor cache] mode: header files that were used by the compiler are recorded, but header files that were not used, but would have been used if they existed, are not. So, when [sccache] checks if a result can be taken from the cache, it currently can’t check if the existence of a new header file should invalidate the result. In practice, the [preprocessor cache] mode is safe to use in the vast majority of cases.
 
