@@ -1537,14 +1537,14 @@ where
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
 pub struct PerLanguageCount {
     counts: HashMap<String, u64>,
     adv_counts: HashMap<String, u64>,
 }
 
 impl PerLanguageCount {
-    fn increment(&mut self, kind: &CompilerKind, lang: &Language) {
+    pub fn increment(&mut self, kind: &CompilerKind, lang: &Language) {
         let lang_comp_key = kind.lang_comp_kind(lang);
         let adv_count = self.adv_counts.entry(lang_comp_key).or_insert(0);
         *adv_count += 1;
@@ -1572,7 +1572,7 @@ impl PerLanguageCount {
 }
 
 /// Statistics about the server.
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct ServerStats {
     /// The count of client compile requests.
     pub compile_requests: u64,
