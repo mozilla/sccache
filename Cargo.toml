@@ -104,7 +104,7 @@ uuid = { version = "1.9", features = ["v4"] }
 walkdir = "2"
 # by default which pulls in an outdated failure version
 which = { version = "6", default-features = false }
-zip = { version = "0.6", default-features = false }
+zip = { version = "1.1", default-features = false }
 zstd = "0.13"
 
 # dist-server only
