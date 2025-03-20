@@ -15,7 +15,7 @@ use crate::errors::*;
 use fs_err as fs;
 use std::fmt;
 use std::io::{Cursor, Read, Seek, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 use zip::write::FileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
@@ -154,15 +154,30 @@ impl CacheRead {
                 // Write the cache entry to a tempfile and then atomically
                 // move it to its final location so that other rustc invocations
                 // happening in parallel don't see a partially-written file.
-                let mut tmp = NamedTempFile::new_in(dir)?;
-                match (self.get_object(&key, &mut tmp), optional) {
-                    (Ok(mode), _) => {
-                        tmp.persist(&path)?;
-                        if let Some(mode) = mode {
-                            set_file_mode(&path, mode)?;
+                match (NamedTempFile::new_in(dir), optional) {
+                    (Ok(mut tmp), _) => {
+                        match (self.get_object(&key, &mut tmp), optional) {
+                            (Ok(mode), _) => {
+                                tmp.persist(&path)?;
+                                if let Some(mode) = mode {
+                                    set_file_mode(path.as_path(), mode)?;
+                                }
+                            }
+                            (Err(e), false) => return Err(e),
+                            // skip if no object found and it's optional
+                            (Err(_), true) => continue,
                         }
                     }
-                    (Err(e), false) => return Err(e),
+                    (Err(e), false) => {
+                        // Fall back to writing directly to the final location
+                        warn!("Failed to create temp file on the same file system: {e}");
+                        let mut f = std::fs::File::create(&path)?;
+                        // `optional`` is false in this branch, so do not ignore errors
+                        let mode = self.get_object(&key, &mut f)?;
+                        if let Some(mode) = mode {
+                            set_file_mode(path.as_path(), mode)?;
+                        }
+                    }
                     // skip if no object found and it's optional
                     (Err(_), true) => continue,
                 }
