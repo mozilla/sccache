@@ -207,6 +207,10 @@ impl CacheRead {
                 optional,
             } in objects
             {
+                if path == Path::new("/dev/null") {
+                    debug!("Skipping output to /dev/null");
+                    continue;
+                }
                 let dir = match path.parent() {
                     Some(d) => d,
                     None => bail!("Output file without a parent directory!"),
