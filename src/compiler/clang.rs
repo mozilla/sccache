@@ -239,6 +239,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("-load", PathBuf, Separated, ExtraHashFile),
     flag!("-mconstructor-aliases", PassThroughFlag),
     take_arg!("-mllvm", OsString, Separated, PassThrough),
+    flag!("-mrelax-all", PassThroughFlag),
     flag!("-no-opaque-pointers", PreprocessorArgumentFlag),
     take_arg!("-plugin-arg", OsString, Concatenated('-'), PassThrough),
     take_arg!("-target", OsString, Separated, PassThrough),
@@ -909,6 +910,12 @@ mod test {
             "-mconstructor-aliases"
         );
         assert_eq!(ovec!["-Xclang", "-mconstructor-aliases"], a.common_args);
+    }
+
+    #[test]
+    fn test_parse_xclang_mrelax_all() {
+        let a = parses!("-c", "foo.c", "-o", "foo.o", "-Xclang", "-mrelax-all");
+        assert_eq!(ovec!["-Xclang", "-mrelax-all"], a.common_args);
     }
 
     #[test]
