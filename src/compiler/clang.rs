@@ -237,6 +237,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     flag!("-gcodeview", PassThroughFlag),
     take_arg!("-include-pch", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
     take_arg!("-load", PathBuf, Separated, ExtraHashFile),
+    flag!("-mconstructor-aliases", PassThroughFlag),
     take_arg!("-mllvm", OsString, Separated, PassThrough),
     flag!("-no-opaque-pointers", PreprocessorArgumentFlag),
     take_arg!("-plugin-arg", OsString, Concatenated('-'), PassThrough),
@@ -895,6 +896,19 @@ mod test {
     fn test_parse_xclang_use_ctor_homing() {
         let a = parses!("-c", "foo.c", "-o", "foo.o", "-Xclang", "-fuse-ctor-homing");
         assert_eq!(ovec!["-Xclang", "-fuse-ctor-homing"], a.common_args);
+    }
+
+    #[test]
+    fn test_parse_xclang_mconstructor_aliases_all() {
+        let a = parses!(
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "-Xclang",
+            "-mconstructor-aliases"
+        );
+        assert_eq!(ovec!["-Xclang", "-mconstructor-aliases"], a.common_args);
     }
 
     #[test]
