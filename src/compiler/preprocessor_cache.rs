@@ -291,6 +291,21 @@ impl PreprocessorCacheEntry {
                     return false;
                 }
 
+                if finder.found_has_include() {
+                    // The case "a file would have been included if it existed, but didn't exist, so
+                    // it wasn't included" is considered rare according to sccache documentation.
+                    // It does not seem to be that rare anymore with C++17 and C23 supporting
+                    // __has_include. The problem can be detected in instances where __has_include
+                    // is used to implement the conditional include. We do it very conservatively
+                    // here: __has_include is present -> no direct mode.
+                    // The most obvious improvement would be not to bail out if __has_include was
+                    // checking for a file that is in the list of includes. Then the result of
+                    // __has_include would be known and co-verified by the check for same (presence
+                    // and content hashes) input files during cache lookup.
+                    debug!("Found __has_include in {}", path.display());
+                    return false;
+                }
+
                 // __DATE__ or __TIMESTAMP__ found. We now make sure that the digest changes
                 // if the (potential) expansion of those macros changes by computing a new
                 // digest comprising the file digest and time information that represents the
@@ -511,18 +526,31 @@ mod test {
         assert!(finder.found_time());
         assert!(!finder.found_timestamp());
         assert!(!finder.found_date());
+        assert!(!finder.found_has_include());
+
         let buf = b"__DATE__";
         let finder = Digest::reader_sync_time_macros(buf.as_slice()).unwrap().1;
         assert!(finder.found_time_macros());
         assert!(!finder.found_time());
         assert!(!finder.found_timestamp());
         assert!(finder.found_date());
+        assert!(!finder.found_has_include());
+
         let buf = b"__TIMESTAMP__";
         let finder = Digest::reader_sync_time_macros(buf.as_slice()).unwrap().1;
         assert!(finder.found_time_macros());
         assert!(!finder.found_time());
         assert!(finder.found_timestamp());
         assert!(!finder.found_date());
+        assert!(!finder.found_has_include());
+
+        let buf = b"__has_include";
+        let finder = Digest::reader_sync_time_macros(buf.as_slice()).unwrap().1;
+        assert!(finder.found_time_macros());
+        assert!(!finder.found_time());
+        assert!(!finder.found_timestamp());
+        assert!(!finder.found_date());
+        assert!(finder.found_has_include());
     }
 
     #[test]
@@ -533,6 +561,7 @@ mod test {
         assert!(finder.found_time());
         assert!(finder.found_timestamp());
         assert!(finder.found_date());
+        assert!(!finder.found_has_include());
     }
 
     #[test]
@@ -543,6 +572,7 @@ mod test {
         assert!(!finder.found_time());
         assert!(!finder.found_timestamp());
         assert!(!finder.found_date());
+        assert!(!finder.found_has_include());
     }
 
     #[test]
@@ -554,6 +584,7 @@ mod test {
         assert!(finder.found_time());
         assert!(finder.found_timestamp());
         assert!(finder.found_date());
+        assert!(!finder.found_has_include());
     }
     #[test]
     fn test_find_time_macros_large_file_match_overlap() {
@@ -566,6 +597,7 @@ mod test {
         assert!(!finder.found_time());
         assert!(finder.found_timestamp());
         assert!(!finder.found_date());
+        assert!(!finder.found_has_include());
 
         let mut buf = vec![0; HASH_BUFFER_SIZE * 2];
         // Make the pattern overlap two buffer chunks to make sure we account for this
@@ -576,6 +608,7 @@ mod test {
         assert!(finder.found_time());
         assert!(!finder.found_timestamp());
         assert!(!finder.found_date());
+        assert!(!finder.found_has_include());
 
         let mut buf = vec![0; HASH_BUFFER_SIZE * 2];
         // Make the pattern overlap two buffer chunks to make sure we account for this
@@ -586,6 +619,7 @@ mod test {
         assert!(!finder.found_time());
         assert!(!finder.found_timestamp());
         assert!(finder.found_date());
+        assert!(!finder.found_has_include());
     }
 
     #[test]
@@ -601,25 +635,34 @@ mod test {
         assert!(finder.found_time());
         assert!(!finder.found_timestamp());
         assert!(finder.found_date());
+        assert!(!finder.found_has_include());
     }
 
     #[test]
     fn test_find_time_macros_large_file_match_overlap_multiple_pages_tiny() {
-        let mut buf = vec![0; HASH_BUFFER_SIZE * 3];
+        let mut buf = vec![0; HASH_BUFFER_SIZE * 4];
         // Make the patterns overlap buffer chunks twice to make sure we account for this
         let start = HASH_BUFFER_SIZE - MAX_TIME_MACRO_HAYSTACK_LEN / 2;
         buf[start..][..b"__TIME__".len()].copy_from_slice(b"__TIME__");
+
         let start = HASH_BUFFER_SIZE * 2 - MAX_TIME_MACRO_HAYSTACK_LEN / 2;
         buf[start..][..b"__DATE__".len()].copy_from_slice(b"__DATE__");
+
+        let start = HASH_BUFFER_SIZE * 3 - MAX_TIME_MACRO_HAYSTACK_LEN / 2;
+        buf[start..][..b"__has_include".len()].copy_from_slice(b"__has_include");
+
         // Test overlap with the last chunk being less than the haystack
         buf.extend([0; MAX_TIME_MACRO_HAYSTACK_LEN / 2 + 1]);
-        let start = HASH_BUFFER_SIZE * 3 - MAX_TIME_MACRO_HAYSTACK_LEN / 2;
+
+        let start = HASH_BUFFER_SIZE * 4 - MAX_TIME_MACRO_HAYSTACK_LEN / 2;
         buf[start..][..b"__TIMESTAMP__".len()].copy_from_slice(b"__TIMESTAMP__");
+
         let finder = Digest::reader_sync_time_macros(buf.as_slice()).unwrap().1;
         assert!(finder.found_time_macros());
         assert!(finder.found_time());
         assert!(finder.found_timestamp());
         assert!(finder.found_date());
+        assert!(finder.found_has_include());
     }
 
     #[test]
@@ -634,5 +677,6 @@ mod test {
         assert!(!finder.found_time());
         assert!(!finder.found_timestamp());
         assert!(!finder.found_date());
+        assert!(!finder.found_has_include());
     }
 }
