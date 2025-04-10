@@ -662,6 +662,7 @@ pub fn parse_arguments(
             // Eagerly bail if it looks like we need to do more complicated work
             use crate::compiler::gcc::ArgData::*;
             let args = match arg.get_data() {
+                Some(NotCompilationFlag) => return CompilerArguments::NotCompilation,
                 Some(SplitDwarf) | Some(TestCoverage) | Some(Coverage) | Some(DoCompilation)
                 | Some(Language(_)) | Some(Output(_)) | Some(TooHardFlag) | Some(XClang(_))
                 | Some(TooHard(_)) => cannot_cache!(arg

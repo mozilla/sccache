@@ -69,6 +69,7 @@ opendal = { version = "0.52.0", optional = true, default-features = false }
 openssl = { version = "0.10.72", optional = true }
 rand = "0.8.4"
 regex = "1.10.3"
+regex_static = "0.1.1"
 reqsign = { version = "0.16.0", optional = true }
 reqwest = { version = "0.12", features = [
   "json",
