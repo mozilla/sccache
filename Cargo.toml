@@ -27,7 +27,7 @@ strip = true
 anyhow = { version = "1.0", features = ["backtrace"] }
 ar = "0.9"
 async-trait = "0.1"
-base64 = "0.21"
+base64 = "0.22"
 bincode = "1"
 blake3 = "1"
 byteorder = "1.5"
