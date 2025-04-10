@@ -172,7 +172,7 @@ impl CacheRead {
                         // Fall back to writing directly to the final location
                         warn!("Failed to create temp file on the same file system: {e}");
                         let mut f = std::fs::File::create(&path)?;
-                        // `optional`` is false in this branch, so do not ignore errors
+                        // `optional` is false in this branch, so do not ignore errors
                         let mode = self.get_object(&key, &mut f)?;
                         if let Some(mode) = mode {
                             if let Err(e) = set_file_mode(path.as_path(), mode) {
