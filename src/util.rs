@@ -200,7 +200,7 @@ impl TimeMacroFinder {
                 if !self.previous_small_read.is_empty() {
                     // In a rare pathological case where all reads are small,
                     // this will grow up to the length of the file.
-                    // It it *very* unlikely and of minor performance
+                    // It is *very* unlikely and of minor performance
                     // importance compared to just getting many small reads.
                     self.previous_small_read.extend(visit);
                 } else {
