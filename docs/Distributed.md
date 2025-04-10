@@ -427,6 +427,30 @@ token = "preshared token"
 type = "DANGEROUSLY_INSECURE"
 ```
 
+# Logging
+
+## stderr
+
+You can set the `SCCACHE_LOG` environment variable to a comma-separated list of directives that specifies the levels and modules desired. 
+
+For example:
+```
+SCCACHE_LOG=info,sccache_dist=trace,sccache=trace,sccache_heartbeat=off
+```
+
+
+For more details, consult the [`env_logger`](https://docs.rs/env_logger/latest/env_logger/#enabling-logging) documentation.
+
+## Syslog
+
+Use the `--syslog` argument to enable logging to a syslog daemon. 
+The presence of the `SCCACHE_LOG` environment variable takes precedence over this argument.
+The same syntax is accepted:
+
+```
+--syslog info,sccache_dist=debug,sccache=debug,sccache_heartbeat=off
+```
+
 
 # Building the Distributed Server Binaries
 
