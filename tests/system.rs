@@ -20,8 +20,8 @@
 #[macro_use]
 extern crate log;
 use crate::harness::{
-    get_stats, sccache_client_cfg, sccache_command, start_local_daemon, stop_local_daemon,
-    write_json_cfg, write_source, zero_stats,
+    client::{sccache_client_cfg, SccacheClient},
+    write_json_cfg, write_source,
 };
 use assert_cmd::prelude::*;
 use fs::File;
@@ -211,7 +211,7 @@ fn copy_to_tempdir(inputs: &[&str], tempdir: &Path) {
     }
 }
 
-fn test_basic_compile(compiler: Compiler, tempdir: &Path) {
+fn test_basic_compile(client: &SccacheClient, compiler: Compiler, tempdir: &Path) {
     let Compiler {
         name,
         exe,
@@ -223,7 +223,8 @@ fn test_basic_compile(compiler: Compiler, tempdir: &Path) {
 
     let out_file = tempdir.join(OUTPUT);
     trace!("compile");
-    sccache_command()
+    client
+        .cmd()
         .args(compile_cmdline(name, &exe, INPUT, OUTPUT, Vec::new()))
         .current_dir(tempdir)
         .envs(env_vars.clone())
@@ -231,18 +232,18 @@ fn test_basic_compile(compiler: Compiler, tempdir: &Path) {
         .success();
     assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
     trace!("request stats");
-    get_stats(|info| {
-        assert_eq!(1, info.stats.compile_requests);
-        assert_eq!(1, info.stats.requests_executed);
-        assert_eq!(0, info.stats.cache_hits.all());
-        assert_eq!(1, info.stats.cache_misses.all());
-        assert_eq!(&1, info.stats.cache_misses.get("C/C++").unwrap());
-        let adv_key = adv_key_kind("c", compiler.name);
-        assert_eq!(&1, info.stats.cache_misses.get_adv(&adv_key).unwrap());
-    });
+    let stats = client.stats().unwrap();
+    assert_eq!(1, stats.compile_requests);
+    assert_eq!(1, stats.requests_executed);
+    assert_eq!(0, stats.cache_hits.all());
+    assert_eq!(1, stats.cache_misses.all());
+    assert_eq!(&1, stats.cache_misses.get("C/C++").unwrap());
+    let adv_key = adv_key_kind("c", compiler.name);
+    assert_eq!(&1, stats.cache_misses.get_adv(&adv_key).unwrap());
     trace!("compile");
     fs::remove_file(&out_file).unwrap();
-    sccache_command()
+    client
+        .cmd()
         .args(compile_cmdline(name, &exe, INPUT, OUTPUT, Vec::new()))
         .current_dir(tempdir)
         .envs(env_vars)
@@ -250,20 +251,19 @@ fn test_basic_compile(compiler: Compiler, tempdir: &Path) {
         .success();
     assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
     trace!("request stats");
-    get_stats(|info| {
-        assert_eq!(2, info.stats.compile_requests);
-        assert_eq!(2, info.stats.requests_executed);
-        assert_eq!(1, info.stats.cache_hits.all());
-        assert_eq!(1, info.stats.cache_misses.all());
-        assert_eq!(&1, info.stats.cache_hits.get("C/C++").unwrap());
-        assert_eq!(&1, info.stats.cache_misses.get("C/C++").unwrap());
-        let adv_key = adv_key_kind("c", compiler.name);
-        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_key).unwrap());
-        assert_eq!(&1, info.stats.cache_misses.get_adv(&adv_key).unwrap());
-    });
+    let stats = client.stats().unwrap();
+    assert_eq!(2, stats.compile_requests);
+    assert_eq!(2, stats.requests_executed);
+    assert_eq!(1, stats.cache_hits.all());
+    assert_eq!(1, stats.cache_misses.all());
+    assert_eq!(&1, stats.cache_hits.get("C/C++").unwrap());
+    assert_eq!(&1, stats.cache_misses.get("C/C++").unwrap());
+    let adv_key = adv_key_kind("c", compiler.name);
+    assert_eq!(&1, stats.cache_hits.get_adv(&adv_key).unwrap());
+    assert_eq!(&1, stats.cache_misses.get_adv(&adv_key).unwrap());
 }
 
-fn test_noncacheable_stats(compiler: Compiler, tempdir: &Path) {
+fn test_noncacheable_stats(client: &SccacheClient, compiler: Compiler, tempdir: &Path) {
     let Compiler {
         name,
         exe,
@@ -273,7 +273,8 @@ fn test_noncacheable_stats(compiler: Compiler, tempdir: &Path) {
     copy_to_tempdir(&[INPUT], tempdir);
 
     trace!("compile");
-    sccache_command()
+    client
+        .cmd()
         .arg(&exe)
         .arg("-E")
         .arg(INPUT)
@@ -282,15 +283,14 @@ fn test_noncacheable_stats(compiler: Compiler, tempdir: &Path) {
         .assert()
         .success();
     trace!("request stats");
-    get_stats(|info| {
-        assert_eq!(1, info.stats.compile_requests);
-        assert_eq!(0, info.stats.requests_executed);
-        assert_eq!(1, info.stats.not_cached.len());
-        assert_eq!(Some(&1), info.stats.not_cached.get("-E"));
-    });
+    let stats = client.stats().unwrap();
+    assert_eq!(1, stats.compile_requests);
+    assert_eq!(0, stats.requests_executed);
+    assert_eq!(1, stats.not_cached.len());
+    assert_eq!(Some(&1), stats.not_cached.get("-E"));
 }
 
-fn test_msvc_deps(compiler: Compiler, tempdir: &Path) {
+fn test_msvc_deps(client: &SccacheClient, compiler: Compiler, tempdir: &Path) {
     let Compiler {
         name,
         exe,
@@ -300,7 +300,8 @@ fn test_msvc_deps(compiler: Compiler, tempdir: &Path) {
     trace!("compile with /sourceDependencies");
     let mut args = compile_cmdline(name, exe, INPUT, OUTPUT, Vec::new());
     args.push("/sourceDependenciestest.o.json".into());
-    sccache_command()
+    client
+        .cmd()
         .args(&args)
         .current_dir(tempdir)
         .envs(env_vars)
@@ -321,7 +322,7 @@ fn test_msvc_deps(compiler: Compiler, tempdir: &Path) {
     assert_ne!(includes.len(), 0);
 }
 
-fn test_msvc_responsefile(compiler: Compiler, tempdir: &Path) {
+fn test_msvc_responsefile(client: &SccacheClient, compiler: Compiler, tempdir: &Path) {
     let Compiler {
         name: _,
         exe,
@@ -337,7 +338,8 @@ fn test_msvc_responsefile(compiler: Compiler, tempdir: &Path) {
     }
 
     let args = vec_from!(OsString, exe, &format!("@{cmd_file_name}"));
-    sccache_command()
+    client
+        .cmd()
         .args(&args)
         .current_dir(tempdir)
         .envs(env_vars)
@@ -348,7 +350,7 @@ fn test_msvc_responsefile(compiler: Compiler, tempdir: &Path) {
     fs::remove_file(&out_file).unwrap();
 }
 
-fn test_gcc_mp_werror(compiler: Compiler, tempdir: &Path) {
+fn test_gcc_mp_werror(client: &SccacheClient, compiler: Compiler, tempdir: &Path) {
     let Compiler {
         name,
         exe,
@@ -360,7 +362,8 @@ fn test_gcc_mp_werror(compiler: Compiler, tempdir: &Path) {
         OsString, "-MD", "-MP", "-MF", "foo.pp", "-Werror"
     ));
     // This should fail, but the error should be from the #error!
-    sccache_command()
+    client
+        .cmd()
         .args(&args)
         .current_dir(tempdir)
         .envs(env_vars)
@@ -373,14 +376,18 @@ fn test_gcc_mp_werror(compiler: Compiler, tempdir: &Path) {
         );
 }
 
-fn test_gcc_fprofile_generate_source_changes(compiler: Compiler, tempdir: &Path) {
+fn test_gcc_fprofile_generate_source_changes(
+    client: &SccacheClient,
+    compiler: Compiler,
+    tempdir: &Path,
+) {
     let Compiler {
         name,
         exe,
         env_vars,
     } = compiler;
     trace!("test -fprofile-generate with different source inputs");
-    zero_stats();
+    client.zero_stats();
     const SRC: &str = "source.c";
     write_source(
         tempdir,
@@ -398,31 +405,31 @@ int main(int argc, char** argv) {
     let mut args = compile_cmdline(name, exe, SRC, OUTPUT, Vec::new());
     args.extend(vec_from!(OsString, "-fprofile-generate"));
     trace!("compile source.c (1)");
-    sccache_command()
+    client
+        .cmd()
         .args(&args)
         .current_dir(tempdir)
         .envs(env_vars.clone())
         .assert()
         .success();
-    get_stats(|info| {
-        assert_eq!(0, info.stats.cache_hits.all());
-        assert_eq!(1, info.stats.cache_misses.all());
-        assert_eq!(&1, info.stats.cache_misses.get("C/C++").unwrap());
-    });
+    let stats = client.stats().unwrap();
+    assert_eq!(0, stats.cache_hits.all());
+    assert_eq!(1, stats.cache_misses.all());
+    assert_eq!(&1, stats.cache_misses.get("C/C++").unwrap());
     // Compile the same source again to ensure we can get a cache hit.
     trace!("compile source.c (2)");
-    sccache_command()
+    client
+        .cmd()
         .args(&args)
         .current_dir(tempdir)
         .envs(env_vars.clone())
         .assert()
         .success();
-    get_stats(|info| {
-        assert_eq!(1, info.stats.cache_hits.all());
-        assert_eq!(1, info.stats.cache_misses.all());
-        assert_eq!(&1, info.stats.cache_hits.get("C/C++").unwrap());
-        assert_eq!(&1, info.stats.cache_misses.get("C/C++").unwrap());
-    });
+    let stats = client.stats().unwrap();
+    assert_eq!(1, stats.cache_hits.all());
+    assert_eq!(1, stats.cache_misses.all());
+    assert_eq!(&1, stats.cache_hits.get("C/C++").unwrap());
+    assert_eq!(&1, stats.cache_misses.get("C/C++").unwrap());
     // Now write out a slightly different source file that will preprocess to the same thing,
     // modulo line numbers. This should not be a cache hit because line numbers are important
     // with -fprofile-generate.
@@ -441,18 +448,18 @@ int main(int argc, char** argv) {
 ",
     );
     trace!("compile source.c (3)");
-    sccache_command()
+    client
+        .cmd()
         .args(&args)
         .current_dir(tempdir)
         .envs(env_vars)
         .assert()
         .success();
-    get_stats(|info| {
-        assert_eq!(1, info.stats.cache_hits.all());
-        assert_eq!(2, info.stats.cache_misses.all());
-        assert_eq!(&1, info.stats.cache_hits.get("C/C++").unwrap());
-        assert_eq!(&2, info.stats.cache_misses.get("C/C++").unwrap());
-    });
+    let stats = client.stats().unwrap();
+    assert_eq!(1, stats.cache_hits.all());
+    assert_eq!(2, stats.cache_misses.all());
+    assert_eq!(&1, stats.cache_hits.get("C/C++").unwrap());
+    assert_eq!(&2, stats.cache_misses.get("C/C++").unwrap());
 }
 
 /* test case like this:
@@ -463,66 +470,74 @@ int main(int argc, char** argv) {
     sccache g++ -c -g -gsplit-dwarf test.cc -o test2.o   --- > cache miss
     strings test2.o |grep test2.dwo
 */
-fn test_split_dwarf_object_generate_output_dir_changes(compiler: Compiler, tempdir: &Path) {
+fn test_split_dwarf_object_generate_output_dir_changes(
+    client: &SccacheClient,
+    compiler: Compiler,
+    tempdir: &Path,
+) {
     let Compiler {
         name,
         exe,
         env_vars,
     } = compiler;
     trace!("test -g -gsplit-dwarf with different output");
-    zero_stats();
+    client.zero_stats();
     const SRC: &str = "source.c";
     write_source(tempdir, SRC, "int test(){}");
     let mut args = compile_cmdline(name, exe.clone(), SRC, "test1.o", Vec::new());
     args.extend(vec_from!(OsString, "-g"));
     args.extend(vec_from!(OsString, "-gsplit-dwarf"));
     trace!("compile source.c (1)");
-    sccache_command()
+    client
+        .cmd()
         .args(&args)
         .current_dir(tempdir)
         .envs(env_vars.clone())
         .assert()
         .success();
-    get_stats(|info| {
-        assert_eq!(0, info.stats.cache_hits.all());
-        assert_eq!(1, info.stats.cache_misses.all());
-        assert_eq!(&1, info.stats.cache_misses.get("C/C++").unwrap());
-    });
+    let stats = client.stats().unwrap();
+    assert_eq!(0, stats.cache_hits.all());
+    assert_eq!(1, stats.cache_misses.all());
+    assert_eq!(&1, stats.cache_misses.get("C/C++").unwrap());
     // Compile the same source again to ensure we can get a cache hit.
     trace!("compile source.c (2)");
-    sccache_command()
+    client
+        .cmd()
         .args(&args)
         .current_dir(tempdir)
         .envs(env_vars.clone())
         .assert()
         .success();
-    get_stats(|info| {
-        assert_eq!(1, info.stats.cache_hits.all());
-        assert_eq!(1, info.stats.cache_misses.all());
-        assert_eq!(&1, info.stats.cache_hits.get("C/C++").unwrap());
-        assert_eq!(&1, info.stats.cache_misses.get("C/C++").unwrap());
-    });
+    let stats = client.stats().unwrap();
+    assert_eq!(1, stats.cache_hits.all());
+    assert_eq!(1, stats.cache_misses.all());
+    assert_eq!(&1, stats.cache_hits.get("C/C++").unwrap());
+    assert_eq!(&1, stats.cache_misses.get("C/C++").unwrap());
     // Compile the same source again with different output
     // to ensure we can force generate new object file.
     let mut args2 = compile_cmdline(name, exe, SRC, "test2.o", Vec::new());
     args2.extend(vec_from!(OsString, "-g"));
     args2.extend(vec_from!(OsString, "-gsplit-dwarf"));
     trace!("compile source.c (2)");
-    sccache_command()
+    client
+        .cmd()
         .args(&args2)
         .current_dir(tempdir)
         .envs(env_vars.clone())
         .assert()
         .success();
-    get_stats(|info| {
-        assert_eq!(1, info.stats.cache_hits.all());
-        assert_eq!(2, info.stats.cache_misses.all());
-        assert_eq!(&1, info.stats.cache_hits.get("C/C++").unwrap());
-        assert_eq!(&2, info.stats.cache_misses.get("C/C++").unwrap());
-    });
+    let stats = client.stats().unwrap();
+    assert_eq!(1, stats.cache_hits.all());
+    assert_eq!(2, stats.cache_misses.all());
+    assert_eq!(&1, stats.cache_hits.get("C/C++").unwrap());
+    assert_eq!(&2, stats.cache_misses.get("C/C++").unwrap());
 }
 
-fn test_gcc_clang_no_warnings_from_macro_expansion(compiler: Compiler, tempdir: &Path) {
+fn test_gcc_clang_no_warnings_from_macro_expansion(
+    client: &SccacheClient,
+    compiler: Compiler,
+    tempdir: &Path,
+) {
     let Compiler {
         name,
         exe,
@@ -533,7 +548,8 @@ fn test_gcc_clang_no_warnings_from_macro_expansion(compiler: Compiler, tempdir: 
     copy_to_tempdir(&[INPUT_MACRO_EXPANSION], tempdir);
 
     trace!("compile");
-    sccache_command()
+    client
+        .cmd()
         .args(
             [
                 &compile_cmdline(name, exe, INPUT_MACRO_EXPANSION, OUTPUT, Vec::new())[..],
@@ -548,7 +564,7 @@ fn test_gcc_clang_no_warnings_from_macro_expansion(compiler: Compiler, tempdir: 
         .stderr(predicates::str::contains("warning:").from_utf8().not());
 }
 
-fn test_compile_with_define(compiler: Compiler, tempdir: &Path) {
+fn test_compile_with_define(client: &SccacheClient, compiler: Compiler, tempdir: &Path) {
     let Compiler {
         name,
         exe,
@@ -559,7 +575,8 @@ fn test_compile_with_define(compiler: Compiler, tempdir: &Path) {
     copy_to_tempdir(&[INPUT_WITH_DEFINE], tempdir);
 
     trace!("compile");
-    sccache_command()
+    client
+        .cmd()
         .args(
             [
                 &compile_cmdline(name, exe, INPUT_WITH_DEFINE, OUTPUT, Vec::new())[..],
@@ -574,7 +591,7 @@ fn test_compile_with_define(compiler: Compiler, tempdir: &Path) {
         .stderr(predicates::str::contains("warning:").from_utf8().not());
 }
 
-fn test_gcc_clang_depfile(compiler: Compiler, tempdir: &Path) {
+fn test_gcc_clang_depfile(client: &SccacheClient, compiler: Compiler, tempdir: &Path) {
     let Compiler {
         name,
         exe,
@@ -585,7 +602,8 @@ fn test_gcc_clang_depfile(compiler: Compiler, tempdir: &Path) {
     fs::copy(tempdir.join(INPUT), tempdir.join("same-content.c")).unwrap();
 
     trace!("compile");
-    sccache_command()
+    client
+        .cmd()
         .args(compile_cmdline(
             name,
             exe.clone(),
@@ -598,7 +616,8 @@ fn test_gcc_clang_depfile(compiler: Compiler, tempdir: &Path) {
         .envs(env_vars.clone())
         .assert()
         .success();
-    sccache_command()
+    client
+        .cmd()
         .args(compile_cmdline(
             name,
             exe,
@@ -624,26 +643,31 @@ fn test_gcc_clang_depfile(compiler: Compiler, tempdir: &Path) {
     assert_ne!(first, second);
 }
 
-fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path, preprocessor_cache_mode: bool) {
+fn run_sccache_command_tests(
+    client: &SccacheClient,
+    compiler: Compiler,
+    tempdir: &Path,
+    preprocessor_cache_mode: bool,
+) {
     if compiler.name != "clang++" {
-        test_basic_compile(compiler.clone(), tempdir);
+        test_basic_compile(client, compiler.clone(), tempdir);
     }
-    test_compile_with_define(compiler.clone(), tempdir);
+    test_compile_with_define(client, compiler.clone(), tempdir);
     if compiler.name == "cl.exe" {
-        test_msvc_deps(compiler.clone(), tempdir);
-        test_msvc_responsefile(compiler.clone(), tempdir);
+        test_msvc_deps(client, compiler.clone(), tempdir);
+        test_msvc_responsefile(client, compiler.clone(), tempdir);
     }
     if compiler.name == "gcc" {
-        test_gcc_mp_werror(compiler.clone(), tempdir);
-        test_gcc_fprofile_generate_source_changes(compiler.clone(), tempdir);
+        test_gcc_mp_werror(client, compiler.clone(), tempdir);
+        test_gcc_fprofile_generate_source_changes(client, compiler.clone(), tempdir);
     }
     if compiler.name == "clang" || compiler.name == "gcc" {
-        test_gcc_clang_no_warnings_from_macro_expansion(compiler.clone(), tempdir);
-        test_split_dwarf_object_generate_output_dir_changes(compiler.clone(), tempdir);
-        test_gcc_clang_depfile(compiler.clone(), tempdir);
+        test_gcc_clang_no_warnings_from_macro_expansion(client, compiler.clone(), tempdir);
+        test_split_dwarf_object_generate_output_dir_changes(client, compiler.clone(), tempdir);
+        test_gcc_clang_depfile(client, compiler.clone(), tempdir);
     }
     if compiler.name == "clang++" {
-        test_clang_multicall(compiler.clone(), tempdir);
+        test_clang_multicall(client, compiler.clone(), tempdir);
     }
 
     // If we are testing with clang-14 or later, we expect the -fminimize-whitespace flag to be used.
@@ -672,6 +696,7 @@ fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path, preprocessor_ca
             ),
         };
         test_clang_cache_whitespace_normalization(
+            client,
             compiler,
             tempdir,
             !is_appleclang && major >= 14,
@@ -679,6 +704,7 @@ fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path, preprocessor_ca
         );
     } else {
         test_clang_cache_whitespace_normalization(
+            client,
             compiler,
             tempdir,
             false,
@@ -687,7 +713,7 @@ fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path, preprocessor_ca
     }
 }
 
-fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
+fn test_nvcc_cuda_compiles(client: &SccacheClient, compiler: &Compiler, tempdir: &Path) {
     let Compiler {
         name,
         exe,
@@ -699,7 +725,8 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
 
     let out_file = tempdir.join(OUTPUT);
     trace!("compile A");
-    sccache_command()
+    client
+        .cmd()
         .args(compile_cuda_cmdline(
             name,
             exe,
@@ -717,34 +744,28 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
     assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
     fs::remove_file(&out_file).unwrap();
     trace!("compile A request stats");
-    get_stats(|info| {
-        assert_eq!(1, info.stats.compile_requests);
-        assert_eq!(5, info.stats.requests_executed);
-        assert_eq!(0, info.stats.cache_hits.all());
-        assert_eq!(4, info.stats.cache_misses.all());
-        assert_eq!(&1, info.stats.cache_misses.get("CUDA").unwrap());
-        assert_eq!(
-            &1,
-            info.stats.cache_misses.get("CUDA (Device code)").unwrap()
-        );
-        assert_eq!(&1, info.stats.cache_misses.get("PTX").unwrap());
-        assert_eq!(&1, info.stats.cache_misses.get("CUBIN").unwrap());
-        assert!(info.stats.cache_misses.get("C/C++").is_none());
-        let adv_cuda_key = adv_key_kind("cuda", compiler.name);
-        let adv_cudafe_key = adv_key_kind("cudafe++", compiler.name);
-        let adv_ptx_key = adv_key_kind("ptx", compiler.name);
-        let adv_cubin_key = adv_key_kind("cubin", compiler.name);
-        assert_eq!(&1, info.stats.cache_misses.get_adv(&adv_cuda_key).unwrap());
-        assert_eq!(
-            &1,
-            info.stats.cache_misses.get_adv(&adv_cudafe_key).unwrap()
-        );
-        assert_eq!(&1, info.stats.cache_misses.get_adv(&adv_ptx_key).unwrap());
-        assert_eq!(&1, info.stats.cache_misses.get_adv(&adv_cubin_key).unwrap());
-    });
+    let stats = client.stats().unwrap();
+    assert_eq!(1, stats.compile_requests);
+    assert_eq!(5, stats.requests_executed);
+    assert_eq!(0, stats.cache_hits.all());
+    assert_eq!(4, stats.cache_misses.all());
+    assert_eq!(&1, stats.cache_misses.get("CUDA").unwrap());
+    assert_eq!(&1, stats.cache_misses.get("CUDA (Device code)").unwrap());
+    assert_eq!(&1, stats.cache_misses.get("PTX").unwrap());
+    assert_eq!(&1, stats.cache_misses.get("CUBIN").unwrap());
+    assert!(stats.cache_misses.get("C/C++").is_none());
+    let adv_cuda_key = adv_key_kind("cuda", compiler.name);
+    let adv_cudafe_key = adv_key_kind("cudafe++", compiler.name);
+    let adv_ptx_key = adv_key_kind("ptx", compiler.name);
+    let adv_cubin_key = adv_key_kind("cubin", compiler.name);
+    assert_eq!(&1, stats.cache_misses.get_adv(&adv_cuda_key).unwrap());
+    assert_eq!(&1, stats.cache_misses.get_adv(&adv_cudafe_key).unwrap());
+    assert_eq!(&1, stats.cache_misses.get_adv(&adv_ptx_key).unwrap());
+    assert_eq!(&1, stats.cache_misses.get_adv(&adv_cubin_key).unwrap());
 
     trace!("compile A");
-    sccache_command()
+    client
+        .cmd()
         .args(compile_cuda_cmdline(
             name,
             exe,
@@ -762,44 +783,38 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
     assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
     fs::remove_file(&out_file).unwrap();
     trace!("compile A request stats");
-    get_stats(|info| {
-        assert_eq!(2, info.stats.compile_requests);
-        assert_eq!(10, info.stats.requests_executed);
-        assert_eq!(4, info.stats.cache_hits.all());
-        assert_eq!(4, info.stats.cache_misses.all());
-        assert_eq!(&1, info.stats.cache_hits.get("CUDA").unwrap());
-        assert_eq!(&1, info.stats.cache_hits.get("CUDA (Device code)").unwrap());
-        assert_eq!(&1, info.stats.cache_hits.get("PTX").unwrap());
-        assert_eq!(&1, info.stats.cache_hits.get("CUBIN").unwrap());
-        assert_eq!(&1, info.stats.cache_misses.get("CUDA").unwrap());
-        assert_eq!(
-            &1,
-            info.stats.cache_misses.get("CUDA (Device code)").unwrap()
-        );
-        assert_eq!(&1, info.stats.cache_misses.get("PTX").unwrap());
-        assert_eq!(&1, info.stats.cache_misses.get("CUBIN").unwrap());
-        assert!(info.stats.cache_misses.get("C/C++").is_none());
-        let adv_cuda_key = adv_key_kind("cuda", compiler.name);
-        let adv_cudafe_key = adv_key_kind("cudafe++", compiler.name);
-        let adv_ptx_key = adv_key_kind("ptx", compiler.name);
-        let adv_cubin_key = adv_key_kind("cubin", compiler.name);
-        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_cuda_key).unwrap());
-        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_cudafe_key).unwrap());
-        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_ptx_key).unwrap());
-        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_cubin_key).unwrap());
-        assert_eq!(&1, info.stats.cache_misses.get_adv(&adv_cuda_key).unwrap());
-        assert_eq!(
-            &1,
-            info.stats.cache_misses.get_adv(&adv_cudafe_key).unwrap()
-        );
-        assert_eq!(&1, info.stats.cache_misses.get_adv(&adv_ptx_key).unwrap());
-        assert_eq!(&1, info.stats.cache_misses.get_adv(&adv_cubin_key).unwrap());
-    });
+    let stats = client.stats().unwrap();
+    assert_eq!(2, stats.compile_requests);
+    assert_eq!(10, stats.requests_executed);
+    assert_eq!(4, stats.cache_hits.all());
+    assert_eq!(4, stats.cache_misses.all());
+    assert_eq!(&1, stats.cache_hits.get("CUDA").unwrap());
+    assert_eq!(&1, stats.cache_hits.get("CUDA (Device code)").unwrap());
+    assert_eq!(&1, stats.cache_hits.get("PTX").unwrap());
+    assert_eq!(&1, stats.cache_hits.get("CUBIN").unwrap());
+    assert_eq!(&1, stats.cache_misses.get("CUDA").unwrap());
+    assert_eq!(&1, stats.cache_misses.get("CUDA (Device code)").unwrap());
+    assert_eq!(&1, stats.cache_misses.get("PTX").unwrap());
+    assert_eq!(&1, stats.cache_misses.get("CUBIN").unwrap());
+    assert!(stats.cache_misses.get("C/C++").is_none());
+    let adv_cuda_key = adv_key_kind("cuda", compiler.name);
+    let adv_cudafe_key = adv_key_kind("cudafe++", compiler.name);
+    let adv_ptx_key = adv_key_kind("ptx", compiler.name);
+    let adv_cubin_key = adv_key_kind("cubin", compiler.name);
+    assert_eq!(&1, stats.cache_hits.get_adv(&adv_cuda_key).unwrap());
+    assert_eq!(&1, stats.cache_hits.get_adv(&adv_cudafe_key).unwrap());
+    assert_eq!(&1, stats.cache_hits.get_adv(&adv_ptx_key).unwrap());
+    assert_eq!(&1, stats.cache_hits.get_adv(&adv_cubin_key).unwrap());
+    assert_eq!(&1, stats.cache_misses.get_adv(&adv_cuda_key).unwrap());
+    assert_eq!(&1, stats.cache_misses.get_adv(&adv_cudafe_key).unwrap());
+    assert_eq!(&1, stats.cache_misses.get_adv(&adv_ptx_key).unwrap());
+    assert_eq!(&1, stats.cache_misses.get_adv(&adv_cubin_key).unwrap());
 
     // By compiling another input source we verify that the pre-processor
     // phase is correctly running and outputting text
     trace!("compile B");
-    sccache_command()
+    client
+        .cmd()
         .args(compile_cuda_cmdline(
             name,
             exe,
@@ -817,43 +832,37 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
     assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
     fs::remove_file(&out_file).unwrap();
     trace!("compile B request stats");
-    get_stats(|info| {
-        assert_eq!(3, info.stats.compile_requests);
-        assert_eq!(15, info.stats.requests_executed);
-        assert_eq!(5, info.stats.cache_hits.all());
-        assert_eq!(7, info.stats.cache_misses.all());
-        assert_eq!(&1, info.stats.cache_hits.get("CUDA").unwrap());
-        assert_eq!(&1, info.stats.cache_hits.get("CUDA (Device code)").unwrap());
-        assert_eq!(&1, info.stats.cache_hits.get("PTX").unwrap());
-        assert_eq!(&2, info.stats.cache_hits.get("CUBIN").unwrap());
-        assert_eq!(&2, info.stats.cache_misses.get("CUDA").unwrap());
-        assert_eq!(
-            &2,
-            info.stats.cache_misses.get("CUDA (Device code)").unwrap()
-        );
-        assert_eq!(&2, info.stats.cache_misses.get("PTX").unwrap());
-        assert_eq!(&1, info.stats.cache_misses.get("CUBIN").unwrap());
-        assert!(info.stats.cache_misses.get("C/C++").is_none());
-        let adv_cuda_key = adv_key_kind("cuda", compiler.name);
-        let adv_cudafe_key = adv_key_kind("cudafe++", compiler.name);
-        let adv_ptx_key = adv_key_kind("ptx", compiler.name);
-        let adv_cubin_key = adv_key_kind("cubin", compiler.name);
-        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_cuda_key).unwrap());
-        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_cudafe_key).unwrap());
-        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_ptx_key).unwrap());
-        assert_eq!(&2, info.stats.cache_hits.get_adv(&adv_cubin_key).unwrap());
-        assert_eq!(&2, info.stats.cache_misses.get_adv(&adv_cuda_key).unwrap());
-        assert_eq!(
-            &2,
-            info.stats.cache_misses.get_adv(&adv_cudafe_key).unwrap()
-        );
-        assert_eq!(&2, info.stats.cache_misses.get_adv(&adv_ptx_key).unwrap());
-        assert_eq!(&1, info.stats.cache_misses.get_adv(&adv_cubin_key).unwrap());
-    });
+    let stats = client.stats().unwrap();
+    assert_eq!(3, stats.compile_requests);
+    assert_eq!(15, stats.requests_executed);
+    assert_eq!(5, stats.cache_hits.all());
+    assert_eq!(7, stats.cache_misses.all());
+    assert_eq!(&1, stats.cache_hits.get("CUDA").unwrap());
+    assert_eq!(&1, stats.cache_hits.get("CUDA (Device code)").unwrap());
+    assert_eq!(&1, stats.cache_hits.get("PTX").unwrap());
+    assert_eq!(&2, stats.cache_hits.get("CUBIN").unwrap());
+    assert_eq!(&2, stats.cache_misses.get("CUDA").unwrap());
+    assert_eq!(&2, stats.cache_misses.get("CUDA (Device code)").unwrap());
+    assert_eq!(&2, stats.cache_misses.get("PTX").unwrap());
+    assert_eq!(&1, stats.cache_misses.get("CUBIN").unwrap());
+    assert!(stats.cache_misses.get("C/C++").is_none());
+    let adv_cuda_key = adv_key_kind("cuda", compiler.name);
+    let adv_cudafe_key = adv_key_kind("cudafe++", compiler.name);
+    let adv_ptx_key = adv_key_kind("ptx", compiler.name);
+    let adv_cubin_key = adv_key_kind("cubin", compiler.name);
+    assert_eq!(&1, stats.cache_hits.get_adv(&adv_cuda_key).unwrap());
+    assert_eq!(&1, stats.cache_hits.get_adv(&adv_cudafe_key).unwrap());
+    assert_eq!(&1, stats.cache_hits.get_adv(&adv_ptx_key).unwrap());
+    assert_eq!(&2, stats.cache_hits.get_adv(&adv_cubin_key).unwrap());
+    assert_eq!(&2, stats.cache_misses.get_adv(&adv_cuda_key).unwrap());
+    assert_eq!(&2, stats.cache_misses.get_adv(&adv_cudafe_key).unwrap());
+    assert_eq!(&2, stats.cache_misses.get_adv(&adv_ptx_key).unwrap());
+    assert_eq!(&1, stats.cache_misses.get_adv(&adv_cubin_key).unwrap());
 
     trace!("compile ptx");
     let out_file = tempdir.join("test.ptx");
-    sccache_command()
+    client
+        .cmd()
         .args(compile_cuda_cmdline(
             name,
             exe,
@@ -870,43 +879,37 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
     assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
     fs::remove_file(&out_file).unwrap();
     trace!("compile ptx request stats");
-    get_stats(|info| {
-        assert_eq!(4, info.stats.compile_requests);
-        assert_eq!(17, info.stats.requests_executed);
-        assert_eq!(5, info.stats.cache_hits.all());
-        assert_eq!(8, info.stats.cache_misses.all());
-        assert_eq!(&1, info.stats.cache_hits.get("CUDA").unwrap());
-        assert_eq!(&1, info.stats.cache_hits.get("CUDA (Device code)").unwrap());
-        assert_eq!(&1, info.stats.cache_hits.get("PTX").unwrap());
-        assert_eq!(&2, info.stats.cache_hits.get("CUBIN").unwrap());
-        assert_eq!(&2, info.stats.cache_misses.get("CUDA").unwrap());
-        assert_eq!(
-            &2,
-            info.stats.cache_misses.get("CUDA (Device code)").unwrap()
-        );
-        assert_eq!(&3, info.stats.cache_misses.get("PTX").unwrap());
-        assert_eq!(&1, info.stats.cache_misses.get("CUBIN").unwrap());
-        assert!(info.stats.cache_misses.get("C/C++").is_none());
-        let adv_cuda_key = adv_key_kind("cuda", compiler.name);
-        let adv_cudafe_key = adv_key_kind("cudafe++", compiler.name);
-        let adv_ptx_key = adv_key_kind("ptx", compiler.name);
-        let adv_cubin_key = adv_key_kind("cubin", compiler.name);
-        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_cuda_key).unwrap());
-        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_cudafe_key).unwrap());
-        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_ptx_key).unwrap());
-        assert_eq!(&2, info.stats.cache_hits.get_adv(&adv_cubin_key).unwrap());
-        assert_eq!(&2, info.stats.cache_misses.get_adv(&adv_cuda_key).unwrap());
-        assert_eq!(
-            &2,
-            info.stats.cache_misses.get_adv(&adv_cudafe_key).unwrap()
-        );
-        assert_eq!(&3, info.stats.cache_misses.get_adv(&adv_ptx_key).unwrap());
-        assert_eq!(&1, info.stats.cache_misses.get_adv(&adv_cubin_key).unwrap());
-    });
+    let stats = client.stats().unwrap();
+    assert_eq!(4, stats.compile_requests);
+    assert_eq!(17, stats.requests_executed);
+    assert_eq!(5, stats.cache_hits.all());
+    assert_eq!(8, stats.cache_misses.all());
+    assert_eq!(&1, stats.cache_hits.get("CUDA").unwrap());
+    assert_eq!(&1, stats.cache_hits.get("CUDA (Device code)").unwrap());
+    assert_eq!(&1, stats.cache_hits.get("PTX").unwrap());
+    assert_eq!(&2, stats.cache_hits.get("CUBIN").unwrap());
+    assert_eq!(&2, stats.cache_misses.get("CUDA").unwrap());
+    assert_eq!(&2, stats.cache_misses.get("CUDA (Device code)").unwrap());
+    assert_eq!(&3, stats.cache_misses.get("PTX").unwrap());
+    assert_eq!(&1, stats.cache_misses.get("CUBIN").unwrap());
+    assert!(stats.cache_misses.get("C/C++").is_none());
+    let adv_cuda_key = adv_key_kind("cuda", compiler.name);
+    let adv_cudafe_key = adv_key_kind("cudafe++", compiler.name);
+    let adv_ptx_key = adv_key_kind("ptx", compiler.name);
+    let adv_cubin_key = adv_key_kind("cubin", compiler.name);
+    assert_eq!(&1, stats.cache_hits.get_adv(&adv_cuda_key).unwrap());
+    assert_eq!(&1, stats.cache_hits.get_adv(&adv_cudafe_key).unwrap());
+    assert_eq!(&1, stats.cache_hits.get_adv(&adv_ptx_key).unwrap());
+    assert_eq!(&2, stats.cache_hits.get_adv(&adv_cubin_key).unwrap());
+    assert_eq!(&2, stats.cache_misses.get_adv(&adv_cuda_key).unwrap());
+    assert_eq!(&2, stats.cache_misses.get_adv(&adv_cudafe_key).unwrap());
+    assert_eq!(&3, stats.cache_misses.get_adv(&adv_ptx_key).unwrap());
+    assert_eq!(&1, stats.cache_misses.get_adv(&adv_cubin_key).unwrap());
 
     trace!("compile cubin");
     let out_file = tempdir.join("test.cubin");
-    sccache_command()
+    client
+        .cmd()
         .args(compile_cuda_cmdline(
             name,
             exe,
@@ -923,39 +926,32 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
     assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
     fs::remove_file(&out_file).unwrap();
     trace!("compile cubin request stats");
-    get_stats(|info| {
-        assert_eq!(5, info.stats.compile_requests);
-        assert_eq!(20, info.stats.requests_executed);
-        assert_eq!(6, info.stats.cache_hits.all());
-        assert_eq!(9, info.stats.cache_misses.all());
-        assert_eq!(&1, info.stats.cache_hits.get("CUDA").unwrap());
-        assert_eq!(&1, info.stats.cache_hits.get("CUDA (Device code)").unwrap());
-        assert_eq!(&1, info.stats.cache_hits.get("PTX").unwrap());
-        assert_eq!(&3, info.stats.cache_hits.get("CUBIN").unwrap());
-        assert_eq!(&2, info.stats.cache_misses.get("CUDA").unwrap());
-        assert_eq!(
-            &2,
-            info.stats.cache_misses.get("CUDA (Device code)").unwrap()
-        );
-        assert_eq!(&4, info.stats.cache_misses.get("PTX").unwrap());
-        assert_eq!(&1, info.stats.cache_misses.get("CUBIN").unwrap());
-        assert!(info.stats.cache_misses.get("C/C++").is_none());
-        let adv_cuda_key = adv_key_kind("cuda", compiler.name);
-        let adv_cudafe_key = adv_key_kind("cudafe++", compiler.name);
-        let adv_ptx_key = adv_key_kind("ptx", compiler.name);
-        let adv_cubin_key = adv_key_kind("cubin", compiler.name);
-        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_cuda_key).unwrap());
-        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_cudafe_key).unwrap());
-        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_ptx_key).unwrap());
-        assert_eq!(&3, info.stats.cache_hits.get_adv(&adv_cubin_key).unwrap());
-        assert_eq!(&2, info.stats.cache_misses.get_adv(&adv_cuda_key).unwrap());
-        assert_eq!(
-            &2,
-            info.stats.cache_misses.get_adv(&adv_cudafe_key).unwrap()
-        );
-        assert_eq!(&4, info.stats.cache_misses.get_adv(&adv_ptx_key).unwrap());
-        assert_eq!(&1, info.stats.cache_misses.get_adv(&adv_cubin_key).unwrap());
-    });
+    let stats = client.stats().unwrap();
+    assert_eq!(5, stats.compile_requests);
+    assert_eq!(20, stats.requests_executed);
+    assert_eq!(6, stats.cache_hits.all());
+    assert_eq!(9, stats.cache_misses.all());
+    assert_eq!(&1, stats.cache_hits.get("CUDA").unwrap());
+    assert_eq!(&1, stats.cache_hits.get("CUDA (Device code)").unwrap());
+    assert_eq!(&1, stats.cache_hits.get("PTX").unwrap());
+    assert_eq!(&3, stats.cache_hits.get("CUBIN").unwrap());
+    assert_eq!(&2, stats.cache_misses.get("CUDA").unwrap());
+    assert_eq!(&2, stats.cache_misses.get("CUDA (Device code)").unwrap());
+    assert_eq!(&4, stats.cache_misses.get("PTX").unwrap());
+    assert_eq!(&1, stats.cache_misses.get("CUBIN").unwrap());
+    assert!(stats.cache_misses.get("C/C++").is_none());
+    let adv_cuda_key = adv_key_kind("cuda", compiler.name);
+    let adv_cudafe_key = adv_key_kind("cudafe++", compiler.name);
+    let adv_ptx_key = adv_key_kind("ptx", compiler.name);
+    let adv_cubin_key = adv_key_kind("cubin", compiler.name);
+    assert_eq!(&1, stats.cache_hits.get_adv(&adv_cuda_key).unwrap());
+    assert_eq!(&1, stats.cache_hits.get_adv(&adv_cudafe_key).unwrap());
+    assert_eq!(&1, stats.cache_hits.get_adv(&adv_ptx_key).unwrap());
+    assert_eq!(&3, stats.cache_hits.get_adv(&adv_cubin_key).unwrap());
+    assert_eq!(&2, stats.cache_misses.get_adv(&adv_cuda_key).unwrap());
+    assert_eq!(&2, stats.cache_misses.get_adv(&adv_cudafe_key).unwrap());
+    assert_eq!(&4, stats.cache_misses.get_adv(&adv_ptx_key).unwrap());
+    assert_eq!(&1, stats.cache_misses.get_adv(&adv_cubin_key).unwrap());
 
     // Test to ensure #2299 doesn't regress (https://github.com/mozilla/sccache/issues/2299)
     let test_2299_src_name = "test_2299.cu";
@@ -979,7 +975,8 @@ int main(int argc, char** argv) {
 ";
     write_source(tempdir, test_2299_src_name, test_2299_cu_src_1);
     trace!("compile test_2299.cu (1)");
-    sccache_command()
+    client
+        .cmd()
         .args(compile_cuda_cmdline(
             name,
             exe,
@@ -1003,43 +1000,37 @@ int main(int argc, char** argv) {
         .unwrap());
     fs::remove_file(&test_2299_out_file).unwrap();
     trace!("compile test_2299.cu request stats (1)");
-    get_stats(|info| {
-        assert_eq!(6, info.stats.compile_requests);
-        assert_eq!(25, info.stats.requests_executed);
-        assert_eq!(6, info.stats.cache_hits.all());
-        assert_eq!(13, info.stats.cache_misses.all());
-        assert_eq!(&1, info.stats.cache_hits.get("CUDA").unwrap());
-        assert_eq!(&1, info.stats.cache_hits.get("CUDA (Device code)").unwrap());
-        assert_eq!(&1, info.stats.cache_hits.get("PTX").unwrap());
-        assert_eq!(&3, info.stats.cache_hits.get("CUBIN").unwrap());
-        assert_eq!(&3, info.stats.cache_misses.get("CUDA").unwrap());
-        assert_eq!(
-            &3,
-            info.stats.cache_misses.get("CUDA (Device code)").unwrap()
-        );
-        assert_eq!(&5, info.stats.cache_misses.get("PTX").unwrap());
-        assert_eq!(&2, info.stats.cache_misses.get("CUBIN").unwrap());
-        assert!(info.stats.cache_misses.get("C/C++").is_none());
-        let adv_cuda_key = adv_key_kind("cuda", compiler.name);
-        let adv_cudafe_key = adv_key_kind("cudafe++", compiler.name);
-        let adv_ptx_key = adv_key_kind("ptx", compiler.name);
-        let adv_cubin_key = adv_key_kind("cubin", compiler.name);
-        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_cuda_key).unwrap());
-        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_cudafe_key).unwrap());
-        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_ptx_key).unwrap());
-        assert_eq!(&3, info.stats.cache_hits.get_adv(&adv_cubin_key).unwrap());
-        assert_eq!(&3, info.stats.cache_misses.get_adv(&adv_cuda_key).unwrap());
-        assert_eq!(
-            &3,
-            info.stats.cache_misses.get_adv(&adv_cudafe_key).unwrap()
-        );
-        assert_eq!(&5, info.stats.cache_misses.get_adv(&adv_ptx_key).unwrap());
-        assert_eq!(&2, info.stats.cache_misses.get_adv(&adv_cubin_key).unwrap());
-    });
+    let stats = client.stats().unwrap();
+    assert_eq!(6, stats.compile_requests);
+    assert_eq!(25, stats.requests_executed);
+    assert_eq!(6, stats.cache_hits.all());
+    assert_eq!(13, stats.cache_misses.all());
+    assert_eq!(&1, stats.cache_hits.get("CUDA").unwrap());
+    assert_eq!(&1, stats.cache_hits.get("CUDA (Device code)").unwrap());
+    assert_eq!(&1, stats.cache_hits.get("PTX").unwrap());
+    assert_eq!(&3, stats.cache_hits.get("CUBIN").unwrap());
+    assert_eq!(&3, stats.cache_misses.get("CUDA").unwrap());
+    assert_eq!(&3, stats.cache_misses.get("CUDA (Device code)").unwrap());
+    assert_eq!(&5, stats.cache_misses.get("PTX").unwrap());
+    assert_eq!(&2, stats.cache_misses.get("CUBIN").unwrap());
+    assert!(stats.cache_misses.get("C/C++").is_none());
+    let adv_cuda_key = adv_key_kind("cuda", compiler.name);
+    let adv_cudafe_key = adv_key_kind("cudafe++", compiler.name);
+    let adv_ptx_key = adv_key_kind("ptx", compiler.name);
+    let adv_cubin_key = adv_key_kind("cubin", compiler.name);
+    assert_eq!(&1, stats.cache_hits.get_adv(&adv_cuda_key).unwrap());
+    assert_eq!(&1, stats.cache_hits.get_adv(&adv_cudafe_key).unwrap());
+    assert_eq!(&1, stats.cache_hits.get_adv(&adv_ptx_key).unwrap());
+    assert_eq!(&3, stats.cache_hits.get_adv(&adv_cubin_key).unwrap());
+    assert_eq!(&3, stats.cache_misses.get_adv(&adv_cuda_key).unwrap());
+    assert_eq!(&3, stats.cache_misses.get_adv(&adv_cudafe_key).unwrap());
+    assert_eq!(&5, stats.cache_misses.get_adv(&adv_ptx_key).unwrap());
+    assert_eq!(&2, stats.cache_misses.get_adv(&adv_cubin_key).unwrap());
 
     write_source(tempdir, test_2299_src_name, test_2299_cu_src_2);
     trace!("compile test_2299.cu (2)");
-    sccache_command()
+    client
+        .cmd()
         .args(compile_cuda_cmdline(
             name,
             exe,
@@ -1063,44 +1054,38 @@ int main(int argc, char** argv) {
         .unwrap());
     fs::remove_file(&test_2299_out_file).unwrap();
     trace!("compile test_2299.cu request stats (2)");
-    get_stats(|info| {
-        assert_eq!(7, info.stats.compile_requests);
-        assert_eq!(30, info.stats.requests_executed);
-        assert_eq!(8, info.stats.cache_hits.all());
-        assert_eq!(15, info.stats.cache_misses.all());
-        assert_eq!(&1, info.stats.cache_hits.get("CUDA").unwrap());
-        assert_eq!(&1, info.stats.cache_hits.get("CUDA (Device code)").unwrap());
-        assert_eq!(&2, info.stats.cache_hits.get("PTX").unwrap());
-        assert_eq!(&4, info.stats.cache_hits.get("CUBIN").unwrap());
-        assert_eq!(&4, info.stats.cache_misses.get("CUDA").unwrap());
-        assert_eq!(
-            &4,
-            info.stats.cache_misses.get("CUDA (Device code)").unwrap()
-        );
-        assert_eq!(&5, info.stats.cache_misses.get("PTX").unwrap());
-        assert_eq!(&2, info.stats.cache_misses.get("CUBIN").unwrap());
-        assert!(info.stats.cache_misses.get("C/C++").is_none());
-        let adv_cuda_key = adv_key_kind("cuda", compiler.name);
-        let adv_cudafe_key = adv_key_kind("cudafe++", compiler.name);
-        let adv_ptx_key = adv_key_kind("ptx", compiler.name);
-        let adv_cubin_key = adv_key_kind("cubin", compiler.name);
-        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_cuda_key).unwrap());
-        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_cudafe_key).unwrap());
-        assert_eq!(&2, info.stats.cache_hits.get_adv(&adv_ptx_key).unwrap());
-        assert_eq!(&4, info.stats.cache_hits.get_adv(&adv_cubin_key).unwrap());
-        assert_eq!(&4, info.stats.cache_misses.get_adv(&adv_cuda_key).unwrap());
-        assert_eq!(
-            &4,
-            info.stats.cache_misses.get_adv(&adv_cudafe_key).unwrap()
-        );
-        assert_eq!(&5, info.stats.cache_misses.get_adv(&adv_ptx_key).unwrap());
-        assert_eq!(&2, info.stats.cache_misses.get_adv(&adv_cubin_key).unwrap());
-    });
+    let stats = client.stats().unwrap();
+    assert_eq!(7, stats.compile_requests);
+    assert_eq!(30, stats.requests_executed);
+    assert_eq!(8, stats.cache_hits.all());
+    assert_eq!(15, stats.cache_misses.all());
+    assert_eq!(&1, stats.cache_hits.get("CUDA").unwrap());
+    assert_eq!(&1, stats.cache_hits.get("CUDA (Device code)").unwrap());
+    assert_eq!(&2, stats.cache_hits.get("PTX").unwrap());
+    assert_eq!(&4, stats.cache_hits.get("CUBIN").unwrap());
+    assert_eq!(&4, stats.cache_misses.get("CUDA").unwrap());
+    assert_eq!(&4, stats.cache_misses.get("CUDA (Device code)").unwrap());
+    assert_eq!(&5, stats.cache_misses.get("PTX").unwrap());
+    assert_eq!(&2, stats.cache_misses.get("CUBIN").unwrap());
+    assert!(stats.cache_misses.get("C/C++").is_none());
+    let adv_cuda_key = adv_key_kind("cuda", compiler.name);
+    let adv_cudafe_key = adv_key_kind("cudafe++", compiler.name);
+    let adv_ptx_key = adv_key_kind("ptx", compiler.name);
+    let adv_cubin_key = adv_key_kind("cubin", compiler.name);
+    assert_eq!(&1, stats.cache_hits.get_adv(&adv_cuda_key).unwrap());
+    assert_eq!(&1, stats.cache_hits.get_adv(&adv_cudafe_key).unwrap());
+    assert_eq!(&2, stats.cache_hits.get_adv(&adv_ptx_key).unwrap());
+    assert_eq!(&4, stats.cache_hits.get_adv(&adv_cubin_key).unwrap());
+    assert_eq!(&4, stats.cache_misses.get_adv(&adv_cuda_key).unwrap());
+    assert_eq!(&4, stats.cache_misses.get_adv(&adv_cudafe_key).unwrap());
+    assert_eq!(&5, stats.cache_misses.get_adv(&adv_ptx_key).unwrap());
+    assert_eq!(&2, stats.cache_misses.get_adv(&adv_cubin_key).unwrap());
 
     // Recompile the original version again to ensure only cache hits
     write_source(tempdir, test_2299_src_name, test_2299_cu_src_1);
     trace!("compile test_2299.cu (3)");
-    sccache_command()
+    client
+        .cmd()
         .args(compile_cuda_cmdline(
             name,
             exe,
@@ -1124,48 +1109,44 @@ int main(int argc, char** argv) {
         .unwrap());
     fs::remove_file(&test_2299_out_file).unwrap();
     trace!("compile test_2299.cu request stats (3)");
-    get_stats(|info| {
-        assert_eq!(8, info.stats.compile_requests);
-        assert_eq!(35, info.stats.requests_executed);
-        assert_eq!(12, info.stats.cache_hits.all());
-        assert_eq!(15, info.stats.cache_misses.all());
-        assert_eq!(&2, info.stats.cache_hits.get("CUDA").unwrap());
-        assert_eq!(&2, info.stats.cache_hits.get("CUDA (Device code)").unwrap());
-        assert_eq!(&3, info.stats.cache_hits.get("PTX").unwrap());
-        assert_eq!(&5, info.stats.cache_hits.get("CUBIN").unwrap());
-        assert_eq!(&4, info.stats.cache_misses.get("CUDA").unwrap());
-        assert_eq!(
-            &4,
-            info.stats.cache_misses.get("CUDA (Device code)").unwrap()
-        );
-        assert_eq!(&5, info.stats.cache_misses.get("PTX").unwrap());
-        assert_eq!(&2, info.stats.cache_misses.get("CUBIN").unwrap());
-        assert!(info.stats.cache_misses.get("C/C++").is_none());
-        let adv_cuda_key = adv_key_kind("cuda", compiler.name);
-        let adv_cudafe_key = adv_key_kind("cudafe++", compiler.name);
-        let adv_ptx_key = adv_key_kind("ptx", compiler.name);
-        let adv_cubin_key = adv_key_kind("cubin", compiler.name);
-        assert_eq!(&2, info.stats.cache_hits.get_adv(&adv_cuda_key).unwrap());
-        assert_eq!(&2, info.stats.cache_hits.get_adv(&adv_cudafe_key).unwrap());
-        assert_eq!(&3, info.stats.cache_hits.get_adv(&adv_ptx_key).unwrap());
-        assert_eq!(&5, info.stats.cache_hits.get_adv(&adv_cubin_key).unwrap());
-        assert_eq!(&4, info.stats.cache_misses.get_adv(&adv_cuda_key).unwrap());
-        assert_eq!(
-            &4,
-            info.stats.cache_misses.get_adv(&adv_cudafe_key).unwrap()
-        );
-        assert_eq!(&5, info.stats.cache_misses.get_adv(&adv_ptx_key).unwrap());
-        assert_eq!(&2, info.stats.cache_misses.get_adv(&adv_cubin_key).unwrap());
-    });
+    let stats = client.stats().unwrap();
+    assert_eq!(8, stats.compile_requests);
+    assert_eq!(35, stats.requests_executed);
+    assert_eq!(12, stats.cache_hits.all());
+    assert_eq!(15, stats.cache_misses.all());
+    assert_eq!(&2, stats.cache_hits.get("CUDA").unwrap());
+    assert_eq!(&2, stats.cache_hits.get("CUDA (Device code)").unwrap());
+    assert_eq!(&3, stats.cache_hits.get("PTX").unwrap());
+    assert_eq!(&5, stats.cache_hits.get("CUBIN").unwrap());
+    assert_eq!(&4, stats.cache_misses.get("CUDA").unwrap());
+    assert_eq!(&4, stats.cache_misses.get("CUDA (Device code)").unwrap());
+    assert_eq!(&5, stats.cache_misses.get("PTX").unwrap());
+    assert_eq!(&2, stats.cache_misses.get("CUBIN").unwrap());
+    assert!(stats.cache_misses.get("C/C++").is_none());
+    let adv_cuda_key = adv_key_kind("cuda", compiler.name);
+    let adv_cudafe_key = adv_key_kind("cudafe++", compiler.name);
+    let adv_ptx_key = adv_key_kind("ptx", compiler.name);
+    let adv_cubin_key = adv_key_kind("cubin", compiler.name);
+    assert_eq!(&2, stats.cache_hits.get_adv(&adv_cuda_key).unwrap());
+    assert_eq!(&2, stats.cache_hits.get_adv(&adv_cudafe_key).unwrap());
+    assert_eq!(&3, stats.cache_hits.get_adv(&adv_ptx_key).unwrap());
+    assert_eq!(&5, stats.cache_hits.get_adv(&adv_cubin_key).unwrap());
+    assert_eq!(&4, stats.cache_misses.get_adv(&adv_cuda_key).unwrap());
+    assert_eq!(&4, stats.cache_misses.get_adv(&adv_cudafe_key).unwrap());
+    assert_eq!(&5, stats.cache_misses.get_adv(&adv_ptx_key).unwrap());
+    assert_eq!(&2, stats.cache_misses.get_adv(&adv_cubin_key).unwrap());
 }
 
-fn test_nvcc_proper_lang_stat_tracking(compiler: Compiler, tempdir: &Path) {
+fn test_nvcc_proper_lang_stat_tracking(
+    client: &SccacheClient,
+    compiler: &Compiler,
+    tempdir: &Path,
+) {
     let Compiler {
         name,
         exe,
         env_vars,
     } = compiler;
-    zero_stats();
 
     println!("test_nvcc_proper_lang_stat_tracking: {}", name);
     // Compile multiple source files.
@@ -1173,10 +1154,11 @@ fn test_nvcc_proper_lang_stat_tracking(compiler: Compiler, tempdir: &Path) {
 
     let out_file = tempdir.join(OUTPUT);
     trace!("compile CUDA A");
-    sccache_command()
+    client
+        .cmd()
         .args(compile_cmdline(
             name,
-            &exe,
+            exe,
             INPUT_FOR_CUDA_C,
             OUTPUT,
             Vec::new(),
@@ -1187,10 +1169,11 @@ fn test_nvcc_proper_lang_stat_tracking(compiler: Compiler, tempdir: &Path) {
         .success();
     fs::remove_file(&out_file).unwrap();
     trace!("compile CUDA A");
-    sccache_command()
+    client
+        .cmd()
         .args(compile_cmdline(
             name,
-            &exe,
+            exe,
             INPUT_FOR_CUDA_C,
             OUTPUT,
             Vec::new(),
@@ -1201,48 +1184,48 @@ fn test_nvcc_proper_lang_stat_tracking(compiler: Compiler, tempdir: &Path) {
         .success();
     fs::remove_file(&out_file).unwrap();
     trace!("compile C++ A");
-    sccache_command()
-        .args(compile_cmdline(name, &exe, INPUT, OUTPUT, Vec::new()))
+    client
+        .cmd()
+        .args(compile_cmdline(name, exe, INPUT, OUTPUT, Vec::new()))
         .current_dir(tempdir)
         .envs(env_vars.clone())
         .assert()
         .success();
     fs::remove_file(&out_file).unwrap();
     trace!("compile C++ A");
-    sccache_command()
-        .args(compile_cmdline(name, &exe, INPUT, OUTPUT, Vec::new()))
+    client
+        .cmd()
+        .args(compile_cmdline(name, exe, INPUT, OUTPUT, Vec::new()))
         .current_dir(tempdir)
-        .envs(env_vars)
+        .envs(env_vars.clone())
         .assert()
         .success();
     fs::remove_file(&out_file).unwrap();
 
     trace!("request stats");
-    get_stats(|info| {
-        assert_eq!(4, info.stats.compile_requests);
-        assert_eq!(14, info.stats.requests_executed);
-        assert_eq!(6, info.stats.cache_hits.all());
-        assert_eq!(4, info.stats.cache_misses.all());
-        assert!(info.stats.cache_hits.get("C/C++").is_none());
-        assert_eq!(&2, info.stats.cache_hits.get("CUDA").unwrap());
-        assert_eq!(&1, info.stats.cache_hits.get("CUDA (Device code)").unwrap());
-        assert_eq!(&2, info.stats.cache_hits.get("CUBIN").unwrap());
-        assert!(info.stats.cache_misses.get("C/C++").is_none());
-        assert_eq!(&2, info.stats.cache_misses.get("CUDA").unwrap());
-        assert_eq!(
-            &1,
-            info.stats.cache_misses.get("CUDA (Device code)").unwrap()
-        );
-        assert_eq!(&1, info.stats.cache_misses.get("PTX").unwrap());
-    });
+    let stats = client.stats().unwrap();
+    assert_eq!(4, stats.compile_requests);
+    assert_eq!(14, stats.requests_executed);
+    assert_eq!(6, stats.cache_hits.all());
+    assert_eq!(4, stats.cache_misses.all());
+    assert!(stats.cache_hits.get("C/C++").is_none());
+    assert_eq!(&2, stats.cache_hits.get("CUDA").unwrap());
+    assert_eq!(&1, stats.cache_hits.get("CUDA (Device code)").unwrap());
+    assert_eq!(&2, stats.cache_hits.get("CUBIN").unwrap());
+    assert!(stats.cache_misses.get("C/C++").is_none());
+    assert_eq!(&2, stats.cache_misses.get("CUDA").unwrap());
+    assert_eq!(&1, stats.cache_misses.get("CUDA (Device code)").unwrap());
+    assert_eq!(&1, stats.cache_misses.get("PTX").unwrap());
 }
 
-fn run_sccache_nvcc_cuda_command_tests(compiler: Compiler, tempdir: &Path) {
-    test_nvcc_cuda_compiles(&compiler, tempdir);
-    test_nvcc_proper_lang_stat_tracking(compiler, tempdir);
+fn run_sccache_nvcc_cuda_command_tests(client: &SccacheClient, compiler: Compiler, tempdir: &Path) {
+    client.zero_stats();
+    test_nvcc_cuda_compiles(client, &compiler, tempdir);
+    client.zero_stats();
+    test_nvcc_proper_lang_stat_tracking(client, &compiler, tempdir);
 }
 
-fn test_clang_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
+fn test_clang_cuda_compiles(client: &SccacheClient, compiler: &Compiler, tempdir: &Path) {
     let Compiler {
         name,
         exe,
@@ -1254,7 +1237,8 @@ fn test_clang_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
 
     let out_file = tempdir.join(OUTPUT);
     trace!("compile A");
-    sccache_command()
+    client
+        .cmd()
         .args(compile_cuda_cmdline(
             name,
             exe,
@@ -1269,18 +1253,18 @@ fn test_clang_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
         .success();
     assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
     trace!("request stats");
-    get_stats(|info| {
-        assert_eq!(1, info.stats.compile_requests);
-        assert_eq!(1, info.stats.requests_executed);
-        assert_eq!(0, info.stats.cache_hits.all());
-        assert_eq!(1, info.stats.cache_misses.all());
-        assert_eq!(&1, info.stats.cache_misses.get("CUDA").unwrap());
-        let adv_cuda_key = adv_key_kind("cuda", compiler.name);
-        assert_eq!(&1, info.stats.cache_misses.get_adv(&adv_cuda_key).unwrap());
-    });
+    let stats = client.stats().unwrap();
+    assert_eq!(1, stats.compile_requests);
+    assert_eq!(1, stats.requests_executed);
+    assert_eq!(0, stats.cache_hits.all());
+    assert_eq!(1, stats.cache_misses.all());
+    assert_eq!(&1, stats.cache_misses.get("CUDA").unwrap());
+    let adv_cuda_key = adv_key_kind("cuda", compiler.name);
+    assert_eq!(&1, stats.cache_misses.get_adv(&adv_cuda_key).unwrap());
     trace!("compile A");
     fs::remove_file(&out_file).unwrap();
-    sccache_command()
+    client
+        .cmd()
         .args(compile_cuda_cmdline(
             name,
             exe,
@@ -1295,21 +1279,21 @@ fn test_clang_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
         .success();
     assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
     trace!("request stats");
-    get_stats(|info| {
-        assert_eq!(2, info.stats.compile_requests);
-        assert_eq!(2, info.stats.requests_executed);
-        assert_eq!(1, info.stats.cache_hits.all());
-        assert_eq!(1, info.stats.cache_misses.all());
-        assert_eq!(&1, info.stats.cache_hits.get("CUDA").unwrap());
-        assert_eq!(&1, info.stats.cache_misses.get("CUDA").unwrap());
-        let adv_cuda_key = adv_key_kind("cuda", compiler.name);
-        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_cuda_key).unwrap());
-        assert_eq!(&1, info.stats.cache_misses.get_adv(&adv_cuda_key).unwrap());
-    });
+    let stats = client.stats().unwrap();
+    assert_eq!(2, stats.compile_requests);
+    assert_eq!(2, stats.requests_executed);
+    assert_eq!(1, stats.cache_hits.all());
+    assert_eq!(1, stats.cache_misses.all());
+    assert_eq!(&1, stats.cache_hits.get("CUDA").unwrap());
+    assert_eq!(&1, stats.cache_misses.get("CUDA").unwrap());
+    let adv_cuda_key = adv_key_kind("cuda", compiler.name);
+    assert_eq!(&1, stats.cache_hits.get_adv(&adv_cuda_key).unwrap());
+    assert_eq!(&1, stats.cache_misses.get_adv(&adv_cuda_key).unwrap());
     // By compiling another input source we verify that the pre-processor
     // phase is correctly running and outputting text
     trace!("compile B");
-    sccache_command()
+    client
+        .cmd()
         .args(compile_cuda_cmdline(
             name,
             exe,
@@ -1324,26 +1308,28 @@ fn test_clang_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
         .success();
     assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
     trace!("request stats");
-    get_stats(|info| {
-        assert_eq!(3, info.stats.compile_requests);
-        assert_eq!(3, info.stats.requests_executed);
-        assert_eq!(1, info.stats.cache_hits.all());
-        assert_eq!(2, info.stats.cache_misses.all());
-        assert_eq!(&1, info.stats.cache_hits.get("CUDA").unwrap());
-        assert_eq!(&2, info.stats.cache_misses.get("CUDA").unwrap());
-        let adv_cuda_key = adv_key_kind("cuda", compiler.name);
-        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_cuda_key).unwrap());
-        assert_eq!(&2, info.stats.cache_misses.get_adv(&adv_cuda_key).unwrap());
-    });
+    let stats = client.stats().unwrap();
+    assert_eq!(3, stats.compile_requests);
+    assert_eq!(3, stats.requests_executed);
+    assert_eq!(1, stats.cache_hits.all());
+    assert_eq!(2, stats.cache_misses.all());
+    assert_eq!(&1, stats.cache_hits.get("CUDA").unwrap());
+    assert_eq!(&2, stats.cache_misses.get("CUDA").unwrap());
+    let adv_cuda_key = adv_key_kind("cuda", compiler.name);
+    assert_eq!(&1, stats.cache_hits.get_adv(&adv_cuda_key).unwrap());
+    assert_eq!(&2, stats.cache_misses.get_adv(&adv_cuda_key).unwrap());
 }
 
-fn test_clang_proper_lang_stat_tracking(compiler: Compiler, tempdir: &Path) {
+fn test_clang_proper_lang_stat_tracking(
+    client: &SccacheClient,
+    compiler: &Compiler,
+    tempdir: &Path,
+) {
     let Compiler {
         name,
         exe,
         env_vars,
     } = compiler;
-    zero_stats();
 
     println!("test_clang_proper_lang_stat_tracking: {}", name);
     // Compile multiple source files.
@@ -1351,10 +1337,11 @@ fn test_clang_proper_lang_stat_tracking(compiler: Compiler, tempdir: &Path) {
 
     let out_file = tempdir.join(OUTPUT);
     trace!("compile CUDA A");
-    sccache_command()
+    client
+        .cmd()
         .args(compile_cuda_cmdline(
             name,
-            &exe,
+            exe,
             "-c",
             INPUT_FOR_CUDA_C,
             OUTPUT,
@@ -1366,10 +1353,11 @@ fn test_clang_proper_lang_stat_tracking(compiler: Compiler, tempdir: &Path) {
         .success();
     fs::remove_file(&out_file).unwrap();
     trace!("compile CUDA A");
-    sccache_command()
+    client
+        .cmd()
         .args(compile_cuda_cmdline(
             name,
-            &exe,
+            exe,
             "-c",
             INPUT_FOR_CUDA_C,
             OUTPUT,
@@ -1381,41 +1369,48 @@ fn test_clang_proper_lang_stat_tracking(compiler: Compiler, tempdir: &Path) {
         .success();
     fs::remove_file(&out_file).unwrap();
     trace!("compile C++ A");
-    sccache_command()
-        .args(compile_cmdline(name, &exe, INPUT, OUTPUT, Vec::new()))
+    client
+        .cmd()
+        .args(compile_cmdline(name, exe, INPUT, OUTPUT, Vec::new()))
         .current_dir(tempdir)
         .envs(env_vars.clone())
         .assert()
         .success();
     fs::remove_file(&out_file).unwrap();
     trace!("compile C++ A");
-    sccache_command()
-        .args(compile_cmdline(name, &exe, INPUT, OUTPUT, Vec::new()))
+    client
+        .cmd()
+        .args(compile_cmdline(name, exe, INPUT, OUTPUT, Vec::new()))
         .current_dir(tempdir)
-        .envs(env_vars)
+        .envs(env_vars.clone())
         .assert()
         .success();
     fs::remove_file(&out_file).unwrap();
 
     trace!("request stats");
-    get_stats(|info| {
-        assert_eq!(4, info.stats.compile_requests);
-        assert_eq!(4, info.stats.requests_executed);
-        assert_eq!(2, info.stats.cache_hits.all());
-        assert_eq!(2, info.stats.cache_misses.all());
-        assert_eq!(&1, info.stats.cache_hits.get("C/C++").unwrap());
-        assert_eq!(&1, info.stats.cache_misses.get("C/C++").unwrap());
-        assert_eq!(&1, info.stats.cache_hits.get("CUDA").unwrap());
-        assert_eq!(&1, info.stats.cache_misses.get("CUDA").unwrap());
-    });
+    let stats = client.stats().unwrap();
+    assert_eq!(4, stats.compile_requests);
+    assert_eq!(4, stats.requests_executed);
+    assert_eq!(2, stats.cache_hits.all());
+    assert_eq!(2, stats.cache_misses.all());
+    assert_eq!(&1, stats.cache_hits.get("C/C++").unwrap());
+    assert_eq!(&1, stats.cache_misses.get("C/C++").unwrap());
+    assert_eq!(&1, stats.cache_hits.get("CUDA").unwrap());
+    assert_eq!(&1, stats.cache_misses.get("CUDA").unwrap());
 }
 
-fn run_sccache_clang_cuda_command_tests(compiler: Compiler, tempdir: &Path) {
-    test_clang_cuda_compiles(&compiler, tempdir);
-    test_clang_proper_lang_stat_tracking(compiler, tempdir);
+fn run_sccache_clang_cuda_command_tests(
+    client: &SccacheClient,
+    compiler: Compiler,
+    tempdir: &Path,
+) {
+    client.zero_stats();
+    test_clang_cuda_compiles(client, &compiler, tempdir);
+    client.zero_stats();
+    test_clang_proper_lang_stat_tracking(client, &compiler, tempdir);
 }
 
-fn test_hip_compiles(compiler: &Compiler, tempdir: &Path) {
+fn test_hip_compiles(client: &SccacheClient, compiler: &Compiler, tempdir: &Path) {
     let Compiler {
         name,
         exe,
@@ -1429,7 +1424,8 @@ fn test_hip_compiles(compiler: &Compiler, tempdir: &Path) {
 
     let out_file = tempdir.join(OUTPUT);
     trace!("compile A");
-    sccache_command()
+    client
+        .cmd()
         .args(compile_hip_cmdline(
             name,
             exe,
@@ -1444,18 +1440,18 @@ fn test_hip_compiles(compiler: &Compiler, tempdir: &Path) {
         .success();
     assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
     trace!("request stats");
-    get_stats(|info| {
-        assert_eq!(1, info.stats.compile_requests);
-        assert_eq!(1, info.stats.requests_executed);
-        assert_eq!(0, info.stats.cache_hits.all());
-        assert_eq!(1, info.stats.cache_misses.all());
-        assert_eq!(&1, info.stats.cache_misses.get("HIP").unwrap());
-        let adv_hip_key = adv_key_kind("hip", compiler.name);
-        assert_eq!(&1, info.stats.cache_misses.get_adv(&adv_hip_key).unwrap());
-    });
+    let stats = client.stats().unwrap();
+    assert_eq!(1, stats.compile_requests);
+    assert_eq!(1, stats.requests_executed);
+    assert_eq!(0, stats.cache_hits.all());
+    assert_eq!(1, stats.cache_misses.all());
+    assert_eq!(&1, stats.cache_misses.get("HIP").unwrap());
+    let adv_hip_key = adv_key_kind("hip", compiler.name);
+    assert_eq!(&1, stats.cache_misses.get_adv(&adv_hip_key).unwrap());
     trace!("compile A");
     fs::remove_file(&out_file).unwrap();
-    sccache_command()
+    client
+        .cmd()
         .args(compile_hip_cmdline(
             name,
             exe,
@@ -1470,21 +1466,21 @@ fn test_hip_compiles(compiler: &Compiler, tempdir: &Path) {
         .success();
     assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
     trace!("request stats");
-    get_stats(|info| {
-        assert_eq!(2, info.stats.compile_requests);
-        assert_eq!(2, info.stats.requests_executed);
-        assert_eq!(1, info.stats.cache_hits.all());
-        assert_eq!(1, info.stats.cache_misses.all());
-        assert_eq!(&1, info.stats.cache_hits.get("HIP").unwrap());
-        assert_eq!(&1, info.stats.cache_misses.get("HIP").unwrap());
-        let adv_hip_key = adv_key_kind("hip", compiler.name);
-        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_hip_key).unwrap());
-        assert_eq!(&1, info.stats.cache_misses.get_adv(&adv_hip_key).unwrap());
-    });
+    let stats = client.stats().unwrap();
+    assert_eq!(2, stats.compile_requests);
+    assert_eq!(2, stats.requests_executed);
+    assert_eq!(1, stats.cache_hits.all());
+    assert_eq!(1, stats.cache_misses.all());
+    assert_eq!(&1, stats.cache_hits.get("HIP").unwrap());
+    assert_eq!(&1, stats.cache_misses.get("HIP").unwrap());
+    let adv_hip_key = adv_key_kind("hip", compiler.name);
+    assert_eq!(&1, stats.cache_hits.get_adv(&adv_hip_key).unwrap());
+    assert_eq!(&1, stats.cache_misses.get_adv(&adv_hip_key).unwrap());
     // By compiling another input source we verify that the pre-processor
     // phase is correctly running and outputting text
     trace!("compile B");
-    sccache_command()
+    client
+        .cmd()
         .args(compile_hip_cmdline(
             name,
             exe,
@@ -1499,20 +1495,19 @@ fn test_hip_compiles(compiler: &Compiler, tempdir: &Path) {
         .success();
     assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
     trace!("request stats");
-    get_stats(|info| {
-        assert_eq!(3, info.stats.compile_requests);
-        assert_eq!(3, info.stats.requests_executed);
-        assert_eq!(1, info.stats.cache_hits.all());
-        assert_eq!(2, info.stats.cache_misses.all());
-        assert_eq!(&1, info.stats.cache_hits.get("HIP").unwrap());
-        assert_eq!(&2, info.stats.cache_misses.get("HIP").unwrap());
-        let adv_hip_key = adv_key_kind("hip", compiler.name);
-        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_hip_key).unwrap());
-        assert_eq!(&2, info.stats.cache_misses.get_adv(&adv_hip_key).unwrap());
-    });
+    let stats = client.stats().unwrap();
+    assert_eq!(3, stats.compile_requests);
+    assert_eq!(3, stats.requests_executed);
+    assert_eq!(1, stats.cache_hits.all());
+    assert_eq!(2, stats.cache_misses.all());
+    assert_eq!(&1, stats.cache_hits.get("HIP").unwrap());
+    assert_eq!(&2, stats.cache_misses.get("HIP").unwrap());
+    let adv_hip_key = adv_key_kind("hip", compiler.name);
+    assert_eq!(&1, stats.cache_hits.get_adv(&adv_hip_key).unwrap());
+    assert_eq!(&2, stats.cache_misses.get_adv(&adv_hip_key).unwrap());
 }
 
-fn test_hip_compiles_multi_targets(compiler: &Compiler, tempdir: &Path) {
+fn test_hip_compiles_multi_targets(client: &SccacheClient, compiler: &Compiler, tempdir: &Path) {
     let Compiler {
         name,
         exe,
@@ -1526,7 +1521,8 @@ fn test_hip_compiles_multi_targets(compiler: &Compiler, tempdir: &Path) {
 
     let out_file = tempdir.join(OUTPUT);
     trace!("compile A with gfx900 and gfx1030");
-    sccache_command()
+    client
+        .cmd()
         .args(compile_hip_cmdline(
             name,
             exe,
@@ -1541,19 +1537,19 @@ fn test_hip_compiles_multi_targets(compiler: &Compiler, tempdir: &Path) {
         .success();
     assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
     trace!("request stats");
-    get_stats(|info| {
-        assert_eq!(1, info.stats.compile_requests);
-        assert_eq!(1, info.stats.requests_executed);
-        assert_eq!(0, info.stats.cache_hits.all());
-        assert_eq!(1, info.stats.cache_misses.all());
-        assert_eq!(&1, info.stats.cache_misses.get("HIP").unwrap());
-        let adv_hip_key = adv_key_kind("hip", compiler.name);
-        assert_eq!(&1, info.stats.cache_misses.get_adv(&adv_hip_key).unwrap());
-    });
+    let stats = client.stats().unwrap();
+    assert_eq!(1, stats.compile_requests);
+    assert_eq!(1, stats.requests_executed);
+    assert_eq!(0, stats.cache_hits.all());
+    assert_eq!(1, stats.cache_misses.all());
+    assert_eq!(&1, stats.cache_misses.get("HIP").unwrap());
+    let adv_hip_key = adv_key_kind("hip", compiler.name);
+    assert_eq!(&1, stats.cache_misses.get_adv(&adv_hip_key).unwrap());
 
     trace!("compile A with with gfx900 and gfx1030 again");
     fs::remove_file(&out_file).unwrap();
-    sccache_command()
+    client
+        .cmd()
         .args(compile_hip_cmdline(
             name,
             exe,
@@ -1568,22 +1564,22 @@ fn test_hip_compiles_multi_targets(compiler: &Compiler, tempdir: &Path) {
         .success();
     assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
     trace!("request stats");
-    get_stats(|info| {
-        assert_eq!(2, info.stats.compile_requests);
-        assert_eq!(2, info.stats.requests_executed);
-        assert_eq!(1, info.stats.cache_hits.all());
-        assert_eq!(1, info.stats.cache_misses.all());
-        assert_eq!(&1, info.stats.cache_hits.get("HIP").unwrap());
-        assert_eq!(&1, info.stats.cache_misses.get("HIP").unwrap());
-        let adv_hip_key = adv_key_kind("hip", compiler.name);
-        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_hip_key).unwrap());
-        assert_eq!(&1, info.stats.cache_misses.get_adv(&adv_hip_key).unwrap());
-    });
+    let stats = client.stats().unwrap();
+    assert_eq!(2, stats.compile_requests);
+    assert_eq!(2, stats.requests_executed);
+    assert_eq!(1, stats.cache_hits.all());
+    assert_eq!(1, stats.cache_misses.all());
+    assert_eq!(&1, stats.cache_hits.get("HIP").unwrap());
+    assert_eq!(&1, stats.cache_misses.get("HIP").unwrap());
+    let adv_hip_key = adv_key_kind("hip", compiler.name);
+    assert_eq!(&1, stats.cache_hits.get_adv(&adv_hip_key).unwrap());
+    assert_eq!(&1, stats.cache_misses.get_adv(&adv_hip_key).unwrap());
 
     // By compiling another input source we verify that the pre-processor
     // phase is correctly running and outputting text
     trace!("compile B with gfx900 and gfx1030");
-    sccache_command()
+    client
+        .cmd()
         .args(compile_hip_cmdline(
             name,
             exe,
@@ -1598,28 +1594,27 @@ fn test_hip_compiles_multi_targets(compiler: &Compiler, tempdir: &Path) {
         .success();
     assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
     trace!("request stats");
-    get_stats(|info| {
-        assert_eq!(3, info.stats.compile_requests);
-        assert_eq!(3, info.stats.requests_executed);
-        assert_eq!(1, info.stats.cache_hits.all());
-        assert_eq!(2, info.stats.cache_misses.all());
-        assert_eq!(&1, info.stats.cache_hits.get("HIP").unwrap());
-        assert_eq!(&2, info.stats.cache_misses.get("HIP").unwrap());
-        let adv_hip_key = adv_key_kind("hip", compiler.name);
-        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_hip_key).unwrap());
-        assert_eq!(&2, info.stats.cache_misses.get_adv(&adv_hip_key).unwrap());
-    });
+    let stats = client.stats().unwrap();
+    assert_eq!(3, stats.compile_requests);
+    assert_eq!(3, stats.requests_executed);
+    assert_eq!(1, stats.cache_hits.all());
+    assert_eq!(2, stats.cache_misses.all());
+    assert_eq!(&1, stats.cache_hits.get("HIP").unwrap());
+    assert_eq!(&2, stats.cache_misses.get("HIP").unwrap());
+    let adv_hip_key = adv_key_kind("hip", compiler.name);
+    assert_eq!(&1, stats.cache_hits.get_adv(&adv_hip_key).unwrap());
+    assert_eq!(&2, stats.cache_misses.get_adv(&adv_hip_key).unwrap());
 }
 
-fn run_sccache_hip_command_tests(compiler: Compiler, tempdir: &Path) {
-    zero_stats();
-    test_hip_compiles(&compiler, tempdir);
-    zero_stats();
-    test_hip_compiles_multi_targets(&compiler, tempdir);
+fn run_sccache_hip_command_tests(client: &SccacheClient, compiler: Compiler, tempdir: &Path) {
+    client.zero_stats();
+    test_hip_compiles(client, &compiler, tempdir);
+    client.zero_stats();
+    test_hip_compiles_multi_targets(client, &compiler, tempdir);
     // test_proper_lang_stat_tracking(compiler, tempdir);
 }
 
-fn test_clang_multicall(compiler: Compiler, tempdir: &Path) {
+fn test_clang_multicall(client: &SccacheClient, compiler: Compiler, tempdir: &Path) {
     let Compiler {
         name,
         exe,
@@ -1630,7 +1625,8 @@ fn test_clang_multicall(compiler: Compiler, tempdir: &Path) {
     copy_to_tempdir(&[INPUT_CLANG_MULTICALL], tempdir);
 
     println!("compile clang_multicall");
-    sccache_command()
+    client
+        .cmd()
         .args(compile_cmdline(
             name,
             exe,
@@ -1645,6 +1641,7 @@ fn test_clang_multicall(compiler: Compiler, tempdir: &Path) {
 }
 
 fn test_clang_cache_whitespace_normalization(
+    client: &SccacheClient,
     compiler: Compiler,
     tempdir: &Path,
     hit: bool,
@@ -1659,10 +1656,11 @@ fn test_clang_cache_whitespace_normalization(
     debug!("expecting hit: {}", hit);
     // Compile a source file.
     copy_to_tempdir(&[INPUT_WITH_WHITESPACE, INPUT_WITH_WHITESPACE_ALT], tempdir);
-    zero_stats();
+    client.zero_stats();
 
     debug!("compile whitespace");
-    sccache_command()
+    client
+        .cmd()
         .args(compile_cmdline(
             name,
             &exe,
@@ -1675,15 +1673,15 @@ fn test_clang_cache_whitespace_normalization(
         .assert()
         .success();
     debug!("request stats");
-    get_stats(|info| {
-        assert_eq!(1, info.stats.compile_requests);
-        assert_eq!(1, info.stats.requests_executed);
-        assert_eq!(0, info.stats.cache_hits.all());
-        assert_eq!(1, info.stats.cache_misses.all());
-    });
+    let stats = client.stats().unwrap();
+    assert_eq!(1, stats.compile_requests);
+    assert_eq!(1, stats.requests_executed);
+    assert_eq!(0, stats.cache_hits.all());
+    assert_eq!(1, stats.cache_misses.all());
 
     debug!("compile whitespace_alt");
-    sccache_command()
+    client
+        .cmd()
         .args(compile_cmdline(
             name,
             &exe,
@@ -1697,26 +1695,24 @@ fn test_clang_cache_whitespace_normalization(
         .success();
     debug!("request stats (expecting cache hit)");
     if hit {
-        get_stats(move |info| {
-            assert_eq!(2, info.stats.compile_requests);
-            assert_eq!(2, info.stats.requests_executed);
-            if preprocessor_cache_mode {
-                // Preprocessor cache mode hashes the input file, so whitespace
-                // normalization does not work.
-                assert_eq!(0, info.stats.cache_hits.all());
-                assert_eq!(2, info.stats.cache_misses.all());
-            } else {
-                assert_eq!(1, info.stats.cache_hits.all());
-                assert_eq!(1, info.stats.cache_misses.all());
-            }
-        });
+        let stats = client.stats().unwrap();
+        assert_eq!(2, stats.compile_requests);
+        assert_eq!(2, stats.requests_executed);
+        if preprocessor_cache_mode {
+            // Preprocessor cache mode hashes the input file, so whitespace
+            // normalization does not work.
+            assert_eq!(0, stats.cache_hits.all());
+            assert_eq!(2, stats.cache_misses.all());
+        } else {
+            assert_eq!(1, stats.cache_hits.all());
+            assert_eq!(1, stats.cache_misses.all());
+        }
     } else {
-        get_stats(|info| {
-            assert_eq!(2, info.stats.compile_requests);
-            assert_eq!(2, info.stats.requests_executed);
-            assert_eq!(0, info.stats.cache_hits.all());
-            assert_eq!(2, info.stats.cache_misses.all());
-        });
+        let stats = client.stats().unwrap();
+        assert_eq!(2, stats.compile_requests);
+        assert_eq!(2, stats.requests_executed);
+        assert_eq!(0, stats.cache_hits.all());
+        assert_eq!(2, stats.cache_misses.all());
     }
 }
 
@@ -1814,66 +1810,73 @@ fn find_hip_compiler() -> Option<Compiler> {
     None
 }
 
+fn make_sccache_client(
+    preprocessor_cache_mode: bool,
+) -> (Option<tempfile::TempDir>, PathBuf, SccacheClient) {
+    let tempdir = tempfile::Builder::new()
+        .prefix("sccache_system_test")
+        .tempdir()
+        .unwrap();
+
+    // Persist the tempdir if SCCACHE_DEBUG is defined
+    let (tempdir_path, maybe_tempdir) = if env::var("SCCACHE_DEBUG").is_ok() {
+        (tempdir.into_path(), None)
+    } else {
+        (tempdir.path().to_path_buf(), Some(tempdir))
+    };
+
+    // Create the configurations
+    let sccache_cfg = sccache_client_cfg(&tempdir_path, preprocessor_cache_mode);
+    write_json_cfg(&tempdir_path, "sccache-cfg.json", &sccache_cfg);
+    let sccache_cached_cfg_path = tempdir_path.join("sccache-cached-cfg");
+    // Start the server daemon on a unique port
+    let client = SccacheClient::new(
+        &tempdir_path.join("sccache-cfg.json"),
+        &sccache_cached_cfg_path,
+    )
+    .start();
+
+    (maybe_tempdir, tempdir_path, client)
+}
+
 // TODO: This runs multiple test cases, for multiple compilers. It should be
 // split up to run them individually. In the current form, it is hard to see
 // which sub test cases are executed, and if one fails, the remaining tests
 // are not run.
 #[test_case(true ; "with preprocessor cache")]
 #[test_case(false ; "without preprocessor cache")]
-#[serial]
 #[cfg(any(unix, target_env = "msvc"))]
 fn test_sccache_command(preprocessor_cache_mode: bool) {
     let _ = env_logger::try_init();
-    let tempdir = tempfile::Builder::new()
-        .prefix("sccache_system_test")
-        .tempdir()
-        .unwrap();
     let compilers = find_compilers();
     if compilers.is_empty() {
-        warn!("No compilers found, skipping test");
-    } else {
-        // Ensure there's no existing sccache server running.
-        stop_local_daemon();
-        // Create the configurations
-        let sccache_cfg = sccache_client_cfg(tempdir.path(), preprocessor_cache_mode);
-        write_json_cfg(tempdir.path(), "sccache-cfg.json", &sccache_cfg);
-        let sccache_cached_cfg_path = tempdir.path().join("sccache-cached-cfg");
-        // Start a server.
-        trace!("start server");
-        start_local_daemon(
-            &tempdir.path().join("sccache-cfg.json"),
-            &sccache_cached_cfg_path,
-        );
-        for compiler in compilers {
-            run_sccache_command_tests(compiler, tempdir.path(), preprocessor_cache_mode);
-            zero_stats();
-        }
-        stop_local_daemon();
+        return warn!("No compilers found, skipping test");
+    }
+
+    // Create and start the sccache client
+    let (_tempdir, tempdir_path, client) = make_sccache_client(preprocessor_cache_mode);
+
+    for compiler in compilers {
+        run_sccache_command_tests(&client, compiler, &tempdir_path, preprocessor_cache_mode);
+        client.zero_stats();
     }
 }
 
 #[test]
-#[serial]
 fn test_stats_no_server() {
-    // Ensure there's no existing sccache server running.
-    stop_local_daemon();
-    get_stats(|_| {});
+    let client = SccacheClient::new_no_cfg();
+    let _ = client.stats();
     assert!(
-        !stop_local_daemon(),
+        !client.stop(),
         "Server shouldn't be running after --show-stats"
     );
 }
 
 #[test_case(true ; "with preprocessor cache")]
 #[test_case(false ; "without preprocessor cache")]
-#[serial]
 #[cfg(any(unix, target_env = "msvc"))]
 fn test_cuda_sccache_command(preprocessor_cache_mode: bool) {
     let _ = env_logger::try_init();
-    let tempdir = tempfile::Builder::new()
-        .prefix("sccache_system_test")
-        .tempdir()
-        .unwrap();
     let compilers = find_cuda_compilers();
     println!(
         "CUDA compilers: {:?}",
@@ -1883,57 +1886,30 @@ fn test_cuda_sccache_command(preprocessor_cache_mode: bool) {
             .collect::<Vec<_>>()
     );
     if compilers.is_empty() {
-        warn!("No compilers found, skipping test");
-    } else {
-        // Ensure there's no existing sccache server running.
-        stop_local_daemon();
-        // Create the configurations
-        let sccache_cfg = sccache_client_cfg(tempdir.path(), preprocessor_cache_mode);
-        write_json_cfg(tempdir.path(), "sccache-cfg.json", &sccache_cfg);
-        let sccache_cached_cfg_path = tempdir.path().join("sccache-cached-cfg");
-        // Start a server.
-        trace!("start server");
-        start_local_daemon(
-            &tempdir.path().join("sccache-cfg.json"),
-            &sccache_cached_cfg_path,
-        );
-        for compiler in compilers {
-            match compiler.name {
-                "nvcc" => run_sccache_nvcc_cuda_command_tests(compiler, tempdir.path()),
-                "clang++" => run_sccache_clang_cuda_command_tests(compiler, tempdir.path()),
-                _ => {}
-            }
-            zero_stats();
+        return warn!("No compilers found, skipping test");
+    }
+
+    // Create and start the sccache client
+    let (_tempdir, tempdir_path, client) = make_sccache_client(preprocessor_cache_mode);
+
+    for compiler in compilers {
+        match compiler.name {
+            "nvcc" => run_sccache_nvcc_cuda_command_tests(&client, compiler, &tempdir_path),
+            "clang++" => run_sccache_clang_cuda_command_tests(&client, compiler, &tempdir_path),
+            _ => {}
         }
-        stop_local_daemon();
     }
 }
 
 #[test_case(true ; "with preprocessor cache")]
 #[test_case(false ; "without preprocessor cache")]
-#[serial]
 #[cfg(any(unix, target_env = "msvc"))]
 fn test_hip_sccache_command(preprocessor_cache_mode: bool) {
     let _ = env_logger::try_init();
-    let tempdir = tempfile::Builder::new()
-        .prefix("sccache_system_test")
-        .tempdir()
-        .unwrap();
 
     if let Some(compiler) = find_hip_compiler() {
-        stop_local_daemon();
-        // Create the configurations
-        let sccache_cfg = sccache_client_cfg(tempdir.path(), preprocessor_cache_mode);
-        write_json_cfg(tempdir.path(), "sccache-cfg.json", &sccache_cfg);
-        let sccache_cached_cfg_path = tempdir.path().join("sccache-cached-cfg");
-        // Start a server.
-        trace!("start server");
-        start_local_daemon(
-            &tempdir.path().join("sccache-cfg.json"),
-            &sccache_cached_cfg_path,
-        );
-        run_sccache_hip_command_tests(compiler, tempdir.path());
-        zero_stats();
-        stop_local_daemon();
+        // Create and start the sccache client
+        let (_tempdir, tempdir_path, client) = make_sccache_client(preprocessor_cache_mode);
+        run_sccache_hip_command_tests(&client, compiler, &tempdir_path);
     }
 }
