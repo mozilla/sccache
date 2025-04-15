@@ -104,6 +104,7 @@ impl CCompilerImpl for Gcc {
         cwd: &Path,
         env_vars: &[(OsString, OsString)],
         rewrite_includes_only: bool,
+        _hash_key: &str,
     ) -> Result<(
         Box<dyn CompileCommand<T>>,
         Option<dist::CompileCommand>,
@@ -905,10 +906,21 @@ where
             let mut language: Option<String> =
                 language_to_arg(parsed_args.language).map(|lang| lang.into());
             if !rewrite_includes_only {
-                match parsed_args.language {
-                    Language::C => language = Some("cpp-output".into()),
-                    Language::GenericHeader | Language::CHeader | Language::CxxHeader => {}
-                    _ => language.as_mut()?.push_str("-cpp-output"),
+                if let CCompilerKind::Nvhpc = kind {
+                    // -x=c|cpp|c++|i|cpp-output|asm|assembler|ASM|assembler-with-cpp|none
+                    // Specify the language for any following input files, instead of letting
+                    // the compiler choose based on suffix. Turn off with -x none
+                    match parsed_args.language {
+                        Language::C | Language::Cxx => language = Some("cpp-output".into()),
+                        Language::GenericHeader | Language::CHeader | Language::CxxHeader => {}
+                        _ => *(language.as_mut()?) = "none".into(),
+                    }
+                } else {
+                    match parsed_args.language {
+                        Language::C => language = Some("cpp-output".into()),
+                        Language::GenericHeader | Language::CHeader | Language::CxxHeader => {}
+                        _ => language.as_mut()?.push_str("-cpp-output"),
+                    }
                 }
             }
 

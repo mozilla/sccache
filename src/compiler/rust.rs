@@ -1684,6 +1684,7 @@ impl<T: CommandCreatorSync> Compilation<T> for RustCompilation {
         &self,
         path_transformer: &mut dist::PathTransformer,
         _rewrite_includes_only: bool,
+        _hash_key: &str,
     ) -> Result<(
         Box<dyn CompileCommand<T>>,
         Option<dist::CompileCommand>,
