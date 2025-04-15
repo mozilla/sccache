@@ -5,6 +5,7 @@ env:
   RUST_BACKTRACE: full
   RUST_LOG: debug
   SCCACHE_PATH: /home/runner/.cargo/bin/sccache
+  ACTIONS_CACHE_SERVICE_V2: on
 
 jobs:
   build:
