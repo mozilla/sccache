@@ -732,11 +732,19 @@ struct AdditionalStats {
     cache_misses: Option<Vec<(CCompilerKind, Language, u64)>>,
 }
 
-fn test_nvcc_cuda_compiles(client: &SccacheClient, compiler: &Compiler, tempdir: &Path) {
+fn test_nvcc_cuda_compiles(
+    client: &SccacheClient,
+    compiler: &Compiler,
+    tempdir: &Path,
+    with_debug_flags: bool,
+) {
     let mut stats = client.stats().unwrap();
 
-    let extra_args = vec![];
-    let with_debug_flags = false;
+    let extra_args = if with_debug_flags {
+        vec!["-G".into()]
+    } else {
+        vec![]
+    };
 
     let Compiler {
         name,
@@ -1406,10 +1414,15 @@ fn test_nvcc_proper_lang_stat_tracking(
     client: &SccacheClient,
     compiler: &Compiler,
     tempdir: &Path,
+    with_debug_flags: bool,
 ) {
     let mut stats = client.stats().unwrap();
 
-    let extra_args = vec![];
+    let extra_args = if with_debug_flags {
+        vec!["-G".into()]
+    } else {
+        vec![]
+    };
 
     let Compiler {
         name,
@@ -1576,15 +1589,29 @@ fn test_nvcc_proper_lang_stat_tracking(
     );
 }
 
-fn run_sccache_nvcc_cuda_command_tests(client: &SccacheClient, compiler: Compiler, tempdir: &Path) {
-    test_nvcc_cuda_compiles(client, &compiler, tempdir);
-    test_nvcc_proper_lang_stat_tracking(client, &compiler, tempdir);
+fn run_sccache_nvcc_cuda_command_tests(
+    client: &SccacheClient,
+    compiler: Compiler,
+    tempdir: &Path,
+    with_debug_flags: bool,
+) {
+    test_nvcc_cuda_compiles(client, &compiler, tempdir, with_debug_flags);
+    test_nvcc_proper_lang_stat_tracking(client, &compiler, tempdir, with_debug_flags);
 }
 
-fn test_clang_cuda_compiles(client: &SccacheClient, compiler: &Compiler, tempdir: &Path) {
+fn test_clang_cuda_compiles(
+    client: &SccacheClient,
+    compiler: &Compiler,
+    tempdir: &Path,
+    with_debug_flags: bool,
+) {
     let mut stats = client.stats().unwrap();
 
-    let extra_args = vec![];
+    let extra_args = if with_debug_flags {
+        vec!["-g".into(), "--cuda-noopt-device-debug".into()]
+    } else {
+        vec![]
+    };
 
     let Compiler {
         name,
@@ -1703,8 +1730,15 @@ fn test_clang_proper_lang_stat_tracking(
     client: &SccacheClient,
     compiler: &Compiler,
     tempdir: &Path,
+    with_debug_flags: bool,
 ) {
     let mut stats = client.stats().unwrap();
+
+    let extra_args = if with_debug_flags {
+        vec!["-g".into(), "--cuda-noopt-device-debug".into()]
+    } else {
+        vec![]
+    };
 
     let Compiler {
         name,
@@ -1726,7 +1760,7 @@ fn test_clang_proper_lang_stat_tracking(
             "-c",
             INPUT_FOR_CUDA_C,
             OUTPUT,
-            &[],
+            &extra_args,
         ))
         .current_dir(tempdir)
         .envs(env_vars.clone())
@@ -1759,7 +1793,7 @@ fn test_clang_proper_lang_stat_tracking(
             "-c",
             INPUT_FOR_CUDA_C,
             OUTPUT,
-            &[],
+            &extra_args,
         ))
         .current_dir(tempdir)
         .envs(env_vars.clone())
@@ -1784,7 +1818,13 @@ fn test_clang_proper_lang_stat_tracking(
     trace!("compile C++ A");
     client
         .cmd()
-        .args(compile_cmdline(name, exe, INPUT, OUTPUT, Vec::new()))
+        .args(compile_cmdline(
+            name,
+            exe,
+            INPUT,
+            OUTPUT,
+            extra_args.clone(),
+        ))
         .current_dir(tempdir)
         .envs(env_vars.clone())
         .assert()
@@ -1810,7 +1850,13 @@ fn test_clang_proper_lang_stat_tracking(
     trace!("compile C++ A");
     client
         .cmd()
-        .args(compile_cmdline(name, exe, INPUT, OUTPUT, Vec::new()))
+        .args(compile_cmdline(
+            name,
+            exe,
+            INPUT,
+            OUTPUT,
+            extra_args.clone(),
+        ))
         .current_dir(tempdir)
         .envs(env_vars.clone())
         .assert()
@@ -1836,9 +1882,10 @@ fn run_sccache_clang_cuda_command_tests(
     client: &SccacheClient,
     compiler: Compiler,
     tempdir: &Path,
+    with_debug_flags: bool,
 ) {
-    test_clang_cuda_compiles(client, &compiler, tempdir);
-    test_clang_proper_lang_stat_tracking(client, &compiler, tempdir);
+    test_clang_cuda_compiles(client, &compiler, tempdir, with_debug_flags);
+    test_clang_proper_lang_stat_tracking(client, &compiler, tempdir, with_debug_flags);
 }
 
 fn test_hip_compiles(client: &SccacheClient, compiler: &Compiler, tempdir: &Path) {
@@ -2303,10 +2350,12 @@ fn test_stats_no_server() {
     );
 }
 
-#[test_case(true ; "with preprocessor cache")]
-#[test_case(false ; "without preprocessor cache")]
+#[test_case(true, false ; "preprocessor_cache=true, device_debug=false")]
+#[test_case(false, false ; "preprocessor_cache=false, device_debug=false")]
+#[test_case(true, true ; "preprocessor_cache=true, device_debug=true")]
+#[test_case(false, true ; "preprocessor_cache=false, device_debug=true")]
 #[cfg(any(unix, target_env = "msvc"))]
-fn test_cuda_sccache_command(preprocessor_cache_mode: bool) {
+fn test_cuda_sccache_command(preprocessor_cache_mode: bool, with_debug_flags: bool) {
     let _ = env_logger::try_init();
     let compilers = find_cuda_compilers();
     println!(
@@ -2325,8 +2374,18 @@ fn test_cuda_sccache_command(preprocessor_cache_mode: bool) {
 
     for compiler in compilers {
         match compiler.name {
-            "nvcc" => run_sccache_nvcc_cuda_command_tests(&client, compiler, &tempdir_path),
-            "clang++" => run_sccache_clang_cuda_command_tests(&client, compiler, &tempdir_path),
+            "nvcc" => run_sccache_nvcc_cuda_command_tests(
+                &client,
+                compiler,
+                &tempdir_path,
+                with_debug_flags,
+            ),
+            "clang++" => run_sccache_clang_cuda_command_tests(
+                &client,
+                compiler,
+                &tempdir_path,
+                with_debug_flags,
+            ),
             _ => {}
         }
     }
