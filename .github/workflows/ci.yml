@@ -2,6 +2,17 @@ name: ci
 on: [ push, pull_request ]
 
 jobs:
+  checks:
+    name: checks
+    runs-on: ubuntu-latest
+    outputs:
+      has-codecov-token: ${{ steps.has-codecov-token.outputs.defined }}
+    steps:
+      - id: has-codecov-token
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+        if: "${{ env.CODECOV_TOKEN != '' }}"
+        run: echo "::set-output name=defined::true"
   lint:
     name: ${{ matrix.component }} ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -101,11 +112,11 @@ jobs:
           # # M1 CPU
           - os: macos-14
           - os: windows-2019
-            cuda: "11.1"
+            cuda: "11.8"
             # Oldest supported version, keep in sync with README.md
             rustc: "1.75.0"
             extra_args: --no-fail-fast
-            extra_desc: cuda11.1
+            extra_desc: cuda11.8
           - os: windows-2019
             cuda: "11.8"
             rustc: nightly
@@ -141,6 +152,7 @@ jobs:
       BINARY_DIR: "target/debug"
       GRCOV_IGNORE_OPTION: '--ignore build.rs --ignore "/*" --ignore "[a-zA-Z]:/*"'
       GRCOV_EXCLUDE_OPTION: '--excl-br-line "^\s*((debug_)?assert(_eq|_ne)?!|#\[derive\()"'
+      SCCACHE_DEBUG: 1
     steps:
       - uses: ilammy/msvc-dev-cmd@v1
 
@@ -282,7 +294,7 @@ jobs:
         if: ${{ !matrix.container }}
 
       - name: Build
-        run: cargo build --locked --release --bin ${{ matrix.binary || 'sccache' }} --target ${{ matrix.target }} --features=openssl/vendored ${{ matrix.extra_args }}
+        run: cargo build --locked --release --bin ${{ matrix.binary || 'sccache' }} --target ${{ matrix.target }} --features=vendored-openssl ${{ matrix.extra_args }}
         env:
           MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macosx_deployment_target }}
           DEVELOPER_DIR: ${{ matrix.developer_dir }}
@@ -322,7 +334,7 @@ jobs:
           mem: 8192
           usesh: true
           sync: rsync
-          copyback: false
+          copyback: true
           prepare: pkg install -y ca_root_nss curl gmake gtar pot sudo
           run: |
             #####################################################################################
