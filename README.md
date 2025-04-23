@@ -4,7 +4,7 @@
 ![Crates.io](https://img.shields.io/crates/l/sccache)
 [![dependency status](https://deps.rs/repo/github/mozilla/sccache/status.svg)](https://deps.rs/repo/github/mozilla/sccache)
 
-[![CodeCov](https://codecov.io/gh/mozilla/sccache/branch/master/graph/badge.svg)](https://codecov.io/gh/mozilla/sccache)
+[![CodeCov](https://codecov.io/gh/mozilla/sccache/branch/main/graph/badge.svg)](https://codecov.io/gh/mozilla/sccache)
 
 
 sccache - Shared Compilation Cache
