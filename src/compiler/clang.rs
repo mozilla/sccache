@@ -232,6 +232,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     // Note: this overrides the -fprofile-use option in gcc.rs.
     take_arg!("-fprofile-use", PathBuf, Concatenated('='), ClangProfileUse),
     take_arg!("-fsanitize-blacklist", PathBuf, Concatenated('='), ExtraHashFile),
+    take_arg!("-fsanitize-ignorelist", PathBuf, Concatenated('='), ExtraHashFile),
     flag!("-fuse-ctor-homing", PassThroughFlag),
     take_arg!("-gcc-toolchain", OsString, Separated, PassThrough),
     flag!("-gcodeview", PassThroughFlag),
@@ -939,6 +940,22 @@ mod test {
             "-fsanitize-blacklist=list.txt"
         );
         assert_eq!(ovec!["-fsanitize-blacklist=list.txt"], a.common_args);
+        assert_eq!(
+            ovec![std::env::current_dir().unwrap().join("list.txt")],
+            a.extra_hash_files
+        );
+    }
+
+    #[test]
+    fn test_parse_fsanitize_ignorelist() {
+        let a = parses!(
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "-fsanitize-ignorelist=list.txt"
+        );
+        assert_eq!(ovec!["-fsanitize-ignorelist=list.txt"], a.common_args);
         assert_eq!(
             ovec![std::env::current_dir().unwrap().join("list.txt")],
             a.extra_hash_files
