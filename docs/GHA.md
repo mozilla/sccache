@@ -4,14 +4,14 @@ To use the [GitHub Actions cache](https://docs.github.com/en/actions/using-workf
 
 By changing `SCCACHE_GHA_VERSION`, we can purge all the cache.
 
-This cache type will need tokens like `ACTIONS_CACHE_URL` and `ACTIONS_RUNTIME_TOKEN` to work. You can set these environmental variables using the following step in a GitHub Actions workflow.
+This cache type will need tokens like `ACTIONS_RESULTS_URL` and `ACTIONS_RUNTIME_TOKEN` to work. You can set these environmental variables using the following step in a GitHub Actions workflow.
 
 ```yaml
 - name: Configure sccache
   uses: actions/github-script@v7
   with:
     script: |
-      core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+      core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
       core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
 ```
 
