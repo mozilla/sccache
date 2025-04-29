@@ -972,7 +972,7 @@ where
     let includes_prefix = includes_prefix.to_string();
     let cwd = cwd.to_owned();
 
-    let mut output = run_input_output(cmd, None).await?;
+    let output = run_input_output(cmd, None).await?;
 
     if !is_clang {
         return Ok(output);
@@ -990,8 +990,13 @@ where
         encode_path(&mut f, &parsed_args.input)
             .with_context(|| format!("Couldn't encode input filename: '{:?}'", objfile))?;
         write!(f, " ")?;
+        let process::Output {
+            status,
+            stdout,
+            stderr: stderr_bytes,
+        } = output;
         let stderr =
-            from_local_codepage(&output.stderr).context("Failed to convert preprocessor stderr")?;
+            from_local_codepage(&stderr_bytes).context("Failed to convert preprocessor stderr")?;
         let mut deps = HashSet::new();
         let mut stderr_bytes = vec![];
         for line in stderr.lines() {
@@ -1021,8 +1026,11 @@ where
                 writeln!(f, "{}:", dep)?;
             }
         }
-        output.stderr = stderr_bytes;
-        Ok(output)
+        Ok(process::Output {
+            status,
+            stdout,
+            stderr: stderr_bytes,
+        })
     } else {
         Ok(output)
     }
