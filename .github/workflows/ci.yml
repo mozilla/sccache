@@ -70,6 +70,7 @@ jobs:
 
 
   test:
+    needs: [checks]
     name: test ${{ matrix.os }} rust ${{ matrix.rustc || 'stable' }} ${{ matrix.extra_desc }}
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ matrix.allow_failure || false }}
@@ -83,40 +84,50 @@ jobs:
             rustc: "1.75.0"
             extra_desc: dist-tests
             extra_args: --no-default-features --features=dist-tests test_dist_ -- --test-threads 1
+            no_coverage: ${{ needs.checks.outputs.has-codecov-token != 'true' }}
           - os: ubuntu-22.04
             rustc: stable
             extra_desc: dist-server
             extra_args: --features=dist-server
+            no_coverage: ${{ needs.checks.outputs.has-codecov-token != 'true' }}
           - os: ubuntu-22.04
             rustc: stable
+            no_coverage: ${{ needs.checks.outputs.has-codecov-token != 'true' }}
           - os: ubuntu-22.04
             rustc: beta
+            no_coverage: ${{ needs.checks.outputs.has-codecov-token != 'true' }}
           - os: ubuntu-22.04
             rustc: nightly
             allow_failure: true
             extra_args: --features=unstable
+            no_coverage: ${{ needs.checks.outputs.has-codecov-token != 'true' }}
           - os: ubuntu-22.04
             extra_desc: no-default-features
             extra_args: --no-default-features
             allow_failure: true
+            no_coverage: ${{ needs.checks.outputs.has-codecov-token != 'true' }}
           - os: ubuntu-22.04
             cuda: "11.8"
             extra_desc: cuda11.8
+            no_coverage: ${{ needs.checks.outputs.has-codecov-token != 'true' }}
           - os: ubuntu-24.04
             cuda: "12.8"
             # Oldest supported version, keep in sync with README.md
             rustc: "1.75.0"
             extra_desc: cuda12.8
+            no_coverage: ${{ needs.checks.outputs.has-codecov-token != 'true' }}
           - os: macos-13
             no_coverage: true
           # # M1 CPU
           - os: macos-14
+            no_coverage: ${{ needs.checks.outputs.has-codecov-token != 'true' }}
           - os: windows-2019
             cuda: "11.8"
             # Oldest supported version, keep in sync with README.md
             rustc: "1.75.0"
             extra_args: --no-fail-fast
             extra_desc: cuda11.8
+            no_coverage: ${{ needs.checks.outputs.has-codecov-token != 'true' }}
           - os: windows-2019
             cuda: "11.8"
             rustc: nightly
@@ -128,18 +139,21 @@ jobs:
             cuda: "11.8"
             rustc: beta
             extra_desc: cuda11.8
+            no_coverage: ${{ needs.checks.outputs.has-codecov-token != 'true' }}
           - os: windows-2022
             cuda: "12.8"
             # Oldest supported version, keep in sync with README.md
             rustc: "1.75.0"
             extra_args: --no-fail-fast
             extra_desc: cuda12.8
+            no_coverage: ${{ needs.checks.outputs.has-codecov-token != 'true' }}
           - os: windows-2022
             cuda: "12.8"
             rustc: nightly
             allow_failure: true
             extra_args: --features=unstable
             extra_desc: cuda12.8
+            no_coverage: ${{ needs.checks.outputs.has-codecov-token != 'true' }}
           - os: windows-2022
             cuda: "12.8"
             rustc: beta
@@ -198,7 +212,6 @@ jobs:
           mkdir -p .cargo
           echo '[env]
           LLVM_PROFILE_FILE = { value = "target/debug/coverage/default-%p-%8m.profraw", relative = true }' >> .cargo/config.toml
-
 
       - name: Execute tests
         run: cargo test --locked --all-targets ${{ matrix.extra_args }}
