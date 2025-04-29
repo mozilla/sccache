@@ -119,7 +119,6 @@ where
     let mut take_next = false;
     let mut outputs = HashMap::new();
     let mut extra_dist_files = vec![];
-    // let mut gen_module_id_file = false;
     let mut module_id_file_name = Option::<PathBuf>::None;
 
     let mut common_args = vec![];
@@ -161,7 +160,6 @@ where
                     }
                     Some(GenModuleIdFileFlag) => {
                         take_next = false;
-                        // gen_module_id_file = true;
                         &mut common_args
                     }
                     Some(ModuleIdFileName(o)) => {
