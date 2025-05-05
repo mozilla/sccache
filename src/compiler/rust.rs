@@ -1311,7 +1311,7 @@ where
     T: CommandCreatorSync,
 {
     async fn generate_hash_key(
-        self: Box<Self>,
+        &mut self,
         creator: &T,
         cwd: PathBuf,
         env_vars: Vec<(OsString, OsString)>,
@@ -1321,35 +1321,11 @@ where
         _storage: Arc<dyn Storage>,
         _cache_control: CacheControl,
     ) -> Result<HashResult<T>> {
-        let RustHasher {
-            executable,
-            host,
-            version,
-            sysroot,
-            compiler_shlibs_digests,
-            #[cfg(feature = "dist-client")]
-            rlib_dep_reader,
-            parsed_args:
-                ParsedArguments {
-                    arguments,
-                    output_dir,
-                    externs,
-                    crate_link_paths,
-                    staticlibs,
-                    crate_name,
-                    crate_types,
-                    dep_info,
-                    emit,
-                    has_json,
-                    profile,
-                    gcno,
-                    target_json,
-                    ..
-                },
-        } = *self;
-        trace!("[{}]: generate_hash_key", crate_name);
+        trace!("[{}]: generate_hash_key", self.parsed_args.crate_name);
         // TODO: this doesn't produce correct arguments if they should be concatenated - should use iter_os_strings
-        let os_string_arguments: Vec<(OsString, Option<OsString>)> = arguments
+        let os_string_arguments: Vec<(OsString, Option<OsString>)> = self
+            .parsed_args
+            .arguments
             .iter()
             .map(|arg| {
                 (
@@ -1378,8 +1354,8 @@ where
         let source_files_and_hashes_and_env_deps = async {
             let (source_files, env_deps) = get_source_files_and_env_deps(
                 creator,
-                &crate_name,
-                &executable,
+                &self.parsed_args.crate_name,
+                &self.executable,
                 &filtered_arguments,
                 &cwd,
                 &env_vars,
@@ -1391,20 +1367,38 @@ where
         };
 
         // Hash the contents of the externs listed on the commandline.
-        trace!("[{}]: hashing {} externs", crate_name, externs.len());
-        let abs_externs = externs.iter().map(|e| cwd.join(e)).collect::<Vec<_>>();
+        trace!(
+            "[{}]: hashing {} externs",
+            self.parsed_args.crate_name,
+            self.parsed_args.externs.len()
+        );
+        let abs_externs = self
+            .parsed_args
+            .externs
+            .iter()
+            .map(|e| cwd.join(e))
+            .collect::<Vec<_>>();
         let extern_hashes = hash_all(&abs_externs, pool);
         // Hash the contents of the staticlibs listed on the commandline.
-        trace!("[{}]: hashing {} staticlibs", crate_name, staticlibs.len());
-        let abs_staticlibs = staticlibs.iter().map(|s| cwd.join(s)).collect::<Vec<_>>();
+        trace!(
+            "[{}]: hashing {} staticlibs",
+            self.parsed_args.crate_name,
+            self.parsed_args.staticlibs.len()
+        );
+        let abs_staticlibs = self
+            .parsed_args
+            .staticlibs
+            .iter()
+            .map(|s| cwd.join(s))
+            .collect::<Vec<_>>();
         let staticlib_hashes = hash_all_archives(&abs_staticlibs, pool);
 
         // Hash the content of the specified target json file, if any.
         let mut target_json_files = Vec::new();
-        if let Some(path) = &target_json {
+        if let Some(path) = &self.parsed_args.target_json {
             trace!(
                 "[{}]: hashing target json file {}",
-                crate_name,
+                self.parsed_args.crate_name,
                 path.display()
             );
             let abs_target_json = cwd.join(path);
@@ -1432,7 +1426,7 @@ where
         // 1. A version
         m.update(CACHE_VERSION);
         // 2. compiler_shlibs_digests
-        for d in compiler_shlibs_digests {
+        for d in &self.compiler_shlibs_digests {
             m.update(d.as_bytes());
         }
         let weak_toolchain_key = m.clone().finish();
@@ -1454,7 +1448,7 @@ where
                 // We also exclude `--target` if it specifies a path to a .json file. The file content
                 // is used as hash input below.
                 // If `--target` specifies a string, it continues to be hashed as part of the arguments.
-                .filter(|&(arg, _)| target_json.is_none() || arg != "--target")
+                .filter(|&(arg, _)| self.parsed_args.target_json.is_none() || arg != "--target")
                 // A few argument types were not passed in a deterministic order
                 // by older versions of cargo: --extern, -L, --cfg. We'll filter the rest of those
                 // out, sort them, and append them to the rest of the arguments.
@@ -1518,7 +1512,7 @@ where
         // 9. The cwd of the compile. This will wind up in the rlib.
         cwd.hash(&mut HashToDigest { digest: &mut m });
         // 10. The version of the compiler.
-        version.hash(&mut HashToDigest { digest: &mut m });
+        self.version.hash(&mut HashToDigest { digest: &mut m });
 
         // Turn arguments into a simple Vec<OsString> to calculate outputs.
         let flat_os_string_arguments: Vec<OsString> = os_string_arguments
@@ -1528,7 +1522,7 @@ where
 
         let mut outputs = get_compiler_outputs(
             creator,
-            &executable,
+            &self.executable,
             flat_os_string_arguments,
             &cwd,
             &env_vars,
@@ -1546,14 +1540,18 @@ where
         // rmeta.
         //
         // This can go away once the above rustc PR makes it in.
-        let emit_generates_only_metadata =
-            !emit.is_empty() && emit.iter().all(|e| e == "metadata" || e == "dep-info");
+        let emit_generates_only_metadata = !self.parsed_args.emit.is_empty()
+            && self
+                .parsed_args
+                .emit
+                .iter()
+                .all(|e| e == "metadata" || e == "dep-info");
 
         if emit_generates_only_metadata {
             outputs.retain(|o| o.ends_with(".rlib") || o.ends_with(".rmeta"));
         }
 
-        if emit.contains("metadata") {
+        if self.parsed_args.emit.contains("metadata") {
             // rustc currently does not report rmeta outputs with --print file-names
             // --emit metadata the rlib is printed, and with --emit metadata,link
             // only the rlib is printed.
@@ -1569,7 +1567,7 @@ where
                 if !outputs.contains(&rmeta) {
                     outputs.push(rmeta);
                 }
-                if !emit.contains("link") {
+                if !self.parsed_args.emit.contains("link") {
                     outputs.retain(|p| *p != lib);
                 }
             }
@@ -1581,7 +1579,7 @@ where
         let mut outputs = outputs
             .into_iter()
             .map(|o| {
-                let p = output_dir.join(&o);
+                let p = self.parsed_args.output_dir.join(&o);
                 (
                     o,
                     ArtifactDescriptor {
@@ -1591,8 +1589,8 @@ where
                 )
             })
             .collect::<HashMap<_, _>>();
-        let dep_info = if let Some(dep_info) = dep_info {
-            let p = output_dir.join(&dep_info);
+        let dep_info = if let Some(dep_info) = &self.parsed_args.dep_info {
+            let p = self.parsed_args.output_dir.join(dep_info);
             outputs.insert(
                 dep_info.to_string_lossy().into_owned(),
                 ArtifactDescriptor {
@@ -1604,8 +1602,8 @@ where
         } else {
             None
         };
-        if let Some(profile) = profile {
-            let p = output_dir.join(&profile);
+        if let Some(profile) = &self.parsed_args.profile {
+            let p = self.parsed_args.output_dir.join(profile);
             outputs.insert(
                 profile.to_string_lossy().into_owned(),
                 ArtifactDescriptor {
@@ -1614,8 +1612,8 @@ where
                 },
             );
         }
-        if let Some(gcno) = gcno {
-            let p = output_dir.join(&gcno);
+        if let Some(gcno) = &self.parsed_args.gcno {
+            let p = self.parsed_args.output_dir.join(gcno);
             outputs.insert(
                 gcno.to_string_lossy().into_owned(),
                 ArtifactDescriptor {
@@ -1624,9 +1622,9 @@ where
                 },
             );
         }
-        let mut arguments = arguments;
+        let mut arguments = self.parsed_args.arguments.clone();
         // Request color output unless json was requested. The client will strip colors if needed.
-        if !has_json {
+        if !self.parsed_args.has_json {
             arguments.push(Argument::WithValue(
                 "--color",
                 ArgData::Color("always".into()),
@@ -1643,20 +1641,20 @@ where
         Ok(HashResult {
             key: m.finish(),
             compilation: Box::new(RustCompilation {
-                executable,
-                host,
-                sysroot,
+                executable: self.executable.clone(),
+                host: self.host.clone(),
+                sysroot: self.sysroot.clone(),
                 arguments,
                 inputs,
                 outputs,
-                crate_link_paths,
-                crate_name,
-                crate_types,
+                crate_link_paths: self.parsed_args.crate_link_paths.clone(),
+                crate_name: self.parsed_args.crate_name.clone(),
+                crate_types: self.parsed_args.crate_types.clone(),
                 dep_info,
                 cwd,
                 env_vars,
                 #[cfg(feature = "dist-client")]
-                rlib_dep_reader,
+                rlib_dep_reader: self.rlib_dep_reader.clone(),
             }),
             weak_toolchain_key,
         })
@@ -3386,7 +3384,7 @@ proc_macro false
         let mut emit = HashSet::new();
         emit.insert("link".to_string());
         emit.insert("metadata".to_string());
-        let hasher = Box::new(RustHasher {
+        let mut hasher = Box::new(RustHasher {
             executable: "rustc".into(),
             host: "x86-64-unknown-unknown-unknown".to_owned(),
             version: TEST_RUSTC_VERSION.to_string(),
@@ -3516,7 +3514,7 @@ proc_macro false
             f.touch(e.to_str().unwrap()).expect(&s);
         }
         pre_func(f.tempdir.path()).expect("Failed to execute pre_func");
-        let hasher = Box::new(RustHasher {
+        let mut hasher = Box::new(RustHasher {
             executable: "rustc".into(),
             host: "x86-64-unknown-unknown-unknown".to_owned(),
             version: TEST_RUSTC_VERSION.to_string(),

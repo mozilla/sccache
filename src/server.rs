@@ -1288,7 +1288,7 @@ where
     pub async fn start_compile_task(
         self,
         compiler: Box<dyn Compiler<C>>,
-        hasher: Box<dyn CompilerHasher<C>>,
+        mut hasher: Box<dyn CompilerHasher<C>>,
         arguments: Vec<OsString>,
         cwd: PathBuf,
         env_vars: Vec<(OsString, OsString)>,
