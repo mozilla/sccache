@@ -8,35 +8,47 @@ The local storage only supports a single sccache server at a time. Multiple conc
 
 ## Preprocessor cache mode
 
-This is inspired by [ccache's direct mode](https://ccache.dev/manual/3.7.9.html#_the_direct_mode) and works roughly the same. It allows to skip the preprocessor for cached results when compiling C/C++.
+This is inspired by [ccache's direct mode](https://ccache.dev/manual/3.7.9.html#_the_direct_mode) and works roughly the same.
+It adds a cache that allows to skip preprocessing when compiling C/C++. This can make it much faster to return compilation results
+from cache since preprocessing is a major expense for these.
 
-[preprocessor cache] mode is controlled by a configuration option which is true by default, as well as additional conditions described below.
+Preprocessor cache mode is controlled by a configuration option which is true by default, as well as additional conditions described below.
 
-In non-preprocessor cache mode, sccache's compilation pipeline for one C/C++ source file is inputs → preprocessing → cache lookup → (return outputs if cached / compilation otherwise). In preprocessor cache mode, the compilation pipeline is inputs → cache lookup → (return outputs if cached / preprocessing → compilation otherwise). This can make it much faster to return compilation outputs from cache.
+To ensure that the cached preprocessor results for a source file correspond to the un-preprocessed inputs, sccache needs
+to remember, among other things, all files included by the source file. sccache also needs to recognize
+when "external factors" may change the results, such as system time if the `__TIME__` macro is used
+in a source file. How conservative sccache is about some of these external factors is configurable, see below.
 
-To ensure that the cached outputs for a source file correspond to the un-preprocessed inputs, [sccache] needs to remember, among other things, all files included by that source file (i.e. the complete set of inputs). To quote ccache's documentation:
+Preprocessor cache mode will be disabled in any of the following cases:
 
-> There is a catch with the [preprocessor cache] mode: header files that were used by the compiler are recorded, but header files that were not used, but would have been used if they existed, are not. So, when [sccache] checks if a result can be taken from the cache, it currently can’t check if the existence of a new header file should invalidate the result. In practice, the [preprocessor cache] mode is safe to use in the vast majority of cases.
+- Not compiling C or C++
+- The configuration option is false
+- Using distributed compilation
+- Not using GCC or Clang
+- Not using local storage for the cache
+- Any of the compiler options `-MD`, `-MMD`, `-MP`, `-Xpreprocessor`, `-Wp,` are present
+- The modification time of one of the header files is too new (avoids a race condition)
+- Certain strings such as `__DATE__`, `__TIME__`, `__TIMESTAMP__` are present in the source code,
+  indicating that the preprocessor result may change based on external factors
 
-Preprocessor cache mode will be disabled if any of the following holds:
+The preprocessor cache may silently produce stale results in any of the following cases:
 
-- the configuration option is false
-- not using GCC or Clang with local storage (only implemented for these)
-- the modification time of one of the include files is too new (this avoids a race condition)
-- a compiler option not supported by [preprocessor cache] mode is used; this is usually because the compilation has inputs or outputs which [sccache] does not model well enough
-- the string `__TIME__` is present in the source code
+- When a source file was compiled and its results were cached, a header file would have been included if it existed, but it did
+  not exist at the time. sccache does not know about such files, so it cannot invalidate the result if the header file later exists.
+- A macro such as `__TIME__` (etc) is used in the source code and `ignore_time_macros` is enabled
+- There are other external factors influencing the preprocessing result that sccache does not know about
 
 Configuration options and their default values:
 
-- `use_preprocessor_cache_mode`: `true`. Whether to use [preprocessor cache] mode. This can be overridden for an sccache invocation by setting the environment variable `SCCACHE_DIRECT` to `true`/`on`/`1` or `false`/`off`/`0`).
+- `use_preprocessor_cache_mode`: `true`. Whether to use preprocessor cache mode. This can be overridden for an sccache invocation by setting the environment variable `SCCACHE_DIRECT` to `true`/`on`/`1` or `false`/`off`/`0`).
 - `file_stat_matches`: `false`. If false, only compare header files by hashing their contents. If true, will use size + ctime + mtime to check whether a file has changed. See other flags below for more control over this behavior.
 - `use_ctime_for_stat`: `true`. If true, uses the ctime (file status change on UNIX, creation time on Windows) to check that a file has/hasn't changed. Can be useful to disable when backdating modification times in a controlled manner.
 
-- `ignore_time_macros`: `false`. If true, ignore `__DATE__`, `__TIME__` and `__TIMESTAMP__` being present in the source code. Will speed up preprocessor cache mode, but can result in false positives.
+- `ignore_time_macros`: `false`. If true, ignore `__DATE__`, `__TIME__` and `__TIMESTAMP__` being present in the source code. Will speed up preprocessor cache mode, but can produce stale results.
 
 - `skip_system_headers`: `false`. If true, preprocessor cache mode will not cache system headers, only add them to the hash.
 
-- `hash_working_directory`: `true`. If true, will add the current working directory in the hash to distinguish two compilations from different directories.
+- `hash_working_directory`: `true`. If true, will add the current working directory to the hash to distinguish two compilations from different directories.
 
 See where to write the config in [the configuration doc](Configuration.md).
 
