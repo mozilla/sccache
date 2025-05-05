@@ -499,7 +499,8 @@ where
                                 compilation: Box::new(CCompilation {
                                     parsed_args: self.parsed_args.to_owned(),
                                     #[cfg(feature = "dist-client")]
-                                    preprocessed_input: vec![],
+                                    preprocessed_input: PREPROCESSING_SKIPPED_COMPILE_POISON
+                                        .to_vec(),
                                     executable: self.executable.to_owned(),
                                     compiler: self.compiler.to_owned(),
                                     cwd: cwd.to_owned(),
@@ -1154,6 +1155,14 @@ fn include_is_too_new(
     false
 }
 
+// Used as "preprocessed code" when no preprocessing was done so that compilation fails. That should never
+// happen though because, where necessary, the compile poison code is detected and the preprocessing is
+// *then* done to salvage the situation. Previously, an empty u8 vector was used, which is unfortunately a
+// valid C/C++ compilation unit and caused errors that only surfaced when linking: the symbols expected from
+// the compilation unit were of course not produced.
+#[cfg(feature = "dist-client")]
+const PREPROCESSING_SKIPPED_COMPILE_POISON: &[u8] = b"([{SCCACHE -*-* INVALID_C_CPP_CODE([{\"";
+
 impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I> {
     fn generate_compile_commands(
         &self,
@@ -1203,6 +1212,11 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I>
         });
         let outputs_rewriter = Box::new(NoopOutputsRewriter);
         Ok((inputs_packager, toolchain_packager, outputs_rewriter))
+    }
+
+    #[cfg(feature = "dist-client")]
+    fn is_preprocessed_for_distribution(&self) -> bool {
+        self.preprocessed_input != PREPROCESSING_SKIPPED_COMPILE_POISON
     }
 
     fn outputs<'a>(&'a self) -> Box<dyn Iterator<Item = FileObjectSource> + 'a> {
