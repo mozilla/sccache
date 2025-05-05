@@ -1161,21 +1161,12 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I>
         Option<dist::CompileCommand>,
         Cacheable,
     )> {
-        let CCompilation {
-            ref parsed_args,
-            ref executable,
-            ref compiler,
-            ref cwd,
-            ref env_vars,
-            ..
-        } = *self;
-
-        compiler.generate_compile_commands(
+        self.compiler.generate_compile_commands(
             path_transformer,
-            executable,
-            parsed_args,
-            cwd,
-            env_vars,
+            &self.executable,
+            &self.parsed_args,
+            &self.cwd,
+            &self.env_vars,
             rewrite_includes_only,
         )
     }

@@ -498,12 +498,10 @@ where
                     out_pretty,
                     fmt_duration_as_secs(&duration)
                 );
-                let stdout = entry.get_stdout();
-                let stderr = entry.get_stderr();
                 let output = process::Output {
                     status: exit_status(0),
-                    stdout,
-                    stderr,
+                    stdout: entry.get_stdout(),
+                    stderr: entry.get_stderr(),
                 };
                 let hit = CompileResult::CacheHit(duration);
                 match entry.extract_objects(outputs.clone(), &pool).await {
