@@ -567,6 +567,29 @@ where
                 // Cache miss, so compile it.
                 let start = Instant::now();
 
+                #[cfg(feature = "dist-client")]
+                if may_dist
+                    && !compilation.is_preprocessed_for_distribution()
+                    && cache_control == CacheControl::Default
+                {
+                    // This compilation only had enough information to find and use a cache entry (or to
+                    // run a local compile, which doesn't need locally preprocessed code).
+                    // For distributed compilation, the local preprocessing step still needs to be done.
+                    return self
+                        .get_cached_or_compile(
+                            service,
+                            dist_client,
+                            creator,
+                            storage,
+                            arguments,
+                            cwd,
+                            env_vars,
+                            CacheControl::ForceRecache,
+                            pool,
+                        )
+                        .await;
+                }
+
                 let (cacheable, dist_type, compiler_result) = dist_or_local_compile(
                     service,
                     dist_client,
@@ -931,6 +954,11 @@ where
         self: Box<Self>,
         _path_transformer: dist::PathTransformer,
     ) -> Result<DistPackagers>;
+
+    #[cfg(feature = "dist-client")]
+    fn is_preprocessed_for_distribution(&self) -> bool {
+        true
+    }
 
     /// Returns an iterator over the results of this compilation.
     ///
