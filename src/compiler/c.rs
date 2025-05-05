@@ -401,8 +401,8 @@ where
         }
 
         let use_preprocessor_cache_mode = {
-            let can_use_preprocessor_cache_mode = !may_dist
-                && preprocessor_cache_mode_config.use_preprocessor_cache_mode
+            let can_use_preprocessor_cache_mode =
+                preprocessor_cache_mode_config.use_preprocessor_cache_mode
                 && !too_hard_for_preprocessor_cache_mode;
 
             let mut use_preprocessor_cache_mode = can_use_preprocessor_cache_mode;
@@ -429,7 +429,6 @@ where
             use_preprocessor_cache_mode
         };
 
-        // Disable preprocessor cache when doing distributed compilation
         let mut preprocessor_key = if use_preprocessor_cache_mode {
             preprocessor_cache_entry_hash_key(
                 &self.executable_digest,
@@ -492,7 +491,7 @@ where
                                 compilation: Box::new(CCompilation {
                                     parsed_args: self.parsed_args.to_owned(),
                                     #[cfg(feature = "dist-client")]
-                                    preprocessed_input: vec![],
+                                    preprocessed_input: PREPROCESSING_SKIPPED_COMPILE_POISON.to_vec(),
                                     executable: self.executable.to_owned(),
                                     compiler: self.compiler.to_owned(),
                                     cwd: cwd.to_owned(),
@@ -1143,6 +1142,12 @@ fn include_is_too_new(
     false
 }
 
+// Used as "preprocessed code" when no preprocessing took place to immediately produce an error (which
+// should never happen / be caught earlier though!). Previously, an empty u8 vector was used, which is
+// unfortunately a valid C/C++ program and caused errors that only surfaced when linking.
+#[cfg(feature = "dist-client")]
+const PREPROCESSING_SKIPPED_COMPILE_POISON: &[u8] = b"([{SCCACHE -*-* INVALID_C_CPP_CODE([{\"";
+
 impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I> {
     fn generate_compile_commands(
         &self,
@@ -1192,6 +1197,11 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I>
         });
         let outputs_rewriter = Box::new(NoopOutputsRewriter);
         Ok((inputs_packager, toolchain_packager, outputs_rewriter))
+    }
+
+    #[cfg(feature = "dist-client")]
+    fn is_preprocessed_for_distribution(&self) -> bool {
+        self.preprocessed_input != PREPROCESSING_SKIPPED_COMPILE_POISON
     }
 
     fn outputs<'a>(&'a self) -> Box<dyn Iterator<Item = FileObjectSource> + 'a> {
