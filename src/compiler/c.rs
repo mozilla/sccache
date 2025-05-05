@@ -365,7 +365,7 @@ where
     I: CCompilerImpl,
 {
     async fn generate_hash_key(
-        self: Box<Self>,
+        &mut self,
         creator: &T,
         cwd: PathBuf,
         env_vars: Vec<(OsString, OsString)>,
@@ -376,33 +376,29 @@ where
         cache_control: CacheControl,
     ) -> Result<HashResult<T>> {
         let start_of_compilation = std::time::SystemTime::now();
-        let CCompilerHasher {
-            parsed_args,
-            executable,
-            executable_digest,
-            compiler,
-        } = *self;
 
-        let extra_hashes = hash_all(&parsed_args.extra_hash_files, &pool.clone()).await?;
+        let extra_hashes = hash_all(&self.parsed_args.extra_hash_files, &pool.clone()).await?;
         // Create an argument vector containing both preprocessor and arch args, to
         // use in creating a hash key
-        let mut preprocessor_and_arch_args = parsed_args.preprocessor_args.clone();
-        preprocessor_and_arch_args.extend(parsed_args.arch_args.to_vec());
+        let mut preprocessor_and_arch_args = self.parsed_args.preprocessor_args.clone();
+        preprocessor_and_arch_args.extend(self.parsed_args.arch_args.to_vec());
         // common_args is used in preprocessing too
-        preprocessor_and_arch_args.extend(parsed_args.common_args.to_vec());
+        preprocessor_and_arch_args.extend(self.parsed_args.common_args.to_vec());
 
-        let absolute_input_path: Cow<'_, _> = if parsed_args.input.is_absolute() {
-            Cow::Borrowed(&parsed_args.input)
+        let absolute_input_path: Cow<'_, _> = if self.parsed_args.input.is_absolute() {
+            Cow::Borrowed(&self.parsed_args.input)
         } else {
-            Cow::Owned(cwd.join(&parsed_args.input))
+            Cow::Owned(cwd.join(&self.parsed_args.input))
         };
 
         // Try to look for a cached preprocessing step for this compilation
         // request.
         let preprocessor_cache_mode_config = storage.preprocessor_cache_mode_config();
-        let too_hard_for_preprocessor_cache_mode =
-            parsed_args.too_hard_for_preprocessor_cache_mode.is_some();
-        if let Some(arg) = &parsed_args.too_hard_for_preprocessor_cache_mode {
+        let too_hard_for_preprocessor_cache_mode = self
+            .parsed_args
+            .too_hard_for_preprocessor_cache_mode
+            .is_some();
+        if let Some(arg) = &self.parsed_args.too_hard_for_preprocessor_cache_mode {
             debug!(
                 "parse_arguments: Cannot use preprocessor cache because of {:?}",
                 arg
@@ -440,13 +436,13 @@ where
 
         let mut preprocessor_key = if use_preprocessor_cache_mode {
             preprocessor_cache_entry_hash_key(
-                &executable_digest,
-                parsed_args.language,
+                &self.executable_digest,
+                self.parsed_args.language,
                 &preprocessor_and_arch_args,
                 &extra_hashes,
                 &env_vars,
                 &absolute_input_path,
-                compiler.plusplus(),
+                self.compiler.plusplus(),
                 preprocessor_cache_mode_config,
             )?
         } else {
@@ -493,17 +489,19 @@ where
                             // the toolchain will not contain the correct path
                             // to invoke the compiler! Add the compiler
                             // executable path to try and prevent this
-                            let weak_toolchain_key =
-                                format!("{}-{}", executable.to_string_lossy(), executable_digest);
+                            let weak_toolchain_key = format!(
+                                "{}-{}",
+                                self.executable.to_string_lossy(),
+                                self.executable_digest
+                            );
                             return Ok(HashResult {
                                 key,
                                 compilation: Box::new(CCompilation {
-                                    parsed_args: parsed_args.to_owned(),
+                                    parsed_args: self.parsed_args.to_owned(),
                                     #[cfg(feature = "dist-client")]
-                                    // TODO or is it never relevant since dist?
                                     preprocessed_input: vec![],
-                                    executable: executable.to_owned(),
-                                    compiler: compiler.to_owned(),
+                                    executable: self.executable.to_owned(),
+                                    compiler: self.compiler.to_owned(),
                                     cwd: cwd.to_owned(),
                                     env_vars: env_vars.to_owned(),
                                 }),
@@ -517,11 +515,12 @@ where
             }
         }
 
-        let result = compiler
+        let result = self
+            .compiler
             .preprocess(
                 creator,
-                &executable,
-                &parsed_args,
+                &self.executable,
+                &self.parsed_args,
                 &cwd,
                 &env_vars,
                 may_dist,
@@ -529,13 +528,13 @@ where
                 use_preprocessor_cache_mode,
             )
             .await;
-        let out_pretty = parsed_args.output_pretty().into_owned();
+        let out_pretty = self.parsed_args.output_pretty().into_owned();
         let result = result.map_err(|e| {
             debug!("[{}]: preprocessor failed: {:?}", out_pretty, e);
             e
         });
 
-        let outputs = parsed_args.outputs.clone();
+        let outputs = self.parsed_args.outputs.clone();
         let args_cwd = cwd.clone();
 
         let mut preprocessor_result = result.or_else(move |err| {
@@ -594,24 +593,24 @@ where
 
         trace!(
             "[{}]: Preprocessor output is {} bytes",
-            parsed_args.output_pretty(),
+            self.parsed_args.output_pretty(),
             preprocessor_result.stdout.len()
         );
 
         // Create an argument vector containing both common and arch args, to
         // use in creating a hash key
-        let mut common_and_arch_args = parsed_args.common_args.clone();
-        common_and_arch_args.extend(parsed_args.arch_args.to_vec());
+        let mut common_and_arch_args = self.parsed_args.common_args.clone();
+        common_and_arch_args.extend(self.parsed_args.arch_args.to_vec());
 
         let key = {
             hash_key(
-                &executable_digest,
-                parsed_args.language,
+                &self.executable_digest,
+                self.parsed_args.language,
                 &common_and_arch_args,
                 &extra_hashes,
                 &env_vars,
                 &preprocessor_result.stdout,
-                compiler.plusplus(),
+                self.compiler.plusplus(),
             )
         };
 
@@ -638,15 +637,19 @@ where
         // A compiler binary may be a symlink to another and so has the same digest, but that means
         // the toolchain will not contain the correct path to invoke the compiler! Add the compiler
         // executable path to try and prevent this
-        let weak_toolchain_key = format!("{}-{}", executable.to_string_lossy(), executable_digest);
+        let weak_toolchain_key = format!(
+            "{}-{}",
+            self.executable.to_string_lossy(),
+            self.executable_digest
+        );
         Ok(HashResult {
             key,
             compilation: Box::new(CCompilation {
-                parsed_args,
+                parsed_args: self.parsed_args.clone(),
                 #[cfg(feature = "dist-client")]
                 preprocessed_input: preprocessor_result.stdout,
-                executable,
-                compiler,
+                executable: self.executable.clone(),
+                compiler: self.compiler.clone(),
                 cwd,
                 env_vars,
             }),
