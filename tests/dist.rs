@@ -7,8 +7,9 @@ extern crate sccache;
 extern crate serde_json;
 
 use crate::harness::{
-    cargo_command, get_stats, init_cargo, sccache_command, start_local_daemon, stop_local_daemon,
-    write_json_cfg, write_source,
+    client::{sccache_client_cfg, SccacheClient},
+    dist::{cargo_command, sccache_dist_path, DistSystem},
+    init_cargo, write_source,
 };
 use assert_cmd::prelude::*;
 use sccache::config::HTTPUrl;
@@ -16,7 +17,6 @@ use sccache::dist::{
     AssignJobResult, CompileCommand, InputsReader, JobId, JobState, RunJobResult, ServerIncoming,
     ServerOutgoing, SubmitToolchainResult, Toolchain, ToolchainReader,
 };
-use std::ffi::OsStr;
 use std::path::Path;
 use std::process::Output;
 
@@ -24,17 +24,12 @@ use sccache::errors::*;
 
 mod harness;
 
-fn basic_compile(tmpdir: &Path, sccache_cfg_path: &Path, sccache_cached_cfg_path: &Path) {
-    let envs: Vec<(_, &OsStr)> = vec![
-        ("RUST_BACKTRACE", "1".as_ref()),
-        ("SCCACHE_LOG", "debug".as_ref()),
-        ("SCCACHE_CONF", sccache_cfg_path.as_ref()),
-        ("SCCACHE_CACHED_CONF", sccache_cached_cfg_path.as_ref()),
-    ];
+fn basic_compile(client: &SccacheClient, tmpdir: &Path) {
     let source_file = "x.c";
     let obj_file = "x.o";
     write_source(tmpdir, source_file, "#if !defined(SCCACHE_TEST_DEFINE)\n#error SCCACHE_TEST_DEFINE is not defined\n#endif\nint x() { return 5; }");
-    sccache_command()
+    client
+        .cmd()
         .args([
             std::env::var("CC")
                 .unwrap_or_else(|_| "gcc".to_string())
@@ -45,21 +40,13 @@ fn basic_compile(tmpdir: &Path, sccache_cfg_path: &Path, sccache_cached_cfg_path
         .arg(tmpdir.join(source_file))
         .arg("-o")
         .arg(tmpdir.join(obj_file))
-        .envs(envs)
+        .env("RUST_BACKTRACE", "1")
+        .env("SCCACHE_RECACHE", "1")
         .assert()
         .success();
 }
 
-fn rust_compile(tmpdir: &Path, sccache_cfg_path: &Path, sccache_cached_cfg_path: &Path) -> Output {
-    let sccache_path = assert_cmd::cargo::cargo_bin("sccache").into_os_string();
-    let envs: Vec<(_, &OsStr)> = vec![
-        ("RUSTC_WRAPPER", sccache_path.as_ref()),
-        ("CARGO_TARGET_DIR", "target".as_ref()),
-        ("RUST_BACKTRACE", "1".as_ref()),
-        ("SCCACHE_LOG", "debug".as_ref()),
-        ("SCCACHE_CONF", sccache_cfg_path.as_ref()),
-        ("SCCACHE_CACHED_CONF", sccache_cached_cfg_path.as_ref()),
-    ];
+fn rust_compile(client: &SccacheClient, tmpdir: &Path) -> Output {
     let cargo_name = "sccache-dist-test";
     let cargo_path = init_cargo(tmpdir, cargo_name);
 
@@ -87,7 +74,16 @@ fn rust_compile(tmpdir: &Path, sccache_cfg_path: &Path, sccache_cached_cfg_path:
     cargo_command()
         .current_dir(cargo_path)
         .args(["build", "--release"])
-        .envs(envs)
+        .envs(
+            client
+                .cmd()
+                .get_envs()
+                .map(|(k, v)| (k, v.unwrap_or_default())),
+        )
+        .env("RUSTC_WRAPPER", &client.path)
+        .env("CARGO_TARGET_DIR", "target")
+        .env("RUST_BACKTRACE", "1")
+        .env("SCCACHE_RECACHE", "1")
         .output()
         .unwrap()
 }
@@ -96,7 +92,7 @@ pub fn dist_test_sccache_client_cfg(
     tmpdir: &Path,
     scheduler_url: HTTPUrl,
 ) -> sccache::config::FileConfig {
-    let mut sccache_cfg = harness::sccache_client_cfg(tmpdir, false);
+    let mut sccache_cfg = sccache_client_cfg(tmpdir, false);
     sccache_cfg.cache.disk.as_mut().unwrap().size = 0;
     sccache_cfg.dist.scheduler_url = Some(scheduler_url);
     sccache_cfg
@@ -110,29 +106,27 @@ fn test_dist_basic() {
         .tempdir()
         .unwrap();
     let tmpdir = tmpdir.path();
-    let sccache_dist = harness::sccache_dist_path();
+    let sccache_dist = sccache_dist_path();
 
-    let mut system = harness::DistSystem::new(&sccache_dist, tmpdir);
+    let mut system = DistSystem::new(&sccache_dist, tmpdir);
     system.add_scheduler();
     system.add_server();
 
-    let sccache_cfg = dist_test_sccache_client_cfg(tmpdir, system.scheduler_url());
-    let sccache_cfg_path = tmpdir.join("sccache-cfg.json");
-    write_json_cfg(tmpdir, "sccache-cfg.json", &sccache_cfg);
-    let sccache_cached_cfg_path = tmpdir.join("sccache-cached-cfg");
+    let client = system.new_client(&dist_test_sccache_client_cfg(
+        tmpdir,
+        system.scheduler_url(),
+    ));
 
-    stop_local_daemon();
-    start_local_daemon(&sccache_cfg_path, &sccache_cached_cfg_path);
-    basic_compile(tmpdir, &sccache_cfg_path, &sccache_cached_cfg_path);
+    basic_compile(&client, tmpdir);
 
-    get_stats(|info| {
-        assert_eq!(1, info.stats.dist_compiles.values().sum::<usize>());
-        assert_eq!(0, info.stats.dist_errors);
-        assert_eq!(1, info.stats.compile_requests);
-        assert_eq!(1, info.stats.requests_executed);
-        assert_eq!(0, info.stats.cache_hits.all());
-        assert_eq!(1, info.stats.cache_misses.all());
-    });
+    let stats = client.stats().unwrap();
+
+    assert_eq!(1, stats.dist_compiles.values().sum::<usize>());
+    assert_eq!(0, stats.dist_errors);
+    assert_eq!(1, stats.compile_requests);
+    assert_eq!(1, stats.requests_executed);
+    assert_eq!(0, stats.cache_hits.all());
+    assert_eq!(1, stats.cache_misses.all());
 }
 
 #[test]
@@ -143,32 +137,31 @@ fn test_dist_restartedserver() {
         .tempdir()
         .unwrap();
     let tmpdir = tmpdir.path();
-    let sccache_dist = harness::sccache_dist_path();
+    let sccache_dist = sccache_dist_path();
 
-    let mut system = harness::DistSystem::new(&sccache_dist, tmpdir);
+    let mut system = DistSystem::new(&sccache_dist, tmpdir);
     system.add_scheduler();
     let server_handle = system.add_server();
 
-    let sccache_cfg = dist_test_sccache_client_cfg(tmpdir, system.scheduler_url());
-    let sccache_cfg_path = tmpdir.join("sccache-cfg.json");
-    write_json_cfg(tmpdir, "sccache-cfg.json", &sccache_cfg);
-    let sccache_cached_cfg_path = tmpdir.join("sccache-cached-cfg");
+    let client = system.new_client(&dist_test_sccache_client_cfg(
+        tmpdir,
+        system.scheduler_url(),
+    ));
 
-    stop_local_daemon();
-    start_local_daemon(&sccache_cfg_path, &sccache_cached_cfg_path);
-    basic_compile(tmpdir, &sccache_cfg_path, &sccache_cached_cfg_path);
+    basic_compile(&client, tmpdir);
 
     system.restart_server(&server_handle);
-    basic_compile(tmpdir, &sccache_cfg_path, &sccache_cached_cfg_path);
 
-    get_stats(|info| {
-        assert_eq!(2, info.stats.dist_compiles.values().sum::<usize>());
-        assert_eq!(0, info.stats.dist_errors);
-        assert_eq!(2, info.stats.compile_requests);
-        assert_eq!(2, info.stats.requests_executed);
-        assert_eq!(0, info.stats.cache_hits.all());
-        assert_eq!(2, info.stats.cache_misses.all());
-    });
+    basic_compile(&client, tmpdir);
+
+    let stats = client.stats().unwrap();
+
+    assert_eq!(2, stats.dist_compiles.values().sum::<usize>());
+    assert_eq!(0, stats.dist_errors);
+    assert_eq!(2, stats.compile_requests);
+    assert_eq!(2, stats.requests_executed);
+    assert_eq!(0, stats.cache_hits.all());
+    assert_eq!(2, stats.cache_misses.all());
 }
 
 #[test]
@@ -179,28 +172,26 @@ fn test_dist_nobuilder() {
         .tempdir()
         .unwrap();
     let tmpdir = tmpdir.path();
-    let sccache_dist = harness::sccache_dist_path();
+    let sccache_dist = sccache_dist_path();
 
-    let mut system = harness::DistSystem::new(&sccache_dist, tmpdir);
+    let mut system = DistSystem::new(&sccache_dist, tmpdir);
     system.add_scheduler();
 
-    let sccache_cfg = dist_test_sccache_client_cfg(tmpdir, system.scheduler_url());
-    let sccache_cfg_path = tmpdir.join("sccache-cfg.json");
-    write_json_cfg(tmpdir, "sccache-cfg.json", &sccache_cfg);
-    let sccache_cached_cfg_path = tmpdir.join("sccache-cached-cfg");
+    let client = system.new_client(&dist_test_sccache_client_cfg(
+        tmpdir,
+        system.scheduler_url(),
+    ));
 
-    stop_local_daemon();
-    start_local_daemon(&sccache_cfg_path, &sccache_cached_cfg_path);
-    basic_compile(tmpdir, &sccache_cfg_path, &sccache_cached_cfg_path);
+    basic_compile(&client, tmpdir);
 
-    get_stats(|info| {
-        assert_eq!(0, info.stats.dist_compiles.values().sum::<usize>());
-        assert_eq!(1, info.stats.dist_errors);
-        assert_eq!(1, info.stats.compile_requests);
-        assert_eq!(1, info.stats.requests_executed);
-        assert_eq!(0, info.stats.cache_hits.all());
-        assert_eq!(1, info.stats.cache_misses.all());
-    });
+    let stats = client.stats().unwrap();
+
+    assert_eq!(0, stats.dist_compiles.values().sum::<usize>());
+    assert_eq!(1, stats.dist_errors);
+    assert_eq!(1, stats.compile_requests);
+    assert_eq!(1, stats.requests_executed);
+    assert_eq!(0, stats.cache_hits.all());
+    assert_eq!(1, stats.cache_misses.all());
 }
 
 struct FailingServer;
@@ -244,29 +235,27 @@ fn test_dist_failingserver() {
         .tempdir()
         .unwrap();
     let tmpdir = tmpdir.path();
-    let sccache_dist = harness::sccache_dist_path();
+    let sccache_dist = sccache_dist_path();
 
-    let mut system = harness::DistSystem::new(&sccache_dist, tmpdir);
+    let mut system = DistSystem::new(&sccache_dist, tmpdir);
     system.add_scheduler();
     system.add_custom_server(FailingServer);
 
-    let sccache_cfg = dist_test_sccache_client_cfg(tmpdir, system.scheduler_url());
-    let sccache_cfg_path = tmpdir.join("sccache-cfg.json");
-    write_json_cfg(tmpdir, "sccache-cfg.json", &sccache_cfg);
-    let sccache_cached_cfg_path = tmpdir.join("sccache-cached-cfg");
+    let client = system.new_client(&dist_test_sccache_client_cfg(
+        tmpdir,
+        system.scheduler_url(),
+    ));
 
-    stop_local_daemon();
-    start_local_daemon(&sccache_cfg_path, &sccache_cached_cfg_path);
-    basic_compile(tmpdir, &sccache_cfg_path, &sccache_cached_cfg_path);
+    basic_compile(&client, tmpdir);
 
-    get_stats(|info| {
-        assert_eq!(0, info.stats.dist_compiles.values().sum::<usize>());
-        assert_eq!(1, info.stats.dist_errors);
-        assert_eq!(1, info.stats.compile_requests);
-        assert_eq!(1, info.stats.requests_executed);
-        assert_eq!(0, info.stats.cache_hits.all());
-        assert_eq!(1, info.stats.cache_misses.all());
-    });
+    let stats = client.stats().unwrap();
+
+    assert_eq!(0, stats.dist_compiles.values().sum::<usize>());
+    assert_eq!(1, stats.dist_errors);
+    assert_eq!(1, stats.compile_requests);
+    assert_eq!(1, stats.requests_executed);
+    assert_eq!(0, stats.cache_hits.all());
+    assert_eq!(1, stats.cache_misses.all());
 }
 
 #[test]
@@ -277,64 +266,33 @@ fn test_dist_cargo_build() {
         .tempdir()
         .unwrap();
     let tmpdir = tmpdir.path();
-    let sccache_dist = harness::sccache_dist_path();
+    let sccache_dist = sccache_dist_path();
 
-    let mut system = harness::DistSystem::new(&sccache_dist, tmpdir);
+    let mut system = DistSystem::new(&sccache_dist, tmpdir);
     system.add_scheduler();
     let _server_handle = system.add_server();
 
-    let sccache_cfg = dist_test_sccache_client_cfg(tmpdir, system.scheduler_url());
-    let sccache_cfg_path = tmpdir.join("sccache-cfg.json");
-    write_json_cfg(tmpdir, "sccache-cfg.json", &sccache_cfg);
-    let sccache_cached_cfg_path = tmpdir.join("sccache-cached-cfg");
+    let client = system.new_client(&dist_test_sccache_client_cfg(
+        tmpdir,
+        system.scheduler_url(),
+    ));
 
-    stop_local_daemon();
-    start_local_daemon(&sccache_cfg_path, &sccache_cached_cfg_path);
-    rust_compile(tmpdir, &sccache_cfg_path, &sccache_cached_cfg_path)
-        .assert()
-        .success();
-    get_stats(|info| {
-        assert_eq!(1, info.stats.dist_compiles.values().sum::<usize>());
-        assert_eq!(0, info.stats.dist_errors);
-        assert_eq!(5, info.stats.compile_requests);
-        assert_eq!(1, info.stats.requests_executed);
-        assert_eq!(0, info.stats.cache_hits.all());
-        assert_eq!(1, info.stats.cache_misses.all());
-    });
-}
+    let compile_output = rust_compile(&client, tmpdir);
 
-#[test]
-#[cfg_attr(not(feature = "dist-tests"), ignore)]
-fn test_dist_cargo_makeflags() {
-    let tmpdir = tempfile::Builder::new()
-        .prefix("sccache_dist_test")
-        .tempdir()
-        .unwrap();
-    let tmpdir = tmpdir.path();
-    let sccache_dist = harness::sccache_dist_path();
-
-    let mut system = harness::DistSystem::new(&sccache_dist, tmpdir);
-    system.add_scheduler();
-    let _server_handle = system.add_server();
-
-    let sccache_cfg = dist_test_sccache_client_cfg(tmpdir, system.scheduler_url());
-    let sccache_cfg_path = tmpdir.join("sccache-cfg.json");
-    write_json_cfg(tmpdir, "sccache-cfg.json", &sccache_cfg);
-    let sccache_cached_cfg_path = tmpdir.join("sccache-cached-cfg");
-
-    stop_local_daemon();
-    start_local_daemon(&sccache_cfg_path, &sccache_cached_cfg_path);
-    let compile_output = rust_compile(tmpdir, &sccache_cfg_path, &sccache_cached_cfg_path);
-
+    // Ensure sccache ignores inherited jobservers in CARGO_MAKEFLAGS
     assert!(!String::from_utf8_lossy(&compile_output.stderr)
         .contains("warning: failed to connect to jobserver from environment variable"));
 
-    get_stats(|info| {
-        assert_eq!(1, info.stats.dist_compiles.values().sum::<usize>());
-        assert_eq!(0, info.stats.dist_errors);
-        assert_eq!(5, info.stats.compile_requests);
-        assert_eq!(1, info.stats.requests_executed);
-        assert_eq!(0, info.stats.cache_hits.all());
-        assert_eq!(1, info.stats.cache_misses.all());
-    });
+    // Assert compilation succeeded
+    compile_output.assert().success();
+
+    let stats = client.stats().unwrap();
+
+    assert_eq!(1, stats.dist_compiles.values().sum::<usize>());
+    assert_eq!(0, stats.dist_errors);
+    // check >= 5 because cargo >=1.82 does additional requests with -vV
+    assert!(stats.compile_requests >= 5);
+    assert_eq!(1, stats.requests_executed);
+    assert_eq!(0, stats.cache_hits.all());
+    assert_eq!(1, stats.cache_misses.all());
 }
