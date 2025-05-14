@@ -44,14 +44,6 @@ const APP_NAME: &str = "sccache";
 const DIST_APP_NAME: &str = "sccache-dist-client";
 const TEN_GIGS: u64 = 10 * 1024 * 1024 * 1024;
 
-const MOZILLA_OAUTH_PKCE_CLIENT_ID: &str = "F1VVD6nRTckSVrviMRaOdLBWIk1AvHYo";
-// The sccache audience is an API set up in auth0 for sccache to allow 7 day expiry,
-// the openid scope allows us to query the auth0 /userinfo endpoint which contains
-// group information due to Mozilla rules.
-const MOZILLA_OAUTH_PKCE_AUTH_URL: &str =
-    "https://auth.mozilla.auth0.com/authorize?audience=sccache&scope=openid%20profile";
-const MOZILLA_OAUTH_PKCE_TOKEN_URL: &str = "https://auth.mozilla.auth0.com/oauth/token";
-
 pub const INSECURE_DIST_CLIENT_TOKEN: &str = "dangerously_insecure_client";
 
 // Unfortunately this means that nothing else can use the sccache cache dir as
@@ -472,8 +464,6 @@ impl<'a> Deserialize<'a> for DistAuth {
         pub enum Helper {
             #[serde(rename = "token")]
             Token { token: String },
-            #[serde(rename = "mozilla")]
-            Mozilla,
             #[serde(rename = "oauth2_code_grant_pkce")]
             Oauth2CodeGrantPKCE {
                 client_id: String,
@@ -488,11 +478,6 @@ impl<'a> Deserialize<'a> for DistAuth {
 
         Ok(match helper {
             Helper::Token { token } => DistAuth::Token { token },
-            Helper::Mozilla => DistAuth::Oauth2CodeGrantPKCE {
-                client_id: MOZILLA_OAUTH_PKCE_CLIENT_ID.to_owned(),
-                auth_url: MOZILLA_OAUTH_PKCE_AUTH_URL.to_owned(),
-                token_url: MOZILLA_OAUTH_PKCE_TOKEN_URL.to_owned(),
-            },
             Helper::Oauth2CodeGrantPKCE {
                 client_id,
                 auth_url,
@@ -1096,8 +1081,6 @@ pub mod scheduler {
             issuer: String,
             jwks_url: String,
         },
-        #[serde(rename = "mozilla")]
-        Mozilla { required_groups: Vec<String> },
         #[serde(rename = "proxy_token")]
         ProxyToken {
             url: String,
