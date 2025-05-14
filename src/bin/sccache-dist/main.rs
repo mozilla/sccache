@@ -175,9 +175,6 @@ fn run(command: Command) -> Result<i32> {
                     token_check::ValidJWTCheck::new(audience, issuer, &jwks_url)
                         .context("Failed to create a checker for valid JWTs")?,
                 ),
-                scheduler_config::ClientAuth::Mozilla { required_groups } => {
-                    Box::new(token_check::MozillaCheck::new(required_groups))
-                }
                 scheduler_config::ClientAuth::ProxyToken { url, cache_secs } => {
                     Box::new(token_check::ProxyTokenCheck::new(url, cache_secs))
                 }
