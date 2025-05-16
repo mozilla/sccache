@@ -178,7 +178,7 @@ jobs:
 
       - name: "`grcov` ~ install"
         if: ${{ ! matrix.no_coverage }}
-        run: cargo install grcov
+        run: cargo install --locked grcov
 
       - name: Create config for testing
         if: ${{ ! matrix.no_coverage }}
