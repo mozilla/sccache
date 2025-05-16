@@ -34,8 +34,6 @@ mod cache;
 pub mod client_auth;
 #[cfg(any(feature = "dist-client", feature = "dist-server"))]
 pub mod http;
-#[cfg(test)]
-mod test;
 
 #[cfg(any(feature = "dist-client", feature = "dist-server"))]
 pub use crate::dist::cache::TcCache;
