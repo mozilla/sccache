@@ -13,15 +13,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{env, ffi::OsString, fmt, net::SocketAddr, path::PathBuf, str::FromStr};
+use std::{
+    ffi::OsString,
+    fmt,
+    io::BufWriter,
+    net::{SocketAddr, TcpStream, UdpSocket},
+    path::PathBuf,
+    process,
+};
 
 use anyhow::{anyhow, bail};
-use clap::{Arg, ArgGroup, Command as ClapCommand, ValueEnum};
+use clap::{Arg, ArgGroup, Command as ClapCommand};
 use sccache::{config, dist::ServerId};
-use syslog::Facility;
+use syslog::{unix, BasicLogger, Formatter3164, LoggerBackend};
+use syslog::{Facility, Logger};
 
 use crate::cmdline::{AuthSubcommand, Command};
-
 #[derive(Debug, Clone)]
 struct TokenLength(usize);
 
@@ -53,44 +60,6 @@ impl fmt::Display for TokenLength {
     }
 }
 
-#[derive(Clone, Copy, ValueEnum)]
-enum LogLevel {
-    Error,
-    Warn,
-    Info,
-    Debug,
-    Trace,
-}
-
-impl FromStr for LogLevel {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let variant = match s {
-            "error" => Self::Error,
-            "warn" => Self::Warn,
-            "info" => Self::Info,
-            "debug" => Self::Debug,
-            "trace" => Self::Trace,
-            _ => bail!("Unknown log level: {:?}", s),
-        };
-
-        Ok(variant)
-    }
-}
-
-impl From<LogLevel> for log::LevelFilter {
-    fn from(log_level: LogLevel) -> Self {
-        match log_level {
-            LogLevel::Error => Self::Error,
-            LogLevel::Warn => Self::Warn,
-            LogLevel::Info => Self::Info,
-            LogLevel::Debug => Self::Debug,
-            LogLevel::Trace => Self::Trace,
-        }
-    }
-}
-
 fn flag_infer_long(name: &'static str) -> Arg {
     Arg::new(name).long(name)
 }
@@ -98,8 +67,7 @@ fn flag_infer_long(name: &'static str) -> Arg {
 fn get_clap_command() -> ClapCommand {
     let syslog = flag_infer_long("syslog")
         .help("Log to the syslog with LEVEL")
-        .value_name("LEVEL")
-        .value_parser(clap::value_parser!(LogLevel));
+        .value_name("LEVEL");
     let config_with_help_message = |help: &'static str| {
         flag_infer_long("config")
             .help(help)
@@ -155,9 +123,38 @@ fn get_clap_command() -> ClapCommand {
         ]))
 }
 
-fn check_init_syslog(name: &str, log_level: LogLevel) {
-    let level = log::LevelFilter::from(log_level);
-    drop(syslog::init(Facility::LOG_DAEMON, level, Some(name)));
+fn check_init_syslog(name: &str, log_filter: &str) {
+    let facility = Facility::LOG_DAEMON;
+    let process = name.to_string();
+    let pid = process::id();
+    let mut formatter = Formatter3164 {
+        facility,
+        hostname: None,
+        process,
+        pid,
+    };
+
+    let backend = if let Ok(logger) = unix(formatter.clone()) {
+        logger.backend
+    } else {
+        formatter.hostname = Some(hostname::get().unwrap().to_string_lossy().to_string());
+        if let Ok(tcp_stream) = TcpStream::connect(("127.0.0.1", 601)) {
+            LoggerBackend::Tcp(BufWriter::new(tcp_stream))
+        } else {
+            let udp_addr = "127.0.0.1:514".parse().unwrap();
+            let udp_stream = UdpSocket::bind(("127.0.0.1", 0)).unwrap();
+            LoggerBackend::Udp(udp_stream, udp_addr)
+        }
+    };
+
+    let mut builder = env_filter::Builder::new();
+    builder.parse(log_filter);
+    let filter = builder.build();
+    log::set_max_level(filter.filter());
+
+    let logger =
+        env_filter::FilteredLog::new(BasicLogger::new(Logger { formatter, backend }), filter);
+    drop(log::set_boxed_logger(Box::new(logger)));
 }
 
 /// Parse commandline `args` into a `Result<Command>` to execute.
@@ -217,9 +214,9 @@ pub fn try_parse_from(
         Some(("scheduler", matches)) => {
             if matches.contains_id("syslog") {
                 let log_level = matches
-                    .get_one::<LogLevel>("syslog")
+                    .get_one::<String>("syslog")
                     .expect("`syslog` is required");
-                check_init_syslog("sccache-scheduler", *log_level);
+                check_init_syslog("sccache-scheduler", log_level.as_str());
             }
 
             let config_path = matches
@@ -234,9 +231,9 @@ pub fn try_parse_from(
         Some(("server", matches)) => {
             if matches.contains_id("syslog") {
                 let log_level = matches
-                    .get_one::<LogLevel>("syslog")
+                    .get_one::<String>("syslog")
                     .expect("`syslog` is required");
-                check_init_syslog("sccache-buildserver", *log_level);
+                check_init_syslog("sccache-buildserver", log_level.as_str());
             }
 
             let config_path = matches
