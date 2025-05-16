@@ -126,7 +126,8 @@ impl Default for Digest {
     }
 }
 
-/// The longest pattern we're looking for is `__TIMESTAMP__`
+/// The longest patterns we're looking for are `__TIMESTAMP__` and
+///                                            `__has_include`
 const MAX_HAYSTACK_LEN: usize = b"__TIMESTAMP__".len();
 
 #[cfg(test)]
@@ -142,6 +143,7 @@ pub struct TimeMacroFinder {
     found_date: Cell<bool>,
     found_time: Cell<bool>,
     found_timestamp: Cell<bool>,
+    found_has_include: Cell<bool>, // (invalidates cached results similarly to time macros)
     overlap_buffer: [u8; MAX_HAYSTACK_LEN * 2],
     /// Counter of chunks of full size we've been through. Partial reads do
     /// not count and are handled separately.
@@ -281,10 +283,13 @@ impl TimeMacroFinder {
         if memchr::memmem::find(buffer, b"__DATE__").is_some() {
             self.found_date.set(true);
         };
+        if memchr::memmem::find(buffer, b"__has_include").is_some() {
+            self.found_has_include.set(true);
+        };
     }
 
     pub fn found_time_macros(&self) -> bool {
-        self.found_date() || self.found_time() || self.found_timestamp()
+        self.found_date() || self.found_time() || self.found_timestamp() || self.found_has_include()
     }
 
     pub fn found_time(&self) -> bool {
@@ -297,6 +302,10 @@ impl TimeMacroFinder {
 
     pub fn found_timestamp(&self) -> bool {
         self.found_timestamp.get()
+    }
+
+    pub fn found_has_include(&self) -> bool {
+        self.found_has_include.get()
     }
 
     pub fn new() -> Self {

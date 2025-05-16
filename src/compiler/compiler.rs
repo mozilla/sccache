@@ -393,7 +393,7 @@ where
     /// information that can be reused for compilation if necessary.
     #[allow(clippy::too_many_arguments)]
     async fn generate_hash_key(
-        self: Box<Self>,
+        &mut self,
         creator: &T,
         cwd: PathBuf,
         env_vars: Vec<(OsString, OsString)>,
@@ -411,7 +411,7 @@ where
     /// compile and store the result.
     #[allow(clippy::too_many_arguments)]
     async fn get_cached_or_compile(
-        self: Box<Self>,
+        &mut self,
         service: &server::SccacheService<T>,
         dist_client: Option<Arc<dyn dist::Client>>,
         creator: T,
@@ -434,7 +434,7 @@ where
             .generate_hash_key(
                 &creator,
                 cwd.clone(),
-                env_vars,
+                env_vars.clone(),
                 may_dist,
                 &pool,
                 rewrite_includes_only,
@@ -498,12 +498,10 @@ where
                     out_pretty,
                     fmt_duration_as_secs(&duration)
                 );
-                let stdout = entry.get_stdout();
-                let stderr = entry.get_stderr();
                 let output = process::Output {
                     status: exit_status(0),
-                    stdout,
-                    stderr,
+                    stdout: entry.get_stdout(),
+                    stderr: entry.get_stderr(),
                 };
                 let hit = CompileResult::CacheHit(duration);
                 match entry.extract_objects(outputs.clone(), &pool).await {
@@ -568,6 +566,29 @@ where
             CacheLookupResult::Miss(miss_type) => {
                 // Cache miss, so compile it.
                 let start = Instant::now();
+
+                #[cfg(feature = "dist-client")]
+                if may_dist
+                    && !compilation.is_preprocessed_for_distribution()
+                    && cache_control == CacheControl::Default
+                {
+                    // This compilation only had enough information to find and use a cache entry (or to
+                    // run a local compile, which doesn't need locally preprocessed code).
+                    // For distributed compilation, the local preprocessing step still needs to be done.
+                    return self
+                        .get_cached_or_compile(
+                            service,
+                            dist_client,
+                            creator,
+                            storage,
+                            arguments,
+                            cwd,
+                            env_vars,
+                            CacheControl::ForceRecache,
+                            pool,
+                        )
+                        .await;
+                }
 
                 let (cacheable, dist_type, compiler_result) = dist_or_local_compile(
                     service,
@@ -933,6 +954,11 @@ where
         self: Box<Self>,
         _path_transformer: dist::PathTransformer,
     ) -> Result<DistPackagers>;
+
+    #[cfg(feature = "dist-client")]
+    fn is_preprocessed_for_distribution(&self) -> bool {
+        true
+    }
 
     /// Returns an iterator over the results of this compilation.
     ///
@@ -2108,7 +2134,7 @@ LLVM version: 6.0",
                     &creator,
                     Ok(MockChild::new(exit_status(0), "preprocessor output", "")),
                 );
-                let hasher = match c.parse_arguments(&arguments, ".".as_ref(), &[]) {
+                let mut hasher = match c.parse_arguments(&arguments, ".".as_ref(), &[]) {
                     CompilerArguments::Ok(h) => h,
                     o => panic!("Bad result from parse_arguments: {:?}", o),
                 };
@@ -2176,7 +2202,7 @@ LLVM version: 6.0",
                     &creator,
                     Ok(MockChild::new(exit_status(0), "preprocessor output", "")),
                 );
-                let hasher = match c.parse_arguments(argument, ".".as_ref(), &[]) {
+                let mut hasher = match c.parse_arguments(argument, ".".as_ref(), &[]) {
                     CompilerArguments::Ok(h) => h,
                     o => panic!("Bad result from parse_arguments: {:?}", o),
                 };
@@ -2285,11 +2311,10 @@ LLVM version: 6.0",
         });
         let cwd = f.tempdir.path();
         let arguments = ovec!["-c", "foo.c", "-o", "foo.o"];
-        let hasher = match c.parse_arguments(&arguments, ".".as_ref(), &[]) {
+        let mut hasher = match c.parse_arguments(&arguments, ".".as_ref(), &[]) {
             CompilerArguments::Ok(h) => h,
             o => panic!("Bad result from parse_arguments: {:?}", o),
         };
-        let hasher2 = hasher.clone();
         let (cached, res) = runtime
             .block_on(async {
                 hasher
@@ -2329,7 +2354,7 @@ LLVM version: 6.0",
         // There should be no actual compiler invocation.
         let (cached, res) = runtime
             .block_on(async {
-                hasher2
+                hasher
                     .get_cached_or_compile(
                         &service,
                         None,
@@ -2415,11 +2440,10 @@ LLVM version: 6.0",
 
         let cwd = f.tempdir.path();
         let arguments = ovec!["-c", "foo.c", "-o", "foo.o"];
-        let hasher = match c.parse_arguments(&arguments, ".".as_ref(), &[]) {
+        let mut hasher = match c.parse_arguments(&arguments, ".".as_ref(), &[]) {
             CompilerArguments::Ok(h) => h,
             o => panic!("Bad result from parse_arguments: {:?}", o),
         };
-        let hasher2 = hasher.clone();
         let (cached, res) = runtime
             .block_on(async {
                 hasher
@@ -2459,7 +2483,7 @@ LLVM version: 6.0",
         // There should be no actual compiler invocation.
         let (cached, res) = runtime
             .block_on(async {
-                hasher2
+                hasher
                     .get_cached_or_compile(
                         &service,
                         Some(dist_client.clone()),
@@ -2538,7 +2562,7 @@ LLVM version: 6.0",
         });
         let cwd = f.tempdir.path();
         let arguments = ovec!["-c", "foo.c", "-o", "foo.o"];
-        let hasher = match c.parse_arguments(&arguments, ".".as_ref(), &[]) {
+        let mut hasher = match c.parse_arguments(&arguments, ".".as_ref(), &[]) {
             CompilerArguments::Ok(h) => h,
             o => panic!("Bad result from parse_arguments: {:?}", o),
         };
@@ -2631,7 +2655,7 @@ LLVM version: 6.0",
 
         let cwd = f.tempdir.path();
         let arguments = ovec!["-c", "foo.c", "-o", "foo.o"];
-        let hasher = match c.parse_arguments(&arguments, ".".as_ref(), &[]) {
+        let mut hasher = match c.parse_arguments(&arguments, ".".as_ref(), &[]) {
             CompilerArguments::Ok(h) => h,
             o => panic!("Bad result from parse_arguments: {:?}", o),
         };
@@ -2723,11 +2747,10 @@ LLVM version: 6.0",
         }
         let cwd = f.tempdir.path();
         let arguments = ovec!["-c", "foo.c", "-o", "foo.o"];
-        let hasher = match c.parse_arguments(&arguments, ".".as_ref(), &[]) {
+        let mut hasher = match c.parse_arguments(&arguments, ".".as_ref(), &[]) {
             CompilerArguments::Ok(h) => h,
             o => panic!("Bad result from parse_arguments: {:?}", o),
         };
-        let hasher2 = hasher.clone();
         let (cached, res) = runtime
             .block_on(async {
                 hasher
@@ -2759,7 +2782,7 @@ LLVM version: 6.0",
         assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
         // Now compile again, but force recaching.
         fs::remove_file(&obj).unwrap();
-        let (cached, res) = hasher2
+        let (cached, res) = hasher
             .get_cached_or_compile(
                 &service,
                 None,
@@ -2846,7 +2869,7 @@ LLVM version: 6.0",
         );
         let cwd = f.tempdir.path();
         let arguments = ovec!["-c", "foo.c", "-o", "foo.o"];
-        let hasher = match c.parse_arguments(&arguments, ".".as_ref(), &[]) {
+        let mut hasher = match c.parse_arguments(&arguments, ".".as_ref(), &[]) {
             CompilerArguments::Ok(h) => h,
             o => panic!("Bad result from parse_arguments: {:?}", o),
         };
@@ -2963,7 +2986,7 @@ LLVM version: 6.0",
             if obj.is_file() {
                 fs::remove_file(&obj).unwrap();
             }
-            let hasher = hasher.clone();
+            let mut hasher = hasher.clone();
             let (cached, res) = hasher
                 .get_cached_or_compile(
                     &service,
