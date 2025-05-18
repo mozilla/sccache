@@ -134,6 +134,7 @@ impl ParsedArguments {
 /// A generic implementation of the `Compilation` trait for C/C++ compilers.
 struct CCompilation<I: CCompilerImpl> {
     parsed_args: ParsedArguments,
+    is_locally_preprocessed: bool,
     #[cfg(feature = "dist-client")]
     preprocessed_input: Vec<u8>,
     executable: PathBuf,
@@ -498,6 +499,7 @@ where
                                 key,
                                 compilation: Box::new(CCompilation {
                                     parsed_args: self.parsed_args.to_owned(),
+                                    is_locally_preprocessed: false,
                                     #[cfg(feature = "dist-client")]
                                     preprocessed_input: PREPROCESSING_SKIPPED_COMPILE_POISON
                                         .to_vec(),
@@ -647,6 +649,7 @@ where
             key,
             compilation: Box::new(CCompilation {
                 parsed_args: self.parsed_args.clone(),
+                is_locally_preprocessed: true,
                 #[cfg(feature = "dist-client")]
                 preprocessed_input: preprocessor_result.stdout,
                 executable: self.executable.clone(),
@@ -1156,10 +1159,10 @@ fn include_is_too_new(
 }
 
 // Used as "preprocessed code" when no preprocessing was done so that compilation fails. That should never
-// happen though because, where necessary, the compile poison code is detected and the preprocessing is
-// *then* done to salvage the situation. Previously, an empty u8 vector was used, which is unfortunately a
-// valid C/C++ compilation unit and caused errors that only surfaced when linking: the symbols expected from
-// the compilation unit were of course not produced.
+// happen though because, where necessary, the situation is detected and preprocessing is *then* done to
+// salvage the situation. Previously, an empty u8 vector was used, which is unfortunately a valid C and C++
+// compilation unit and caused errors that only surfaced when linking: the symbols expected from the
+// compilation unit were of course not produced.
 #[cfg(feature = "dist-client")]
 const PREPROCESSING_SKIPPED_COMPILE_POISON: &[u8] = b"([{SCCACHE -*-* INVALID_C_CPP_CODE([{\"";
 
@@ -1214,9 +1217,8 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I>
         Ok((inputs_packager, toolchain_packager, outputs_rewriter))
     }
 
-    #[cfg(feature = "dist-client")]
-    fn is_preprocessed_for_distribution(&self) -> bool {
-        self.preprocessed_input != PREPROCESSING_SKIPPED_COMPILE_POISON
+    fn is_locally_preprocessed(&self) -> bool {
+        self.is_locally_preprocessed
     }
 
     fn outputs<'a>(&'a self) -> Box<dyn Iterator<Item = FileObjectSource> + 'a> {

@@ -503,8 +503,30 @@ where
                     stdout: entry.get_stdout(),
                     stderr: entry.get_stderr(),
                 };
+
+                let filtered_outputs = if compilation.is_locally_preprocessed() {
+                    // In this mode, cache entries are exclusively distinguished by their preprocessed
+                    // source contents. But two files may differ in their names and / or the names of
+                    // included files while still producing the same preprocessed output, so they get the
+                    // same cache entry. That entry will have wrong (file names) dependency informaton in
+                    // the dependency file except for the compilation unit that originally produced it.
+                    // Since we did local preprocessing, that should already have produced the dependency
+                    // file - just leave that one alone and don't overwrite it from the cache.
+                    outputs
+                        .iter()
+                        .filter(|fobj_source| fobj_source.key != "d") // key "d" means dependency file
+                        .cloned()
+                        .collect()
+                } else {
+                    // In this mode, no local preprocessing was done, so the dependency file (if any)
+                    // has not been created. But in this mode, the cache key also includes a lot of
+                    // information about filenames (and less relevant here, file hashes), so it *is* safe
+                    // to restore the dependency file from the cache.
+                    outputs.clone()
+                };
+
                 let hit = CompileResult::CacheHit(duration);
-                match entry.extract_objects(outputs.clone(), &pool).await {
+                match entry.extract_objects(filtered_outputs, &pool).await {
                     Ok(()) => Ok(CacheLookupResult::Success(hit, output)),
                     Err(e) => {
                         if e.downcast_ref::<DecompressionFailure>().is_some() {
@@ -569,7 +591,7 @@ where
 
                 #[cfg(feature = "dist-client")]
                 if may_dist
-                    && !compilation.is_preprocessed_for_distribution()
+                    && !compilation.is_locally_preprocessed()
                     && cache_control == CacheControl::Default
                 {
                     // This compilation only had enough information to find and use a cache entry (or to
@@ -955,8 +977,7 @@ where
         _path_transformer: dist::PathTransformer,
     ) -> Result<DistPackagers>;
 
-    #[cfg(feature = "dist-client")]
-    fn is_preprocessed_for_distribution(&self) -> bool {
+    fn is_locally_preprocessed(&self) -> bool {
         true
     }
 
