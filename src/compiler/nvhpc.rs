@@ -165,6 +165,7 @@ impl CCompilerImpl for Nvhpc {
         cwd: &Path,
         env_vars: &[(OsString, OsString)],
         rewrite_includes_only: bool,
+        _hash_key: &str,
     ) -> Result<(
         Box<dyn CompileCommand<T>>,
         Option<dist::CompileCommand>,

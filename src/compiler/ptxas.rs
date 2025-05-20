@@ -86,6 +86,7 @@ impl CCompilerImpl for Ptxas {
         cwd: &Path,
         env_vars: &[(OsString, OsString)],
         _rewrite_includes_only: bool,
+        _hash_key: &str,
     ) -> Result<(
         Box<dyn CompileCommand<T>>,
         Option<dist::CompileCommand>,
