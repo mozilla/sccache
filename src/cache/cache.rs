@@ -843,4 +843,28 @@ mod test {
             });
         }
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_extract_object_to_devnull_works() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .worker_threads(1)
+            .build()
+            .unwrap();
+
+        let pool = runtime.handle();
+
+        let cache_data = CacheWrite::new();
+        let cache_read = CacheRead::from(io::Cursor::new(cache_data.finish().unwrap())).unwrap();
+
+        let objects = vec![FileObjectSource {
+            key: "test_key".to_string(),
+            path: PathBuf::from("/dev/null"),
+            optional: false,
+        }];
+
+        let result = runtime.block_on(cache_read.extract_objects(objects, pool));
+        assert!(result.is_ok(), "Extracting to /dev/null should succeed");
+    }
 }
