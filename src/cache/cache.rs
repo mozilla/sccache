@@ -894,7 +894,11 @@ mod test {
                 optional: false,
             }];
             let result = cache_read.extract_objects(objects, pool).await;
-            assert!(result.is_ok(), "Extracting to /dev/fd/{} should succeed", raw_fd);
+            assert!(
+                result.is_ok(),
+                "Extracting to /dev/fd/{} should succeed",
+                raw_fd
+            );
             let mut buf = vec![0; data.len()];
             let n = receiver.read_exact(&mut buf).await.unwrap();
             assert_eq!(n, data.len(), "Read the correct number of bytes");
