@@ -1818,10 +1818,19 @@ impl ServerStats {
                 stat_width = stat_width + suffix_len
             ));
         }
+
+        // Compare values. If equal, compare keys to have a fully deterministic order.
+        let sort_func =
+            |(k1, v1): &(&String, &usize), (k2, v2): &(&String, &usize)| match v1.cmp(v2).reverse()
+            {
+                std::cmp::Ordering::Equal => k1.cmp(k2),
+                other => other,
+            };
+
         if !self.dist_compiles.is_empty() {
             writer.write("\nSuccessful distributed compiles");
             let mut counts: Vec<_> = self.dist_compiles.iter().collect();
-            counts.sort_by(|(_, c1), (_, c2)| c1.cmp(c2).reverse());
+            counts.sort_by(sort_func);
             for (reason, count) in counts {
                 writer.write(&format!(
                     "  {:<name_width$} {:>stat_width$}",
@@ -1835,7 +1844,7 @@ impl ServerStats {
         if !self.not_cached.is_empty() {
             writer.write("\nNon-cacheable reasons:");
             let mut counts: Vec<_> = self.not_cached.iter().collect();
-            counts.sort_by(|(_, c1), (_, c2)| c1.cmp(c2).reverse());
+            counts.sort_by(sort_func);
             for (reason, count) in counts {
                 writer.write(&format!(
                     "{:<name_width$} {:>stat_width$}",
