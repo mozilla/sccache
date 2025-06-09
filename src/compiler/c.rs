@@ -25,8 +25,8 @@ use crate::dist;
 use crate::dist::pkg;
 use crate::mock_command::CommandCreatorSync;
 use crate::util::{
-    decode_path, encode_path, hash_all, Digest, HashToDigest, MetadataCtimeExt, TimeMacroFinder,
-    Timestamp,
+    decode_path, encode_path, hash_all, Digest, HashToDigest, MetadataCtimeExt, OsStrExt,
+    TimeMacroFinder, Timestamp,
 };
 use async_trait::async_trait;
 use fs_err as fs;
@@ -1444,6 +1444,13 @@ static CACHED_ENV_VARS: Lazy<HashSet<&'static OsStr>> = Lazy::new(|| {
     .collect()
 });
 
+const NON_HASHABLE_ARGS: &[&str] = &[
+    "-fdebug-prefix-map",
+    "-fmacro-prefix-map",
+    "-ffile-prefix-map",
+    "-fdebug-compilation-dir",
+];
+
 /// Compute the hash key of `compiler` compiling `preprocessor_output` with `args`.
 pub fn hash_key(
     compiler_digest: &str,
@@ -1462,7 +1469,13 @@ pub fn hash_key(
     m.update(&[plusplus as u8]);
     m.update(CACHE_VERSION);
     m.update(language.as_str().as_bytes());
-    for arg in arguments {
+    'arg_loop: for arg in arguments {
+        for non_hashable in NON_HASHABLE_ARGS {
+            if arg.to_string_lossy().starts_with(non_hashable) {
+                // Skip non-hashable arguments.
+                continue 'arg_loop;
+            }
+        }
         arg.hash(&mut HashToDigest { digest: &mut m });
     }
     for hash in extra_hashes {
@@ -1573,6 +1586,32 @@ mod test {
         assert_neq!(
             hash_key(digest, Language::C, &abc, &[], &[], PREPROCESSED, false),
             hash_key(digest, Language::C, &a, &[], &[], PREPROCESSED, false)
+        );
+    }
+
+    #[test]
+    fn test_hash_key_non_hashable_args() {
+        let digest = "abcd";
+        const PREPROCESSED: &[u8] = b"hello world";
+
+        let args = ovec!["arg1", "arg2", "arg3"];
+        let mut args_with_non_hashable: Vec<OsString> = NON_HASHABLE_ARGS
+            .iter()
+            .map(|s| OsString::from(s))
+            .collect();
+
+        args_with_non_hashable.extend(args.clone());
+        assert_neq!(
+            hash_key(digest, Language::C, &args, &[], &[], PREPROCESSED, false),
+            hash_key(
+                digest,
+                Language::C,
+                &args_with_non_hashable,
+                &[],
+                &[],
+                PREPROCESSED,
+                false
+            )
         );
     }
 
