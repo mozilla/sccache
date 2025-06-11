@@ -504,14 +504,7 @@ where
                     stderr: entry.get_stderr(),
                 };
 
-                #[cfg(not(feature = "dist-client"))]
-                let local_preprocessing_done = true;
-                #[cfg(feature = "dist-client")]
-                let local_preprocessing_done = compilation.is_preprocessed_for_distribution();
-                // TODO probably rename that getter
-                // TODO not even sure that that is the right condition to check!
-
-                let filtered_outputs = if local_preprocessing_done {
+                let filtered_outputs = if compilation.is_locally_preprocessed() {
                     // In this mode, cache entries are exclusively distinguished by their preprocessed
                     // source contents. But two files may differ in their names and / or the names of
                     // included files while still producing the same preprocessed output, so they get the
@@ -598,7 +591,7 @@ where
 
                 #[cfg(feature = "dist-client")]
                 if may_dist
-                    && !compilation.is_preprocessed_for_distribution()
+                    && !compilation.is_locally_preprocessed()
                     && cache_control == CacheControl::Default
                 {
                     // This compilation only had enough information to find and use a cache entry (or to
@@ -984,8 +977,7 @@ where
         _path_transformer: dist::PathTransformer,
     ) -> Result<DistPackagers>;
 
-    #[cfg(feature = "dist-client")]
-    fn is_preprocessed_for_distribution(&self) -> bool {
+    fn is_locally_preprocessed(&self) -> bool {
         true
     }
 
