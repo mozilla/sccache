@@ -70,7 +70,7 @@ fn default_toolchain_cache_size() -> u64 {
 }
 
 pub fn parse_size(val: &str) -> Option<u64> {
-    let multiplier = match val.chars().last() {
+    let multiplier = match val.chars().last().map(|v| v.to_ascii_uppercase()) {
         Some('K') => 1024,
         Some('M') => 1024 * 1024,
         Some('G') => 1024 * 1024 * 1024,
@@ -1211,6 +1211,7 @@ fn test_parse_size() {
     assert_eq!(None, parse_size("bogus value"));
     assert_eq!(Some(100), parse_size("100"));
     assert_eq!(Some(2048), parse_size("2K"));
+    assert_eq!(Some(2048), parse_size("2k"));
     assert_eq!(Some(10 * 1024 * 1024), parse_size("10M"));
     assert_eq!(Some(TEN_GIGS), parse_size("10G"));
     assert_eq!(Some(1024 * TEN_GIGS), parse_size("10T"));
