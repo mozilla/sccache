@@ -25,13 +25,13 @@ use serde::{
 };
 #[cfg(test)]
 use serial_test::serial;
-use std::{collections::HashMap, fmt};
 use std::env;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::result::Result as StdResult;
 use std::str::FromStr;
 use std::sync::Mutex;
+use std::{collections::HashMap, fmt};
 
 pub use crate::cache::PreprocessorCacheModeConfig;
 use crate::errors::*;
@@ -103,7 +103,6 @@ impl<'de> de::Visitor<'de> for StringOrU64Visitor {
         }
     }
 }
-
 
 fn deserialize_size_from_str<'de, D>(deserializer: D) -> StdResult<u64, D::Error>
 where
