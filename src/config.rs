@@ -20,12 +20,12 @@ use once_cell::sync::Lazy;
 #[cfg(any(feature = "dist-client", feature = "dist-server"))]
 use serde::ser::Serializer;
 use serde::{
-    de::{DeserializeOwned, Deserializer},
+    de::{self, DeserializeOwned, Deserializer},
     Deserialize, Serialize,
 };
 #[cfg(test)]
 use serial_test::serial;
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt};
 use std::env;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -67,6 +67,49 @@ fn default_disk_cache_size() -> u64 {
 }
 fn default_toolchain_cache_size() -> u64 {
     TEN_GIGS
+}
+
+struct StringOrU64Visitor;
+
+impl<'de> de::Visitor<'de> for StringOrU64Visitor {
+    type Value = u64;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a string with size suffix (like '20G') or a u64")
+    }
+
+    fn visit_str<E>(self, value: &str) -> StdResult<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        parse_size(value).ok_or_else(|| E::custom(format!("Invalid size value: {}", value)))
+    }
+
+    fn visit_u64<E>(self, value: u64) -> StdResult<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(value)
+    }
+
+    fn visit_i64<E>(self, value: i64) -> StdResult<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        if value < 0 {
+            Err(E::custom("negative values not supported"))
+        } else {
+            Ok(value as u64)
+        }
+    }
+}
+
+
+fn deserialize_size_from_str<'de, D>(deserializer: D) -> StdResult<u64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserializer.deserialize_any(StringOrU64Visitor)
 }
 
 pub fn parse_size(val: &str) -> Option<u64> {
@@ -150,7 +193,7 @@ pub struct AzureCacheConfig {
 #[serde(default)]
 pub struct DiskCacheConfig {
     pub dir: PathBuf,
-    // TODO: use deserialize_with to allow human-readable sizes in toml
+    #[serde(deserialize_with = "deserialize_size_from_str")]
     pub size: u64,
     pub preprocessor_cache_mode: PreprocessorCacheModeConfig,
     pub rw_mode: CacheModeConfig,
@@ -517,6 +560,7 @@ pub struct DistConfig {
     pub scheduler_url: Option<String>,
     pub cache_dir: PathBuf,
     pub toolchains: Vec<DistToolchainConfig>,
+    #[serde(deserialize_with = "deserialize_size_from_str")]
     pub toolchain_cache_size: u64,
     pub rewrite_includes_only: bool,
 }
