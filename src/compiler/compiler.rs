@@ -1301,13 +1301,12 @@ where
 
     let maybe_rustc_executable = if is_rustc_like(executable) {
         Some(executable.to_path_buf())
-    } else if env.iter().any(|(k, _)| k == OsStr::new("CARGO")) {
-        // If not, detect the scenario where cargo is configured to wrap rustc with something other than sccache.
-        // This happens when sccache is used as a `RUSTC_WRAPPER` and another tool is used as a
-        // `RUSTC_WORKSPACE_WRAPPER`. In that case rustc will be the first argument rather than the command.
-        //
-        // The check for the `CARGO` env acts as a guardrail against false positives.
-        // https://doc.rust-lang.org/cargo/reference/environment-variables.html#environment-variables-cargo-reads
+    } else if env
+        .iter()
+        .any(|(k, _)| k == OsStr::new("RUSTC_WORKSPACE_WRAPPER") || k == OsStr::new("CARGO"))
+    {
+        // When sccache is used as a `RUSTC_WRAPPER` and another tool is used as a `RUSTC_WORKSPACE_WRAPPER`,
+        // rustc will be the first argument rather than the command.
         args.iter()
             .next()
             .filter(|arg1| is_rustc_like(arg1))
