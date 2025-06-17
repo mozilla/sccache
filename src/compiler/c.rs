@@ -1597,11 +1597,11 @@ mod test {
         let args = ovec!["arg1", "arg2", "arg3"];
         let mut args_with_non_hashable: Vec<OsString> = NON_HASHABLE_ARGS
             .iter()
-            .map(|s| OsString::from(s))
+            .map(OsString::from)
             .collect();
 
         args_with_non_hashable.extend(args.clone());
-        assert_neq!(
+        assert_eq!(
             hash_key(digest, Language::C, &args, &[], &[], PREPROCESSED, false),
             hash_key(
                 digest,
