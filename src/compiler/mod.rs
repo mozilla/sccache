@@ -20,6 +20,7 @@ mod clang;
 #[macro_use]
 #[allow(clippy::module_inception)]
 mod compiler;
+mod cudafe;
 mod diab;
 mod gcc;
 mod msvc;

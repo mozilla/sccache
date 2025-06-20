@@ -692,6 +692,7 @@ pub fn language_to_gcc_arg(lang: Language) -> Option<&'static str> {
         Language::ObjectiveCxx => Some("objective-c++"),
         Language::ObjectiveCxxHeader => Some("objective-c++-header"),
         Language::Cuda => Some("cu"),
+        Language::CudaFE => None,
         Language::Ptx => None,
         Language::Cubin => None,
         Language::Rust => None, // Let the compiler decide
@@ -968,15 +969,12 @@ impl<'a> ExpandIncludeFile<'a> {
     }
 }
 
-impl<'a> Iterator for ExpandIncludeFile<'a> {
+impl Iterator for ExpandIncludeFile<'_> {
     type Item = OsString;
 
     fn next(&mut self) -> Option<OsString> {
         loop {
-            let arg = match self.stack.pop() {
-                Some(arg) => arg,
-                None => return None,
-            };
+            let arg = self.stack.pop()?;
             let file = match arg.split_prefix("@") {
                 Some(arg) => self.cwd.join(arg),
                 None => return Some(arg),

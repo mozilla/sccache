@@ -188,6 +188,7 @@ pub fn language_to_clang_arg(lang: Language) -> Option<&'static str> {
         Language::ObjectiveCxx => Some("objective-c++"),
         Language::ObjectiveCxxHeader => Some("objective-c++-header"),
         Language::Cuda => Some("cuda"),
+        Language::CudaFE => None,
         Language::Ptx => None,
         Language::Cubin => None,
         Language::Rust => None, // Let the compiler decide
@@ -231,12 +232,15 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     // Note: this overrides the -fprofile-use option in gcc.rs.
     take_arg!("-fprofile-use", PathBuf, Concatenated('='), ClangProfileUse),
     take_arg!("-fsanitize-blacklist", PathBuf, Concatenated('='), ExtraHashFile),
+    take_arg!("-fsanitize-ignorelist", PathBuf, Concatenated('='), ExtraHashFile),
     flag!("-fuse-ctor-homing", PassThroughFlag),
     take_arg!("-gcc-toolchain", OsString, Separated, PassThrough),
     flag!("-gcodeview", PassThroughFlag),
     take_arg!("-include-pch", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
     take_arg!("-load", PathBuf, Separated, ExtraHashFile),
+    flag!("-mconstructor-aliases", PassThroughFlag),
     take_arg!("-mllvm", OsString, Separated, PassThrough),
+    flag!("-mrelax-all", PassThroughFlag),
     flag!("-no-opaque-pointers", PreprocessorArgumentFlag),
     take_arg!("-plugin-arg", OsString, Concatenated('-'), PassThrough),
     take_arg!("-target", OsString, Separated, PassThrough),
@@ -897,6 +901,25 @@ mod test {
     }
 
     #[test]
+    fn test_parse_xclang_mconstructor_aliases_all() {
+        let a = parses!(
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "-Xclang",
+            "-mconstructor-aliases"
+        );
+        assert_eq!(ovec!["-Xclang", "-mconstructor-aliases"], a.common_args);
+    }
+
+    #[test]
+    fn test_parse_xclang_mrelax_all() {
+        let a = parses!("-c", "foo.c", "-o", "foo.o", "-Xclang", "-mrelax-all");
+        assert_eq!(ovec!["-Xclang", "-mrelax-all"], a.common_args);
+    }
+
+    #[test]
     fn test_parse_fplugin() {
         let a = parses!("-c", "foo.c", "-o", "foo.o", "-fplugin", "plugin.so");
         println!("A {:#?}", a);
@@ -917,6 +940,22 @@ mod test {
             "-fsanitize-blacklist=list.txt"
         );
         assert_eq!(ovec!["-fsanitize-blacklist=list.txt"], a.common_args);
+        assert_eq!(
+            ovec![std::env::current_dir().unwrap().join("list.txt")],
+            a.extra_hash_files
+        );
+    }
+
+    #[test]
+    fn test_parse_fsanitize_ignorelist() {
+        let a = parses!(
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "-fsanitize-ignorelist=list.txt"
+        );
+        assert_eq!(ovec!["-fsanitize-ignorelist=list.txt"], a.common_args);
         assert_eq!(
             ovec![std::env::current_dir().unwrap().join("list.txt")],
             a.extra_hash_files

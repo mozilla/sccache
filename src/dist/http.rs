@@ -243,7 +243,7 @@ pub mod urls {
 
 #[cfg(feature = "dist-server")]
 mod server {
-    use crate::util::new_reqwest_blocking_client;
+    use crate::util::{new_reqwest_blocking_client, num_cpus};
     use byteorder::{BigEndian, ReadBytesExt};
     use flate2::read::ZlibDecoder as ZlibReadDecoder;
     use once_cell::sync::Lazy;
@@ -532,7 +532,7 @@ mod server {
     fn bearer_http_auth(request: &rouille::Request) -> Option<&str> {
         let header = request.header("Authorization")?;
 
-        let mut split = header.splitn(2, |c| c == ' ');
+        let mut split = header.splitn(2, ' ');
 
         let authtype = split.next()?;
         if authtype != "Bearer" {
@@ -762,7 +762,7 @@ mod server {
 
             let server = rouille::Server::new(public_addr, move |request| {
                 let req_id = request_count.fetch_add(1, atomic::Ordering::SeqCst);
-                trace!("Req {} ({}): {:?}", req_id, request.remote_addr(), request);
+                trace!(target: "sccache_http", "Req {} ({}): {:?}", req_id, request.remote_addr(), request);
                 let response = (|| router!(request,
                     (POST) (/api/v1/scheduler/alloc_job) => {
                         let bearer_auth = match bearer_http_auth(request) {
@@ -801,7 +801,7 @@ mod server {
                     (POST) (/api/v1/scheduler/heartbeat_server) => {
                         let server_id = check_server_auth_or_err!(request);
                         let heartbeat_server = try_or_400_log!(req_id, bincode_input(request));
-                        trace!("Req {}: heartbeat_server: {:?}", req_id, heartbeat_server);
+                        trace!(target: "sccache_heartbeat", "Req {}: heartbeat_server: {:?}", req_id, heartbeat_server);
 
                         let HeartbeatServerHttpRequest { num_cpus, jwt_key, server_nonce, cert_digest, cert_pem } = heartbeat_server;
                         try_or_500_log!(req_id, maybe_update_certs(
@@ -836,14 +836,14 @@ mod server {
                         rouille::Response::empty_404()
                     },
                 ))();
-                trace!("Res {}: {:?}", req_id, response);
+                 trace!(target: "sccache_http", "Res {}: {:?}", req_id, response);
                 response
             }).map_err(|e| anyhow!(format!("Failed to start http server for sccache scheduler: {}", e)))?;
 
             // This limit is rouille's default for `start_server_with_pool`, which
             // we would use, except that interface doesn't permit any sort of
             // error handling to be done.
-            let server = server.pool_size(num_cpus::get() * 8);
+            let server = server.pool_size(num_cpus() * 8);
             server.run();
 
             panic!("Rouille server terminated")
@@ -925,7 +925,7 @@ mod server {
                 handler,
             } = self;
             let heartbeat_req = HeartbeatServerHttpRequest {
-                num_cpus: num_cpus::get(),
+                num_cpus: num_cpus(),
                 jwt_key: jwt_key.clone(),
                 server_nonce,
                 cert_digest,
@@ -943,7 +943,7 @@ mod server {
             thread::spawn(move || {
                 let client = new_reqwest_blocking_client();
                 loop {
-                    trace!("Performing heartbeat");
+                    trace!(target: "sccache_heartbeat", "Performing heartbeat");
                     match bincode_req(
                         client
                             .post(heartbeat_url.clone())
@@ -952,12 +952,15 @@ mod server {
                             .expect("failed to serialize heartbeat"),
                     ) {
                         Ok(HeartbeatServerResult { is_new }) => {
-                            trace!("Heartbeat success is_new={}", is_new);
+                            trace!(target: "sccache_heartbeat", "Heartbeat success is_new={}", is_new);
                             // TODO: if is_new, terminate all running jobs
+                            if is_new {
+                                info!("Server connected to scheduler");
+                            }
                             thread::sleep(HEARTBEAT_INTERVAL)
                         }
                         Err(e) => {
-                            error!("Failed to send heartbeat to server: {}", e);
+                            error!(target: "sccache_heartbeat", "Failed to send heartbeat to server: {}", e);
                             thread::sleep(HEARTBEAT_ERROR_INTERVAL)
                         }
                     }
@@ -1019,7 +1022,7 @@ mod server {
             // This limit is rouille's default for `start_server_with_pool`, which
             // we would use, except that interface doesn't permit any sort of
             // error handling to be done.
-            let server = server.pool_size(num_cpus::get() * 8);
+            let server = server.pool_size(num_cpus() * 8);
             server.run();
 
             panic!("Rouille server terminated")

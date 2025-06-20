@@ -155,6 +155,8 @@ pub enum CCompilerKind {
     Msvc,
     /// NVIDIA CUDA compiler
     Nvcc,
+    /// NVIDIA CUDA front-end
+    CudaFE,
     /// NVIDIA CUDA optimizer and PTX generator
     Cicc,
     /// NVIDIA CUDA PTX assembler
@@ -283,10 +285,13 @@ where
             .read_dir()
             .ok()
             .map(|f| {
-                f.flatten()
-                    .filter(|f| f.path().extension().map_or(false, |ext| ext == "bc"))
+                let mut device_libs = f
+                    .flatten()
+                    .filter(|f| f.path().extension().is_some_and(|ext| ext == "bc"))
                     .map(|f| f.path())
-                    .collect()
+                    .collect::<Vec<_>>();
+                device_libs.sort_unstable();
+                device_libs
             })
             .unwrap_or_default()
     }
@@ -405,6 +410,7 @@ where
         }
 
         let use_preprocessor_cache_mode = {
+            // Disable preprocessor cache when doing distributed compilation (+ other conditions)
             let can_use_preprocessor_cache_mode = !may_dist
                 && preprocessor_cache_mode_config.use_preprocessor_cache_mode
                 && !too_hard_for_preprocessor_cache_mode;
@@ -433,7 +439,6 @@ where
             use_preprocessor_cache_mode
         };
 
-        // Disable preprocessor cache when doing distributed compilation
         let mut preprocessor_key = if use_preprocessor_cache_mode {
             preprocessor_cache_entry_hash_key(
                 &executable_digest,
@@ -1261,7 +1266,7 @@ impl pkg::InputsPackager for CInputsPackager {
             if !super::CAN_DIST_DYLIBS
                 && input_path
                     .extension()
-                    .map_or(false, |ext| ext == std::env::consts::DLL_EXTENSION)
+                    .is_some_and(|ext| ext == std::env::consts::DLL_EXTENSION)
             {
                 bail!(
                     "Cannot distribute dylib input {} on this platform",
@@ -1385,18 +1390,10 @@ impl pkg::ToolchainPackager for CToolchainPackager {
                 add_named_file(&mut package_builder, "liblto_plugin.so")?;
             }
 
-            CCompilerKind::Cicc => {}
-
-            CCompilerKind::Ptxas => {}
-
-            CCompilerKind::Nvcc => {
-                // Various programs called by the nvcc front end.
-                // presumes the underlying host compiler is consistent
-                add_named_file(&mut package_builder, "cudafe++")?;
-                add_named_file(&mut package_builder, "fatbinary")?;
-                add_named_prog(&mut package_builder, "nvlink")?;
-                add_named_prog(&mut package_builder, "ptxas")?;
-            }
+            CCompilerKind::Cicc
+            | CCompilerKind::CudaFE
+            | CCompilerKind::Ptxas
+            | CCompilerKind::Nvcc => {}
 
             CCompilerKind::Nvhpc => {
                 // Various programs called by the nvc nvc++ front end.

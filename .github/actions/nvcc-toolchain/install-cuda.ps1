@@ -1,7 +1,7 @@
 Param(
     [Parameter(Mandatory=$false)]
     [string]
-    $cudaVersion="12.6.0"
+    $cudaVersion="12.8.0"
 )
 
 # Use System.Version to tokenize version

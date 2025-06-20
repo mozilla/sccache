@@ -68,7 +68,7 @@ token = "my server's token"
 FreeBSD as a build client
 -------------------------
 
-On a FreeBSD client, make sure to add the right toolchains to to
+On a FreeBSD client, make sure to add the right toolchains to
 `~/.config/sccache/config`:
 
 ```toml

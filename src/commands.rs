@@ -787,6 +787,21 @@ pub fn run_command(cmd: Command) -> Result<i32> {
             env_vars,
         } => {
             trace!("Command::Compile {{ {:?}, {:?}, {:?} }}", exe, cmdline, cwd);
+
+            let incr_env_strs = ["CARGO_BUILD_INCREMENTAL", "CARGO_INCREMENTAL"];
+            incr_env_strs
+                .iter()
+                .for_each(|incr_str| match env::var(incr_str) {
+                    Ok(incr_val) if incr_val == "1" => {
+                        println!(
+                            "sccache: incremental compilation is prohibited: Unset {} to continue.",
+                            incr_str
+                        );
+                        std::process::exit(1);
+                    }
+                    _ => (),
+                });
+
             let jobserver = Client::new();
             let conn = connect_or_start_server(&get_addr(), startup_timeout)?;
             let mut runtime = Runtime::new()?;

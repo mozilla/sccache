@@ -115,7 +115,7 @@ impl PotBuilder {
             image_map: Arc::new(Mutex::new(HashMap::new())),
             container_lists: Arc::new(Mutex::new(HashMap::new())),
             cleanup_thread_count: Arc::new(AtomicUsize::new(0)),
-            max_cleanup_thread_count: num_cpus::get() * 3,
+            max_cleanup_thread_count: sccache::util::num_cpus() * 3,
         };
         ret.cleanup()?;
         Ok(ret)

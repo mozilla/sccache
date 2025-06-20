@@ -46,7 +46,8 @@ pub fn start_local_daemon(cfg_path: &Path, cached_cfg_path: &Path) {
     if !sccache_command()
         .arg("--start-server")
         // Uncomment following lines to debug locally.
-        // .env("SCCACHE_LOG", "debug")
+        // .env("SCCACHE_LOG", "sccache=trace")
+        // .env("RUST_LOG_STYLE", "never")
         // .env(
         //     "SCCACHE_ERROR_LOG",
         //     env::temp_dir().join("sccache_local_daemon.txt"),
@@ -68,7 +69,7 @@ pub fn stop_local_daemon() -> bool {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .map_or(false, |status| status.success())
+        .is_ok_and(|status| status.success())
 }
 
 pub fn get_stats<F: 'static + Fn(ServerInfo)>(f: F) {
@@ -109,17 +110,31 @@ pub fn write_source(path: &Path, filename: &str, contents: &str) {
     f.write_all(contents.as_bytes()).unwrap();
 }
 
+pub fn init_cargo(path: &Path, cargo_name: &str) -> PathBuf {
+    let cargo_path = path.join(cargo_name);
+    let source_path = "src";
+    fs::create_dir_all(cargo_path.join(source_path)).unwrap();
+    cargo_path
+}
+
 // Prune any environment variables that could adversely affect test execution.
-pub fn sccache_command() -> Command {
+pub fn prune_command(mut cmd: Command) -> Command {
     use sccache::util::OsStrExt;
 
-    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin("sccache"));
     for (var, _) in env::vars_os() {
         if var.starts_with("SCCACHE_") {
             cmd.env_remove(var);
         }
     }
     cmd
+}
+
+pub fn sccache_command() -> Command {
+    prune_command(Command::new(assert_cmd::cargo::cargo_bin("sccache")))
+}
+
+pub fn cargo_command() -> Command {
+    prune_command(Command::new("cargo"))
 }
 
 #[cfg(feature = "dist-server")]
@@ -287,10 +302,10 @@ impl DistSystem {
                 "--network",
                 "host",
                 "-v",
-                &format!("{}:/sccache-dist", self.sccache_dist.to_str().unwrap()),
+                &format!("{}:/sccache-dist:z", self.sccache_dist.to_str().unwrap()),
                 "-v",
                 &format!(
-                    "{}:{}",
+                    "{}:{}:z",
                     self.tmpdir.to_str().unwrap(),
                     CONFIGS_CONTAINER_PATH
                 ),
@@ -355,10 +370,10 @@ impl DistSystem {
                 "--network",
                 "host",
                 "-v",
-                &format!("{}:/sccache-dist", self.sccache_dist.to_str().unwrap()),
+                &format!("{}:/sccache-dist:z", self.sccache_dist.to_str().unwrap()),
                 "-v",
                 &format!(
-                    "{}:{}",
+                    "{}:{}:z",
                     self.tmpdir.to_str().unwrap(),
                     CONFIGS_CONTAINER_PATH
                 ),

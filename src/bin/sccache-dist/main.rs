@@ -48,7 +48,10 @@ fn main() {
         .iter()
         .for_each(|incr_str| match env::var(incr_str) {
             Ok(incr_val) if incr_val == "1" => {
-                println!("sccache: increment compilation is  prohibited.");
+                println!(
+                    "sccache: incremental compilation is prohibited: Unset {} to continue.",
+                    incr_str
+                );
                 std::process::exit(1);
             }
             _ => (),
@@ -85,7 +88,7 @@ fn create_server_token(server_id: ServerId, auth_token: &str) -> String {
     format!("{} {}", server_id.addr(), auth_token)
 }
 fn check_server_token(server_token: &str, auth_token: &str) -> Option<ServerId> {
-    let mut split = server_token.splitn(2, |c| c == ' ');
+    let mut split = server_token.splitn(2, ' ');
     let server_addr = split.next().and_then(|addr| addr.parse().ok())?;
     match split.next() {
         Some(t) if t == auth_token => Some(ServerId::new(server_addr)),
@@ -172,9 +175,6 @@ fn run(command: Command) -> Result<i32> {
                     token_check::ValidJWTCheck::new(audience, issuer, &jwks_url)
                         .context("Failed to create a checker for valid JWTs")?,
                 ),
-                scheduler_config::ClientAuth::Mozilla { required_groups } => {
-                    Box::new(token_check::MozillaCheck::new(required_groups))
-                }
                 scheduler_config::ClientAuth::ProxyToken { url, cache_secs } => {
                     Box::new(token_check::ProxyTokenCheck::new(url, cache_secs))
                 }

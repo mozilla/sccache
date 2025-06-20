@@ -17,7 +17,8 @@ use blake3::Hasher as blake3_Hasher;
 use byteorder::{BigEndian, ByteOrder};
 use fs::File;
 use fs_err as fs;
-use object::{macho, read::archive::ArchiveFile, read::macho::FatArch};
+use object::read::archive::ArchiveFile;
+use object::read::macho::{FatArch, MachOFatFile32, MachOFatFile64};
 use serde::{Deserialize, Serialize};
 use std::cell::Cell;
 use std::ffi::{OsStr, OsString};
@@ -199,7 +200,7 @@ impl TimeMacroFinder {
                 if !self.previous_small_read.is_empty() {
                     // In a rare pathological case where all reads are small,
                     // this will grow up to the length of the file.
-                    // It it *very* unlikely and of minor performance
+                    // It is *very* unlikely and of minor performance
                     // importance compared to just getting many small reads.
                     self.previous_small_read.extend(visit);
                 } else {
@@ -356,20 +357,19 @@ pub async fn hash_all_archives(
             let archive_mmap =
                 unsafe { memmap2::MmapOptions::new().map_copy_read_only(&archive_file)? };
 
-            match macho::FatHeader::parse(&*archive_mmap) {
-                Ok(h) if h.magic.get(object::endian::BigEndian) == macho::FAT_MAGIC => {
-                    for arch in macho::FatHeader::parse_arch32(&*archive_mmap)? {
-                        hash_regular_archive(&mut m, arch.data(&*archive_mmap)?)?;
-                    }
+            if let Ok(fat) = MachOFatFile32::parse(&*archive_mmap) {
+                for arch in fat.arches() {
+                    hash_regular_archive(&mut m, arch.data(&*archive_mmap)?)?;
                 }
-                Ok(h) if h.magic.get(object::endian::BigEndian) == macho::FAT_MAGIC_64 => {
-                    for arch in macho::FatHeader::parse_arch64(&*archive_mmap)? {
-                        hash_regular_archive(&mut m, arch.data(&*archive_mmap)?)?;
-                    }
+            } else if let Ok(fat) = MachOFatFile64::parse(&*archive_mmap) {
+                for arch in fat.arches() {
+                    hash_regular_archive(&mut m, arch.data(&*archive_mmap)?)?;
                 }
+            } else {
                 // Not a FatHeader at all, regular archive.
-                _ => hash_regular_archive(&mut m, &archive_mmap)?,
+                hash_regular_archive(&mut m, &archive_mmap)?;
             }
+
             Ok(m.finish())
         })
     });
@@ -829,7 +829,7 @@ pub struct HashToDigest<'a> {
     pub digest: &'a mut Digest,
 }
 
-impl<'a> Hasher for HashToDigest<'a> {
+impl Hasher for HashToDigest<'_> {
     fn write(&mut self, bytes: &[u8]) {
         self.digest.update(bytes)
     }
@@ -1009,6 +1009,10 @@ pub fn ascii_unescape_default(s: &[u8]) -> std::io::Result<Vec<u8>> {
         offset += 1;
     }
     Ok(out)
+}
+
+pub fn num_cpus() -> usize {
+    std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
 }
 
 #[cfg(test)]

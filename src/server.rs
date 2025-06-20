@@ -258,10 +258,13 @@ impl DistClientContainer {
                     "enabled, auth not configured".to_string(),
                 )
             }
-            DistClientState::RetryCreateAt(cfg, _) => {
+            DistClientState::RetryCreateAt(cfg, time) => {
                 return DistInfo::NotConnected(
                     cfg.scheduler_url.clone(),
-                    "enabled, not connected, will retry".to_string(),
+                    format!(
+                        "enabled, not connected, will retry in {:.1}s",
+                        time.duration_since(Instant::now()).as_secs_f32()
+                    ),
                 )
             }
             DistClientState::Some(cfg, client) => (Arc::clone(client), cfg.scheduler_url.clone()),
@@ -431,7 +434,7 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
     let client = Client::new();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .worker_threads(std::cmp::max(20, 2 * num_cpus::get()))
+        .worker_threads(std::cmp::max(20, 2 * util::num_cpus()))
         .build()?;
     let pool = runtime.handle().clone();
     let dist_client = DistClientContainer::new(config, &pool);

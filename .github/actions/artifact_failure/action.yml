@@ -23,7 +23,7 @@ runs:
             --exclude='bins' \
             --exclude='.git' \
             -zcf target/failure-${{ inputs.name }}.tar.gz .
-    - uses: actions/upload-artifact@v3
+    - uses: actions/upload-artifact@v4
       with:
         name: ${{ inputs.name }}
         path: target/failure-${{ inputs.name }}.tar.gz
