@@ -873,6 +873,7 @@ mod server {
         bind_address: SocketAddr,
         scheduler_url: reqwest::Url,
         scheduler_auth: String,
+        core_count: usize,
         // HTTPS pieces all the builders will use for connection encryption
         cert_digest: Vec<u8>,
         cert_pem: Vec<u8>,
@@ -890,6 +891,7 @@ mod server {
             bind_address: Option<SocketAddr>,
             scheduler_url: reqwest::Url,
             scheduler_auth: String,
+            core_count: usize,
             handler: S,
         ) -> Result<Self> {
             let (cert_digest, cert_pem, privkey_pem) =
@@ -903,6 +905,7 @@ mod server {
                 bind_address: bind_address.unwrap_or(public_addr),
                 scheduler_url,
                 scheduler_auth,
+                core_count,
                 cert_digest,
                 cert_pem,
                 privkey_pem,
@@ -913,30 +916,19 @@ mod server {
         }
 
         pub fn start(self) -> Result<Infallible> {
-            let Self {
-                bind_address,
-                scheduler_url,
-                scheduler_auth,
-                cert_digest,
-                cert_pem,
-                privkey_pem,
-                jwt_key,
-                server_nonce,
-                handler,
-            } = self;
             let heartbeat_req = HeartbeatServerHttpRequest {
-                num_cpus: num_cpus(),
-                jwt_key: jwt_key.clone(),
-                server_nonce,
-                cert_digest,
-                cert_pem: cert_pem.clone(),
+                num_cpus: self.core_count,
+                jwt_key: self.jwt_key.clone(),
+                server_nonce: self.server_nonce,
+                cert_digest: self.cert_digest,
+                cert_pem: self.cert_pem.clone(),
             };
-            let job_authorizer = JWTJobAuthorizer::new(jwt_key);
-            let heartbeat_url = urls::scheduler_heartbeat_server(&scheduler_url);
+            let job_authorizer = JWTJobAuthorizer::new(self.jwt_key);
+            let heartbeat_url = urls::scheduler_heartbeat_server(&self.scheduler_url);
             let requester = ServerRequester {
                 client: new_reqwest_blocking_client(),
-                scheduler_url,
-                scheduler_auth: scheduler_auth.clone(),
+                scheduler_url: self.scheduler_url,
+                scheduler_auth: self.scheduler_auth.clone(),
             };
 
             // TODO: detect if this panics
@@ -947,7 +939,7 @@ mod server {
                     match bincode_req(
                         client
                             .post(heartbeat_url.clone())
-                            .bearer_auth(scheduler_auth.clone())
+                            .bearer_auth(self.scheduler_auth.clone())
                             .bincode(&heartbeat_req)
                             .expect("failed to serialize heartbeat"),
                     ) {
@@ -967,10 +959,10 @@ mod server {
                 }
             });
 
-            info!("Server listening for clients on {}", bind_address);
+            info!("Server listening for clients on {}", self.bind_address);
             let request_count = atomic::AtomicUsize::new(0);
 
-            let server = rouille::Server::new_ssl(bind_address, move |request| {
+            let server = rouille::Server::new_ssl(self.bind_address, move |request| {
                 let req_id = request_count.fetch_add(1, atomic::Ordering::SeqCst);
                 trace!("Req {} ({}): {:?}", req_id, request.remote_addr(), request);
                 let response = (|| router!(request,
@@ -979,7 +971,7 @@ mod server {
                         let toolchain = try_or_400_log!(req_id, bincode_input(request));
                         trace!("Req {}: assign_job({}): {:?}", req_id, job_id, toolchain);
 
-                        let res: AssignJobResult = try_or_500_log!(req_id, handler.handle_assign_job(job_id, toolchain));
+                        let res: AssignJobResult = try_or_500_log!(req_id, self.handler.handle_assign_job(job_id, toolchain));
                         prepare_response(request, &res)
                     },
                     (POST) (/api/v1/distserver/submit_toolchain/{job_id: JobId}) => {
@@ -988,7 +980,8 @@ mod server {
 
                         let body = request.data().expect("body was already read in submit_toolchain");
                         let toolchain_rdr = ToolchainReader(Box::new(body));
-                        let res: SubmitToolchainResult = try_or_500_log!(req_id, handler.handle_submit_toolchain(&requester, job_id, toolchain_rdr));
+                        let res: SubmitToolchainResult = try_or_500_log!(req_id, self.handler.handle_submit_toolchain(
+                                                                                        &requester, job_id, toolchain_rdr));
                         prepare_response(request, &res)
                     },
                     (POST) (/api/v1/distserver/run_job/{job_id: JobId}) => {
@@ -1007,7 +1000,8 @@ mod server {
                         let inputs_rdr = InputsReader(Box::new(ZlibReadDecoder::new(body)));
                         let outputs = outputs.into_iter().collect();
 
-                        let res: RunJobResult = try_or_500_log!(req_id, handler.handle_run_job(&requester, job_id, command, outputs, inputs_rdr));
+                        let res: RunJobResult = try_or_500_log!(req_id, self.handler.handle_run_job(&requester, job_id,
+                                                                                        command, outputs, inputs_rdr));
                         prepare_response(request, &res)
                     },
                     _ => {
@@ -1017,7 +1011,7 @@ mod server {
                 ))();
                 trace!("Res {}: {:?}", req_id, response);
                 response
-            }, cert_pem, privkey_pem).map_err(|e| anyhow!(format!("Failed to start http server for sccache server: {}", e)))?;
+            }, self.cert_pem, self.privkey_pem).map_err(|e| anyhow!(format!("Failed to start http server for sccache server: {}", e)))?;
 
             // This limit is rouille's default for `start_server_with_pool`, which
             // we would use, except that interface doesn't permit any sort of
