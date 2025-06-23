@@ -290,6 +290,7 @@ where
     let mut language_extensions = true; // by default, GCC allows extensions
     let mut split_dwarf = false;
     let mut need_explicit_dep_target = false;
+    let mut dep_path = None;
     enum DepArgumentRequirePath {
         NotNeeded,
         Missing,
@@ -371,7 +372,6 @@ where
             }
             Some(Output(p)) => output_arg = Some(p.clone()),
             Some(NeedDepTarget) => {
-                too_hard_for_preprocessor_cache_mode = Some(arg.to_os_string());
                 need_explicit_dep_target = true;
                 if let DepArgumentRequirePath::NotNeeded = need_explicit_dep_argument_path {
                     need_explicit_dep_argument_path = DepArgumentRequirePath::Missing;
@@ -381,8 +381,9 @@ where
                 dep_flag = OsString::from(arg.flag_str().expect("Dep target flag expected"));
                 dep_target = Some(s.clone());
             }
-            Some(DepArgumentPath(_)) => {
+            Some(DepArgumentPath(path)) => {
                 need_explicit_dep_argument_path = DepArgumentRequirePath::Provided;
+                dep_path = Some(path.clone());
             }
             Some(SerializeDiagnostics(path)) => {
                 serialize_diagnostics = Some(path.clone());
@@ -640,6 +641,16 @@ where
     if let DepArgumentRequirePath::Missing = need_explicit_dep_argument_path {
         dependency_args.push(OsString::from("-MF"));
         dependency_args.push(Path::new(&output).with_extension("d").into_os_string());
+    }
+
+    if let Some(path) = dep_path {
+        outputs.insert(
+            "d",
+            ArtifactDescriptor {
+                path: path.clone(),
+                optional: false,
+            },
+        );
     }
 
     if let Some(path) = serialize_diagnostics {
@@ -1450,6 +1461,13 @@ mod test {
                     path: "foo.o".into(),
                     optional: false
                 }
+            ),
+            (
+                "d",
+                ArtifactDescriptor {
+                    path: "foo.o.d".into(),
+                    optional: false
+                }
             )
         );
         assert_eq!(ovec!["-MF", "foo.o.d"], dependency_args);
@@ -1543,6 +1561,13 @@ mod test {
                     path: "foo.o".into(),
                     optional: false
                 }
+            ),
+            (
+                "d",
+                ArtifactDescriptor {
+                    path: "foo.o.d".into(),
+                    optional: false
+                }
             )
         );
         assert_eq!(ovec!["-MF", "foo.o.d"], dependency_args);
@@ -1576,6 +1601,13 @@ mod test {
                 "obj",
                 ArtifactDescriptor {
                     path: "foo.o".into(),
+                    optional: false
+                }
+            ),
+            (
+                "d",
+                ArtifactDescriptor {
+                    path: "foo.o.d".into(),
                     optional: false
                 }
             )
@@ -1615,6 +1647,13 @@ mod test {
                 "obj",
                 ArtifactDescriptor {
                     path: "foo.o".into(),
+                    optional: false
+                }
+            ),
+            (
+                "d",
+                ArtifactDescriptor {
+                    path: "foo.o.d".into(),
                     optional: false
                 }
             )
@@ -1855,6 +1894,13 @@ mod test {
                 "obj",
                 ArtifactDescriptor {
                     path: "foo.o".into(),
+                    optional: false
+                }
+            ),
+            (
+                "d",
+                ArtifactDescriptor {
+                    path: "foo.o.d".into(),
                     optional: false
                 }
             )
