@@ -44,6 +44,11 @@ impl Storage for ReadOnlyStorage {
         Ok(CacheMode::ReadOnly)
     }
 
+    async fn timestamp_cache_hit(&self, _key: &str) -> Result<Option<Duration>> {
+        // Not supported.
+        Ok(None)
+    }
+
     /// Get the storage location.
     fn location(&self) -> String {
         self.0.location()
