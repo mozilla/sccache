@@ -59,7 +59,11 @@ const COMPILERS: &[&str] = &["gcc", "clang", "clang++", "nvc", "nvc++"];
 #[cfg(target_os = "macos")]
 const COMPILERS: &[&str] = &["clang", "clang++"];
 
+#[cfg(all(unix, not(target_os = "windows")))]
 const CUDA_COMPILERS: &[&str] = &["nvcc", "clang++"];
+
+#[cfg(target_os = "windows")]
+const CUDA_COMPILERS: &[&str] = &["nvcc"];
 
 fn adv_key_kind(lang: &str, compiler: &str) -> String {
     let language = lang.to_owned();
