@@ -577,6 +577,7 @@ where
                     compilation,
                     weak_toolchain_key,
                     out_pretty.clone(),
+                    &key,
                 )
                 .await?;
                 let duration_compilation = start.elapsed();
@@ -671,6 +672,7 @@ where
 }
 
 #[cfg(not(feature = "dist-client"))]
+#[allow(clippy::too_many_arguments)]
 async fn dist_or_local_compile<T>(
     service: &server::SccacheService<T>,
     _dist_client: Option<Arc<dyn dist::Client>>,
@@ -679,13 +681,14 @@ async fn dist_or_local_compile<T>(
     compilation: Box<dyn Compilation<T>>,
     _weak_toolchain_key: String,
     out_pretty: String,
+    unique_compilation_key: &str,
 ) -> Result<(Cacheable, DistType, process::Output)>
 where
     T: CommandCreatorSync,
 {
     let mut path_transformer = dist::PathTransformer::new();
     let (compile_cmd, _dist_compile_cmd, cacheable) = compilation
-        .generate_compile_commands(&mut path_transformer, true)
+        .generate_compile_commands(&mut path_transformer, true, unique_compilation_key)
         .context("Failed to generate compile commands")?;
 
     debug!("[{}]: Compiling locally", out_pretty);
@@ -696,6 +699,7 @@ where
 }
 
 #[cfg(feature = "dist-client")]
+#[allow(clippy::too_many_arguments)]
 async fn dist_or_local_compile<T>(
     service: &server::SccacheService<T>,
     dist_client: Option<Arc<dyn dist::Client>>,
@@ -704,6 +708,7 @@ async fn dist_or_local_compile<T>(
     compilation: Box<dyn Compilation<T>>,
     weak_toolchain_key: String,
     out_pretty: String,
+    unique_compilation_key: &str,
 ) -> Result<(Cacheable, DistType, process::Output)>
 where
     T: CommandCreatorSync,
@@ -716,7 +721,11 @@ where
     };
     let mut path_transformer = dist::PathTransformer::new();
     let (compile_cmd, dist_compile_cmd, cacheable) = compilation
-        .generate_compile_commands(&mut path_transformer, rewrite_includes_only)
+        .generate_compile_commands(
+            &mut path_transformer,
+            rewrite_includes_only,
+            unique_compilation_key,
+        )
         .context("Failed to generate compile commands")?;
 
     let dist_client = match dist_compile_cmd.clone().and(dist_client) {
@@ -921,6 +930,7 @@ where
         &self,
         path_transformer: &mut dist::PathTransformer,
         rewrite_includes_only: bool,
+        unique_compilation_key: &str,
     ) -> Result<(
         Box<dyn CompileCommand<T>>,
         Option<dist::CompileCommand>,
