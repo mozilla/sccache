@@ -43,6 +43,7 @@ use crate::config::Config;
 ))]
 use crate::config::{self, CacheType};
 use async_trait::async_trait;
+use chrono::Local;
 use fs_err as fs;
 
 use serde::{Deserialize, Serialize};
@@ -490,7 +491,11 @@ impl Storage for opendal::Operator {
     async fn check(&self) -> Result<CacheMode> {
         use opendal::ErrorKind;
 
-        let path = ".sccache_check";
+        // Use a unique name for path so that we don't have to grant overwrite permissions
+        // on the bucket.
+        let formatted_time = Local::now().format("%Y_%m_%d_%H_%M_%S%.3f").to_string();
+        let combined = format!(".sccache_check_{formatted_time}");
+        let path: &str = combined.as_str();
 
         // Read is required, return error directly if we can't read .
         match self.read(path).await {
