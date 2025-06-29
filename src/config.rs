@@ -1688,3 +1688,36 @@ fn server_toml_parse() {
         }
     )
 }
+
+#[test]
+fn human_units_parse() {
+    const CONFIG_STR: &str = r#"
+[dist]
+toolchain_cache_size = "5g"
+
+[cache.disk]
+size = "7g"
+"#;
+
+    let file_config: FileConfig = toml::from_str(CONFIG_STR).expect("Is valid toml.");
+    assert_eq!(
+        file_config,
+        FileConfig {
+            cache: CacheConfigs {
+                disk: Some(DiskCacheConfig {
+                    dir: default_disk_cache_dir(),
+                    size: 7 * 1024 * 1024 * 1024,
+                    preprocessor_cache_mode: PreprocessorCacheModeConfig::activated(),
+                    rw_mode: CacheModeConfig::ReadWrite,
+                }),
+                ..Default::default()
+            },
+            dist: DistConfig {
+                toolchain_cache_size: 5 * 1024 * 1024 * 1024,
+                ..Default::default()
+            },
+            server_startup_timeout_ms: None,
+        }
+    );
+
+}
