@@ -2332,4 +2332,32 @@ mod tests {
         assert!(output.contains("Cache hits rate (cuda)              0.00 %"));
         assert!(output.contains("Cache hits rate (rust)             33.33 %"));
     }
+
+    // Test that 2 servers with the same hits will always be printed in the same order.
+    // This test will **randomly** (not consistently) fail in case of a regression.
+    #[test]
+    fn test_print_deterministic_hits() {
+        // Test a bunch of time to make the test fail often enough
+        for _ in 0..5 {
+            let mut stats = ServerStats::default();
+            stats.dist_compiles.insert("server1".to_string(), 10);
+            stats.dist_compiles.insert("server2".to_string(), 10);
+
+            let mut writer = StringWriter::new();
+            stats.print(&mut writer, false);
+
+            // Check that the order is deterministic
+            let output = writer.get_output();
+            let lines: Vec<&str> = output.lines().collect();
+            let find_s1 = lines
+                .iter()
+                .position(|line| line.contains("server1"))
+                .unwrap();
+            let find_s2 = lines
+                .iter()
+                .position(|line| line.contains("server2"))
+                .unwrap();
+            assert!(find_s1 < find_s2);
+        }
+    }
 }
