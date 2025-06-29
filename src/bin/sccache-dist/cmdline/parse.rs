@@ -112,6 +112,7 @@ fn get_clap_command() -> ClapCommand {
         .subcommand_required(true)
         .subcommand(
             ClapCommand::new("auth")
+                .about("Helper commands to generate authentication tokens")
                 .subcommand_required(true)
                 .subcommand(ClapCommand::new("generate-jwt-hs256-key"))
                 .subcommand(
@@ -145,14 +146,25 @@ fn get_clap_command() -> ClapCommand {
                     ),
                 ),
         )
-        .subcommand(ClapCommand::new("scheduler").args(&[
-            config_with_help_message("Use the scheduler config file at PATH").required(true),
-            syslog.clone(),
-        ]))
-        .subcommand(ClapCommand::new("server").args(&[
-            config_with_help_message("Use the server config file at PATH").required(true),
-            syslog,
-        ]))
+        .subcommand(
+            ClapCommand::new("scheduler")
+                .about(
+                    "Launch as a scheduler, to dispatch distributed builds across multiple servers",
+                )
+                .args(&[
+                    config_with_help_message("Use the scheduler config file at PATH")
+                        .required(true),
+                    syslog.clone(),
+                ]),
+        )
+        .subcommand(
+            ClapCommand::new("server")
+                .about("Launch as a server, to handle distributed builds assigned by the scheduler")
+                .args(&[
+                    config_with_help_message("Use the server config file at PATH").required(true),
+                    syslog,
+                ]),
+        )
 }
 
 fn check_init_syslog(name: &str, log_level: LogLevel) {
