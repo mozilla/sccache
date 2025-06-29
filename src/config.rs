@@ -1705,10 +1705,8 @@ size = "7g"
         FileConfig {
             cache: CacheConfigs {
                 disk: Some(DiskCacheConfig {
-                    dir: default_disk_cache_dir(),
                     size: 7 * 1024 * 1024 * 1024,
-                    preprocessor_cache_mode: PreprocessorCacheModeConfig::activated(),
-                    rw_mode: CacheModeConfig::ReadWrite,
+                    ..Default::default()
                 }),
                 ..Default::default()
             },
