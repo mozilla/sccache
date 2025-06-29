@@ -2334,7 +2334,7 @@ mod tests {
     }
 
     // Test that 2 servers with the same hits will always be printed in the same order.
-    // This test will **randomly** (not consistently) fail in case of a regression.
+    // This test will **randomly** (not consistently) fail in case of a regression, due to HashMap iteration behaviour.
     #[test]
     fn test_print_deterministic_hits() {
         // Test a bunch of time to make the test fail often enough
