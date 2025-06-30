@@ -13,6 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use chrono::{DateTime, Utc};
 use crate::cache::CacheMode;
 use crate::errors::*;
 use opendal::Operator;
@@ -102,10 +103,29 @@ impl GoogleTokenLoad for TaskClusterTokenLoader {
 
             debug!("gcs: token load succeeded for scope: {}", &self.scope);
 
-            // TODO: we can parse expire time instead using hardcode 1 hour.
+            // Default to 1 hour.
+            let mut expires_in_usize = 3600;
+
+            // Parse ISO_INSTANT date/time format, e.g. "2011-12-03T10:15:30Z"
+            match DateTime::parse_from_rfc3339(&resp.expire_time) {
+                Ok(datetime) => {
+                    let delta = datetime.timestamp() - Utc::now().timestamp();
+                    if delta > 0 {
+                        expires_in_usize = delta as usize;
+                    } else {
+                        debug!("gcs: invalid (past dated) token expire_time: {}", &resp.expire_time);
+                    }
+                },
+                Err(e) => {
+                    debug!("gcs: failed to parse token expire_time: {}", e);
+                }
+            };
+
+            debug!("gcs: token expires in {} seconds", expires_in_usize);
+
             Ok(Some(GoogleToken::new(
                 &resp.access_token,
-                3600,
+                expires_in_usize,
                 &self.scope,
             )))
         } else {
