@@ -173,7 +173,7 @@ impl Storage for DiskCache {
     }
 
     async fn current_size(&self) -> Result<Option<u64>> {
-        Ok(self.lru.lock().unwrap().get().map(|l| l.size()))
+        Ok(Some(self.lru.lock().unwrap().get_or_init()?.size()))
     }
     async fn max_size(&self) -> Result<Option<u64>> {
         Ok(Some(self.lru.lock().unwrap().capacity()))
