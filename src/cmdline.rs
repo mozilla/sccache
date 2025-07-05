@@ -197,7 +197,10 @@ pub fn try_parse() -> Result<Command> {
     let mut args: Vec<_> = env::args_os().collect();
 
     if !internal_start_server {
-        if let Ok(exe) = env::current_exe() {
+        if let Ok(exe) = match env::args().next() {
+            Some(s) if !s.is_empty() => Ok(PathBuf::from(s)),
+            _ => env::current_exe(),
+        } {
             match exe
                 .file_stem()
                 .and_then(|s| s.to_str())
@@ -205,7 +208,7 @@ pub fn try_parse() -> Result<Command> {
             {
                 // If the executable has its standard name, do nothing.
                 Some(ref e) if e == env!("CARGO_PKG_NAME") => {}
-                // Otherwise, if it was copied/hardlinked under a different $name, act
+                // Otherwise, if it was copied/linked under a different $name, act
                 // as if it were invoked with `sccache $name`, but avoid $name resolving
                 // to ourselves again if it's in the PATH.
                 _ => {
