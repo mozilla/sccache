@@ -23,10 +23,9 @@ Preprocessor cache mode will be disabled in any of the following cases:
 
 - Not compiling C or C++
 - The configuration option is false
-- Using distributed compilation
 - Not using GCC or Clang
 - Not using local storage for the cache
-- Any of the compiler options `-MD`, `-MMD`, `-MP`, `-Xpreprocessor`, `-Wp,` are present
+- Any of the compiler options `-MP`, `-Xpreprocessor`, `-Wp,` are present
 - The modification time of one of the header files is too new (avoids a race condition)
 - Certain strings such as `__DATE__`, `__TIME__`, `__TIMESTAMP__` are present in the source code,
   indicating that the preprocessor result may change based on external factors
