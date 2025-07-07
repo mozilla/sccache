@@ -338,3 +338,64 @@ fn test_dist_cargo_makeflags() {
         assert_eq!(1, info.stats.cache_misses.all());
     });
 }
+
+#[test]
+#[cfg_attr(not(feature = "dist-tests"), ignore)]
+fn test_dist_preprocesspr_cache_bug_2173() {
+    // Bug 2173: preprocessor cache hit but main cache miss - because using the preprocessor cache
+    // means not doing regular preprocessing, there was no preprocessed translation unit to send
+    // out for distributed compilation, so an empty u8 array was compiled - which "worked", but
+    // the object file *was* the result of compiling an empty file.
+    let tmpdir = tempfile::Builder::new()
+        .prefix("sccache_dist_test")
+        .tempdir()
+        .unwrap();
+    let tmpdir = tmpdir.path();
+    let sccache_dist = harness::sccache_dist_path();
+
+    let mut system = harness::DistSystem::new(&sccache_dist, tmpdir);
+    system.add_scheduler();
+    let _server_handle = system.add_server();
+
+    let mut sccache_cfg = dist_test_sccache_client_cfg(tmpdir, system.scheduler_url());
+    let disk_cache = sccache_cfg.cache.disk.as_mut().unwrap();
+    disk_cache
+        .preprocessor_cache_mode
+        .use_preprocessor_cache_mode = true;
+    disk_cache.size = 10_000_000; // enough for one tiny object file
+    let sccache_cfg_path = tmpdir.join("sccache-cfg.json");
+    write_json_cfg(tmpdir, "sccache-cfg.json", &sccache_cfg);
+    let sccache_cached_cfg_path = tmpdir.join("sccache-cached-cfg");
+
+    stop_local_daemon();
+    start_local_daemon(&sccache_cfg_path, &sccache_cached_cfg_path);
+
+    basic_compile(tmpdir, &sccache_cfg_path, &sccache_cached_cfg_path);
+    let obj_file = "x.o";
+    let obj_path = tmpdir.join(obj_file);
+    let data_a = std::fs::read(&obj_path).unwrap();
+
+    let cache_path = sccache_cfg.cache.disk.unwrap().dir;
+
+    // Don't touch the preprocessor cache - and check that it exists
+    assert!(
+        cache_path.join("preprocessor").is_dir(),
+        "The preprocessor cache should exist"
+    );
+
+    // Delete the main cache to ensure a cache miss - potential dirs are "0".."f".
+    let main_cache_dirs = "0123456789abcdef";
+    let delete_count = main_cache_dirs.chars().fold(0, |res, dir| {
+        res + (std::fs::remove_dir_all(cache_path.join(String::from(dir))).is_ok() as u32)
+    });
+    assert_eq!(delete_count, 1, "Did the disk cache format change?");
+
+    basic_compile(tmpdir, &sccache_cfg_path, &sccache_cached_cfg_path);
+
+    // Check that this gave the same result (i.e. that it didn't compile a completely empty file).
+    // It would be nice to check directly that the object file contains the symbol for the x() function
+    // from basic_compile(), but that seems pretty involved and this happens to work...
+    let data_b = std::fs::read(&obj_path).unwrap();
+
+    assert_eq!(data_a, data_b);
+}
