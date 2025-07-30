@@ -499,7 +499,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     take_arg!("@", PathBuf, Concatenated, TooHardPath),
 ]);
 
-// TODO: what do do with precompiled header flags? eg: /Y-, /Yc, /YI, /Yu, /Zf, /Zm
+// TODO: what to do with precompiled header flags? eg: /Y-, /Yc, /YI, /Yu, /Zf, /Zm
 
 pub fn parse_arguments(
     arguments: &[OsString],

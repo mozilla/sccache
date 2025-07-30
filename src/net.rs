@@ -67,7 +67,7 @@ impl SocketAddr {
         #[cfg(any(target_os = "linux", target_os = "android"))]
         {
             if s.starts_with("\\x00") {
-                // Rust abstract path expects no prepand '\x00'.
+                // Rust abstract path expects no prepend '\x00'.
                 let data = crate::util::ascii_unescape_default(&s.as_bytes()[4..])?;
                 return Ok(SocketAddr::UnixAbstract(data));
             }
