@@ -386,7 +386,7 @@ pub fn generate_compile_commands(
         .prefix("sccache_nvcc")
         .tempdir()
         .unwrap()
-        .into_path();
+        .keep();
 
     let mut arguments = vec![];
 
