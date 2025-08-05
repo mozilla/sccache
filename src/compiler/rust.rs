@@ -1501,7 +1501,11 @@ where
             // CARGO_REGISTRIES_*_TOKEN contains non-cacheable secrets.
             // Registry override config doesn't need to be hashed, because deps' package IDs
             // already uniquely identify the relevant registries.
-            if var == "CARGO_MAKEFLAGS" || var.starts_with("CARGO_REGISTRIES_") {
+            // CARGO_BUILD_JOBS only affects Cargo's parallelism, not rustc output.
+            if var == "CARGO_MAKEFLAGS"
+                || var.starts_with("CARGO_REGISTRIES_")
+                || var == "CARGO_BUILD_JOBS"
+            {
                 continue;
             }
 
@@ -3440,6 +3444,10 @@ proc_macro false
                     (OsString::from("CARGO_BLAH"), OsString::from("abc")),
                     (
                         OsString::from("CARGO_REGISTRIES_A_TOKEN"),
+                        OsString::from("ignored"),
+                    ),
+                    (
+                        OsString::from("CARGO_BUILD_JOBS"),
                         OsString::from("ignored"),
                     ),
                 ]
