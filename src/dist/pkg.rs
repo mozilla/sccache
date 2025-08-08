@@ -184,6 +184,7 @@ mod toolchain_imp {
                 .compression_level(Compression::default())
                 .from_writer(writer);
             let mut builder = tar::Builder::new(par);
+            builder.mode(tar::HeaderMode::Deterministic);
 
             for (tar_path, dir_path) in dir_set {
                 builder.append_dir(tar_path, dir_path)?
@@ -196,7 +197,6 @@ mod toolchain_imp {
                 let mut header = tar::Header::new_gnu();
                 header.set_entry_type(tar::EntryType::Symlink);
                 header.set_size(0);
-                header.set_mtime(0);
                 // Leave `to_path` as absolute, assuming the tar will be used in a chroot-like
                 // environment.
                 builder.append_link(&mut header, tar_safe_path(from_path), to_path)?
