@@ -8,7 +8,7 @@ extern crate serde_json;
 
 use crate::harness::{
     cargo_command, get_stats, init_cargo, sccache_command, start_local_daemon, stop_local_daemon,
-    write_json_cfg, write_source,
+    write_json_cfg, write_source, clear_cache_local_daemon
 };
 use assert_cmd::prelude::*;
 use sccache::config::HTTPUrl;
@@ -114,7 +114,7 @@ fn test_dist_basic() {
 
     let mut system = harness::DistSystem::new(&sccache_dist, tmpdir);
     system.add_scheduler();
-    system.add_server();
+    let server_handle = system.add_server();
 
     let sccache_cfg = dist_test_sccache_client_cfg(tmpdir, system.scheduler_url());
     let sccache_cfg_path = tmpdir.join("sccache-cfg.json");
@@ -398,4 +398,43 @@ fn test_dist_preprocesspr_cache_bug_2173() {
     let data_b = std::fs::read(&obj_path).unwrap();
 
     assert_eq!(data_a, data_b);
+}
+
+#[test]
+#[cfg_attr(not(feature = "dist-tests"), ignore)]
+fn test_dist_toolchain() {
+    let tmpdir = tempfile::Builder::new()
+        .prefix("sccache_dist_test")
+        .tempdir()
+        .unwrap();
+    let tmpdir = tmpdir.path();
+    let sccache_dist = harness::sccache_dist_path();
+
+    let mut system = harness::DistSystem::new(&sccache_dist, tmpdir);
+    system.add_scheduler();
+    let server_handle = system.add_server();
+    let sccache_cfg = dist_test_sccache_client_cfg(tmpdir, system.scheduler_url());
+    let sccache_cfg_path = tmpdir.join("sccache-cfg.json");
+    write_json_cfg(tmpdir, "sccache-cfg.json", &sccache_cfg);
+    let sccache_cached_cfg_path = tmpdir.join("sccache-cached-cfg");
+    stop_local_daemon();
+    start_local_daemon(&sccache_cfg_path, &sccache_cached_cfg_path);
+    basic_compile(tmpdir, &sccache_cfg_path, &sccache_cached_cfg_path);
+
+    stop_local_daemon();
+    clear_cache_local_daemon(tmpdir);
+
+    start_local_daemon(&sccache_cfg_path, &sccache_cached_cfg_path);
+    basic_compile(tmpdir, &sccache_cfg_path, &sccache_cached_cfg_path);
+
+    assert_eq!(system.count_toolchains_on_server(&server_handle), 1);
+
+    get_stats(|info| {
+        assert_eq!(1, info.stats.dist_compiles.values().sum::<usize>());
+        assert_eq!(0, info.stats.dist_errors);
+        assert_eq!(1, info.stats.compile_requests);
+        assert_eq!(1, info.stats.requests_executed);
+        assert_eq!(0, info.stats.cache_hits.all());
+        assert_eq!(1, info.stats.cache_misses.all());
+    });
 }
