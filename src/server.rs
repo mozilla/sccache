@@ -46,7 +46,9 @@ use std::io::{self, Write};
 use std::marker::Unpin;
 #[cfg(feature = "dist-client")]
 use std::mem;
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(target_os = "android")]
+use std::os::android::net::SocketAddrExt;
+#[cfg(target_os = "linux")]
 use std::os::linux::net::SocketAddrExt;
 use std::path::PathBuf;
 use std::pin::Pin;
