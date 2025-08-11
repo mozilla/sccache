@@ -7,8 +7,8 @@ extern crate sccache;
 extern crate serde_json;
 
 use crate::harness::{
-    cargo_command, get_stats, init_cargo, sccache_command, start_local_daemon, stop_local_daemon,
-    write_json_cfg, write_source, clear_cache_local_daemon
+    cargo_command, clear_cache_local_daemon, get_stats, init_cargo, sccache_command,
+    start_local_daemon, stop_local_daemon, write_json_cfg, write_source,
 };
 use assert_cmd::prelude::*;
 use sccache::config::HTTPUrl;
