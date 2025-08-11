@@ -76,9 +76,14 @@ pub fn stop_local_daemon() -> bool {
 pub fn clear_cache_local_daemon(tmpdir: &Path) -> bool {
     trace!("clear local cache daemon");
     let client_build_dir = tmpdir.join(DIST_CACHE_RELPATH);
-    assert_eq!(true , client_build_dir.exists());
+    assert!(client_build_dir.exists());
     Command::new("rm")
-      .arg("-rf").arg(client_build_dir).output().unwrap().status.success()
+        .arg("-rf")
+        .arg(client_build_dir)
+        .output()
+        .unwrap()
+        .status
+        .success()
 }
 
 pub fn get_stats<F: 'static + Fn(ServerInfo)>(f: F) {
@@ -482,13 +487,23 @@ impl DistSystem {
         match handle {
             ServerHandle::Container { cid, url: _ } => {
                 let output = Command::new("docker")
-                    .args(["exec","-t", cid , "ls", "-1", &format!("{BUILD_DIR_CONTAINER_PATH}/toolchains")])
+                    .args([
+                        "exec",
+                        "-t",
+                        cid,
+                        "ls",
+                        "-1",
+                        &format!("{BUILD_DIR_CONTAINER_PATH}/toolchains"),
+                    ])
                     .output()
                     .unwrap();
                 check_output(&output);
                 println!("{output:?}");
                 let str_output = String::from_utf8_lossy(&output.stdout);
-                return str_output.split("\n").filter(|&part| !part.is_empty()).count();
+                return str_output
+                    .split("\n")
+                    .filter(|&part| !part.is_empty())
+                    .count();
             }
             ServerHandle::Process { pid: _, url: _ } => {
                 panic!("restart not yet implemented for pids")
