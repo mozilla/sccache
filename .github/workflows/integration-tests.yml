@@ -51,7 +51,7 @@ jobs:
         with:
           toolchain: "stable"
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: integration-tests
           path: /home/runner/.cargo/bin/
@@ -99,7 +99,7 @@ jobs:
         with:
           toolchain: "stable"
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: integration-tests
           path: /home/runner/.cargo/bin/
@@ -159,7 +159,7 @@ jobs:
         with:
           toolchain: "stable"
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: integration-tests
           path: /home/runner/.cargo/bin/
@@ -215,7 +215,7 @@ jobs:
         with:
           toolchain: "stable"
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: integration-tests
           path: /home/runner/.cargo/bin/
@@ -264,7 +264,7 @@ jobs:
         with:
           toolchain: "stable"
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: integration-tests
           path: /home/runner/.cargo/bin/
@@ -319,7 +319,7 @@ jobs:
         with:
           toolchain: "stable"
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: integration-tests
           path: /home/runner/.cargo/bin/
@@ -374,7 +374,7 @@ jobs:
         with:
           toolchain: "stable"
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: integration-tests
           path: /home/runner/.cargo/bin/
@@ -426,7 +426,7 @@ jobs:
         with:
           toolchain: "stable"
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: integration-tests
           path: /home/runner/.cargo/bin/
@@ -549,7 +549,7 @@ jobs:
           chmod +x llvm.sh
           sudo ./llvm.sh "${LLVM_VERSION}"
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: integration-tests
           path: /home/runner/.cargo/bin/
@@ -627,7 +627,7 @@ jobs:
         run: |
           cargo build -p randomize_readdir
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: integration-tests
           path: /home/runner/.cargo/bin/
@@ -692,7 +692,7 @@ jobs:
             core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '')
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: integration-tests
           path: /home/runner/.cargo/bin/
@@ -736,7 +736,7 @@ jobs:
             core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '')
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: integration-tests
           path: /home/runner/.cargo/bin/
@@ -792,7 +792,7 @@ jobs:
             core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '')
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: integration-tests
           path: /home/runner/.cargo/bin/
@@ -857,7 +857,7 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TEST_TOOLCHAIN }}
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: integration-tests
           path: /home/runner/.cargo/bin/
@@ -890,7 +890,7 @@ jobs:
       CARGO_INCREMENTAL: "0"
 
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: integration-tests
           path: /home/runner/.cargo/bin/
