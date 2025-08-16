@@ -45,9 +45,9 @@ Configuration options and their default values:
 
 - `ignore_time_macros`: `false`. If true, ignore `__DATE__`, `__TIME__` and `__TIMESTAMP__` being present in the source code. Will speed up preprocessor cache mode, but can produce stale results.
 
-- `skip_system_headers`: `false`. If true, preprocessor cache mode will not cache system headers, only add them to the hash.
+- `skip_system_headers`: `false`. If true, the preprocessor cache will only add the paths of included system headers to the cache key but ignore the headers' contents.
 
-- `hash_working_directory`: `true`. If true, will add the current working directory to the hash to distinguish two compilations from different directories.
+- `hash_working_directory`: `true`. If true, will add the current working directory to the cache key to distinguish two compilations from different directories.
 
 See where to write the config in [the configuration doc](Configuration.md).
 
