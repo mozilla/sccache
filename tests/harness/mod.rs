@@ -3,6 +3,7 @@ use fs_err as fs;
 use sccache::config::HTTPUrl;
 use sccache::dist::{self, SchedulerStatusResult, ServerId};
 use sccache::server::ServerInfo;
+use std::fs::remove_dir_all;
 use std::env;
 use std::io::Write;
 use std::net::{self, IpAddr, SocketAddr};
@@ -77,13 +78,7 @@ pub fn clear_cache_local_daemon(tmpdir: &Path) -> bool {
     trace!("clear local cache daemon");
     let client_build_dir = tmpdir.join(DIST_CACHE_RELPATH);
     assert!(client_build_dir.exists());
-    Command::new("rm")
-        .arg("-rf")
-        .arg(client_build_dir)
-        .output()
-        .unwrap()
-        .status
-        .success()
+    remove_dir_all(client_build_dir).is_ok()
 }
 
 pub fn get_stats<F: 'static + Fn(ServerInfo)>(f: F) {
@@ -501,7 +496,7 @@ impl DistSystem {
                 println!("{output:?}");
                 let str_output = String::from_utf8_lossy(&output.stdout);
                 return str_output
-                    .split("\n")
+                    .lines()
                     .filter(|&part| !part.is_empty())
                     .count();
             }
