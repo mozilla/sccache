@@ -114,7 +114,7 @@ fn test_dist_basic() {
 
     let mut system = harness::DistSystem::new(&sccache_dist, tmpdir);
     system.add_scheduler();
-    let server_handle = system.add_server();
+    system.add_server();
 
     let sccache_cfg = dist_test_sccache_client_cfg(tmpdir, system.scheduler_url());
     let sccache_cfg_path = tmpdir.join("sccache-cfg.json");
