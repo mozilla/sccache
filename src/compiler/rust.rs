@@ -1445,7 +1445,12 @@ where
                 // These contain paths which aren't relevant to the output, and the compiler inputs
                 // in those paths (rlibs and static libs used in the compilation) are used as hash
                 // inputs below.
-                .filter(|&(arg, _)| !(arg == "--extern" || arg == "-L" || arg == "--out-dir" || arg == "--diagnostic-width"))
+                .filter(|&(arg, _)| {
+                    !(arg == "--extern"
+                        || arg == "-L"
+                        || arg == "--out-dir"
+                        || arg == "--diagnostic-width")
+                })
                 // We also exclude `--target` if it specifies a path to a .json file. The file content
                 // is used as hash input below.
                 // If `--target` specifies a string, it continues to be hashed as part of the arguments.
