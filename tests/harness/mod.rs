@@ -3,8 +3,8 @@ use fs_err as fs;
 use sccache::config::HTTPUrl;
 use sccache::dist::{self, SchedulerStatusResult, ServerId};
 use sccache::server::ServerInfo;
-use std::fs::remove_dir_all;
 use std::env;
+use std::fs::remove_dir_all;
 use std::io::Write;
 use std::net::{self, IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
@@ -495,10 +495,7 @@ impl DistSystem {
                 check_output(&output);
                 println!("{output:?}");
                 let str_output = String::from_utf8_lossy(&output.stdout);
-                return str_output
-                    .lines()
-                    .filter(|&part| !part.is_empty())
-                    .count();
+                return str_output.lines().filter(|&part| !part.is_empty()).count();
             }
             ServerHandle::Process { pid: _, url: _ } => {
                 panic!("restart not yet implemented for pids")
