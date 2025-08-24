@@ -154,6 +154,7 @@ impl CCompilerImpl for Clang {
         cwd: &Path,
         env_vars: &[(OsString, OsString)],
         rewrite_includes_only: bool,
+        _hash_key: &str,
     ) -> Result<(
         Box<dyn CompileCommand<T>>,
         Option<dist::CompileCommand>,
@@ -412,6 +413,7 @@ mod test {
             "-x",
             "cuda",
             "--cuda-gpu-arch=sm_50",
+            "--cuda-noopt-device-debug",
             "-o",
             "foo.o"
         );
@@ -428,7 +430,10 @@ mod test {
             )
         );
         assert!(a.preprocessor_args.is_empty());
-        assert_eq!(ovec!["--cuda-gpu-arch=sm_50"], a.common_args);
+        assert_eq!(
+            ovec!["--cuda-gpu-arch=sm_50", "--cuda-noopt-device-debug"],
+            a.common_args
+        );
 
         let b = parses!(
             "-c",
