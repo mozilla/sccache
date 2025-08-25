@@ -232,6 +232,10 @@ jobs:
             target: x86_64-unknown-linux-musl
             container: '{"image": "messense/rust-musl-cross:x86_64-musl"}'
           - os: ubuntu-22.04
+            target: s390x-unknown-linux-musl
+            container: '{"image": "messense/rust-musl-cross:s390x-musl"}'
+            lto: "false"
+          - os: ubuntu-22.04
             binary: sccache-dist
             extra_args: --no-default-features --features="dist-server"
             target: x86_64-unknown-linux-musl
@@ -275,6 +279,7 @@ jobs:
           DEVELOPER_DIR: ${{ matrix.developer_dir }}
           SDKROOT: ${{ matrix.sdkroot }}
           RUSTFLAGS: ${{ matrix.rustflags }}
+          CARGO_PROFILE_RELEASE_LTO: ${{ matrix.lto || 'true' }}
 
       # Workaround for the lack of substring() function in github actions expressions.
       - name: Id
