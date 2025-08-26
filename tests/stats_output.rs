@@ -1,7 +1,7 @@
 pub mod helpers;
 
-use helpers::SccacheTest;
 use anyhow::Result;
+use helpers::SccacheTest;
 use predicates::str::PredicateStrExt;
 use serial_test::serial;
 
@@ -14,8 +14,8 @@ fn test_sccache_cache_size() -> Result<()> {
         .show_text_stats(false)?
         .try_stdout(
             predicates::str::is_match(r"^Cache size\s+\d+\s")
-            .unwrap()
-            .from_utf8(),
+                .unwrap()
+                .from_utf8(),
         )?
         .try_success()?;
     Ok(())
