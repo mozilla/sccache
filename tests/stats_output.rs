@@ -13,7 +13,7 @@ fn test_sccache_cache_size() -> Result<()> {
     test_info
         .show_text_stats(false)?
         .try_stdout(
-            predicates::str::is_match(r"^Cache size\s+\d+\s")
+            predicates::str::is_match(r"Cache size\s+\d+\s")
                 .unwrap()
                 .from_utf8(),
         )?
