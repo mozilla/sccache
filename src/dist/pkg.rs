@@ -184,6 +184,7 @@ mod toolchain_imp {
                 .compression_level(Compression::default())
                 .from_writer(writer);
             let mut builder = tar::Builder::new(par);
+            builder.mode(tar::HeaderMode::Deterministic);
 
             for (tar_path, dir_path) in dir_set {
                 builder.append_dir(tar_path, dir_path)?
