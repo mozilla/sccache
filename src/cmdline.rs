@@ -217,7 +217,8 @@ pub fn try_parse() -> Result<Command> {
                     {
                         match which_in(exe_filename, Some(&path), &cwd) {
                             Ok(ref full_path)
-                                if full_path.canonicalize()? == env::current_exe().canonicalize()? =>
+                                if full_path.canonicalize()?
+                                    == env::current_exe()?.canonicalize()? =>
                             {
                                 if let Some(dir) = full_path.parent() {
                                     let path = env::join_paths(
