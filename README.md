@@ -287,10 +287,6 @@ Known Caveats
 
 [More details on Rust caveats](/docs/Rust.md)
 
-### Symbolic links
-
-* Symbolic links to sccache won't work. Use hardlinks: `ln sccache /usr/local/bin/cc`
-
 ### User Agent
 
 * Requests sent to your storage option of choice will have a user agent header indicating the current sccache version, e.g. `sccache/0.8.2`.
