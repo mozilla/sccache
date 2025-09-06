@@ -35,6 +35,8 @@ use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fmt::{self, format};
 use std::io::{self, Read, Write};
+#[cfg(unix)]
+use std::os::unix::fs as unix_fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::str;
@@ -1948,5 +1950,56 @@ fn test_hip_sccache_command(preprocessor_cache_mode: bool) {
         run_sccache_hip_command_tests(compiler, tempdir.path());
         zero_stats();
         stop_local_daemon();
+    }
+}
+
+// Test that invoking (e.g.) a symlink called "gcc" to "sccache" results in sccache invoking gcc
+#[test]
+#[serial]
+#[cfg(unix)]
+fn test_symlinked_exe() {
+    let compilers = find_compilers();
+    if compilers.is_empty() {
+        warn!("No compilers found, skipping test");
+        return;
+    }
+
+    let tempdir = tempfile::Builder::new()
+        .prefix("sccache_system_test")
+        .tempdir()
+        .unwrap();
+
+    let get_version = |compiler: &mut Command| {
+        compiler
+            .arg("--version")
+            .current_dir(&tempdir)
+            .output()
+            .unwrap()
+            .stdout
+    };
+
+    let mut sc_cmd = sccache_command();
+    let sccache_path = sc_cmd.get_program().to_os_string();
+    let sc_ver_stdout = get_version(&mut sc_cmd);
+
+    for compiler in compilers {
+        trace!(
+            "Testing sccache symlink to {} ({:?})",
+            compiler.name,
+            compiler.exe
+        );
+        let compiler_ver_stdout =
+            get_version(Command::new(&compiler.exe).envs(compiler.env_vars.clone()));
+        assert_ne!(compiler_ver_stdout, sc_ver_stdout);
+
+        let exe_filename = Path::new(&compiler.exe).file_name().unwrap();
+        let sccache_compiler_alias = tempdir.path().join(exe_filename);
+        unix_fs::symlink(&sccache_path, &sccache_compiler_alias).unwrap();
+
+        let compiler_alias_ver_stdout =
+            get_version(Command::new(&sccache_compiler_alias).envs(compiler.env_vars));
+        assert_eq!(compiler_ver_stdout, compiler_alias_ver_stdout);
+
+        fs::remove_file(&sccache_compiler_alias).unwrap();
     }
 }
