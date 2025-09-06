@@ -197,6 +197,7 @@ pub fn try_parse() -> Result<Command> {
     let mut args: Vec<_> = env::args_os().collect();
 
     if !internal_start_server {
+        // current_exe() follows symlinks on some OSes, so try argv[0] to get the original invocation
         if let Ok(exe) = match env::args().next() {
             Some(s) if !s.is_empty() => Ok(PathBuf::from(s)),
             _ => env::current_exe(),
