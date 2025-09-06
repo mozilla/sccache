@@ -1084,7 +1084,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
     let mut gcno = false;
     let mut target_json = None;
 
-    for arg in ArgsIter::new(arguments.iter().cloned(), &ARGS[..]) {
+    for (idx, arg) in ArgsIter::new(arguments.iter().cloned(), &ARGS[..]).enumerate() {
         let arg = try_or_cannot_cache!(arg, "argument parse");
         match arg.get_data() {
             Some(TooHardFlag) | Some(TooHardPath(_)) => {
@@ -1176,9 +1176,21 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
             None => {
                 match arg {
                     Argument::Raw(ref val) => {
+                        if idx == 0 {
+                            if let Some(value) = val.to_str() {
+                                if value == "rustc" {
+                                    // If the first argument is rustc, it's likely called via clippy-driver,
+                                    // so it's not actually an input file, which means we should discount it.
+                                    continue;
+                                }
+                            }
+                        }
                         if input.is_some() {
                             // Can't cache compilations with multiple inputs.
-                            cannot_cache!("multiple input files");
+                            cannot_cache!(
+                                "multiple input files",
+                                format!("prev = {input:?}, next = {arg:?}")
+                            );
                         }
                         input = Some(val.clone());
                     }
@@ -3057,6 +3069,36 @@ LLVM version: 15.0.2
             "--color=auto"
         );
         assert_eq!(h.color_mode, ColorMode::Auto);
+    }
+
+    #[test]
+    fn test_parse_arguments_multiple_inputs() {
+        fails!(
+            "huh.rs",
+            "--emit",
+            "link",
+            "foo.rs",
+            "--out-dir",
+            "out",
+            "--crate-name",
+            "foo",
+            "--crate-type",
+            "lib"
+        );
+
+        // Having `rustc` as the first argument is indicative of clippy
+        parses!(
+            "rustc",
+            "--emit",
+            "link",
+            "foo.rs",
+            "--out-dir",
+            "out",
+            "--crate-name",
+            "foo",
+            "--crate-type",
+            "lib"
+        );
     }
 
     #[test]
