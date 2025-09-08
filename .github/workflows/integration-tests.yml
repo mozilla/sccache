@@ -253,7 +253,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Configure Cache Env
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
@@ -537,7 +537,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Configure Cache Env
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
@@ -597,14 +597,14 @@ jobs:
       # make sure it's working.
       #
       # - name: Configure Cache Env
-      #   uses: actions/github-script@v7
+      #   uses: actions/github-script@v8
       #   with:
       #     script: |
       #       core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
       #       core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '')
 
       # - name: Configure ROCm Env
-      #   uses: actions/github-script@v7
+      #   uses: actions/github-script@v8
       #   with:
       #     script: |
       #       core.exportVariable('ROCM_PATH', process.env.ROCM_PATH || '');
@@ -686,7 +686,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Configure Cache Env
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
@@ -730,7 +730,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Configure Cache Env
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
@@ -786,7 +786,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Configure Cache Env
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
