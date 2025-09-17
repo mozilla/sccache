@@ -59,7 +59,13 @@ const COMPILERS: &[&str] = &["gcc", "clang", "clang++", "nvc", "nvc++"];
 #[cfg(target_os = "macos")]
 const COMPILERS: &[&str] = &["clang", "clang++"];
 
+#[cfg(not(windows))]
 const CUDA_COMPILERS: &[&str] = &["nvcc", "clang++"];
+// Visual Studio 2022 ships clang++ v19 which is too old for recent CUDA versions, and older CUDA
+// versions are too old for recent MSVC versions such as v14 included with Visual Studio 2022...
+// One could perhaps try to accept only clang++ not from under the VS2022 path.
+#[cfg(windows)]
+const CUDA_COMPILERS: &[&str] = &["nvcc"];
 
 fn adv_key_kind(lang: &str, compiler: &str) -> String {
     let language = lang.to_owned();
