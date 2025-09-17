@@ -118,21 +118,21 @@ jobs:
             rustc: beta
             extra_desc: cuda11.8
           - os: windows-2022
-            cuda: "12.8"
+            cuda: "12.4"
             # Oldest supported version, keep in sync with README.md
             rustc: "1.75.0"
             extra_args: --no-fail-fast
-            extra_desc: cuda12.8
+            extra_desc: cuda12.4
           - os: windows-2022
-            cuda: "12.8"
+            cuda: "12.4"
             rustc: nightly
             allow_failure: true
             extra_args: --features=unstable
-            extra_desc: cuda12.8
+            extra_desc: cuda12.4
           - os: windows-2022
-            cuda: "12.8"
+            cuda: "12.4"
             rustc: beta
-            extra_desc: cuda12.8
+            extra_desc: cuda12.4
             no_coverage: true
     env:
       RUST_BACKTRACE: 1
