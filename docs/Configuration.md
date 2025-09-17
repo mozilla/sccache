@@ -203,7 +203,7 @@ The full url appears then as `redis://user:passwd@1.2.3.4:6379/?db=1`.
 #### azure
 
 * `SCCACHE_AZURE_CONNECTION_STRING`
-* `SCCACHE_AZURE_CONTAINER`
+* `SCCACHE_AZURE_BLOB_CONTAINER`
 * `SCCACHE_AZURE_KEY_PREFIX`
 
 #### gha
