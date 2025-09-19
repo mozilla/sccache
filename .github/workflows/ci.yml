@@ -122,16 +122,19 @@ jobs:
             # Oldest supported version, keep in sync with README.md
             rustc: "1.75.0"
             extra_args: --no-fail-fast
+            notest_cuda_compilers: clang++
             extra_desc: cuda12.8
           - os: windows-2022
             cuda: "12.8"
             rustc: nightly
             allow_failure: true
             extra_args: --features=unstable
+            notest_cuda_compilers: clang++
             extra_desc: cuda12.8
           - os: windows-2022
             cuda: "12.8"
             rustc: beta
+            notest_cuda_compilers: clang++
             extra_desc: cuda12.8
             no_coverage: true
     env:
@@ -141,6 +144,7 @@ jobs:
       BINARY_DIR: "target/debug"
       GRCOV_IGNORE_OPTION: '--ignore build.rs --ignore "/*" --ignore "[a-zA-Z]:/*"'
       GRCOV_EXCLUDE_OPTION: '--excl-br-line "^\s*((debug_)?assert(_eq|_ne)?!|#\[derive\()"'
+      NOTEST_CUDA_COMPILERS: ${{ matrix.notest_cuda_compilers || '' }}
     steps:
       - uses: ilammy/msvc-dev-cmd@v1
 
