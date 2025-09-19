@@ -59,13 +59,7 @@ const COMPILERS: &[&str] = &["gcc", "clang", "clang++", "nvc", "nvc++"];
 #[cfg(target_os = "macos")]
 const COMPILERS: &[&str] = &["clang", "clang++"];
 
-#[cfg(not(windows))]
 const CUDA_COMPILERS: &[&str] = &["nvcc", "clang++"];
-// Visual Studio 2022 ships clang++ v19 which is too old for recent CUDA versions, and older CUDA
-// versions are too old for recent MSVC versions such as v14 included with Visual Studio 2022...
-// One could perhaps try to accept only clang++ not from under the VS2022 path.
-#[cfg(windows)]
-const CUDA_COMPILERS: &[&str] = &["nvcc"];
 
 fn adv_key_kind(lang: &str, compiler: &str) -> String {
     let language = lang.to_owned();
@@ -1760,10 +1754,23 @@ fn find_compilers() -> Vec<Compiler> {
 
 fn find_cuda_compilers() -> Vec<Compiler> {
     let cwd = env::current_dir().unwrap();
+
+    let candidates = match env::var_os("NOTEST_CUDA_COMPILERS") {
+        Some(nc) => {
+            let ncs = nc.into_string().unwrap();
+            let not_candidates = ncs.split(':').collect::<Vec<_>>();
+            CUDA_COMPILERS
+                .iter()
+                .filter(|&c| !not_candidates.contains(c))
+                .collect::<Vec<_>>()
+        }
+        None => CUDA_COMPILERS.iter().collect::<Vec<_>>(),
+    };
+
     // CUDA compilers like clang don't come with all of the components for compilation.
     // To consider a machine to have any cuda compilers we rely on the existence of `nvcc`
     let compilers = match which("nvcc") {
-        Ok(_) => CUDA_COMPILERS
+        Ok(_) => candidates
             .iter()
             .filter_map(|c| {
                 which_in(c, env::var_os("PATH"), &cwd)
