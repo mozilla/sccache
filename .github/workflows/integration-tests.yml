@@ -452,7 +452,7 @@ jobs:
           ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"
 
   test-mock-msvc:
-    runs-on: windows-2019
+    runs-on: windows-2022
     env:
       TARGET: x86_64-pc-windows-msvc
       SCCACHE_EXE: ${{ github.workspace }}\\target\\x86_64-pc-windows-msvc\\debug\\sccache.exe
