@@ -2343,15 +2343,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "retry"
-version = "2.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9166d72162de3575f950507683fac47e30f6f2c3836b71b7fbc61aa517c9c5f4"
-dependencies = [
- "rand",
-]
-
-[[package]]
 name = "ring"
 version = "0.17.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2569,6 +2560,7 @@ dependencies = [
  "ar",
  "assert_cmd",
  "async-trait",
+ "backon",
  "base64 0.21.7",
  "bincode",
  "blake3",
@@ -2611,7 +2603,6 @@ dependencies = [
  "regex",
  "reqsign",
  "reqwest 0.12.5",
- "retry",
  "rouille",
  "semver",
  "serde",
