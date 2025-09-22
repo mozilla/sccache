@@ -13,7 +13,9 @@
 //! The module is used to provide abstraction over TCP socket and UDS.
 
 use std::fmt;
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(target_os = "android")]
+use std::os::android::net::SocketAddrExt;
+#[cfg(target_os = "linux")]
 use std::os::linux::net::SocketAddrExt;
 
 use futures::{Future, TryFutureExt};
