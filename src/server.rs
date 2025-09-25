@@ -1818,10 +1818,19 @@ impl ServerStats {
                 stat_width = stat_width + suffix_len
             ));
         }
+
+        // Compare values. If equal, compare keys to have a fully deterministic order.
+        let sort_func =
+            |(k1, v1): &(&String, &usize), (k2, v2): &(&String, &usize)| match v1.cmp(v2).reverse()
+            {
+                std::cmp::Ordering::Equal => k1.cmp(k2),
+                other => other,
+            };
+
         if !self.dist_compiles.is_empty() {
             writer.write("\nSuccessful distributed compiles");
             let mut counts: Vec<_> = self.dist_compiles.iter().collect();
-            counts.sort_by(|(_, c1), (_, c2)| c1.cmp(c2).reverse());
+            counts.sort_by(sort_func);
             for (reason, count) in counts {
                 writer.write(&format!(
                     "  {:<name_width$} {:>stat_width$}",
@@ -1835,7 +1844,7 @@ impl ServerStats {
         if !self.not_cached.is_empty() {
             writer.write("\nNon-cacheable reasons:");
             let mut counts: Vec<_> = self.not_cached.iter().collect();
-            counts.sort_by(|(_, c1), (_, c2)| c1.cmp(c2).reverse());
+            counts.sort_by(sort_func);
             for (reason, count) in counts {
                 writer.write(&format!(
                     "{:<name_width$} {:>stat_width$}",
@@ -2322,5 +2331,33 @@ mod tests {
         assert!(output.contains("Cache hits rate (c/c++ [clang])   100.00 %"));
         assert!(output.contains("Cache hits rate (cuda)              0.00 %"));
         assert!(output.contains("Cache hits rate (rust)             33.33 %"));
+    }
+
+    // Test that 2 servers with the same hits will always be printed in the same order.
+    // This test will **randomly** (not consistently) fail in case of a regression, due to HashMap iteration behaviour.
+    #[test]
+    fn test_print_deterministic_hits() {
+        // Test a bunch of time to make the test fail often enough
+        for _ in 0..5 {
+            let mut stats = ServerStats::default();
+            stats.dist_compiles.insert("server1".to_string(), 10);
+            stats.dist_compiles.insert("server2".to_string(), 10);
+
+            let mut writer = StringWriter::new();
+            stats.print(&mut writer, false);
+
+            // Check that the order is deterministic
+            let output = writer.get_output();
+            let lines: Vec<&str> = output.lines().collect();
+            let find_s1 = lines
+                .iter()
+                .position(|line| line.contains("server1"))
+                .unwrap();
+            let find_s2 = lines
+                .iter()
+                .position(|line| line.contains("server2"))
+                .unwrap();
+            assert!(find_s1 < find_s2);
+        }
     }
 }
