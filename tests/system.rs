@@ -61,7 +61,11 @@ const COMPILERS: &[&str] = &["gcc", "clang", "clang++", "nvc", "nvc++"];
 #[cfg(target_os = "macos")]
 const COMPILERS: &[&str] = &["clang", "clang++"];
 
+#[cfg(all(unix, not(target_os = "windows")))]
 const CUDA_COMPILERS: &[&str] = &["nvcc", "clang++"];
+
+#[cfg(target_os = "windows")]
+const CUDA_COMPILERS: &[&str] = &["nvcc"];
 
 fn adv_key_kind(lang: &str, compiler: &str) -> String {
     let language = lang.to_owned();
@@ -928,18 +932,18 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
     get_stats(|info| {
         assert_eq!(5, info.stats.compile_requests);
         assert_eq!(20, info.stats.requests_executed);
-        assert_eq!(6, info.stats.cache_hits.all());
-        assert_eq!(9, info.stats.cache_misses.all());
+        assert_eq!(7, info.stats.cache_hits.all());
+        assert_eq!(8, info.stats.cache_misses.all());
         assert_eq!(&1, info.stats.cache_hits.get("CUDA").unwrap());
         assert_eq!(&1, info.stats.cache_hits.get("CUDA (Device code)").unwrap());
-        assert_eq!(&1, info.stats.cache_hits.get("PTX").unwrap());
+        assert_eq!(&2, info.stats.cache_hits.get("PTX").unwrap());
         assert_eq!(&3, info.stats.cache_hits.get("CUBIN").unwrap());
         assert_eq!(&2, info.stats.cache_misses.get("CUDA").unwrap());
         assert_eq!(
             &2,
             info.stats.cache_misses.get("CUDA (Device code)").unwrap()
         );
-        assert_eq!(&4, info.stats.cache_misses.get("PTX").unwrap());
+        assert_eq!(&3, info.stats.cache_misses.get("PTX").unwrap());
         assert_eq!(&1, info.stats.cache_misses.get("CUBIN").unwrap());
         assert!(info.stats.cache_misses.get("C/C++").is_none());
         let adv_cuda_key = adv_key_kind("cuda", compiler.name);
@@ -948,14 +952,14 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
         let adv_cubin_key = adv_key_kind("cubin", compiler.name);
         assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_cuda_key).unwrap());
         assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_cudafe_key).unwrap());
-        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_ptx_key).unwrap());
+        assert_eq!(&2, info.stats.cache_hits.get_adv(&adv_ptx_key).unwrap());
         assert_eq!(&3, info.stats.cache_hits.get_adv(&adv_cubin_key).unwrap());
         assert_eq!(&2, info.stats.cache_misses.get_adv(&adv_cuda_key).unwrap());
         assert_eq!(
             &2,
             info.stats.cache_misses.get_adv(&adv_cudafe_key).unwrap()
         );
-        assert_eq!(&4, info.stats.cache_misses.get_adv(&adv_ptx_key).unwrap());
+        assert_eq!(&3, info.stats.cache_misses.get_adv(&adv_ptx_key).unwrap());
         assert_eq!(&1, info.stats.cache_misses.get_adv(&adv_cubin_key).unwrap());
     });
 
@@ -1008,18 +1012,18 @@ int main(int argc, char** argv) {
     get_stats(|info| {
         assert_eq!(6, info.stats.compile_requests);
         assert_eq!(25, info.stats.requests_executed);
-        assert_eq!(6, info.stats.cache_hits.all());
-        assert_eq!(13, info.stats.cache_misses.all());
+        assert_eq!(7, info.stats.cache_hits.all());
+        assert_eq!(12, info.stats.cache_misses.all());
         assert_eq!(&1, info.stats.cache_hits.get("CUDA").unwrap());
         assert_eq!(&1, info.stats.cache_hits.get("CUDA (Device code)").unwrap());
-        assert_eq!(&1, info.stats.cache_hits.get("PTX").unwrap());
+        assert_eq!(&2, info.stats.cache_hits.get("PTX").unwrap());
         assert_eq!(&3, info.stats.cache_hits.get("CUBIN").unwrap());
         assert_eq!(&3, info.stats.cache_misses.get("CUDA").unwrap());
         assert_eq!(
             &3,
             info.stats.cache_misses.get("CUDA (Device code)").unwrap()
         );
-        assert_eq!(&5, info.stats.cache_misses.get("PTX").unwrap());
+        assert_eq!(&4, info.stats.cache_misses.get("PTX").unwrap());
         assert_eq!(&2, info.stats.cache_misses.get("CUBIN").unwrap());
         assert!(info.stats.cache_misses.get("C/C++").is_none());
         let adv_cuda_key = adv_key_kind("cuda", compiler.name);
@@ -1028,14 +1032,14 @@ int main(int argc, char** argv) {
         let adv_cubin_key = adv_key_kind("cubin", compiler.name);
         assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_cuda_key).unwrap());
         assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_cudafe_key).unwrap());
-        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_ptx_key).unwrap());
+        assert_eq!(&2, info.stats.cache_hits.get_adv(&adv_ptx_key).unwrap());
         assert_eq!(&3, info.stats.cache_hits.get_adv(&adv_cubin_key).unwrap());
         assert_eq!(&3, info.stats.cache_misses.get_adv(&adv_cuda_key).unwrap());
         assert_eq!(
             &3,
             info.stats.cache_misses.get_adv(&adv_cudafe_key).unwrap()
         );
-        assert_eq!(&5, info.stats.cache_misses.get_adv(&adv_ptx_key).unwrap());
+        assert_eq!(&4, info.stats.cache_misses.get_adv(&adv_ptx_key).unwrap());
         assert_eq!(&2, info.stats.cache_misses.get_adv(&adv_cubin_key).unwrap());
     });
 
@@ -1068,18 +1072,18 @@ int main(int argc, char** argv) {
     get_stats(|info| {
         assert_eq!(7, info.stats.compile_requests);
         assert_eq!(30, info.stats.requests_executed);
-        assert_eq!(8, info.stats.cache_hits.all());
-        assert_eq!(15, info.stats.cache_misses.all());
+        assert_eq!(9, info.stats.cache_hits.all());
+        assert_eq!(14, info.stats.cache_misses.all());
         assert_eq!(&1, info.stats.cache_hits.get("CUDA").unwrap());
         assert_eq!(&1, info.stats.cache_hits.get("CUDA (Device code)").unwrap());
-        assert_eq!(&2, info.stats.cache_hits.get("PTX").unwrap());
+        assert_eq!(&3, info.stats.cache_hits.get("PTX").unwrap());
         assert_eq!(&4, info.stats.cache_hits.get("CUBIN").unwrap());
         assert_eq!(&4, info.stats.cache_misses.get("CUDA").unwrap());
         assert_eq!(
             &4,
             info.stats.cache_misses.get("CUDA (Device code)").unwrap()
         );
-        assert_eq!(&5, info.stats.cache_misses.get("PTX").unwrap());
+        assert_eq!(&4, info.stats.cache_misses.get("PTX").unwrap());
         assert_eq!(&2, info.stats.cache_misses.get("CUBIN").unwrap());
         assert!(info.stats.cache_misses.get("C/C++").is_none());
         let adv_cuda_key = adv_key_kind("cuda", compiler.name);
@@ -1088,14 +1092,14 @@ int main(int argc, char** argv) {
         let adv_cubin_key = adv_key_kind("cubin", compiler.name);
         assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_cuda_key).unwrap());
         assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_cudafe_key).unwrap());
-        assert_eq!(&2, info.stats.cache_hits.get_adv(&adv_ptx_key).unwrap());
+        assert_eq!(&3, info.stats.cache_hits.get_adv(&adv_ptx_key).unwrap());
         assert_eq!(&4, info.stats.cache_hits.get_adv(&adv_cubin_key).unwrap());
         assert_eq!(&4, info.stats.cache_misses.get_adv(&adv_cuda_key).unwrap());
         assert_eq!(
             &4,
             info.stats.cache_misses.get_adv(&adv_cudafe_key).unwrap()
         );
-        assert_eq!(&5, info.stats.cache_misses.get_adv(&adv_ptx_key).unwrap());
+        assert_eq!(&4, info.stats.cache_misses.get_adv(&adv_ptx_key).unwrap());
         assert_eq!(&2, info.stats.cache_misses.get_adv(&adv_cubin_key).unwrap());
     });
 
@@ -1129,18 +1133,18 @@ int main(int argc, char** argv) {
     get_stats(|info| {
         assert_eq!(8, info.stats.compile_requests);
         assert_eq!(35, info.stats.requests_executed);
-        assert_eq!(12, info.stats.cache_hits.all());
-        assert_eq!(15, info.stats.cache_misses.all());
+        assert_eq!(13, info.stats.cache_hits.all());
+        assert_eq!(14, info.stats.cache_misses.all());
         assert_eq!(&2, info.stats.cache_hits.get("CUDA").unwrap());
         assert_eq!(&2, info.stats.cache_hits.get("CUDA (Device code)").unwrap());
-        assert_eq!(&3, info.stats.cache_hits.get("PTX").unwrap());
+        assert_eq!(&4, info.stats.cache_hits.get("PTX").unwrap());
         assert_eq!(&5, info.stats.cache_hits.get("CUBIN").unwrap());
         assert_eq!(&4, info.stats.cache_misses.get("CUDA").unwrap());
         assert_eq!(
             &4,
             info.stats.cache_misses.get("CUDA (Device code)").unwrap()
         );
-        assert_eq!(&5, info.stats.cache_misses.get("PTX").unwrap());
+        assert_eq!(&4, info.stats.cache_misses.get("PTX").unwrap());
         assert_eq!(&2, info.stats.cache_misses.get("CUBIN").unwrap());
         assert!(info.stats.cache_misses.get("C/C++").is_none());
         let adv_cuda_key = adv_key_kind("cuda", compiler.name);
@@ -1149,14 +1153,14 @@ int main(int argc, char** argv) {
         let adv_cubin_key = adv_key_kind("cubin", compiler.name);
         assert_eq!(&2, info.stats.cache_hits.get_adv(&adv_cuda_key).unwrap());
         assert_eq!(&2, info.stats.cache_hits.get_adv(&adv_cudafe_key).unwrap());
-        assert_eq!(&3, info.stats.cache_hits.get_adv(&adv_ptx_key).unwrap());
+        assert_eq!(&4, info.stats.cache_hits.get_adv(&adv_ptx_key).unwrap());
         assert_eq!(&5, info.stats.cache_hits.get_adv(&adv_cubin_key).unwrap());
         assert_eq!(&4, info.stats.cache_misses.get_adv(&adv_cuda_key).unwrap());
         assert_eq!(
             &4,
             info.stats.cache_misses.get_adv(&adv_cudafe_key).unwrap()
         );
-        assert_eq!(&5, info.stats.cache_misses.get_adv(&adv_ptx_key).unwrap());
+        assert_eq!(&4, info.stats.cache_misses.get_adv(&adv_ptx_key).unwrap());
         assert_eq!(&2, info.stats.cache_misses.get_adv(&adv_cubin_key).unwrap());
     });
 }
