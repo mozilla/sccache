@@ -3722,6 +3722,7 @@ proc_macro false
                     "foo.rs",
                     "--out-dir",
                     "out",
+                    "--diagnostic-width=1",
                     "--extern",
                     "a=1",
                     "--crate-name",
