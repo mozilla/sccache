@@ -20,18 +20,18 @@ use once_cell::sync::Lazy;
 #[cfg(any(feature = "dist-client", feature = "dist-server"))]
 use serde::ser::Serializer;
 use serde::{
-    de::{DeserializeOwned, Deserializer},
+    de::{self, DeserializeOwned, Deserializer},
     Deserialize, Serialize,
 };
 #[cfg(test)]
 use serial_test::serial;
-use std::collections::HashMap;
 use std::env;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::result::Result as StdResult;
 use std::str::FromStr;
 use std::sync::Mutex;
+use std::{collections::HashMap, fmt};
 
 pub use crate::cache::PreprocessorCacheModeConfig;
 use crate::errors::*;
@@ -69,8 +69,50 @@ fn default_toolchain_cache_size() -> u64 {
     TEN_GIGS
 }
 
+struct StringOrU64Visitor;
+
+impl<'de> de::Visitor<'de> for StringOrU64Visitor {
+    type Value = u64;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a string with size suffix (like '20G') or a u64")
+    }
+
+    fn visit_str<E>(self, value: &str) -> StdResult<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        parse_size(value).ok_or_else(|| E::custom(format!("Invalid size value: {}", value)))
+    }
+
+    fn visit_u64<E>(self, value: u64) -> StdResult<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(value)
+    }
+
+    fn visit_i64<E>(self, value: i64) -> StdResult<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        if value < 0 {
+            Err(E::custom("negative values not supported"))
+        } else {
+            Ok(value as u64)
+        }
+    }
+}
+
+fn deserialize_size_from_str<'de, D>(deserializer: D) -> StdResult<u64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserializer.deserialize_any(StringOrU64Visitor)
+}
+
 pub fn parse_size(val: &str) -> Option<u64> {
-    let multiplier = match val.chars().last() {
+    let multiplier = match val.chars().last().map(|v| v.to_ascii_uppercase()) {
         Some('K') => 1024,
         Some('M') => 1024 * 1024,
         Some('G') => 1024 * 1024 * 1024,
@@ -150,7 +192,7 @@ pub struct AzureCacheConfig {
 #[serde(default)]
 pub struct DiskCacheConfig {
     pub dir: PathBuf,
-    // TODO: use deserialize_with to allow human-readable sizes in toml
+    #[serde(deserialize_with = "deserialize_size_from_str")]
     pub size: u64,
     pub preprocessor_cache_mode: PreprocessorCacheModeConfig,
     pub rw_mode: CacheModeConfig,
@@ -517,6 +559,7 @@ pub struct DistConfig {
     pub scheduler_url: Option<String>,
     pub cache_dir: PathBuf,
     pub toolchains: Vec<DistToolchainConfig>,
+    #[serde(deserialize_with = "deserialize_size_from_str")]
     pub toolchain_cache_size: u64,
     pub rewrite_includes_only: bool,
 }
@@ -1211,6 +1254,7 @@ fn test_parse_size() {
     assert_eq!(None, parse_size("bogus value"));
     assert_eq!(Some(100), parse_size("100"));
     assert_eq!(Some(2048), parse_size("2K"));
+    assert_eq!(Some(2048), parse_size("2k"));
     assert_eq!(Some(10 * 1024 * 1024), parse_size("10M"));
     assert_eq!(Some(TEN_GIGS), parse_size("10G"));
     assert_eq!(Some(1024 * TEN_GIGS), parse_size("10T"));
@@ -1643,4 +1687,34 @@ fn server_toml_parse() {
             toolchain_cache_size: 10737418240,
         }
     )
+}
+
+#[test]
+fn human_units_parse() {
+    const CONFIG_STR: &str = r#"
+[dist]
+toolchain_cache_size = "5g"
+
+[cache.disk]
+size = "7g"
+"#;
+
+    let file_config: FileConfig = toml::from_str(CONFIG_STR).expect("Is valid toml.");
+    assert_eq!(
+        file_config,
+        FileConfig {
+            cache: CacheConfigs {
+                disk: Some(DiskCacheConfig {
+                    size: 7 * 1024 * 1024 * 1024,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            dist: DistConfig {
+                toolchain_cache_size: 5 * 1024 * 1024 * 1024,
+                ..Default::default()
+            },
+            server_startup_timeout_ms: None,
+        }
+    );
 }
