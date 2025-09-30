@@ -225,6 +225,7 @@ fn sccache_server_cfg(
             token: DIST_SERVER_TOKEN.to_owned(),
         },
         toolchain_cache_size: TC_CACHE_SIZE,
+        core_count: None,
     }
 }
 
@@ -439,6 +440,7 @@ impl DistSystem {
             Some(SocketAddr::from(([0, 0, 0, 0], server_addr.port()))),
             self.scheduler_url().to_url(),
             token,
+            4,
             handler,
         )
         .unwrap();
