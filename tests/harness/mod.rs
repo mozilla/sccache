@@ -4,6 +4,7 @@ use sccache::config::HTTPUrl;
 use sccache::dist::{self, SchedulerStatusResult, ServerId};
 use sccache::server::ServerInfo;
 use std::env;
+use std::fs::remove_dir_all;
 use std::io::Write;
 use std::net::{self, IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
@@ -30,6 +31,7 @@ const DIST_IMAGE: &str = "sccache_dist_test_image";
 const DIST_DOCKERFILE: &str = include_str!("Dockerfile.sccache-dist");
 const DIST_IMAGE_BWRAP_PATH: &str = "/usr/bin/bwrap";
 const MAX_STARTUP_WAIT: Duration = Duration::from_secs(5);
+const DIST_CACHE_RELPATH: &str = "client-dist-cache";
 
 const DIST_SERVER_TOKEN: &str = "THIS IS THE TEST TOKEN";
 
@@ -70,6 +72,13 @@ pub fn stop_local_daemon() -> bool {
         .stderr(Stdio::null())
         .status()
         .is_ok_and(|status| status.success())
+}
+
+pub fn clear_cache_local_daemon(tmpdir: &Path) -> bool {
+    trace!("clear local cache daemon");
+    let client_build_dir = tmpdir.join(DIST_CACHE_RELPATH);
+    assert!(client_build_dir.exists());
+    remove_dir_all(client_build_dir).is_ok()
 }
 
 pub fn get_stats<F: 'static + Fn(ServerInfo)>(f: F) {
@@ -147,7 +156,7 @@ pub fn sccache_client_cfg(
     preprocessor_cache_mode: bool,
 ) -> sccache::config::FileConfig {
     let cache_relpath = "client-cache";
-    let dist_cache_relpath = "client-dist-cache";
+    let dist_cache_relpath = DIST_CACHE_RELPATH;
     fs::create_dir(tmpdir.join(cache_relpath)).unwrap();
     fs::create_dir(tmpdir.join(dist_cache_relpath)).unwrap();
 
@@ -468,6 +477,30 @@ impl DistSystem {
             }
         }
         self.wait_server_ready(handle)
+    }
+    pub fn count_toolchains_on_server(&mut self, handle: &ServerHandle) -> usize {
+        match handle {
+            ServerHandle::Container { cid, url: _ } => {
+                let output = Command::new("docker")
+                    .args([
+                        "exec",
+                        "-t",
+                        cid,
+                        "ls",
+                        "-1",
+                        &format!("{BUILD_DIR_CONTAINER_PATH}/toolchains"),
+                    ])
+                    .output()
+                    .unwrap();
+                check_output(&output);
+                println!("{output:?}");
+                let str_output = String::from_utf8_lossy(&output.stdout);
+                return str_output.lines().filter(|&part| !part.is_empty()).count();
+            }
+            ServerHandle::Process { pid: _, url: _ } => {
+                panic!("restart not yet implemented for pids")
+            }
+        }
     }
 
     pub fn wait_server_ready(&mut self, handle: &ServerHandle) {

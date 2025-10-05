@@ -16,8 +16,8 @@ use crate::errors::*;
 use crate::net::Connection;
 use crate::protocol::{Request, Response};
 use crate::util;
+use backon::BlockingRetryable;
 use byteorder::{BigEndian, ByteOrder};
-use retry::{delay::Fixed, retry};
 use std::io::{self, BufReader, BufWriter, Read};
 
 /// A connection to an sccache server.
@@ -79,7 +79,10 @@ pub fn connect_with_retry(addr: &crate::net::SocketAddr) -> io::Result<ServerCon
     //   if the process exited.
     // * Send a pipe handle to the server process so it can notify
     //   us once it starts the server instead of us polling.
-    match retry(Fixed::from_millis(500).take(10), || connect_to_server(addr)) {
+    let backoff = backon::ConstantBuilder::default()
+        .with_delay(std::time::Duration::from_millis(500))
+        .with_max_times(10);
+    match (|| connect_to_server(addr)).retry(backoff).call() {
         Ok(conn) => Ok(conn),
         Err(e) => Err(io::Error::new(
             io::ErrorKind::TimedOut,

@@ -27,6 +27,9 @@ strip = true
 anyhow = { version = "1.0", features = ["backtrace"] }
 ar = "0.9"
 async-trait = "0.1"
+backon = { version = "1", default-features = false, features = [
+  "std-blocking-sleep",
+] }
 base64 = "0.21"
 bincode = "1"
 blake3 = "1"
@@ -78,7 +81,6 @@ reqwest = { version = "0.12", features = [
   "rustls-tls-native-roots",
   "trust-dns",
 ], optional = true }
-retry = "2"
 semver = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -124,7 +126,7 @@ version-compare = { version = "0.1.1", optional = true }
 [dev-dependencies]
 assert_cmd = "2.0.13"
 cc = "1.0"
-chrono = "0.4.40"
+chrono = "0.4.42"
 filetime = "0.2"
 itertools = "0.12"
 predicates = "=3.1.0"

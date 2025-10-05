@@ -21,7 +21,12 @@ token = "secrettoken"
 
 
 #[cache.azure]
-# does not work as it appears
+# Azure Storage connection string (see <https://docs.azure.cn/en-us/storage/common/storage-configure-connection-string>)
+connection_string = "BlobEndpoint=https://example.blob.core.windows.net/;SharedAccessSignature=..."
+# Name of container
+container = "my_container_name"
+# Optional string to prepend to each blob storage key
+key_prefix = ""
 
 [cache.disk]
 dir = "/tmp/.cache/sccache"
@@ -198,6 +203,8 @@ The full url appears then as `redis://user:passwd@1.2.3.4:6379/?db=1`.
 #### azure
 
 * `SCCACHE_AZURE_CONNECTION_STRING`
+* `SCCACHE_AZURE_BLOB_CONTAINER`
+* `SCCACHE_AZURE_KEY_PREFIX`
 
 #### gha
 

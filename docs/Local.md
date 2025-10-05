@@ -23,10 +23,9 @@ Preprocessor cache mode will be disabled in any of the following cases:
 
 - Not compiling C or C++
 - The configuration option is false
-- Using distributed compilation
 - Not using GCC or Clang
 - Not using local storage for the cache
-- Any of the compiler options `-MD`, `-MMD`, `-MP`, `-Xpreprocessor`, `-Wp,` are present
+- Any of the compiler options `-MP`, `-Xpreprocessor`, `-Wp,` are present
 - The modification time of one of the header files is too new (avoids a race condition)
 - Certain strings such as `__DATE__`, `__TIME__`, `__TIMESTAMP__` are present in the source code,
   indicating that the preprocessor result may change based on external factors
@@ -40,15 +39,15 @@ The preprocessor cache may silently produce stale results in any of the followin
 
 Configuration options and their default values:
 
-- `use_preprocessor_cache_mode`: `true`. Whether to use preprocessor cache mode. This can be overridden for an sccache invocation by setting the environment variable `SCCACHE_DIRECT` to `true`/`on`/`1` or `false`/`off`/`0`).
+- `use_preprocessor_cache_mode`: `true`. Whether to use preprocessor cache mode. This can be overridden for an sccache invocation by setting the environment variable `SCCACHE_DIRECT` to `true`/`on`/`1` or `false`/`off`/`0`.
 - `file_stat_matches`: `false`. If false, only compare header files by hashing their contents. If true, will use size + ctime + mtime to check whether a file has changed. See other flags below for more control over this behavior.
 - `use_ctime_for_stat`: `true`. If true, uses the ctime (file status change on UNIX, creation time on Windows) to check that a file has/hasn't changed. Can be useful to disable when backdating modification times in a controlled manner.
 
 - `ignore_time_macros`: `false`. If true, ignore `__DATE__`, `__TIME__` and `__TIMESTAMP__` being present in the source code. Will speed up preprocessor cache mode, but can produce stale results.
 
-- `skip_system_headers`: `false`. If true, preprocessor cache mode will not cache system headers, only add them to the hash.
+- `skip_system_headers`: `false`. If true, the preprocessor cache will only add the paths of included system headers to the cache key but ignore the headers' contents.
 
-- `hash_working_directory`: `true`. If true, will add the current working directory to the hash to distinguish two compilations from different directories.
+- `hash_working_directory`: `true`. If true, will add the current working directory to the cache key to distinguish two compilations from different directories.
 
 See where to write the config in [the configuration doc](Configuration.md).
 

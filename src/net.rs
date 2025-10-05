@@ -13,7 +13,9 @@
 //! The module is used to provide abstraction over TCP socket and UDS.
 
 use std::fmt;
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(target_os = "android")]
+use std::os::android::net::SocketAddrExt;
+#[cfg(target_os = "linux")]
 use std::os::linux::net::SocketAddrExt;
 
 use futures::{Future, TryFutureExt};
@@ -67,7 +69,7 @@ impl SocketAddr {
         #[cfg(any(target_os = "linux", target_os = "android"))]
         {
             if s.starts_with("\\x00") {
-                // Rust abstract path expects no prepand '\x00'.
+                // Rust abstract path expects no prepend '\x00'.
                 let data = crate::util::ascii_unescape_default(&s.as_bytes()[4..])?;
                 return Ok(SocketAddr::UnixAbstract(data));
             }
