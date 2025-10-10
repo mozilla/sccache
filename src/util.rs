@@ -841,7 +841,7 @@ impl Hasher for HashToDigest<'_> {
 
 /// Pipe `cmd`'s stdio to `/dev/null`, unless a specific env var is set.
 #[cfg(not(windows))]
-pub fn daemonize() -> Result<()> {
+pub fn daemonize(log_file: Option<File>) -> Result<()> {
     use crate::jobserver::discard_inherited_jobserver;
     use daemonize::Daemonize;
     use std::env;
@@ -850,7 +850,18 @@ pub fn daemonize() -> Result<()> {
     match env::var("SCCACHE_NO_DAEMON") {
         Ok(ref val) if val == "1" => {}
         _ => {
-            Daemonize::new().start().context("failed to daemonize")?;
+            Daemonize::new()
+                .stderr(
+                    log_file
+                        .map(|f| f.into_parts().0.into())
+                        .unwrap_or_else(daemonize::Stdio::devnull),
+                )
+                .start()
+                .context("failed to daemonize")?;
+            // Be extra-zealous and clase all non-stdio file descriptors.
+            unsafe {
+                close_fds::close_open_fds(3, &[]);
+            }
         }
     }
 
@@ -926,10 +937,24 @@ pub fn daemonize() -> Result<()> {
     }
 }
 
-/// This is a no-op on Windows.
+/// Daemonizing is a no-op on Windows, but we still must set the log file as
+/// stderr.
 #[cfg(windows)]
-pub fn daemonize() -> Result<()> {
+pub fn daemonize(log_file: Option<File>) -> Result<()> {
+    if let Some(log_file) = log_file {
+        redirect_stderr(log_file);
+    }
     Ok(())
+}
+
+#[cfg(windows)]
+fn redirect_stderr(f: File) {
+    use std::os::windows::io::IntoRawHandle;
+    use windows_sys::Win32::System::Console::{SetStdHandle, STD_ERROR_HANDLE};
+    // Ignore errors here.
+    unsafe {
+        SetStdHandle(STD_ERROR_HANDLE, f.into_raw_handle() as _);
+    }
 }
 
 /// Disable connection pool to avoid broken connection between runtime
