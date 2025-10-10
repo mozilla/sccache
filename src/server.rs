@@ -31,6 +31,7 @@ use anyhow::Context as _;
 use bytes::{buf::BufMut, Bytes, BytesMut};
 use filetime::FileTime;
 use fs::metadata;
+use fs::File;
 use fs_err as fs;
 use futures::channel::mpsc;
 use futures::future::FutureExt;
@@ -42,7 +43,7 @@ use std::collections::{HashMap, HashSet};
 use std::env;
 use std::ffi::OsString;
 use std::future::Future;
-use std::io::{self, Write};
+use std::io::{self, BufWriter, Write};
 use std::marker::Unpin;
 #[cfg(feature = "dist-client")]
 use std::mem;
@@ -50,7 +51,7 @@ use std::mem;
 use std::os::android::net::SocketAddrExt;
 #[cfg(target_os = "linux")]
 use std::os::linux::net::SocketAddrExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::{ExitStatus, Output};
 use std::sync::Arc;
@@ -488,8 +489,14 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
             crate::net::SocketAddr::Net(addr) => {
                 trace!("binding TCP {addr}");
                 let l = runtime.block_on(tokio::net::TcpListener::bind(addr))?;
-                let srv =
-                    SccacheServer::<_>::with_listener(l, runtime, client, dist_client, storage);
+                let srv = SccacheServer::<_>::with_listener(
+                    l,
+                    runtime,
+                    client,
+                    dist_client,
+                    storage,
+                    config.cache_stats_file.clone(),
+                );
                 Ok((
                     srv.local_addr().unwrap(),
                     Box::new(move |f| srv.run(f)) as Box<dyn FnOnce(_) -> _>,
@@ -504,8 +511,14 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
                     let _guard = runtime.enter();
                     tokio::net::UnixListener::bind(path)?
                 };
-                let srv =
-                    SccacheServer::<_>::with_listener(l, runtime, client, dist_client, storage);
+                let srv = SccacheServer::<_>::with_listener(
+                    l,
+                    runtime,
+                    client,
+                    dist_client,
+                    storage,
+                    config.cache_stats_file.clone(),
+                );
                 Ok((
                     srv.local_addr().unwrap(),
                     Box::new(move |f| srv.run(f)) as Box<dyn FnOnce(_) -> _>,
@@ -521,8 +534,14 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
                     let _guard = runtime.enter();
                     tokio::net::UnixListener::from_std(l)?
                 };
-                let srv =
-                    SccacheServer::<_>::with_listener(l, runtime, client, dist_client, storage);
+                let srv = SccacheServer::<_>::with_listener(
+                    l,
+                    runtime,
+                    client,
+                    dist_client,
+                    storage,
+                    config.cache_stats_file.clone(),
+                );
                 Ok((
                     srv.local_addr()
                         .unwrap_or_else(|| crate::net::SocketAddr::UnixAbstract(p.to_vec())),
@@ -579,6 +598,7 @@ impl<C: CommandCreatorSync> SccacheServer<tokio::net::TcpListener, C> {
         client: Client,
         dist_client: DistClientContainer,
         storage: Arc<dyn Storage>,
+        cache_stats_file: Option<PathBuf>,
     ) -> Result<Self> {
         let addr = crate::net::SocketAddr::with_port(port);
         let listener = runtime.block_on(tokio::net::TcpListener::bind(addr.as_net().unwrap()))?;
@@ -589,6 +609,7 @@ impl<C: CommandCreatorSync> SccacheServer<tokio::net::TcpListener, C> {
             client,
             dist_client,
             storage,
+            cache_stats_file,
         ))
     }
 }
@@ -600,13 +621,22 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
         client: Client,
         dist_client: DistClientContainer,
         storage: Arc<dyn Storage>,
+        cache_stats_file: Option<PathBuf>,
     ) -> Self {
         // Prepare the service which we'll use to service all incoming TCP
         // connections.
         let (tx, rx) = mpsc::channel(1);
         let (wait, info) = WaitUntilZero::new();
         let pool = runtime.handle().clone();
-        let service = SccacheService::new(dist_client, storage, &client, pool, tx, info);
+        let service = SccacheService::new(
+            dist_client,
+            storage,
+            &client,
+            pool,
+            tx,
+            info,
+            cache_stats_file.clone(),
+        );
 
         SccacheServer {
             runtime,
@@ -818,6 +848,10 @@ where
     /// This field causes [WaitUntilZero] to wait until this struct drops.
     #[allow(dead_code)]
     info: ActiveInfo,
+
+    /// A file that will contain JSON-formatted stats output, written after
+    /// each compile operation.
+    cache_stats_file: Option<PathBuf>,
 }
 
 type SccacheRequest = Message<Request, Body<()>>;
@@ -857,7 +891,11 @@ where
                 Request::Compile(compile) => {
                     debug!("handle_client: compile");
                     me.stats.lock().await.compile_requests += 1;
-                    me.handle_compile(compile).await
+                    let resp = me.handle_compile(compile).await;
+                    if let Some(val) = &me.cache_stats_file {
+                        me.stats.lock().await.clone().write(val)?
+                    }
+                    resp
                 }
                 Request::GetStats => {
                     debug!("handle_client: get_stats");
@@ -916,6 +954,7 @@ where
         rt: tokio::runtime::Handle,
         tx: mpsc::Sender<ServerMessage>,
         info: ActiveInfo,
+        cache_stats_file: Option<PathBuf>,
     ) -> SccacheService<C> {
         SccacheService {
             stats: Arc::default(),
@@ -927,6 +966,7 @@ where
             creator: C::new(client),
             tx,
             info,
+            cache_stats_file,
         }
     }
 
@@ -938,6 +978,7 @@ where
         let (_, info) = WaitUntilZero::new();
         let client = Client::new_num(1);
         let dist_client = DistClientContainer::new_disabled();
+        let cache_stats_file = None;
         SccacheService {
             stats: Arc::default(),
             dist_client: Arc::new(dist_client),
@@ -948,6 +989,7 @@ where
             creator: C::new(&client),
             tx,
             info,
+            cache_stats_file,
         }
     }
 
@@ -960,6 +1002,7 @@ where
         let (tx, _) = mpsc::channel(1);
         let (_, info) = WaitUntilZero::new();
         let client = Client::new_num(1);
+        let cache_stats_file = None;
         SccacheService {
             stats: Arc::default(),
             dist_client: Arc::new(DistClientContainer::new_with_state(DistClientState::Some(
@@ -981,6 +1024,7 @@ where
             creator: C::new(&client),
             tx,
             info,
+            cache_stats_file,
         }
     }
 
@@ -1908,6 +1952,19 @@ impl ServerStats {
                 &format!("Cache hits rate ({})", lang),
             );
         }
+    }
+
+    /// Write stats in JSON format to a file.
+    fn write(&self, path: &Path) -> Result<()> {
+        let file = match File::create(path) {
+            Ok(f) => f,
+            Err(e) => {
+                debug!("Couldn't open stats file for writing: {}", e);
+                return Ok(());
+            }
+        };
+        let mut writer = BufWriter::new(file);
+        Ok(serde_json::to_writer(&mut writer, self)?)
     }
 }
 
