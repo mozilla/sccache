@@ -1239,6 +1239,7 @@ pub mod server {
         pub bind_address: Option<SocketAddr>,
         pub scheduler_url: HTTPUrl,
         pub scheduler_auth: SchedulerAuth,
+        pub core_count: Option<usize>,
         #[serde(default = "default_toolchain_cache_size")]
         pub toolchain_cache_size: u64,
     }
@@ -1633,6 +1634,9 @@ fn server_toml_parse() {
     use server::BuilderType;
     use server::SchedulerAuth;
     const CONFIG_STR: &str = r#"
+    # The maximum number of cores to be used for build jobs.
+    # If unspecified, slightly higher than the number of CPU cores (including SMT "cores").
+    core_count = 2097
     # This is where client toolchains will be stored.
     cache_dir = "/tmp/toolchains"
     # The maximum size of the toolchain cache, in bytes.
@@ -1685,6 +1689,7 @@ fn server_toml_parse() {
                 token: "my server's token".to_owned()
             },
             toolchain_cache_size: 10737418240,
+            core_count: Some(2097),
         }
     )
 }
