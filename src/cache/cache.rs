@@ -211,8 +211,14 @@ impl CacheRead {
                 optional,
             } in objects
             {
+                #[cfg(unix)]
                 if path == Path::new("/dev/null") {
                     debug!("Skipping output to /dev/null");
+                    continue;
+                }
+                #[cfg(windows)]
+                if path == Path::new("NUL") {
+                    debug!("Skipping output to NUL");
                     continue;
                 }
                 let dir = match path.parent() {
