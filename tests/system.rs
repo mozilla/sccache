@@ -273,7 +273,8 @@ fn test_basic_compile_into_dev_null(compiler: Compiler, tempdir: &Path) {
         exe,
         env_vars,
     } = compiler;
-    println!("test_basic_compile: {}", name);
+    println!("test_basic_compile_into_dev_null: {}", name);
+    zero_stats();
     // Compile a source file.
     copy_to_tempdir(&[INPUT, INPUT_ERR], tempdir);
 
@@ -325,7 +326,8 @@ fn test_basic_compile_into_dev_stdout(compiler: Compiler, tempdir: &Path) {
         exe,
         env_vars,
     } = compiler;
-    println!("test_basic_compile: {}", name);
+    println!("test_basic_compile_into_dev_stdout: {}", name);
+    zero_stats();
     // Compile a source file.
     copy_to_tempdir(&[INPUT, INPUT_ERR], tempdir);
 
