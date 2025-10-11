@@ -130,17 +130,17 @@ ArgData! { pub
 use self::ArgData::*;
 
 counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
-    take_arg!("--define", OsString, Concatenated('='), PreprocessorArgument),
-    take_arg!("--dep-file", PathBuf, Concatenated('='), DepFile),
+    take_arg!("--define", OsString, Concatenated(b'='), PreprocessorArgument),
+    take_arg!("--dep-file", PathBuf, Concatenated(b'='), DepFile),
     flag!("--dry-run", TooHardFlag),
-    take_arg!("--help", OsString, Concatenated('='), NotCompilation),
-    take_arg!("--include-directory", PathBuf, Concatenated('='), PreprocessorArgumentPath),
-    take_arg!("--include-file", PathBuf, Concatenated('='), PreprocessorArgumentPath),
-    take_arg!("--library-directory", OsString, Concatenated('='), PassThrough),
-    take_arg!("--mil-split", OsString, Concatenated('='), TooHard),
-    take_arg!("--option-file", OsString, Concatenated('='), TooHard),
-    take_arg!("--output", PathBuf, Concatenated('='), Output),
-    take_arg!("--preprocess", OsString, Concatenated('='), TooHard),
+    take_arg!("--help", OsString, Concatenated(b'='), NotCompilation),
+    take_arg!("--include-directory", PathBuf, Concatenated(b'='), PreprocessorArgumentPath),
+    take_arg!("--include-file", PathBuf, Concatenated(b'='), PreprocessorArgumentPath),
+    take_arg!("--library-directory", OsString, Concatenated(b'='), PassThrough),
+    take_arg!("--mil-split", OsString, Concatenated(b'='), TooHard),
+    take_arg!("--option-file", OsString, Concatenated(b'='), TooHard),
+    take_arg!("--output", PathBuf, Concatenated(b'='), Output),
+    take_arg!("--preprocess", OsString, Concatenated(b'='), TooHard),
     take_arg!("--undefine", OsString, Separated, PreprocessorArgument), // ok
     flag!("--version", NotCompilationFlag),
     flag!("-?", NotCompilationFlag),
