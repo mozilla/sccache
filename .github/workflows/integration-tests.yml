@@ -833,20 +833,16 @@ jobs:
 
           ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"
 
-  # The test cargo "cargo build -Zprofile"
-  rust-test-Z-profile:
+  # Test sccache with modern LLVM-based code coverage
+  rust-test-coverage:
     runs-on: ubuntu-24.04
     needs: build
 
     env:
       RUSTC_WRAPPER: /home/runner/.cargo/bin/sccache
       CARGO_INCREMENTAL: "0"
-      RUSTFLAGS: "-Ccodegen-units=1 -Copt-level=0 -Clink-dead-code -Coverflow-checks=off -Zpanic_abort_tests -Cpanic=abort -Zprofile"
-      RUSTDOCFLAGS: "-Cpanic=abort"
-      # The last nightly rust that still support "-Zprofile"
-      #
-      # See https://github.com/rust-lang/rust/pull/131829
-      RUST_TEST_TOOLCHAIN: nightly-2024-11-01
+      RUSTFLAGS: "-Cinstrument-coverage"
+      LLVM_PROFILE_FILE: "coverage-%p-%m.profraw"
 
     steps:
       - name: Clone repository
@@ -855,7 +851,7 @@ jobs:
       - name: Install rust
         uses: ./.github/actions/rust-toolchain
         with:
-          toolchain: ${{ env.RUST_TEST_TOOLCHAIN }}
+          toolchain: "stable"
 
       - uses: actions/download-artifact@v5
         with:
@@ -865,14 +861,14 @@ jobs:
         run: chmod +x ${SCCACHE_PATH}
 
       - name: "Coverage test #1"
-        run: cargo +${{ env.RUST_TEST_TOOLCHAIN }} clean && cargo +${{ env.RUST_TEST_TOOLCHAIN }} build
+        run: cargo clean && cargo build
 
       - name: Output
         run: |
           ${SCCACHE_PATH} --show-stats
 
       - name: "Coverage test #2"
-        run: cargo +${{ env.RUST_TEST_TOOLCHAIN }} clean && cargo +${{ env.RUST_TEST_TOOLCHAIN }} build
+        run: cargo clean && cargo build
 
       - name: Output
         run: |
