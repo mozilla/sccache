@@ -15,9 +15,9 @@
 
 use std::time::Duration;
 
+use opendal::Operator;
 use opendal::layers::LoggingLayer;
 use opendal::services::Memcached;
-use opendal::Operator;
 
 use crate::errors::*;
 

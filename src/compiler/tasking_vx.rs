@@ -15,13 +15,13 @@
 
 use crate::{
     compiler::{
+        CCompileCommand, Cacheable, ColorMode, CompileCommand, CompilerArguments, Language,
+        SingleCompileCommand,
         args::{
             ArgDisposition, ArgInfo, ArgToStringResult, ArgsIter, Argument, FromArg, IntoArg,
             NormalizedDisposition, PathTransformerFn, SearchableArgInfo,
         },
         c::{ArtifactDescriptor, CCompilerImpl, CCompilerKind, ParsedArguments},
-        CCompileCommand, Cacheable, ColorMode, CompileCommand, CompilerArguments, Language,
-        SingleCompileCommand,
     },
     counted_array, dist,
     errors::*,
@@ -190,7 +190,7 @@ where
                 cannot_cache!(arg.flag_str().expect("Can't be Argument::Raw/UnknownFlag",))
             }
             Some(NotCompilationFlag) | Some(NotCompilation(_)) => {
-                return CompilerArguments::NotCompilation
+                return CompilerArguments::NotCompilation;
             }
             Some(DoCompilation) => compilation = true,
             Some(Output(p)) => output_arg = Some(p.clone()),
@@ -401,8 +401,8 @@ fn generate_compile_commands(
 #[cfg(test)]
 mod test {
     use super::{
-        dist, generate_compile_commands, parse_arguments, Language, OsString, ParsedArguments,
-        PathBuf, ARGS,
+        ARGS, Language, OsString, ParsedArguments, PathBuf, dist, generate_compile_commands,
+        parse_arguments,
     };
     use crate::compiler::c::ArtifactDescriptor;
     use crate::compiler::*;
@@ -514,8 +514,9 @@ mod test {
 
     #[test]
     fn test_parse_arguments_values() {
-        let args =
-            stringvec!["-c", "foo.cxx", "-fabc", "-I", "include", "-o", "foo.o", "-H", "file"];
+        let args = stringvec![
+            "-c", "foo.cxx", "-fabc", "-I", "include", "-o", "foo.o", "-H", "file"
+        ];
         let ParsedArguments {
             input,
             language,

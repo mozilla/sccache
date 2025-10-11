@@ -15,11 +15,11 @@
 use crate::compiler::args::*;
 use crate::compiler::c::{ArtifactDescriptor, CCompilerImpl, CCompilerKind, ParsedArguments};
 use crate::compiler::{
-    clang, CCompileCommand, Cacheable, ColorMode, CompileCommand, CompilerArguments, Language,
-    SingleCompileCommand,
+    CCompileCommand, Cacheable, ColorMode, CompileCommand, CompilerArguments, Language,
+    SingleCompileCommand, clang,
 };
 use crate::mock_command::{CommandCreatorSync, RunCommand};
-use crate::util::{run_input_output, OsStrExt};
+use crate::util::{OsStrExt, run_input_output};
 use crate::{counted_array, dist};
 use async_trait::async_trait;
 use fs::File;
@@ -514,9 +514,10 @@ where
             | Some(Output(_))
             | Some(TooHardFlag)
             | Some(XClang(_))
-            | Some(TooHard(_)) => cannot_cache!(arg
-                .flag_str()
-                .unwrap_or("Can't handle complex arguments through clang",)),
+            | Some(TooHard(_)) => cannot_cache!(
+                arg.flag_str()
+                    .unwrap_or("Can't handle complex arguments through clang",)
+            ),
             None => match arg {
                 Argument::Raw(_) if follows_plugin_arg => &mut common_args,
                 Argument::Raw(flag) => cannot_cache!(
@@ -1537,8 +1538,9 @@ mod test {
 
     #[test]
     fn test_parse_arguments_explicit_dep_target() {
-        let args =
-            stringvec!["-c", "foo.c", "-MT", "depfile", "-fabc", "-MF", "foo.o.d", "-o", "foo.o"];
+        let args = stringvec![
+            "-c", "foo.c", "-MT", "depfile", "-fabc", "-MF", "foo.o.d", "-o", "foo.o"
+        ];
         let ParsedArguments {
             input,
             language,
@@ -1873,7 +1875,9 @@ mod test {
 
     #[test]
     fn test_parse_arguments_dep_target_needed() {
-        let args = stringvec!["-c", "foo.c", "-fabc", "-MF", "foo.o.d", "-o", "foo.o", "-MD"];
+        let args = stringvec![
+            "-c", "foo.c", "-fabc", "-MF", "foo.o.d", "-o", "foo.o", "-MD"
+        ];
         let ParsedArguments {
             input,
             language,
@@ -2075,7 +2079,9 @@ mod test {
 
         with_var("SCCACHE_CACHE_MULTIARCH", Some("1"), || {
             match parse_arguments_(
-                stringvec!["-arch", "arm64", "-arch", "arm64", "-o", "foo.o", "-c", "foo.cpp"],
+                stringvec![
+                    "-arch", "arm64", "-arch", "arm64", "-o", "foo.o", "-c", "foo.cpp"
+                ],
                 false,
             ) {
                 CompilerArguments::Ok(_) => {}

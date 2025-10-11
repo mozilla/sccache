@@ -512,7 +512,10 @@ impl CommandCreator for MockCommandCreator {
     }
 
     fn new_command<S: AsRef<OsStr>>(&mut self, _program: S) -> MockCommand {
-        assert!(!self.children.is_empty(), "Too many calls to MockCommandCreator::new_command, or not enough to MockCommandCreator::new_command_spawns!");
+        assert!(
+            !self.children.is_empty(),
+            "Too many calls to MockCommandCreator::new_command, or not enough to MockCommandCreator::new_command_spawns!"
+        );
         //TODO: assert value of program
         MockCommand {
             child: Some(self.children.remove(0)),

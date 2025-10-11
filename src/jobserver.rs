@@ -2,9 +2,9 @@ use std::io;
 use std::process::Command;
 use std::sync::Arc;
 
+use futures::StreamExt;
 use futures::channel::mpsc;
 use futures::channel::oneshot;
-use futures::StreamExt;
 
 use crate::errors::*;
 

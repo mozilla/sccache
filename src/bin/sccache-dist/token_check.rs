@@ -1,7 +1,7 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use base64::Engine;
 use sccache::dist::http::{ClientAuthCheck, ClientVisibleMsg};
-use sccache::util::{new_reqwest_blocking_client, BASE64_URL_SAFE_ENGINE};
+use sccache::util::{BASE64_URL_SAFE_ENGINE, new_reqwest_blocking_client};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::result::Result as StdResult;

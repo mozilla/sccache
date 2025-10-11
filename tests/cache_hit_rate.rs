@@ -4,7 +4,7 @@ use std::process::Command;
 
 use anyhow::Result;
 use assert_cmd::assert::OutputAssertExt;
-use helpers::{cargo_clean, SccacheTest, CARGO, CRATE_DIR};
+use helpers::{CARGO, CRATE_DIR, SccacheTest, cargo_clean};
 use predicates::{boolean::PredicateBooleanExt, str::PredicateStrExt};
 use serial_test::serial;
 

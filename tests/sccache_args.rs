@@ -6,7 +6,7 @@ pub mod helpers;
 
 use anyhow::Result;
 use assert_cmd::prelude::*;
-use helpers::{stop_sccache, SCCACHE_BIN};
+use helpers::{SCCACHE_BIN, stop_sccache};
 use predicates::prelude::*;
 use serial_test::serial;
 use std::process::Command;

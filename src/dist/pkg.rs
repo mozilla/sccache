@@ -33,7 +33,7 @@ pub trait InputsPackager: Send {
 
 pub trait OutputsRepackager {
     fn repackage_outputs(self: Box<Self>, wtr: &mut dyn io::Write)
-        -> Result<dist::PathTransformer>;
+    -> Result<dist::PathTransformer>;
 }
 
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]

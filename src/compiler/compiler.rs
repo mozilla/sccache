@@ -33,7 +33,7 @@ use crate::compiler::tasking_vx::TaskingVX;
 use crate::dist::pkg;
 #[cfg(feature = "dist-client")]
 use crate::lru_disk_cache;
-use crate::mock_command::{exit_status, CommandChild, CommandCreatorSync, RunCommand};
+use crate::mock_command::{CommandChild, CommandCreatorSync, RunCommand, exit_status};
 use crate::server;
 use crate::util::{fmt_duration_as_secs, run_input_output};
 use crate::{counted_array, dist};
@@ -892,17 +892,24 @@ where
 
         for (path, output_data) in jc.outputs {
             let len = output_data.lens().actual;
-            let local_path = try_or_cleanup!(path_transformer
-                .to_local(&path)
-                .with_context(|| format!("unable to transform output path {}", path)));
+            let local_path = try_or_cleanup!(
+                path_transformer
+                    .to_local(&path)
+                    .with_context(|| format!("unable to transform output path {}", path))
+            );
             output_paths.push(local_path);
             // Do this first so cleanup works correctly
             let local_path = output_paths.last().expect("nothing in vec after push");
 
-            let mut file = try_or_cleanup!(File::create(local_path)
-                .with_context(|| format!("Failed to create output file {}", local_path.display())));
-            let count = try_or_cleanup!(io::copy(&mut output_data.into_reader(), &mut file)
-                .with_context(|| format!("Failed to write output to {}", local_path.display())));
+            let mut file =
+                try_or_cleanup!(File::create(local_path).with_context(|| format!(
+                    "Failed to create output file {}",
+                    local_path.display()
+                )));
+            let count = try_or_cleanup!(
+                io::copy(&mut output_data.into_reader(), &mut file)
+                    .with_context(|| format!("Failed to write output to {}", local_path.display()))
+            );
 
             assert!(count == len);
         }
@@ -910,9 +917,11 @@ where
             Some(p) => vec![p],
             None => vec![],
         };
-        try_or_cleanup!(outputs_rewriter
-            .handle_outputs(&path_transformer, &output_paths, &extra_inputs)
-            .with_context(|| "failed to rewrite outputs from compile"));
+        try_or_cleanup!(
+            outputs_rewriter
+                .handle_outputs(&path_transformer, &output_paths, &extra_inputs)
+                .with_context(|| "failed to rewrite outputs from compile")
+        );
         Ok((DistType::Ok(server_id), jc.output.into()))
     };
 
@@ -2030,32 +2039,36 @@ LLVM version: 6.0",
         let creator = new_creator();
         next_command(&creator, Ok(MockChild::new(exit_status(1), "", "no -vV")));
         populate_rustc_command_mock(&creator, &f);
-        assert!(detect_compiler(
-            creator,
-            &rustc,
-            f.tempdir.path(),
-            &[OsString::from("not-rustc")],
-            &[(OsString::from("CARGO"), OsString::from("CARGO"))],
-            pool,
-            None,
-        )
-        .wait()
-        .is_err());
+        assert!(
+            detect_compiler(
+                creator,
+                &rustc,
+                f.tempdir.path(),
+                &[OsString::from("not-rustc")],
+                &[(OsString::from("CARGO"), OsString::from("CARGO"))],
+                pool,
+                None,
+            )
+            .wait()
+            .is_err()
+        );
 
         // Test we detect rustc if the CARGO env is not defined
         let creator = new_creator();
         populate_rustc_command_mock(&creator, &f);
-        assert!(detect_compiler(
-            creator,
-            &rustc,
-            f.tempdir.path(),
-            &[OsString::from("rustc")],
-            &[],
-            pool,
-            None,
-        )
-        .wait()
-        .is_ok());
+        assert!(
+            detect_compiler(
+                creator,
+                &rustc,
+                f.tempdir.path(),
+                &[OsString::from("rustc")],
+                &[],
+                pool,
+                None,
+            )
+            .wait()
+            .is_ok()
+        );
     }
 
     #[test]
@@ -2087,17 +2100,19 @@ LLVM version: 6.0",
             &creator,
             Ok(MockChild::new(exit_status(0), "something", "")),
         );
-        assert!(detect_compiler(
-            creator,
-            "/foo/bar".as_ref(),
-            f.tempdir.path(),
-            &[],
-            &[],
-            pool,
-            None
-        )
-        .wait()
-        .is_err());
+        assert!(
+            detect_compiler(
+                creator,
+                "/foo/bar".as_ref(),
+                f.tempdir.path(),
+                &[],
+                &[],
+                pool,
+                None
+            )
+            .wait()
+            .is_err()
+        );
     }
 
     #[test]
@@ -2108,17 +2123,19 @@ LLVM version: 6.0",
         let pool = runtime.handle();
         next_command(&creator, Ok(MockChild::new(exit_status(1), "", "no -vV")));
         next_command(&creator, Ok(MockChild::new(exit_status(1), "", "")));
-        assert!(detect_compiler(
-            creator,
-            "/foo/bar".as_ref(),
-            f.tempdir.path(),
-            &[],
-            &[],
-            pool,
-            None
-        )
-        .wait()
-        .is_err());
+        assert!(
+            detect_compiler(
+                creator,
+                "/foo/bar".as_ref(),
+                f.tempdir.path(),
+                &[],
+                &[],
+                pool,
+                None
+            )
+            .wait()
+            .is_err()
+        );
     }
 
     #[test_case(true ; "with preprocessor cache")]
@@ -3049,7 +3066,7 @@ mod test_dist {
     };
     use async_trait::async_trait;
     use std::path::{Path, PathBuf};
-    use std::sync::{atomic::AtomicBool, Arc};
+    use std::sync::{Arc, atomic::AtomicBool};
 
     use crate::errors::*;
 
@@ -3173,9 +3190,11 @@ mod test_dist {
     #[async_trait]
     impl dist::Client for ErrorSubmitToolchainClient {
         async fn do_alloc_job(&self, tc: Toolchain) -> Result<AllocJobResult> {
-            assert!(!self
-                .has_started
-                .swap(true, std::sync::atomic::Ordering::AcqRel));
+            assert!(
+                !self
+                    .has_started
+                    .swap(true, std::sync::atomic::Ordering::AcqRel)
+            );
             assert_eq!(self.tc, tc);
             Ok(AllocJobResult::Success {
                 job_alloc: JobAlloc {
@@ -3242,9 +3261,11 @@ mod test_dist {
     #[async_trait]
     impl dist::Client for ErrorRunJobClient {
         async fn do_alloc_job(&self, tc: Toolchain) -> Result<AllocJobResult> {
-            assert!(!self
-                .has_started
-                .swap(true, std::sync::atomic::Ordering::AcqRel));
+            assert!(
+                !self
+                    .has_started
+                    .swap(true, std::sync::atomic::Ordering::AcqRel)
+            );
             assert_eq!(self.tc, tc);
             Ok(AllocJobResult::Success {
                 job_alloc: JobAlloc {
@@ -3322,9 +3343,11 @@ mod test_dist {
     #[async_trait]
     impl dist::Client for OneshotClient {
         async fn do_alloc_job(&self, tc: Toolchain) -> Result<AllocJobResult> {
-            assert!(!self
-                .has_started
-                .swap(true, std::sync::atomic::Ordering::AcqRel));
+            assert!(
+                !self
+                    .has_started
+                    .swap(true, std::sync::atomic::Ordering::AcqRel)
+            );
             assert_eq!(self.tc, tc);
 
             Ok(AllocJobResult::Success {

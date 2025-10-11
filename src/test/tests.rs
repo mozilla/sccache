@@ -31,7 +31,7 @@ use std::net::TcpListener;
 use std::path::Path;
 #[cfg(not(target_os = "macos"))]
 use std::process::Command;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
 use std::u64;
