@@ -267,7 +267,6 @@ fn test_basic_compile(compiler: Compiler, tempdir: &Path) {
     });
 }
 
-#[cfg(unix)]
 fn test_basic_compile_into_dev_null(compiler: Compiler, tempdir: &Path) {
     let Compiler {
         name,
@@ -317,11 +316,6 @@ fn test_basic_compile_into_dev_null(compiler: Compiler, tempdir: &Path) {
         assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_key).unwrap());
         assert_eq!(&1, info.stats.cache_misses.get_adv(&adv_key).unwrap());
     });
-}
-
-#[cfg(not(unix))]
-fn test_basic_compile_into_dev_null(_: Compiler, _: &Path) {
-    warn!("Not unix, skipping /dev tests");
 }
 
 #[cfg(unix)]
@@ -378,7 +372,7 @@ fn test_basic_compile_into_dev_stdout(compiler: Compiler, tempdir: &Path) {
 
 #[cfg(not(unix))]
 fn test_basic_compile_into_dev_stdout(_: Compiler, _: &Path) {
-    warn!("Not unix, skipping /dev tests");
+    warn!("Not unix, skipping tests with /dev/stdout");
 }
 
 fn test_noncacheable_stats(compiler: Compiler, tempdir: &Path) {
