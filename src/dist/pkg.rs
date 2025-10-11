@@ -266,9 +266,9 @@ mod toolchain_imp {
                 _ => bail!("Invalid endianness in elf header"),
             };
             let e_type = if little_endian {
-                (elf_bytes[0x11] as u16) << 8 | elf_bytes[0x10] as u16
+                ((elf_bytes[0x11] as u16) << 8) | elf_bytes[0x10] as u16
             } else {
-                (elf_bytes[0x10] as u16) << 8 | elf_bytes[0x11] as u16
+                ((elf_bytes[0x10] as u16) << 8) | elf_bytes[0x11] as u16
             };
             if e_type != 0x02 {
                 bail!("ldd failed on a non-ET_EXEC elf")
