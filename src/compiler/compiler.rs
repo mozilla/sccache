@@ -1515,8 +1515,8 @@ use self::ArgData::PassThrough as Detect_PassThrough;
 //  gcc is expected to exist on the PATH. So if gcc doesn't exist
 //  compiler detection fails if we don't pass along the ccbin arg
 counted_array!(static ARGS: [ArgInfo<ArgData>; _] = [
-    take_arg!("--compiler-bindir", OsString, CanBeSeparated('='), Detect_PassThrough),
-    take_arg!("-ccbin", OsString, CanBeSeparated('='), Detect_PassThrough),
+    take_arg!("--compiler-bindir", OsString, CanBeSeparated(b'='), Detect_PassThrough),
+    take_arg!("-ccbin", OsString, CanBeSeparated(b'='), Detect_PassThrough),
 ]);
 
 async fn detect_c_compiler<T, P>(

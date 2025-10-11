@@ -219,8 +219,7 @@ impl PreprocessorCacheEntry {
                 match (include.mtime, include.ctime) {
                     (Some(mtime), Some(ctime)) if config.use_ctime_for_stat => {
                         let mtime_matches = meta.modified().map(Into::into).ok() == Some(mtime);
-                        let ctime_matches =
-                            meta.ctime_or_creation().map(Into::into).ok() == Some(ctime);
+                        let ctime_matches = meta.ctime_or_creation().ok() == Some(ctime);
                         if mtime_matches && ctime_matches {
                             trace!("mtime+ctime hit for {}", path.display());
                             continue;

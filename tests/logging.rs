@@ -94,6 +94,9 @@ fn test_log_millis_flag_with_various_values() {
     // Test that SCCACHE_LOG_MILLIS accepts any value (not just "1")
     let tempdir = TempDir::new().unwrap();
 
+    // Pattern for timestamp with milliseconds
+    let millis_regex = Regex::new(r"\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z").unwrap();
+
     for value in &["1", "true", "yes", "anything"] {
         let mut cmd = Command::new(sccache_bin());
         cmd.arg("--show-stats")
@@ -103,9 +106,6 @@ fn test_log_millis_flag_with_various_values() {
 
         let output = cmd.output().unwrap();
         let stderr = String::from_utf8_lossy(&output.stderr);
-
-        // Pattern for timestamp with milliseconds
-        let millis_regex = Regex::new(r"\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z").unwrap();
 
         assert!(
             millis_regex.is_match(&stderr),

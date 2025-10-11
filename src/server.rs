@@ -546,7 +546,7 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
                     addr: addr.to_string(),
                 },
             )?;
-            run(future::pending::<()>()).map_err(|e| anyhow::Error::from(e))?;
+            run(future::pending::<()>()).map_err(anyhow::Error::from)?;
             Ok(())
         }
         Err(e) => {

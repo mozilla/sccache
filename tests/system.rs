@@ -1777,7 +1777,8 @@ fn find_cuda_compilers() -> Vec<Compiler> {
 
     // CUDA compilers like clang don't come with all of the components for compilation.
     // To consider a machine to have any cuda compilers we rely on the existence of `nvcc`
-    let compilers = match which("nvcc") {
+
+    match which("nvcc") {
         Ok(_) => candidates
             .iter()
             .filter_map(|c| {
@@ -1797,8 +1798,7 @@ fn find_cuda_compilers() -> Vec<Compiler> {
             );
             vec![]
         }
-    };
-    compilers
+    }
 }
 
 // We detect the HIP Clang compiler through 2 methods:
