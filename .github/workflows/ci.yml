@@ -26,7 +26,7 @@ jobs:
         with:
           components: ${{ matrix.component }}
           # Oldest supported version, keep in sync with README.md
-          toolchain: "1.75.0"
+          toolchain: "1.85.0"
 
       - name: clippy version
         run: cargo clippy --version
@@ -69,7 +69,7 @@ jobs:
         include:
           - os: ubuntu-22.04
             # Oldest supported version, keep in sync with README.md
-            rustc: "1.75.0"
+            rustc: "1.85.0"
             extra_desc: dist-tests
             extra_args: --no-default-features --features=dist-tests test_dist_ -- --test-threads 1
           - os: ubuntu-22.04
@@ -94,7 +94,7 @@ jobs:
           - os: ubuntu-24.04
             cuda: "12.8"
             # Oldest supported version, keep in sync with README.md
-            rustc: "1.75.0"
+            rustc: "1.85.0"
             extra_desc: cuda12.8
           - os: macos-13
             no_coverage: true
@@ -103,7 +103,7 @@ jobs:
           - os: windows-2022
             cuda: "12.8"
             # Oldest supported version, keep in sync with README.md
-            rustc: "1.75.0"
+            rustc: "1.85.0"
             extra_args: --no-fail-fast
             notest_cuda_compilers: clang++
             extra_desc: cuda12.8
