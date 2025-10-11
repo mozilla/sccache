@@ -34,7 +34,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     cache::PreprocessorCacheModeConfig,
-    util::{encode_path, Digest, HashToDigest, MetadataCtimeExt, Timestamp},
+    util::{Digest, HashToDigest, MetadataCtimeExt, Timestamp, encode_path},
 };
 
 use super::Language;

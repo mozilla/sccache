@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use anyhow::{anyhow, bail, Context, Error, Result};
+use anyhow::{Context, Error, Result, anyhow, bail};
 use flate2::read::GzDecoder;
 use fs_err as fs;
 use libmount::Overlay;
@@ -21,7 +21,7 @@ use sccache::dist::{
     Toolchain,
 };
 use sccache::lru_disk_cache::Error as LruError;
-use std::collections::{hash_map, HashMap};
+use std::collections::{HashMap, hash_map};
 use std::io;
 use std::iter;
 use std::path::{self, Path, PathBuf};
@@ -131,8 +131,11 @@ impl OverlayBuilder {
                     }
                 }
                 (_, _) => {
-                    bail!("Unexpected version format running {:?}: got {:?}, expected \"bubblewrap x.x.x\"",
-                          bubblewrap, out);
+                    bail!(
+                        "Unexpected version format running {:?}: got {:?}, expected \"bubblewrap x.x.x\"",
+                        bubblewrap,
+                        out
+                    );
                 }
             }
         } else {
@@ -196,7 +199,7 @@ impl OverlayBuilder {
                         bail!("expected toolchain {}, but not available", tc.archive_id)
                     }
                     Err(e) => {
-                        return Err(Error::from(e).context("failed to get toolchain from cache"))
+                        return Err(Error::from(e).context("failed to get toolchain from cache"));
                     }
                 };
 
@@ -261,8 +264,7 @@ impl OverlayBuilder {
         trace!("Compile environment: {:?}", compile_command.env_vars);
         trace!(
             "Compile command: {:?} {:?}",
-            compile_command.executable,
-            compile_command.arguments
+            compile_command.executable, compile_command.arguments
         );
 
         std::thread::scope(|scope| {
@@ -707,7 +709,8 @@ impl DockerBuilder {
                 tc.archive_id
             ),
             Err(e) => {
-                return Err(e).with_context(|| format!("Failed to use toolchain {}", tc.archive_id))
+                return Err(e)
+                    .with_context(|| format!("Failed to use toolchain {}", tc.archive_id));
             }
         };
 
@@ -759,8 +762,7 @@ impl DockerBuilder {
         trace!("Compile environment: {:?}", compile_command.env_vars);
         trace!(
             "Compile command: {:?} {:?}",
-            compile_command.executable,
-            compile_command.arguments
+            compile_command.executable, compile_command.arguments
         );
 
         trace!("copying in inputs");
@@ -824,7 +826,7 @@ impl DockerBuilder {
         trace!("retrieving {:?}", output_paths);
         for path in output_paths {
             let abspath = cwd.join(&path); // Resolve in case it's relative since we copy it from the root level
-                                           // TODO: this isn't great, but cp gives it out as a tar
+            // TODO: this isn't great, but cp gives it out as a tar
             let output = Command::new("docker")
                 .args(["exec", cid, "/busybox", "cat"])
                 .arg(abspath)

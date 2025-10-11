@@ -646,7 +646,7 @@ pub fn decode_path(bytes: &[u8]) -> std::io::Result<PathBuf> {
 
 #[cfg(windows)]
 pub fn wide_char_to_multi_byte(wide_char_str: &[u16]) -> std::io::Result<Vec<u8>> {
-    use windows_sys::Win32::Globalization::{WideCharToMultiByte, CP_OEMCP};
+    use windows_sys::Win32::Globalization::{CP_OEMCP, WideCharToMultiByte};
 
     let codepage = CP_OEMCP;
     let flags = 0;

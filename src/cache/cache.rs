@@ -567,9 +567,9 @@ pub fn storage_from_config(
         match cache_type {
             #[cfg(feature = "azure")]
             CacheType::Azure(config::AzureCacheConfig {
-                ref connection_string,
-                ref container,
-                ref key_prefix,
+                connection_string,
+                container,
+                key_prefix,
             }) => {
                 debug!("Init azure cache with container {container}, key_prefix {key_prefix}");
                 let storage = AzureBlobCache::build(connection_string, container, key_prefix)
@@ -578,12 +578,12 @@ pub fn storage_from_config(
             }
             #[cfg(feature = "gcs")]
             CacheType::GCS(config::GCSCacheConfig {
-                ref bucket,
-                ref key_prefix,
-                ref cred_path,
+                bucket,
+                key_prefix,
+                cred_path,
                 rw_mode,
-                ref service_account,
-                ref credential_url,
+                service_account,
+                credential_url,
             }) => {
                 debug!("Init gcs cache with bucket {bucket}, key_prefix {key_prefix}");
 
@@ -600,7 +600,7 @@ pub fn storage_from_config(
                 return Ok(Arc::new(storage));
             }
             #[cfg(feature = "gha")]
-            CacheType::GHA(config::GHACacheConfig { ref version, .. }) => {
+            CacheType::GHA(config::GHACacheConfig { version, .. }) => {
                 debug!("Init gha cache with version {version}");
 
                 let storage = GHACache::build(version)
@@ -609,11 +609,11 @@ pub fn storage_from_config(
             }
             #[cfg(feature = "memcached")]
             CacheType::Memcached(config::MemcachedCacheConfig {
-                ref url,
-                ref username,
-                ref password,
-                ref expiration,
-                ref key_prefix,
+                url,
+                username,
+                password,
+                expiration,
+                key_prefix,
             }) => {
                 debug!("Init memcached cache with url {url}");
 
@@ -629,14 +629,14 @@ pub fn storage_from_config(
             }
             #[cfg(feature = "redis")]
             CacheType::Redis(config::RedisCacheConfig {
-                ref endpoint,
-                ref cluster_endpoints,
-                ref username,
-                ref password,
-                ref db,
-                ref url,
-                ref ttl,
-                ref key_prefix,
+                endpoint,
+                cluster_endpoints,
+                username,
+                password,
+                db,
+                url,
+                ttl,
+                key_prefix,
             }) => {
                 let storage = match (endpoint, cluster_endpoints, url) {
                     (Some(url), None, None) => {
@@ -675,7 +675,7 @@ pub fn storage_from_config(
                 return Ok(Arc::new(storage));
             }
             #[cfg(feature = "s3")]
-            CacheType::S3(ref c) => {
+            CacheType::S3(c) => {
                 debug!(
                     "Init s3 cache with bucket {}, endpoint {:?}",
                     c.bucket, c.endpoint
@@ -694,7 +694,7 @@ pub fn storage_from_config(
                 return Ok(Arc::new(storage));
             }
             #[cfg(feature = "webdav")]
-            CacheType::Webdav(ref c) => {
+            CacheType::Webdav(c) => {
                 debug!("Init webdav cache with endpoint {}", c.endpoint);
 
                 let storage = WebdavCache::build(
@@ -709,7 +709,7 @@ pub fn storage_from_config(
                 return Ok(Arc::new(storage));
             }
             #[cfg(feature = "oss")]
-            CacheType::OSS(ref c) => {
+            CacheType::OSS(c) => {
                 debug!(
                     "Init oss cache with bucket {}, endpoint {:?}",
                     c.bucket, c.endpoint

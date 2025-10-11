@@ -24,7 +24,7 @@ use crate::compiler::{
 };
 use crate::errors::*;
 use crate::mock_command::{CommandCreatorSync, RunCommand};
-use crate::util::{run_input_output, OsStrExt};
+use crate::util::{OsStrExt, run_input_output};
 use crate::{counted_array, dist};
 use async_trait::async_trait;
 use fs::File;
@@ -458,8 +458,8 @@ impl Iterator for ExpandAtArgs<'_> {
 #[cfg(test)]
 mod test {
     use super::{
-        dist, fs, generate_compile_commands, parse_arguments, Language, OsString, ParsedArguments,
-        ARGS,
+        ARGS, Language, OsString, ParsedArguments, dist, fs, generate_compile_commands,
+        parse_arguments,
     };
     use crate::compiler::c::ArtifactDescriptor;
     use crate::compiler::*;

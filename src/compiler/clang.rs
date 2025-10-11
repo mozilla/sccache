@@ -18,10 +18,10 @@ use crate::compiler::args::*;
 use crate::compiler::c::{ArtifactDescriptor, CCompilerImpl, CCompilerKind, ParsedArguments};
 use crate::compiler::gcc::ArgData::*;
 use crate::compiler::{
-    gcc, write_temp_file, CCompileCommand, Cacheable, CompileCommand, CompilerArguments, Language,
+    CCompileCommand, Cacheable, CompileCommand, CompilerArguments, Language, gcc, write_temp_file,
 };
 use crate::mock_command::{CommandCreator, CommandCreatorSync, RunCommand};
-use crate::util::{run_input_output, OsStrExt};
+use crate::util::{OsStrExt, run_input_output};
 use crate::{counted_array, dist};
 use async_trait::async_trait;
 use fs::File;
@@ -303,18 +303,22 @@ mod test {
 
     #[test]
     fn test_is_minversion() {
-        assert!(Clang {
-            clangplusplus: false,
-            is_appleclang: false,
-            version: Some("\"Ubuntu Clang 14.0.0\"".to_string()),
-        }
-        .is_minversion(14));
-        assert!(!Clang {
-            clangplusplus: false,
-            is_appleclang: false,
-            version: Some("\"Ubuntu Clang 13.0.0\"".to_string()),
-        }
-        .is_minversion(14));
+        assert!(
+            Clang {
+                clangplusplus: false,
+                is_appleclang: false,
+                version: Some("\"Ubuntu Clang 14.0.0\"".to_string()),
+            }
+            .is_minversion(14)
+        );
+        assert!(
+            !Clang {
+                clangplusplus: false,
+                is_appleclang: false,
+                version: Some("\"Ubuntu Clang 13.0.0\"".to_string()),
+            }
+            .is_minversion(14)
+        );
         assert!(Clang {
             clangplusplus: false,
             is_appleclang: false,

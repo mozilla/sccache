@@ -572,32 +572,44 @@ impl Drop for DistSystem {
         let mut exits = vec![];
 
         if let Some(scheduler_name) = self.scheduler_name.as_ref() {
-            droperr!(Command::new("docker")
-                .args(["logs", scheduler_name])
-                .output()
-                .map(|o| logs.push((scheduler_name, o))));
-            droperr!(Command::new("docker")
-                .args(["kill", scheduler_name])
-                .output()
-                .map(|o| outputs.push((scheduler_name, o))));
-            droperr!(Command::new("docker")
-                .args(["rm", "-f", scheduler_name])
-                .output()
-                .map(|o| outputs.push((scheduler_name, o))));
+            droperr!(
+                Command::new("docker")
+                    .args(["logs", scheduler_name])
+                    .output()
+                    .map(|o| logs.push((scheduler_name, o)))
+            );
+            droperr!(
+                Command::new("docker")
+                    .args(["kill", scheduler_name])
+                    .output()
+                    .map(|o| outputs.push((scheduler_name, o)))
+            );
+            droperr!(
+                Command::new("docker")
+                    .args(["rm", "-f", scheduler_name])
+                    .output()
+                    .map(|o| outputs.push((scheduler_name, o)))
+            );
         }
         for server_name in self.server_names.iter() {
-            droperr!(Command::new("docker")
-                .args(["logs", server_name])
-                .output()
-                .map(|o| logs.push((server_name, o))));
-            droperr!(Command::new("docker")
-                .args(["kill", server_name])
-                .output()
-                .map(|o| outputs.push((server_name, o))));
-            droperr!(Command::new("docker")
-                .args(["rm", "-f", server_name])
-                .output()
-                .map(|o| outputs.push((server_name, o))));
+            droperr!(
+                Command::new("docker")
+                    .args(["logs", server_name])
+                    .output()
+                    .map(|o| logs.push((server_name, o)))
+            );
+            droperr!(
+                Command::new("docker")
+                    .args(["kill", server_name])
+                    .output()
+                    .map(|o| outputs.push((server_name, o)))
+            );
+            droperr!(
+                Command::new("docker")
+                    .args(["rm", "-f", server_name])
+                    .output()
+                    .map(|o| outputs.push((server_name, o)))
+            );
         }
         for &pid in self.server_pids.iter() {
             droperr!(nix::sys::signal::kill(pid, Signal::SIGINT));
@@ -614,14 +626,16 @@ impl Drop for DistSystem {
             if killagain {
                 eprintln!("SIGINT didn't kill process, trying SIGKILL");
                 droperr!(nix::sys::signal::kill(pid, Signal::SIGKILL));
-                droperr!(nix::sys::wait::waitpid(pid, Some(WaitPidFlag::WNOHANG))
-                    .map_err(|e| e.to_string())
-                    .and_then(|ws| if ws == WaitStatus::StillAlive {
-                        Err("process alive after sigkill".to_owned())
-                    } else {
-                        exits.push(ws);
-                        Ok(())
-                    }));
+                droperr!(
+                    nix::sys::wait::waitpid(pid, Some(WaitPidFlag::WNOHANG))
+                        .map_err(|e| e.to_string())
+                        .and_then(|ws| if ws == WaitStatus::StillAlive {
+                            Err("process alive after sigkill".to_owned())
+                        } else {
+                            exits.push(ws);
+                            Ok(())
+                        })
+                );
             }
         }
 
@@ -680,8 +694,12 @@ fn make_container_name(tag: &str) -> String {
 
 fn check_output(output: &Output) {
     if !output.status.success() {
-        println!("{}\n\n[BEGIN STDOUT]\n===========\n{}\n===========\n[FIN STDOUT]\n\n[BEGIN STDERR]\n===========\n{}\n===========\n[FIN STDERR]\n\n",
-            output.status, String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        println!(
+            "{}\n\n[BEGIN STDOUT]\n===========\n{}\n===========\n[FIN STDOUT]\n\n[BEGIN STDERR]\n===========\n{}\n===========\n[FIN STDERR]\n\n",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
         panic!()
     }
 }

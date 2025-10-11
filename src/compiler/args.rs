@@ -679,7 +679,7 @@ macro_rules! take_arg {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use itertools::{diff_with, Diff};
+    use itertools::{Diff, diff_with};
     use std::iter::FromIterator;
 
     macro_rules! arg {

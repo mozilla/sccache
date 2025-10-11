@@ -1,7 +1,7 @@
 [package]
-edition = "2021"
+edition = "2024"
 name = "sccache"
-rust-version = "1.75.0"
+rust-version = "1.85.0"
 version = "0.11.0"
 
 categories = ["command-line-utilities", "development-tools::build-utils"]

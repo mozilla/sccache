@@ -12,12 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use opendal::Operator;
 use opendal::layers::{HttpClientLayer, LoggingLayer};
 use opendal::services::Ghac;
-use opendal::Operator;
 
-use crate::errors::*;
 use crate::VERSION;
+use crate::errors::*;
 
 use super::http_client::set_user_agent;
 

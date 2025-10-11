@@ -33,7 +33,11 @@ fn basic_compile(tmpdir: &Path, sccache_cfg_path: &Path, sccache_cached_cfg_path
     ];
     let source_file = "x.c";
     let obj_file = "x.o";
-    write_source(tmpdir, source_file, "#if !defined(SCCACHE_TEST_DEFINE)\n#error SCCACHE_TEST_DEFINE is not defined\n#endif\nint x() { return 5; }");
+    write_source(
+        tmpdir,
+        source_file,
+        "#if !defined(SCCACHE_TEST_DEFINE)\n#error SCCACHE_TEST_DEFINE is not defined\n#endif\nint x() { return 5; }",
+    );
     sccache_command()
         .args([
             std::env::var("CC")
@@ -326,8 +330,10 @@ fn test_dist_cargo_makeflags() {
     start_local_daemon(&sccache_cfg_path, &sccache_cached_cfg_path);
     let compile_output = rust_compile(tmpdir, &sccache_cfg_path, &sccache_cached_cfg_path);
 
-    assert!(!String::from_utf8_lossy(&compile_output.stderr)
-        .contains("warning: failed to connect to jobserver from environment variable"));
+    assert!(
+        !String::from_utf8_lossy(&compile_output.stderr)
+            .contains("warning: failed to connect to jobserver from environment variable")
+    );
 
     get_stats(|info| {
         assert_eq!(1, info.stats.dist_compiles.values().sum::<usize>());

@@ -11,9 +11,9 @@
 // limitations under the License.
 
 use crate::errors::*;
+use opendal::Operator;
 use opendal::layers::{HttpClientLayer, LoggingLayer};
 use opendal::services::Webdav;
-use opendal::Operator;
 
 use super::http_client::set_user_agent;
 

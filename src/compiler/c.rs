@@ -25,8 +25,8 @@ use crate::dist;
 use crate::dist::pkg;
 use crate::mock_command::CommandCreatorSync;
 use crate::util::{
-    decode_path, encode_path, hash_all, Digest, HashToDigest, MetadataCtimeExt, TimeMacroFinder,
-    Timestamp,
+    Digest, HashToDigest, MetadataCtimeExt, TimeMacroFinder, Timestamp, decode_path, encode_path,
+    hash_all,
 };
 use async_trait::async_trait;
 use fs_err as fs;
@@ -44,8 +44,8 @@ use std::sync::Arc;
 
 use crate::errors::*;
 
-use super::preprocessor_cache::PreprocessorCacheEntry;
 use super::CacheControl;
+use super::preprocessor_cache::PreprocessorCacheEntry;
 
 /// A generic implementation of the `Compiler` trait for C/C++ compilers.
 #[derive(Clone)]
