@@ -403,6 +403,6 @@ jobs:
                 files="$files -a $f";
               fi
           done
-          hub release create -m $tag_name $tag_name $files
+          hub release create -d -m $tag_name $tag_name $files
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
