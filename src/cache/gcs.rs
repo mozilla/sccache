@@ -80,7 +80,7 @@ impl GCSCache {
     }
 }
 
-/// TaskClusterTokenLoeader is used to load tokens from [TaskCluster](https://taskcluster.net/)
+/// Fetch token from TaskCluster for GCS authentication
 ///
 /// This feature is required to run [mozilla's CI](https://searchfox.org/mozilla-central/source/build/mozconfig.cache#67-84):
 ///
