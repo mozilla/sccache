@@ -211,7 +211,6 @@ impl CacheRead {
                 optional,
             } in objects
             {
-                #[cfg(unix)]
                 if path == Path::new("/dev/null") {
                     debug!("Skipping output to /dev/null");
                     continue;
@@ -865,7 +864,6 @@ mod test {
         }
     }
 
-    #[cfg(unix)]
     #[test]
     fn test_extract_object_to_devnull_works() {
         let runtime = tokio::runtime::Builder::new_current_thread()
