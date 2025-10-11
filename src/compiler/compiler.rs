@@ -583,6 +583,25 @@ where
 
         match lookup {
             CacheLookupResult::Success(compile_result, output) => {
+                let out_pretty3 = out_pretty.clone();
+                match storage.timestamp_cache_hit(&key).await {
+                    Ok(None) => {} // Not an error, intentionally left empty.
+                    Ok(Some(duration_timestamp)) => {
+                        debug!(
+                            "[{}]: Updated cache hit timestamp {}",
+                            out_pretty3,
+                            fmt_duration_as_secs(&duration_timestamp)
+                        );
+                    }
+                    Err(e) => {
+                        // `{:#}` prints the error and the causes in a single line.
+                        let errmsg = format!("{:#}", e);
+                        warn!(
+                            "[{}]: Failed to update cache hit timestamp: {}",
+                            out_pretty3, errmsg);
+                    }
+                }
+
                 Ok::<_, Error>((compile_result, output))
             }
             CacheLookupResult::Miss(miss_type) => {
