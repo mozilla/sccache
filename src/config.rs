@@ -71,7 +71,7 @@ fn default_toolchain_cache_size() -> u64 {
 
 struct StringOrU64Visitor;
 
-impl<'de> de::Visitor<'de> for StringOrU64Visitor {
+impl de::Visitor<'_> for StringOrU64Visitor {
     type Value = u64;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {

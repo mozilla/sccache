@@ -992,7 +992,7 @@ pub fn ascii_unescape_default(s: &[u8]) -> std::io::Result<Vec<u8>> {
                             "incomplete hex escape",
                         ));
                     }
-                    let v = unhex(s[offset])? << 4 | unhex(s[offset + 1])?;
+                    let v = (unhex(s[offset])? << 4) | unhex(s[offset + 1])?;
                     out.push(v);
                     offset += 1;
                 }
