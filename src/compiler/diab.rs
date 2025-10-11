@@ -141,13 +141,13 @@ counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     take_arg!(
         "-Xmake-dependency-savefile",
         PathBuf,
-        Concatenated('='),
+        Concatenated(b'='),
         DepArgumentPath
     ),
     take_arg!(
         "-Xmake-dependency-target",
         OsString,
-        Concatenated('='),
+        Concatenated(b'='),
         DepArgument
     ),
     flag!("-c", DoCompilation),
@@ -285,9 +285,7 @@ where
         None => cannot_cache!("unknown source language"),
     };
 
-    let output = output_arg
-        .map(PathBuf::from)
-        .unwrap_or_else(|| Path::new(&input).with_extension("o"));
+    let output = output_arg.unwrap_or_else(|| Path::new(&input).with_extension("o"));
 
     let mut outputs = HashMap::new();
     outputs.insert(

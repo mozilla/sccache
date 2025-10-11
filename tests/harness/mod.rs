@@ -1,4 +1,5 @@
 use fs_err as fs;
+use log::trace;
 #[cfg(any(feature = "dist-client", feature = "dist-server"))]
 use sccache::config::HTTPUrl;
 use sccache::dist::{self, SchedulerStatusResult, ServerId};
@@ -236,6 +237,7 @@ fn create_server_token(server_id: ServerId, auth_token: &str) -> String {
 }
 
 #[cfg(feature = "dist-server")]
+#[allow(dead_code)]
 pub enum ServerHandle {
     Container { cid: String, url: HTTPUrl },
     Process { pid: Pid, url: HTTPUrl },
@@ -448,7 +450,9 @@ impl DistSystem {
                 child
             }
             ForkResult::Child => {
-                env::set_var("SCCACHE_LOG", "sccache=trace");
+                unsafe {
+                    env::set_var("SCCACHE_LOG", "sccache=trace");
+                }
                 env_logger::try_init().unwrap();
                 server.start().unwrap();
                 unreachable!();
@@ -495,7 +499,7 @@ impl DistSystem {
                 check_output(&output);
                 println!("{output:?}");
                 let str_output = String::from_utf8_lossy(&output.stdout);
-                return str_output.lines().filter(|&part| !part.is_empty()).count();
+                str_output.lines().filter(|&part| !part.is_empty()).count()
             }
             ServerHandle::Process { pid: _, url: _ } => {
                 panic!("restart not yet implemented for pids")

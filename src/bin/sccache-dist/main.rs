@@ -1,7 +1,7 @@
 #[macro_use]
 extern crate log;
 
-use anyhow::{Context, Error, Result, bail};
+use anyhow::{Context, Result, bail};
 use base64::Engine;
 use rand::{RngCore, rngs::OsRng};
 use sccache::config::{
@@ -510,7 +510,6 @@ impl SchedulerIncoming for Scheduler {
                     let auth = server_details
                         .job_authorizer
                         .generate_token(job_id)
-                        .map_err(Error::from)
                         .context("Could not create an auth token for this job")?;
                     Some((job_id, server_id, auth))
                 } else {

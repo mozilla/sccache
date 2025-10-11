@@ -1,7 +1,6 @@
 #![cfg(all(feature = "dist-client", feature = "dist-server"))]
 
 extern crate assert_cmd;
-#[macro_use]
 extern crate log;
 extern crate sccache;
 extern crate serde_json;

@@ -164,17 +164,15 @@ impl CommandChild for Child {
 
     async fn wait(self) -> io::Result<ExitStatus> {
         let Child { mut inner, token } = self;
-        inner.wait().await.map(|ret| {
+        inner.wait().await.inspect(|_ret| {
             drop(token);
-            ret
         })
     }
 
     async fn wait_with_output(self) -> io::Result<Output> {
         let Child { inner, token } = self;
-        inner.wait_with_output().await.map(|ret| {
+        inner.wait_with_output().await.inspect(|_ret| {
             drop(token);
-            ret
         })
     }
 }
@@ -649,10 +647,7 @@ mod test {
     fn test_mock_wait_error() {
         let client = Client::new_num(1);
         let mut creator = MockCommandCreator::new(&client);
-        creator.next_command_spawns(Ok(MockChild::with_error(io::Error::new(
-            io::ErrorKind::Other,
-            "error",
-        ))));
+        creator.next_command_spawns(Ok(MockChild::with_error(io::Error::other("error"))));
         let e = spawn_wait_command(&mut creator, "foo").err().unwrap();
         assert_eq!("error", e.to_string());
     }

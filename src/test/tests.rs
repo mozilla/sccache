@@ -34,7 +34,6 @@ use std::process::Command;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
-use std::u64;
 use tokio::runtime::Runtime;
 
 /// Options for running the server in tests.

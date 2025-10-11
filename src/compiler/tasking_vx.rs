@@ -264,9 +264,7 @@ where
         }
     });
 
-    let output = output_arg
-        .map(PathBuf::from)
-        .unwrap_or_else(|| Path::new(&input).with_extension("o"));
+    let output = output_arg.unwrap_or_else(|| Path::new(&input).with_extension("o"));
 
     let mut outputs = HashMap::with_capacity(1);
     outputs.insert(
