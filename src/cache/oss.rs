@@ -10,7 +10,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use opendal::layers::LoggingLayer;
+use opendal::layers::{HttpClientLayer, LoggingLayer};
 use opendal::services::Oss;
 use opendal::Operator;
 
@@ -28,10 +28,7 @@ impl OSSCache {
         endpoint: Option<&str>,
         no_credentials: bool,
     ) -> Result<Operator> {
-        let mut builder = Oss::default()
-            .bucket(bucket)
-            .root(key_prefix)
-            .http_client(set_user_agent());
+        let mut builder = Oss::default().bucket(bucket).root(key_prefix);
 
         if let Some(endpoint) = endpoint {
             builder = builder.endpoint(endpoint);
@@ -44,6 +41,7 @@ impl OSSCache {
         }
 
         let op = Operator::new(builder)?
+            .layer(HttpClientLayer::new(set_user_agent()))
             .layer(LoggingLayer::default())
             .finish();
         Ok(op)

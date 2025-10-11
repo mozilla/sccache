@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use opendal::layers::LoggingLayer;
+use opendal::layers::{HttpClientLayer, LoggingLayer};
 use opendal::services::Ghac;
 use opendal::Operator;
 
@@ -32,8 +32,7 @@ impl GHACache {
             //
             // User customization is theoretically supported, but I decided
             // to see the community feedback first.
-            .root("/sccache")
-            .http_client(set_user_agent());
+            .root("/sccache");
 
         builder = if version.is_empty() {
             builder.version(&format!("sccache-v{VERSION}"))
@@ -42,6 +41,7 @@ impl GHACache {
         };
 
         let op = Operator::new(builder)?
+            .layer(HttpClientLayer::new(set_user_agent()))
             .layer(LoggingLayer::default())
             .finish();
         Ok(op)
