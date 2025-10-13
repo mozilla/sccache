@@ -278,7 +278,6 @@ fn test_basic_compile_into_dev_null(compiler: Compiler, tempdir: &Path) {
     // Compile a source file.
     copy_to_tempdir(&[INPUT, INPUT_ERR], tempdir);
 
-    let out_file = tempdir.join(OUTPUT);
     trace!("compile");
     sccache_command()
         .args(compile_cmdline(name, &exe, INPUT, DEV_NULL, Vec::new()))
@@ -329,7 +328,6 @@ fn test_basic_compile_into_dev_stdout(compiler: Compiler, tempdir: &Path) {
     // Compile a source file.
     copy_to_tempdir(&[INPUT, INPUT_ERR], tempdir);
 
-    let out_file = tempdir.join(OUTPUT);
     trace!("compile");
     sccache_command()
         .args(compile_cmdline(name, &exe, INPUT, DEV_STDOUT, Vec::new()))
