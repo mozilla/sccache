@@ -248,7 +248,12 @@ impl CacheRead {
                         // `optional` is false in this branch, so do not ignore errors
                         let mode = self.get_object(&key, &mut f)?;
                         if let Some(mode) = mode {
-                            set_file_mode(&path, mode)?;
+                            if let Err(e) = set_file_mode(&path, mode) {
+                                // Here we ignore errors from setting file mode because
+                                // if we could not create a temp file in the same directory,
+                                // we probably can't set the mode either (e.g. /dev/stuff)
+                                warn!("Failed to reset file mode: {e}");
+                            }
                         }
                     }
                     // skip if no object found and it's optional
