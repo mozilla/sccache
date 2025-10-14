@@ -71,6 +71,11 @@ On Windows, sccache can be installed via [scoop](https://scoop.sh/):
 ```
 scoop install sccache
 ```
+or `winget`:
+
+```
+winget install Mozilla.sccache
+```
 
 ### Via cargo
 
