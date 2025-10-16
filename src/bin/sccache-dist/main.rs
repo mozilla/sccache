@@ -239,7 +239,7 @@ fn run(command: Command) -> Result<i32> {
                     check_client_auth,
                     check_server_auth,
                 );
-                http_scheduler.start().await?;
+                http_scheduler.start()?;
             }
 
             unreachable!();
@@ -336,7 +336,7 @@ fn run(command: Command) -> Result<i32> {
                     server,
                 )
                 .context("Failed to create sccache HTTP server instance")?;
-                http_server.start().await?;
+                http_server.start()?;
             }
 
             unreachable!();

@@ -223,8 +223,12 @@ dist-server = [
 dist-server-axum = [
   "jwt",
   "flate2",
+  "libmount",
+  "nix",
   "openssl",
   "reqwest",
+  "syslog",
+  "version-compare",
   "axum",
   "tokio-rustls",
   "rustls",
