@@ -28,7 +28,11 @@ use std::sync::Mutex;
 
 use crate::errors::*;
 
-#[cfg(any(feature = "dist-client", feature = "dist-server", feature = "dist-server-axum"))]
+#[cfg(any(
+    feature = "dist-client",
+    feature = "dist-server",
+    feature = "dist-server-axum"
+))]
 mod cache;
 #[cfg(feature = "dist-client")]
 pub mod client_auth;
@@ -43,7 +47,11 @@ pub mod http_axum;
 #[cfg(test)]
 mod test;
 
-#[cfg(any(feature = "dist-client", feature = "dist-server", feature = "dist-server-axum"))]
+#[cfg(any(
+    feature = "dist-client",
+    feature = "dist-server",
+    feature = "dist-server-axum"
+))]
 pub use crate::dist::cache::TcCache;
 
 // TODO: paths (particularly outputs, which are accessed by an unsandboxed program)
@@ -493,7 +501,11 @@ impl From<ProcessOutput> for process::Output {
 #[serde(deny_unknown_fields)]
 pub struct OutputData(Vec<u8>, u64);
 impl OutputData {
-    #[cfg(any(feature = "dist-server", feature = "dist-server-axum", all(feature = "dist-client", test)))]
+    #[cfg(any(
+        feature = "dist-server",
+        feature = "dist-server-axum",
+        all(feature = "dist-client", test)
+    ))]
     pub fn try_from_reader<R: Read>(r: R) -> io::Result<Self> {
         use flate2::Compression;
         use flate2::read::ZlibEncoder as ZlibReadEncoder;
