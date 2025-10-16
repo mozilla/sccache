@@ -238,6 +238,8 @@ dist-server-axum = [
 ]
 # Enables dist tests with external requirements
 dist-tests = ["dist-client", "dist-server"]
+# Enables dist tests with axum-based server
+dist-tests-axum = ["dist-client", "dist-server-axum"]
 
 [workspace]
 exclude = ["tests/test-crate"]
