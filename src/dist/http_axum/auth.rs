@@ -23,7 +23,7 @@ use crate::dist::{JobId, ServerId};
 use axum::{
     async_trait,
     extract::FromRequestParts,
-    http::{header::AUTHORIZATION, request::Parts, HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, header::AUTHORIZATION, request::Parts},
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
@@ -113,7 +113,10 @@ pub enum AuthError {
     InvalidAuthType,
     MissingToken,
     InvalidToken(String),
-    IpMismatch { expected: SocketAddr, actual: SocketAddr },
+    IpMismatch {
+        expected: SocketAddr,
+        actual: SocketAddr,
+    },
     ClientAuthFailed(ClientVisibleMsg),
     InternalError(String),
 }
@@ -124,12 +127,12 @@ impl IntoResponse for AuthError {
             AuthError::MissingAuthHeader => {
                 (StatusCode::UNAUTHORIZED, "no_bearer_auth", String::new())
             }
-            AuthError::InvalidAuthHeader | AuthError::InvalidAuthType => {
-                (StatusCode::UNAUTHORIZED, "invalid_bearer_token", String::new())
-            }
-            AuthError::MissingToken => {
-                (StatusCode::UNAUTHORIZED, "missing_token", String::new())
-            }
+            AuthError::InvalidAuthHeader | AuthError::InvalidAuthType => (
+                StatusCode::UNAUTHORIZED,
+                "invalid_bearer_token",
+                String::new(),
+            ),
+            AuthError::MissingToken => (StatusCode::UNAUTHORIZED, "missing_token", String::new()),
             AuthError::InvalidToken(msg) => (StatusCode::UNAUTHORIZED, "invalid_jwt", msg),
             AuthError::IpMismatch { expected, actual } => (
                 StatusCode::UNAUTHORIZED,
@@ -143,7 +146,9 @@ impl IntoResponse for AuthError {
             AuthError::ClientAuthFailed(msg) => {
                 (StatusCode::UNAUTHORIZED, "bearer_auth_failed", msg.0)
             }
-            AuthError::InternalError(msg) => (StatusCode::INTERNAL_SERVER_ERROR, "internal_error", msg),
+            AuthError::InternalError(msg) => {
+                (StatusCode::INTERNAL_SERVER_ERROR, "internal_error", msg)
+            }
         };
 
         // Format WWW-Authenticate header as per RFC 6750

@@ -219,7 +219,7 @@ fn run(command: Command) -> Result<i32> {
 
             daemonize()?;
             let scheduler = Scheduler::new();
-            
+
             #[cfg(feature = "dist-server")]
             {
                 let http_scheduler = dist::http::Scheduler::new(
@@ -230,7 +230,7 @@ fn run(command: Command) -> Result<i32> {
                 );
                 http_scheduler.start()?;
             }
-            
+
             #[cfg(feature = "dist-server-axum")]
             {
                 let http_scheduler = dist::http_axum::Scheduler::new(
@@ -241,7 +241,7 @@ fn run(command: Command) -> Result<i32> {
                 );
                 http_scheduler.start().await?;
             }
-            
+
             unreachable!();
         }
 
@@ -312,7 +312,7 @@ fn run(command: Command) -> Result<i32> {
 
             let server = Server::new(builder, &cache_dir, toolchain_cache_size)
                 .context("Failed to create sccache server instance")?;
-            
+
             #[cfg(feature = "dist-server")]
             {
                 let http_server = dist::http::Server::new(
@@ -325,7 +325,7 @@ fn run(command: Command) -> Result<i32> {
                 .context("Failed to create sccache HTTP server instance")?;
                 http_server.start()?;
             }
-            
+
             #[cfg(feature = "dist-server-axum")]
             {
                 let http_server = dist::http_axum::Server::new(
@@ -338,7 +338,7 @@ fn run(command: Command) -> Result<i32> {
                 .context("Failed to create sccache HTTP server instance")?;
                 http_server.start().await?;
             }
-            
+
             unreachable!();
         }
     }

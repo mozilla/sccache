@@ -26,8 +26,11 @@ mod server;
 mod streaming;
 mod tls;
 
+#[cfg(test)]
+mod tests;
+
 pub use scheduler::Scheduler;
-pub use server::{Server, HEARTBEAT_TIMEOUT};
+pub use server::{HEARTBEAT_TIMEOUT, Server};
 
 // Re-export common types that are used by both implementations
 pub use super::http::server::{ClientAuthCheck, ClientVisibleMsg, ServerAuthCheck};

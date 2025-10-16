@@ -13,10 +13,10 @@
 // limitations under the License.
 #[cfg(feature = "dist-client")]
 pub use self::client::Client;
-#[cfg(feature = "dist-server")]
-pub use self::server::{Scheduler, Server};
 #[cfg(any(feature = "dist-server", feature = "dist-server-axum"))]
 pub use self::server::{ClientAuthCheck, ClientVisibleMsg, HEARTBEAT_TIMEOUT, ServerAuthCheck};
+#[cfg(feature = "dist-server")]
+pub use self::server::{Scheduler, Server};
 
 pub mod common {
     use reqwest::header;
@@ -287,7 +287,7 @@ pub mod server {
         JobId, JobState, RunJobResult, SchedulerStatusResult, ServerId, ServerNonce,
         SubmitToolchainResult, Toolchain, ToolchainReader, UpdateJobStateResult,
     };
-    
+
     #[cfg(feature = "dist-server")]
     use crate::util::new_reqwest_blocking_client;
 

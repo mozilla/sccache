@@ -44,7 +44,8 @@ pub fn create_https_cert_and_privkey(addr: SocketAddr) -> Result<(Vec<u8>, Vec<u
         .private_key_to_pem()
         .context("failed to create pem from rsa privkey")?;
     let privkey: openssl::pkey::PKey<openssl::pkey::Private> =
-        openssl::pkey::PKey::from_rsa(rsa_key).context("failed to create openssl pkey from rsa privkey")?;
+        openssl::pkey::PKey::from_rsa(rsa_key)
+            .context("failed to create openssl pkey from rsa privkey")?;
 
     let mut builder = openssl::x509::X509::builder().context("failed to create x509 builder")?;
 
@@ -62,13 +63,13 @@ pub fn create_https_cert_and_privkey(addr: SocketAddr) -> Result<(Vec<u8>, Vec<u
         .context("failed to set x509 serial number")?;
 
     // Validity period
-    let not_before =
-        openssl::asn1::Asn1Time::days_from_now(0).context("failed to create openssl not before asn1")?;
+    let not_before = openssl::asn1::Asn1Time::days_from_now(0)
+        .context("failed to create openssl not before asn1")?;
     builder
         .set_not_before(not_before.as_ref())
         .context("failed to set not before on x509")?;
-    let not_after =
-        openssl::asn1::Asn1Time::days_from_now(365).context("failed to create openssl not after asn1")?;
+    let not_after = openssl::asn1::Asn1Time::days_from_now(365)
+        .context("failed to create openssl not after asn1")?;
     builder
         .set_not_after(not_after.as_ref())
         .context("failed to set not after on x509")?;
@@ -127,7 +128,10 @@ pub fn create_https_cert_and_privkey(addr: SocketAddr) -> Result<(Vec<u8>, Vec<u
 }
 
 /// Create rustls ServerConfig from PEM-encoded certificate and key
-pub fn create_rustls_config(cert_pem: &[u8], privkey_pem: &[u8]) -> Result<Arc<rustls::ServerConfig>> {
+pub fn create_rustls_config(
+    cert_pem: &[u8],
+    privkey_pem: &[u8],
+) -> Result<Arc<rustls::ServerConfig>> {
     // Parse certificate
     let certs: Vec<CertificateDer<'_>> = rustls_pemfile::certs(&mut &cert_pem[..])
         .collect::<std::io::Result<Vec<_>>>()
@@ -158,11 +162,7 @@ pub struct HttpsServer {
 }
 
 impl HttpsServer {
-    pub async fn bind(
-        addr: SocketAddr,
-        cert_pem: &[u8],
-        privkey_pem: &[u8],
-    ) -> Result<Self> {
+    pub async fn bind(addr: SocketAddr, cert_pem: &[u8], privkey_pem: &[u8]) -> Result<Self> {
         let listener = TcpListener::bind(addr)
             .await
             .context("failed to bind TCP listener")?;
@@ -205,6 +205,9 @@ mod tests {
 
     #[test]
     fn test_create_https_cert() {
+        // Initialize rustls crypto provider for tests
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
         let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
         let result = create_https_cert_and_privkey(addr);
         assert!(result.is_ok());

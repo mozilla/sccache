@@ -32,7 +32,11 @@ use crate::errors::*;
 mod cache;
 #[cfg(feature = "dist-client")]
 pub mod client_auth;
-#[cfg(any(feature = "dist-client", feature = "dist-server", feature = "dist-server-axum"))]
+#[cfg(any(
+    feature = "dist-client",
+    feature = "dist-server",
+    feature = "dist-server-axum"
+))]
 pub mod http;
 #[cfg(feature = "dist-server-axum")]
 pub mod http_axum;

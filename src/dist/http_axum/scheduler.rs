@@ -22,11 +22,11 @@
 use crate::dist::{self, ServerId};
 use crate::errors::*;
 use axum::{
+    Router,
     extract::{ConnectInfo, Path, State},
-    http::{header, HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
-    Router,
 };
 use std::convert::Infallible;
 use std::net::SocketAddr;
@@ -43,7 +43,7 @@ use crate::dist::http::common::{
 
 /// Scheduler state shared across all handlers
 #[derive(Clone)]
-pub struct SchedulerState<S> 
+pub struct SchedulerState<S>
 where
     S: Clone,
 {
@@ -105,8 +105,7 @@ impl dist::SchedulerOutgoing for SchedulerRequester {
 
 /// Create HTTP client with certificates
 fn create_http_client(certs: &HashMap<ServerId, (Vec<u8>, Vec<u8>)>) -> reqwest::Client {
-    let mut builder = reqwest::Client::builder()
-        .pool_max_idle_per_host(0); // Disable connection pool
+    let mut builder = reqwest::Client::builder().pool_max_idle_per_host(0); // Disable connection pool
 
     for (_, cert_pem) in certs.values() {
         if let Ok(cert) = reqwest::Certificate::from_pem(cert_pem) {
@@ -161,14 +160,8 @@ impl<S: dist::SchedulerIncoming + Send + Sync + Clone + 'static> Scheduler<S> {
                 "/api/v1/scheduler/server_certificate/:server_id",
                 get(server_certificate),
             )
-            .route(
-                "/api/v1/scheduler/heartbeat_server",
-                post(heartbeat_server),
-            )
-            .route(
-                "/api/v1/scheduler/job_state/:job_id",
-                post(job_state),
-            )
+            .route("/api/v1/scheduler/heartbeat_server", post(heartbeat_server))
+            .route("/api/v1/scheduler/job_state/:job_id", post(job_state))
             .route("/api/v1/scheduler/status", get(status))
             .with_state(state);
 
@@ -226,7 +219,8 @@ where
     let res = AllocJobHttpResponse::from_alloc_job_result(alloc_job_res, &certs);
 
     // Format response
-    let format = ResponseFormat::from_accept(headers.get(header::ACCEPT).and_then(|v| v.to_str().ok()));
+    let format =
+        ResponseFormat::from_accept(headers.get(header::ACCEPT).and_then(|v| v.to_str().ok()));
     Ok(format
         .into_response(&res)
         .map_err(|e| AppError::Internal(e.into()))?
@@ -252,7 +246,8 @@ where
         cert_pem,
     };
 
-    let format = ResponseFormat::from_accept(headers.get(header::ACCEPT).and_then(|v| v.to_str().ok()));
+    let format =
+        ResponseFormat::from_accept(headers.get(header::ACCEPT).and_then(|v| v.to_str().ok()));
     Ok(format
         .into_response(&res)
         .map_err(|e| AppError::Internal(e.into()))?
@@ -271,8 +266,7 @@ where
     // Check server authentication
     let bearer_token = extract_bearer(&headers).map_err(|_| AppError::Unauthorized)?;
 
-    let server_id = (state.check_server_auth)(bearer_token)
-        .ok_or(AppError::Unauthorized)?;
+    let server_id = (state.check_server_auth)(bearer_token).ok_or(AppError::Unauthorized)?;
 
     // Check IP matches (support X-Real-IP for proxies)
     let origin_ip = if let Some(real_ip) = headers.get("X-Real-IP") {
@@ -309,17 +303,25 @@ where
         let mut certs = state.server_certificates.write().await;
         if let Some((saved_digest, _)) = certs.get(&server_id) {
             if saved_digest != &cert_digest {
-                info!(
-                    "Updating certificate for {} in scheduler",
-                    server_id.addr()
-                );
+                info!("Updating certificate for {} in scheduler", server_id.addr());
                 certs.insert(server_id, (cert_digest, cert_pem.clone()));
-                state.requester.update_certs(&certs).await.map_err(AppError::Internal)?;
+                state
+                    .requester
+                    .update_certs(&certs)
+                    .await
+                    .map_err(AppError::Internal)?;
             }
         } else {
-            info!("Adding new certificate for {} to scheduler", server_id.addr());
+            info!(
+                "Adding new certificate for {} to scheduler",
+                server_id.addr()
+            );
             certs.insert(server_id, (cert_digest, cert_pem.clone()));
-            state.requester.update_certs(&certs).await.map_err(AppError::Internal)?;
+            state
+                .requester
+                .update_certs(&certs)
+                .await
+                .map_err(AppError::Internal)?;
         }
     }
 
@@ -332,7 +334,8 @@ where
         .handle_heartbeat_server(server_id, server_nonce, num_cpus, job_authorizer)
         .map_err(AppError::Internal)?;
 
-    let format = ResponseFormat::from_accept(headers.get(header::ACCEPT).and_then(|v| v.to_str().ok()));
+    let format =
+        ResponseFormat::from_accept(headers.get(header::ACCEPT).and_then(|v| v.to_str().ok()));
     Ok(format
         .into_response(&res)
         .map_err(|e| AppError::Internal(e.into()))?
@@ -352,8 +355,7 @@ where
     // Check server authentication
     let bearer_token = extract_bearer(&headers).map_err(|_| AppError::Unauthorized)?;
 
-    let server_id = (state.check_server_auth)(bearer_token)
-        .ok_or(AppError::Unauthorized)?;
+    let server_id = (state.check_server_auth)(bearer_token).ok_or(AppError::Unauthorized)?;
 
     // Check IP matches
     let origin_ip = if let Some(real_ip) = headers.get("X-Real-IP") {
@@ -378,7 +380,8 @@ where
         .handle_update_job_state(job_id, server_id, job_state)
         .map_err(AppError::Internal)?;
 
-    let format = ResponseFormat::from_accept(headers.get(header::ACCEPT).and_then(|v| v.to_str().ok()));
+    let format =
+        ResponseFormat::from_accept(headers.get(header::ACCEPT).and_then(|v| v.to_str().ok()));
     Ok(format
         .into_response(&res)
         .map_err(|e| AppError::Internal(e.into()))?
@@ -394,7 +397,8 @@ where
 {
     let res = state.handler.handle_status().map_err(AppError::Internal)?;
 
-    let format = ResponseFormat::from_accept(headers.get(header::ACCEPT).and_then(|v| v.to_str().ok()));
+    let format =
+        ResponseFormat::from_accept(headers.get(header::ACCEPT).and_then(|v| v.to_str().ok()));
     Ok(format
         .into_response(&res)
         .map_err(|e| AppError::Internal(e.into()))?
@@ -494,7 +498,10 @@ impl IntoResponse for AppError {
                 .into_response(),
             AppError::IpMismatch => (
                 StatusCode::UNAUTHORIZED,
-                [("WWW-Authenticate", "Bearer error=\"invalid_bearer_token_mismatched_address\"")],
+                [(
+                    "WWW-Authenticate",
+                    "Bearer error=\"invalid_bearer_token_mismatched_address\"",
+                )],
                 "IP address mismatch",
             )
                 .into_response(),

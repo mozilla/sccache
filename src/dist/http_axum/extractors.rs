@@ -21,7 +21,7 @@ use axum::{
     async_trait,
     body::Bytes,
     extract::{FromRequest, Request},
-    http::{header::CONTENT_TYPE, StatusCode},
+    http::{StatusCode, header::CONTENT_TYPE},
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
@@ -78,9 +78,10 @@ pub enum BincodeRejection {
 impl IntoResponse for BincodeRejection {
     fn into_response(self) -> Response {
         let (status, message) = match self {
-            BincodeRejection::WrongContentType => {
-                (StatusCode::BAD_REQUEST, "Content-Type must be application/octet-stream")
-            }
+            BincodeRejection::WrongContentType => (
+                StatusCode::BAD_REQUEST,
+                "Content-Type must be application/octet-stream",
+            ),
             BincodeRejection::BodyAlreadyExtracted => {
                 (StatusCode::INTERNAL_SERVER_ERROR, "Body already extracted")
             }
@@ -171,7 +172,9 @@ pub enum ResponseError {
 impl From<ResponseError> for anyhow::Error {
     fn from(err: ResponseError) -> Self {
         match err {
-            ResponseError::SerializationError(msg) => anyhow::anyhow!("Serialization error: {}", msg),
+            ResponseError::SerializationError(msg) => {
+                anyhow::anyhow!("Serialization error: {}", msg)
+            }
         }
     }
 }

@@ -19,20 +19,20 @@
 //! - Toolchain submission
 //! - Job execution
 
-use crate::dist::{self, JobId};
 use crate::dist::http::common::HeartbeatServerHttpRequest;
 use crate::dist::http::server::JWT_KEY_LENGTH;
 use crate::dist::http::urls;
+use crate::dist::{self, JobId};
 use crate::errors::*;
 use axum::{
+    Router,
     extract::{Path, State},
-    http::{header, HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::post,
-    Router,
 };
-use rand::rngs::OsRng;
 use rand::RngCore;
+use rand::rngs::OsRng;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -40,7 +40,7 @@ use std::time::Duration;
 use tokio::time::sleep;
 use tower::Service;
 
-use super::auth::{extract_bearer, JWTJobAuthorizer, JobAuthorizer};
+use super::auth::{JWTJobAuthorizer, JobAuthorizer, extract_bearer};
 use super::extractors::{Bincode, ResponseFormat};
 use super::tls;
 
@@ -68,9 +68,8 @@ impl<S: dist::ServerIncoming + Send + Sync + Clone + 'static> Server<S> {
         scheduler_auth: String,
         handler: S,
     ) -> Result<Self> {
-        let (cert_digest, cert_pem, privkey_pem) =
-            tls::create_https_cert_and_privkey(public_addr)
-                .context("failed to create HTTPS certificate for server")?;
+        let (cert_digest, cert_pem, privkey_pem) = tls::create_https_cert_and_privkey(public_addr)
+            .context("failed to create HTTPS certificate for server")?;
         let mut jwt_key = vec![0; JWT_KEY_LENGTH];
         OsRng.fill_bytes(&mut jwt_key);
         let server_nonce = dist::ServerNonce::new();
@@ -207,8 +206,11 @@ impl BodyReader {
 impl std::io::Read for BodyReader {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         self.runtime.block_on(async {
-            match axum::body::to_bytes(std::mem::replace(&mut self.body, axum::body::Body::empty()), usize::MAX)
-                .await 
+            match axum::body::to_bytes(
+                std::mem::replace(&mut self.body, axum::body::Body::empty()),
+                usize::MAX,
+            )
+            .await
             {
                 Ok(data) => {
                     let len = std::cmp::min(buf.len(), data.len());
@@ -232,8 +234,8 @@ impl dist::ServerOutgoing for ServerRequester {
     ) -> Result<dist::UpdateJobStateResult> {
         tokio::runtime::Handle::current().block_on(async {
             let url = urls::scheduler_job_state(&self.scheduler_url, job_id);
-            let bytes = bincode::serialize(&state)
-                .context("Failed to serialize job state to bincode")?;
+            let bytes =
+                bincode::serialize(&state).context("Failed to serialize job state to bincode")?;
 
             let client = self.client.lock().await;
             let res = client
@@ -264,8 +266,8 @@ async fn send_heartbeat(
     auth: &str,
     heartbeat: &HeartbeatServerHttpRequest,
 ) -> Result<bool> {
-    let bytes = bincode::serialize(heartbeat)
-        .context("Failed to serialize heartbeat to bincode")?;
+    let bytes =
+        bincode::serialize(heartbeat).context("Failed to serialize heartbeat to bincode")?;
 
     let res = client
         .post(url.clone())
@@ -281,25 +283,21 @@ async fn send_heartbeat(
     Ok(result.is_new)
 }
 
-async fn serve_https(
-    https_server: tls::HttpsServer,
-    app: Router,
-) -> Result<()> {
+async fn serve_https(https_server: tls::HttpsServer, app: Router) -> Result<()> {
     loop {
         let tls_stream = https_server.accept().await?;
         let tower_service = app.clone();
 
         tokio::spawn(async move {
-            let hyper_service = hyper::service::service_fn(move |request: hyper::Request<hyper::body::Incoming>| {
-                let mut svc = tower_service.clone();
-                svc.call(request)
-            });
+            let hyper_service = hyper::service::service_fn(
+                move |request: hyper::Request<hyper::body::Incoming>| {
+                    let mut svc = tower_service.clone();
+                    svc.call(request)
+                },
+            );
 
             if let Err(err) = hyper::server::conn::http1::Builder::new()
-                .serve_connection(
-                    hyper_util::rt::TokioIo::new(tls_stream),
-                    hyper_service,
-                )
+                .serve_connection(hyper_util::rt::TokioIo::new(tls_stream), hyper_service)
                 .await
             {
                 error!("Error serving connection: {:?}", err);
@@ -331,7 +329,8 @@ where
         .handle_assign_job(job_id, toolchain)
         .map_err(AppError::Internal)?;
 
-    let format = ResponseFormat::from_accept(headers.get(header::ACCEPT).and_then(|v| v.to_str().ok()));
+    let format =
+        ResponseFormat::from_accept(headers.get(header::ACCEPT).and_then(|v| v.to_str().ok()));
     Ok(format
         .into_response(&res)
         .map_err(|e| AppError::Internal(e.into()))?
@@ -364,7 +363,8 @@ where
         .handle_submit_toolchain(&*state.requester, job_id, toolchain_rdr)
         .map_err(AppError::Internal)?;
 
-    let format = ResponseFormat::from_accept(headers.get(header::ACCEPT).and_then(|v| v.to_str().ok()));
+    let format =
+        ResponseFormat::from_accept(headers.get(header::ACCEPT).and_then(|v| v.to_str().ok()));
     Ok(format
         .into_response(&res)
         .map_err(|e| AppError::Internal(e.into()))?
@@ -390,13 +390,13 @@ where
     let stream_data = axum::body::to_bytes(body, usize::MAX)
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to read body: {}", e)))?;
-    
+
     let mut cursor = std::io::Cursor::new(stream_data);
 
     let mut len_bytes = [0u8; 4];
     std::io::Read::read_exact(&mut cursor, &mut len_bytes)
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to read length prefix: {}", e)))?;
-    
+
     let bincode_len = u32::from_be_bytes(len_bytes) as usize;
 
     let mut bincode_buf = vec![0u8; bincode_len];
@@ -409,10 +409,10 @@ where
     let mut remaining = Vec::new();
     std::io::Read::read_to_end(&mut cursor, &mut remaining)
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to read remaining data: {}", e)))?;
-    
-    let inputs_reader = dist::InputsReader(Box::new(
-        flate2::read::ZlibDecoder::new(std::io::Cursor::new(remaining))
-    ));
+
+    let inputs_reader = dist::InputsReader(Box::new(flate2::read::ZlibDecoder::new(
+        std::io::Cursor::new(remaining),
+    )));
 
     trace!("run_job({}): command={:?}", job_id, request.command);
 
@@ -420,10 +420,17 @@ where
 
     let res = state
         .handler
-        .handle_run_job(&*state.requester, job_id, request.command, outputs, inputs_reader)
+        .handle_run_job(
+            &*state.requester,
+            job_id,
+            request.command,
+            outputs,
+            inputs_reader,
+        )
         .map_err(AppError::Internal)?;
 
-    let format = ResponseFormat::from_accept(headers.get(header::ACCEPT).and_then(|v| v.to_str().ok()));
+    let format =
+        ResponseFormat::from_accept(headers.get(header::ACCEPT).and_then(|v| v.to_str().ok()));
     Ok(format
         .into_response(&res)
         .map_err(|e| AppError::Internal(e.into()))?

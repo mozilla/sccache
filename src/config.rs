@@ -127,10 +127,18 @@ pub fn parse_size(val: &str) -> Option<u64> {
     u64::from_str(val).ok().map(|size| size * multiplier)
 }
 
-#[cfg(any(feature = "dist-client", feature = "dist-server", feature = "dist-server-axum"))]
+#[cfg(any(
+    feature = "dist-client",
+    feature = "dist-server",
+    feature = "dist-server-axum"
+))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HTTPUrl(reqwest::Url);
-#[cfg(any(feature = "dist-client", feature = "dist-server", feature = "dist-server-axum"))]
+#[cfg(any(
+    feature = "dist-client",
+    feature = "dist-server",
+    feature = "dist-server-axum"
+))]
 impl Serialize for HTTPUrl {
     fn serialize<S>(&self, serializer: S) -> StdResult<S::Ok, S::Error>
     where
@@ -139,7 +147,11 @@ impl Serialize for HTTPUrl {
         serializer.serialize_str(self.0.as_str())
     }
 }
-#[cfg(any(feature = "dist-client", feature = "dist-server", feature = "dist-server-axum"))]
+#[cfg(any(
+    feature = "dist-client",
+    feature = "dist-server",
+    feature = "dist-server-axum"
+))]
 impl<'a> Deserialize<'a> for HTTPUrl {
     fn deserialize<D>(deserializer: D) -> StdResult<Self, D::Error>
     where

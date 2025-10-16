@@ -45,11 +45,11 @@ where
 
     async fn from_request(req: Request, _state: &S) -> Result<Self, Self::Rejection> {
         let body = req.into_body();
-        
+
         // Convert axum body to a synchronous reader for compatibility
         // with existing ToolchainReader interface
         let reader = BodyReader::new(body);
-        
+
         Ok(ToolchainStream(ToolchainReader(Box::new(reader))))
     }
 }
@@ -85,14 +85,14 @@ where
         let stream_data = axum::body::to_bytes(body, usize::MAX)
             .await
             .map_err(|e| StreamError::ReadError(format!("Failed to read body: {}", e)))?;
-        
+
         let mut cursor = std::io::Cursor::new(stream_data);
 
         // 1. Read 4-byte length prefix
         let mut len_bytes = [0u8; 4];
         std::io::Read::read_exact(&mut cursor, &mut len_bytes)
             .map_err(|e| StreamError::ReadError(format!("Failed to read length prefix: {}", e)))?;
-        
+
         let bincode_len = u32::from_be_bytes(len_bytes) as usize;
 
         // 2. Read bincode portion
@@ -107,9 +107,11 @@ where
         let mut remaining = Vec::new();
         std::io::Read::read_to_end(&mut cursor, &mut remaining)
             .map_err(|e| StreamError::ReadError(format!("Failed to read remaining data: {}", e)))?;
-        
+
         // Wrap in zlib decoder
-        let inputs_reader = InputsReader(Box::new(flate2::read::ZlibDecoder::new(std::io::Cursor::new(remaining))));
+        let inputs_reader = InputsReader(Box::new(flate2::read::ZlibDecoder::new(
+            std::io::Cursor::new(remaining),
+        )));
 
         Ok(RunJobBody {
             command: request.command,
@@ -161,12 +163,9 @@ impl Read for BodyReader {
         // For simplicity in this impl, we just collect all bytes
         // In production, this should use a buffered approach
         self.runtime.block_on(async {
-            
-            
-            
             // Collect body into bytes
             match axum::body::to_bytes(std::mem::replace(&mut self.body, Body::empty()), usize::MAX)
-                .await 
+                .await
             {
                 Ok(data) => {
                     let len = std::cmp::min(buf.len(), data.len());
