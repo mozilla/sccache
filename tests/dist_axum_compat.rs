@@ -5,12 +5,10 @@
 
 #![cfg(all(feature = "dist-client", feature = "dist-server-axum"))]
 
-use sccache::dist::http::common::{
-    AllocJobHttpResponse, HeartbeatServerHttpRequest, JobJwt, ServerCertificateHttpResponse,
-};
-use sccache::dist::{JobId, ServerId, ServerNonce, Toolchain};
+use sccache::dist::http::common::{AllocJobHttpResponse, HeartbeatServerHttpRequest, JobJwt};
+use sccache::dist::http_axum::auth::JobAuthorizer;
+use sccache::dist::{JobId, ServerId, ServerNonce};
 use std::collections::HashMap;
-use std::net::SocketAddr;
 
 /// Test bincode serialization/deserialization compatibility
 #[test]

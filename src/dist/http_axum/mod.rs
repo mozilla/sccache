@@ -18,7 +18,7 @@
 //! rouille-based implementation. It maintains 100% protocol compatibility
 //! while offering better performance and maintainability.
 
-mod auth;
+pub mod auth;
 mod extractors;
 mod handlers;
 mod scheduler;
