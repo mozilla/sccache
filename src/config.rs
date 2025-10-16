@@ -17,7 +17,7 @@ use directories::ProjectDirs;
 use fs::File;
 use fs_err as fs;
 use once_cell::sync::Lazy;
-#[cfg(any(feature = "dist-client", feature = "dist-server"))]
+#[cfg(any(feature = "dist-client", feature = "dist-server", feature = "dist-server-axum"))]
 use serde::ser::Serializer;
 use serde::{
     Deserialize, Serialize,
@@ -163,7 +163,7 @@ impl<'a> Deserialize<'a> for HTTPUrl {
         Ok(HTTPUrl(url))
     }
 }
-#[cfg(any(feature = "dist-client", feature = "dist-server"))]
+#[cfg(any(feature = "dist-client", feature = "dist-server", feature = "dist-server-axum"))]
 fn parse_http_url(url: &str) -> Result<reqwest::Url> {
     use std::net::SocketAddr;
     let url = if let Ok(sa) = url.parse::<SocketAddr>() {

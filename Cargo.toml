@@ -230,6 +230,8 @@ dist-server-axum = [
   "syslog",
   "version-compare",
   "axum",
+  "hyper",
+  "hyper-util",
   "tokio-rustls",
   "rustls",
   "rustls-pemfile",
