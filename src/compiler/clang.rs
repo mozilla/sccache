@@ -18,10 +18,10 @@ use crate::compiler::args::*;
 use crate::compiler::c::{ArtifactDescriptor, CCompilerImpl, CCompilerKind, ParsedArguments};
 use crate::compiler::gcc::ArgData::*;
 use crate::compiler::{
-    gcc, write_temp_file, CCompileCommand, Cacheable, CompileCommand, CompilerArguments, Language,
+    CCompileCommand, Cacheable, CompileCommand, CompilerArguments, Language, gcc, write_temp_file,
 };
 use crate::mock_command::{CommandCreator, CommandCreatorSync, RunCommand};
-use crate::util::{run_input_output, OsStrExt};
+use crate::util::{OsStrExt, run_input_output};
 use crate::{counted_array, dist};
 use async_trait::async_trait;
 use fs::File;
@@ -198,10 +198,10 @@ pub fn language_to_clang_arg(lang: Language) -> Option<&'static str> {
 }
 
 counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
-    take_arg!("--dependent-lib", OsString, Concatenated('='), PassThrough),
-    take_arg!("--hip-device-lib-path", PathBuf, Concatenated('='), PassThroughPath),
-    take_arg!("--hip-path", PathBuf, Concatenated('='), PassThroughPath),
-    take_arg!("--rocm-path", PathBuf, Concatenated('='), PassThroughPath),
+    take_arg!("--dependent-lib", OsString, Concatenated(b'='), PassThrough),
+    take_arg!("--hip-device-lib-path", PathBuf, Concatenated(b'='), PassThroughPath),
+    take_arg!("--hip-path", PathBuf, Concatenated(b'='), PassThroughPath),
+    take_arg!("--rocm-path", PathBuf, Concatenated(b'='), PassThroughPath),
     take_arg!("--serialize-diagnostics", OsString, Separated, PassThrough),
     take_arg!("--target", OsString, Separated, PassThrough),
     // Note: for clang we must override the dep options from gcc.rs with `CanBeSeparated`.
@@ -212,27 +212,27 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     flag!("-Wno-unused-parameter", PassThroughFlag),
     take_arg!("-Xclang", OsString, Separated, XClang),
     take_arg!("-add-plugin", OsString, Separated, PassThrough),
-    take_arg!("-debug-info-kind", OsString, Concatenated('='), PassThrough),
+    take_arg!("-debug-info-kind", OsString, Concatenated(b'='), PassThrough),
     take_arg!("-dependency-file", PathBuf, Separated, DepArgumentPath),
     flag!("-emit-pch", PassThroughFlag),
     flag!("-fcolor-diagnostics", DiagnosticsColorFlag),
     flag!("-fcuda-allow-variadic-functions", PassThroughFlag),
     flag!("-fcxx-modules", TooHardFlag),
     take_arg!("-fdebug-compilation-dir", OsString, Separated, PassThrough),
-    take_arg!("-fembed-offload-object", PathBuf, Concatenated('='), ExtraHashFile),
+    take_arg!("-fembed-offload-object", PathBuf, Concatenated(b'='), ExtraHashFile),
     flag!("-fmodules", TooHardFlag),
     flag!("-fno-color-diagnostics", NoDiagnosticsColorFlag),
     flag!("-fno-pch-timestamp", PassThroughFlag),
     flag!("-fno-profile-instr-generate", TooHardFlag),
     flag!("-fno-profile-instr-use", TooHardFlag),
-    take_arg!("-fplugin", PathBuf, CanBeConcatenated('='), ExtraHashFile),
+    take_arg!("-fplugin", PathBuf, CanBeConcatenated(b'='), ExtraHashFile),
     flag!("-fprofile-instr-generate", ProfileGenerate),
     // Note: the PathBuf argument is optional
-    take_arg!("-fprofile-instr-use", PathBuf, Concatenated('='), ClangProfileUse),
+    take_arg!("-fprofile-instr-use", PathBuf, Concatenated(b'='), ClangProfileUse),
     // Note: this overrides the -fprofile-use option in gcc.rs.
-    take_arg!("-fprofile-use", PathBuf, Concatenated('='), ClangProfileUse),
-    take_arg!("-fsanitize-blacklist", PathBuf, Concatenated('='), ExtraHashFile),
-    take_arg!("-fsanitize-ignorelist", PathBuf, Concatenated('='), ExtraHashFile),
+    take_arg!("-fprofile-use", PathBuf, Concatenated(b'='), ClangProfileUse),
+    take_arg!("-fsanitize-blacklist", PathBuf, Concatenated(b'='), ExtraHashFile),
+    take_arg!("-fsanitize-ignorelist", PathBuf, Concatenated(b'='), ExtraHashFile),
     flag!("-fuse-ctor-homing", PassThroughFlag),
     take_arg!("-gcc-toolchain", OsString, Separated, PassThrough),
     flag!("-gcodeview", PassThroughFlag),
@@ -242,7 +242,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("-mllvm", OsString, Separated, PassThrough),
     flag!("-mrelax-all", PassThroughFlag),
     flag!("-no-opaque-pointers", PreprocessorArgumentFlag),
-    take_arg!("-plugin-arg", OsString, Concatenated('-'), PassThrough),
+    take_arg!("-plugin-arg", OsString, Concatenated(b'-'), PassThrough),
     take_arg!("-target", OsString, Separated, PassThrough),
     flag!("-verify", PreprocessorArgumentFlag),
     take_arg!("/winsysroot", PathBuf, CanBeSeparated, PassThroughPath),
@@ -303,18 +303,22 @@ mod test {
 
     #[test]
     fn test_is_minversion() {
-        assert!(Clang {
-            clangplusplus: false,
-            is_appleclang: false,
-            version: Some("\"Ubuntu Clang 14.0.0\"".to_string()),
-        }
-        .is_minversion(14));
-        assert!(!Clang {
-            clangplusplus: false,
-            is_appleclang: false,
-            version: Some("\"Ubuntu Clang 13.0.0\"".to_string()),
-        }
-        .is_minversion(14));
+        assert!(
+            Clang {
+                clangplusplus: false,
+                is_appleclang: false,
+                version: Some("\"Ubuntu Clang 14.0.0\"".to_string()),
+            }
+            .is_minversion(14)
+        );
+        assert!(
+            !Clang {
+                clangplusplus: false,
+                is_appleclang: false,
+                version: Some("\"Ubuntu Clang 13.0.0\"".to_string()),
+            }
+            .is_minversion(14)
+        );
         assert!(Clang {
             clangplusplus: false,
             is_appleclang: false,

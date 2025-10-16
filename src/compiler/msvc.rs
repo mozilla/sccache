@@ -15,11 +15,11 @@
 use crate::compiler::args::*;
 use crate::compiler::c::{ArtifactDescriptor, CCompilerImpl, CCompilerKind, ParsedArguments};
 use crate::compiler::{
-    clang, gcc, write_temp_file, CCompileCommand, Cacheable, ColorMode, CompileCommand,
-    CompilerArguments, Language, SingleCompileCommand,
+    CCompileCommand, Cacheable, ColorMode, CompileCommand, CompilerArguments, Language,
+    SingleCompileCommand, clang, gcc, write_temp_file,
 };
 use crate::mock_command::{CommandCreatorSync, RunCommand};
-use crate::util::{encode_path, run_input_output, OsStrExt};
+use crate::util::{OsStrExt, encode_path, run_input_output};
 use crate::{counted_array, dist};
 use async_trait::async_trait;
 use fs::File;
@@ -125,7 +125,7 @@ fn from_local_codepage(multi_byte_str: &[u8]) -> io::Result<String> {
 
 #[cfg(windows)]
 pub fn from_local_codepage(multi_byte_str: &[u8]) -> io::Result<String> {
-    use windows_sys::Win32::Globalization::{MultiByteToWideChar, CP_OEMCP, MB_ERR_INVALID_CHARS};
+    use windows_sys::Win32::Globalization::{CP_OEMCP, MB_ERR_INVALID_CHARS, MultiByteToWideChar};
 
     let codepage = CP_OEMCP;
     let flags = MB_ERR_INVALID_CHARS;
@@ -451,7 +451,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("external:anglebrackets", PassThrough),
     msvc_take_arg!("favor:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("fp:", OsString, Concatenated, PassThroughWithSuffix),
-    msvc_take_arg!("fsanitize-blacklist", PathBuf, Concatenated('='), ExtraHashFile),
+    msvc_take_arg!("fsanitize-blacklist", PathBuf, Concatenated(b'='), ExtraHashFile),
     msvc_flag!("fsanitize=address", PassThrough),
     msvc_flag!("fsyntax-only", SuppressCompilation),
     msvc_take_arg!("guard:cf", OsString, Concatenated, PassThroughWithSuffix),
@@ -664,9 +664,10 @@ pub fn parse_arguments(
             let args = match arg.get_data() {
                 Some(SplitDwarf) | Some(TestCoverage) | Some(Coverage) | Some(DoCompilation)
                 | Some(Language(_)) | Some(Output(_)) | Some(TooHardFlag) | Some(XClang(_))
-                | Some(TooHard(_)) => cannot_cache!(arg
-                    .flag_str()
-                    .unwrap_or("Can't handle complex arguments through clang",)),
+                | Some(TooHard(_)) => cannot_cache!(
+                    arg.flag_str()
+                        .unwrap_or("Can't handle complex arguments through clang",)
+                ),
                 None => match arg {
                     Argument::Raw(_) | Argument::UnknownFlag(_) => &mut common_args,
                     _ => unreachable!(),

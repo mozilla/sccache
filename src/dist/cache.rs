@@ -1,7 +1,7 @@
 use crate::dist::Toolchain;
 use crate::lru_disk_cache::Result as LruResult;
 use crate::lru_disk_cache::{LruDiskCache, ReadSeek};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use fs_err as fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -14,17 +14,17 @@ use std::io::Read;
 #[cfg(feature = "dist-client")]
 mod client {
     use crate::config;
-    use crate::dist::pkg::ToolchainPackager;
     use crate::dist::Toolchain;
+    use crate::dist::pkg::ToolchainPackager;
     use crate::lru_disk_cache::Error as LruError;
-    use anyhow::{bail, Context, Error, Result};
+    use anyhow::{Context, Error, Result, bail};
     use fs_err as fs;
     use std::collections::{HashMap, HashSet};
     use std::io::Write;
     use std::path::{Path, PathBuf};
     use std::sync::Mutex;
 
-    use super::{path_key, TcCache};
+    use super::{TcCache, path_key};
 
     #[derive(Clone, Debug)]
     pub struct CustomToolchain {
@@ -417,13 +417,15 @@ mod client {
             )
             .unwrap();
 
-            assert!(client_toolchains
-                .put_toolchain(
-                    "/my/compiler".as_ref(),
-                    "weak_key",
-                    PanicToolchainPackager::new()
-                )
-                .is_err());
+            assert!(
+                client_toolchains
+                    .put_toolchain(
+                        "/my/compiler".as_ref(),
+                        "weak_key",
+                        PanicToolchainPackager::new()
+                    )
+                    .is_err()
+            );
         }
 
         #[test]

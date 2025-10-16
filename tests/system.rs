@@ -1000,9 +1000,11 @@ int main(int argc, char** argv) {
         .envs(env_vars.clone())
         .assert()
         .success();
-    assert!(fs::metadata(&test_2299_out_file)
-        .map(|m| m.len() > 0)
-        .unwrap());
+    assert!(
+        fs::metadata(&test_2299_out_file)
+            .map(|m| m.len() > 0)
+            .unwrap()
+    );
     fs::remove_file(&test_2299_out_file).unwrap();
     trace!("compile test_2299.cu request stats (1)");
     get_stats(|info| {
@@ -1060,9 +1062,11 @@ int main(int argc, char** argv) {
         .envs(env_vars.clone())
         .assert()
         .success();
-    assert!(fs::metadata(&test_2299_out_file)
-        .map(|m| m.len() > 0)
-        .unwrap());
+    assert!(
+        fs::metadata(&test_2299_out_file)
+            .map(|m| m.len() > 0)
+            .unwrap()
+    );
     fs::remove_file(&test_2299_out_file).unwrap();
     trace!("compile test_2299.cu request stats (2)");
     get_stats(|info| {
@@ -1121,9 +1125,11 @@ int main(int argc, char** argv) {
         .envs(env_vars.clone())
         .assert()
         .success();
-    assert!(fs::metadata(&test_2299_out_file)
-        .map(|m| m.len() > 0)
-        .unwrap());
+    assert!(
+        fs::metadata(&test_2299_out_file)
+            .map(|m| m.len() > 0)
+            .unwrap()
+    );
     fs::remove_file(&test_2299_out_file).unwrap();
     trace!("compile test_2299.cu request stats (3)");
     get_stats(|info| {
@@ -1771,7 +1777,8 @@ fn find_cuda_compilers() -> Vec<Compiler> {
 
     // CUDA compilers like clang don't come with all of the components for compilation.
     // To consider a machine to have any cuda compilers we rely on the existence of `nvcc`
-    let compilers = match which("nvcc") {
+
+    match which("nvcc") {
         Ok(_) => candidates
             .iter()
             .filter_map(|c| {
@@ -1791,8 +1798,7 @@ fn find_cuda_compilers() -> Vec<Compiler> {
             );
             vec![]
         }
-    };
-    compilers
+    }
 }
 
 // We detect the HIP Clang compiler through 2 methods:
@@ -1985,8 +1991,7 @@ fn test_symlinked_exe() {
     for compiler in compilers {
         trace!(
             "Testing sccache symlink to {} ({:?})",
-            compiler.name,
-            compiler.exe
+            compiler.name, compiler.exe
         );
         let compiler_ver_stdout =
             get_version(Command::new(&compiler.exe).envs(compiler.env_vars.clone()));

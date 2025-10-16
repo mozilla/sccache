@@ -142,6 +142,7 @@ configuration variables
   - For example, in `10`, it have about 0.9x size with about 1.6x time than default `3` (tested with compiling sccache code)
   - This option will only applied to newly compressed cache and don't affect existing cache.
   - If you want to be apply to all cache, you should reset cache and make new cache.
+* `SCCACHE_LOG_MILLIS` when set (to any value), enables millisecond precision timestamps in log output instead of the default second precision.
 
 ### cache configs
 

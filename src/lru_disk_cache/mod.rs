@@ -13,7 +13,7 @@ use std::io;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
 
-use filetime::{set_file_times, FileTime};
+use filetime::{FileTime, set_file_times};
 pub use lru_cache::{LruCache, Meter};
 use tempfile::NamedTempFile;
 use walkdir::WalkDir;
@@ -85,7 +85,7 @@ impl fmt::Display for Error {
         match self {
             Error::FileTooLarge => write!(f, "File too large"),
             Error::FileNotInCache => write!(f, "File not in cache"),
-            Error::Io(ref e) => write!(f, "{}", e),
+            Error::Io(e) => write!(f, "{}", e),
         }
     }
 }
@@ -95,7 +95,7 @@ impl StdError for Error {
         match self {
             Error::FileTooLarge => None,
             Error::FileNotInCache => None,
-            Error::Io(ref e) => Some(e),
+            Error::Io(e) => Some(e),
         }
     }
 }
@@ -415,9 +415,9 @@ impl LruDiskCache {
 #[cfg(test)]
 mod tests {
     use super::fs::{self, File};
-    use super::{get_all_files, Error, LruDiskCache, LruDiskCacheAddEntry};
+    use super::{Error, LruDiskCache, LruDiskCacheAddEntry, get_all_files};
 
-    use filetime::{set_file_times, FileTime};
+    use filetime::{FileTime, set_file_times};
     use std::io::{self, Read, Write};
     use std::path::{Path, PathBuf};
     use tempfile::TempDir;

@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::errors::*;
-use clap::{error::ErrorKind, Arg, ArgAction, ArgGroup, ValueEnum};
+use clap::{Arg, ArgAction, ArgGroup, ValueEnum, error::ErrorKind};
 use std::env;
 use std::ffi::OsString;
 use std::path::PathBuf;

@@ -10,9 +10,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use opendal::layers::LoggingLayer;
-use opendal::services::S3;
 use opendal::Operator;
+use opendal::layers::{HttpClientLayer, LoggingLayer};
+use opendal::services::S3;
 
 use crate::errors::*;
 
@@ -66,10 +66,7 @@ impl S3Cache {
         self
     }
     pub fn build(self) -> Result<Operator> {
-        let mut builder = S3::default()
-            .http_client(set_user_agent())
-            .bucket(&self.bucket)
-            .root(&self.key_prefix);
+        let mut builder = S3::default().bucket(&self.bucket).root(&self.key_prefix);
 
         if let Some(region) = &self.region {
             builder = builder.region(region);
@@ -101,6 +98,7 @@ impl S3Cache {
         }
 
         let op = Operator::new(builder)?
+            .layer(HttpClientLayer::new(set_user_agent()))
             .layer(LoggingLayer::default())
             .finish();
         Ok(op)

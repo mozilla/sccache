@@ -1,11 +1,11 @@
 #[macro_use]
 extern crate log;
 
-use anyhow::{bail, Context, Error, Result};
+use anyhow::{Context, Result, bail};
 use base64::Engine;
-use rand::{rngs::OsRng, RngCore};
+use rand::{RngCore, rngs::OsRng};
 use sccache::config::{
-    scheduler as scheduler_config, server as server_config, INSECURE_DIST_CLIENT_TOKEN,
+    INSECURE_DIST_CLIENT_TOKEN, scheduler as scheduler_config, server as server_config,
 };
 use sccache::dist::{
     self, AllocJobResult, AssignJobResult, BuilderIncoming, CompileCommand, HeartbeatServerResult,
@@ -14,10 +14,10 @@ use sccache::dist::{
     ServerNonce, ServerOutgoing, SubmitToolchainResult, TcCache, Toolchain, ToolchainReader,
     UpdateJobStateResult,
 };
-use sccache::util::daemonize;
 use sccache::util::BASE64_URL_SAFE_ENGINE;
+use sccache::util::daemonize;
 use serde::{Deserialize, Serialize};
-use std::collections::{btree_map, BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, btree_map};
 use std::env;
 use std::io;
 use std::path::Path;
@@ -312,7 +312,14 @@ fn run(command: Command) -> Result<i32> {
 
 fn init_logging() {
     if env::var(sccache::LOGGING_ENV).is_ok() {
-        match env_logger::Builder::from_env(sccache::LOGGING_ENV).try_init() {
+        let mut builder = env_logger::Builder::from_env(sccache::LOGGING_ENV);
+
+        // Enable millisecond precision timestamps if SCCACHE_LOG_MILLIS is set
+        if env::var("SCCACHE_LOG_MILLIS").is_ok() {
+            builder.format_timestamp_millis();
+        }
+
+        match builder.try_init() {
             Ok(_) => (),
             Err(e) => panic!("Failed to initialize logging: {:?}", e),
         }
@@ -489,10 +496,12 @@ impl SchedulerIncoming for Scheduler {
                     let job_count = self.job_count.fetch_add(1, Ordering::SeqCst) as u64;
                     let job_id = JobId(job_count);
                     assert!(server_details.jobs_assigned.insert(job_id));
-                    assert!(server_details
-                        .jobs_unclaimed
-                        .insert(job_id, Instant::now())
-                        .is_none());
+                    assert!(
+                        server_details
+                            .jobs_unclaimed
+                            .insert(job_id, Instant::now())
+                            .is_none()
+                    );
 
                     info!(
                         "Job {} created and will be assigned to server {:?}",
@@ -501,7 +510,6 @@ impl SchedulerIncoming for Scheduler {
                     let auth = server_details
                         .job_authorizer
                         .generate_token(job_id)
-                        .map_err(Error::from)
                         .context("Could not create an auth token for this job")?;
                     Some((job_id, server_id, auth))
                 } else {
@@ -547,9 +555,10 @@ impl SchedulerIncoming for Scheduler {
                 "Job {} successfully assigned and saved with state {:?}",
                 job_id, state
             );
-            assert!(jobs
-                .insert(job_id, JobDetail { server_id, state })
-                .is_none());
+            assert!(
+                jobs.insert(job_id, JobDetail { server_id, state })
+                    .is_none()
+            );
         }
         let job_alloc = JobAlloc {
             auth,
@@ -764,12 +773,13 @@ impl Server {
 impl ServerIncoming for Server {
     fn handle_assign_job(&self, job_id: JobId, tc: Toolchain) -> Result<AssignJobResult> {
         let need_toolchain = !self.cache.lock().unwrap().contains_toolchain(&tc);
-        assert!(self
-            .job_toolchains
-            .lock()
-            .unwrap()
-            .insert(job_id, tc)
-            .is_none());
+        assert!(
+            self.job_toolchains
+                .lock()
+                .unwrap()
+                .insert(job_id, tc)
+                .is_none()
+        );
         let state = if need_toolchain {
             JobState::Pending
         } else {

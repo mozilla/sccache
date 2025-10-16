@@ -1,7 +1,6 @@
 #![cfg(all(feature = "dist-client", feature = "dist-server"))]
 
 extern crate assert_cmd;
-#[macro_use]
 extern crate log;
 extern crate sccache;
 extern crate serde_json;
@@ -33,7 +32,11 @@ fn basic_compile(tmpdir: &Path, sccache_cfg_path: &Path, sccache_cached_cfg_path
     ];
     let source_file = "x.c";
     let obj_file = "x.o";
-    write_source(tmpdir, source_file, "#if !defined(SCCACHE_TEST_DEFINE)\n#error SCCACHE_TEST_DEFINE is not defined\n#endif\nint x() { return 5; }");
+    write_source(
+        tmpdir,
+        source_file,
+        "#if !defined(SCCACHE_TEST_DEFINE)\n#error SCCACHE_TEST_DEFINE is not defined\n#endif\nint x() { return 5; }",
+    );
     sccache_command()
         .args([
             std::env::var("CC")
@@ -296,7 +299,7 @@ fn test_dist_cargo_build() {
     get_stats(|info| {
         assert_eq!(1, info.stats.dist_compiles.values().sum::<usize>());
         assert_eq!(0, info.stats.dist_errors);
-        assert_eq!(5, info.stats.compile_requests);
+        assert_eq!(8, info.stats.compile_requests);
         assert_eq!(1, info.stats.requests_executed);
         assert_eq!(0, info.stats.cache_hits.all());
         assert_eq!(1, info.stats.cache_misses.all());
@@ -326,13 +329,15 @@ fn test_dist_cargo_makeflags() {
     start_local_daemon(&sccache_cfg_path, &sccache_cached_cfg_path);
     let compile_output = rust_compile(tmpdir, &sccache_cfg_path, &sccache_cached_cfg_path);
 
-    assert!(!String::from_utf8_lossy(&compile_output.stderr)
-        .contains("warning: failed to connect to jobserver from environment variable"));
+    assert!(
+        !String::from_utf8_lossy(&compile_output.stderr)
+            .contains("warning: failed to connect to jobserver from environment variable")
+    );
 
     get_stats(|info| {
         assert_eq!(1, info.stats.dist_compiles.values().sum::<usize>());
         assert_eq!(0, info.stats.dist_errors);
-        assert_eq!(5, info.stats.compile_requests);
+        assert_eq!(8, info.stats.compile_requests);
         assert_eq!(1, info.stats.requests_executed);
         assert_eq!(0, info.stats.cache_hits.all());
         assert_eq!(1, info.stats.cache_misses.all());

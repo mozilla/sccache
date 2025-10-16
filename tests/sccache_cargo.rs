@@ -6,11 +6,11 @@
 pub mod helpers;
 
 use anyhow::{Context, Result};
-use helpers::{cargo_clean, stop_sccache, CARGO, CRATE_DIR};
+use helpers::{CARGO, CRATE_DIR, cargo_clean, stop_sccache};
 
 use assert_cmd::prelude::*;
 use fs_err as fs;
-use helpers::{SccacheTest, SCCACHE_BIN};
+use helpers::{SCCACHE_BIN, SccacheTest};
 use predicates::prelude::*;
 use serial_test::serial;
 use std::path::Path;
@@ -381,14 +381,18 @@ fn test_rust_cargo_cmd_readonly_preemtive_block() -> Result<()> {
         .try_success()?;
 
     let log_contents = fs::read_to_string(sccache_log)?;
-    assert!(predicates::str::contains("server has setup with ReadOnly").eval(log_contents.as_str()));
-    assert!(predicates::str::contains(
-        "Error executing cache write: Cannot write to read-only storage"
-    )
-    .eval(log_contents.as_str()));
-    assert!(predicates::str::contains("DiskCache::finish_put")
-        .not()
-        .eval(log_contents.as_str()));
+    assert!(
+        predicates::str::contains("server has setup with ReadOnly").eval(log_contents.as_str())
+    );
+    assert!(
+        predicates::str::contains("Error executing cache write: Cannot write to read-only storage")
+            .eval(log_contents.as_str())
+    );
+    assert!(
+        predicates::str::contains("DiskCache::finish_put")
+            .not()
+            .eval(log_contents.as_str())
+    );
 
     // Stats reset on server restart, so this needs to be run for each build.
     test_info
