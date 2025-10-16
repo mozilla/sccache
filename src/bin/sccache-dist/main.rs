@@ -220,7 +220,7 @@ fn run(command: Command) -> Result<i32> {
             daemonize()?;
             let scheduler = Scheduler::new();
 
-            #[cfg(feature = "dist-server")]
+            #[cfg(all(feature = "dist-server", not(feature = "dist-server-axum")))]
             {
                 let http_scheduler = dist::http::Scheduler::new(
                     public_addr,
@@ -313,7 +313,7 @@ fn run(command: Command) -> Result<i32> {
             let server = Server::new(builder, &cache_dir, toolchain_cache_size)
                 .context("Failed to create sccache server instance")?;
 
-            #[cfg(feature = "dist-server")]
+            #[cfg(all(feature = "dist-server", not(feature = "dist-server-axum")))]
             {
                 let http_server = dist::http::Server::new(
                     public_addr,
