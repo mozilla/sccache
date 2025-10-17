@@ -13,18 +13,15 @@
 // limitations under the License.
 #[cfg(feature = "dist-client")]
 pub use self::client::Client;
+#[cfg(any(feature = "dist-server", feature = "dist-server-axum"))]
+pub use self::server::{ClientAuthCheck, ClientVisibleMsg, HEARTBEAT_TIMEOUT, ServerAuthCheck};
 #[cfg(feature = "dist-server")]
-pub use self::server::Server;
-#[cfg(feature = "dist-server")]
-pub use self::server::{
-    ClientAuthCheck, ClientVisibleMsg, HEARTBEAT_TIMEOUT, Scheduler, ServerAuthCheck,
-};
+pub use self::server::{Scheduler, Server};
 
-mod common {
+pub mod common {
     use reqwest::header;
     use serde::{Deserialize, Serialize};
-    #[cfg(feature = "dist-server")]
-    use std::collections::HashMap;
+    pub use std::collections::HashMap;
     use std::fmt;
 
     use crate::dist;
@@ -113,7 +110,6 @@ mod common {
         },
     }
     impl AllocJobHttpResponse {
-        #[cfg(feature = "dist-server")]
         pub fn from_alloc_job_result(
             res: dist::AllocJobResult,
             certs: &HashMap<dist::ServerId, (Vec<u8>, Vec<u8>)>,
@@ -249,41 +245,57 @@ pub mod urls {
     }
 }
 
-#[cfg(feature = "dist-server")]
-mod server {
-    use crate::util::{new_reqwest_blocking_client, num_cpus};
+#[cfg(any(feature = "dist-server", feature = "dist-server-axum"))]
+pub mod server {
+    use crate::errors::*;
+    use crate::util::num_cpus;
+    #[cfg(feature = "dist-server")]
     use byteorder::{BigEndian, ReadBytesExt};
+    #[cfg(feature = "dist-server")]
     use flate2::read::ZlibDecoder as ZlibReadDecoder;
     use once_cell::sync::Lazy;
     use rand::{RngCore, rngs::OsRng};
+    #[cfg(feature = "dist-server")]
     use rouille::accept;
+    #[cfg(feature = "dist-server")]
     use serde::Serialize;
+    #[cfg(feature = "dist-server")]
     use std::collections::HashMap;
     use std::convert::Infallible;
+    #[cfg(feature = "dist-server")]
     use std::io::Read;
     use std::net::SocketAddr;
     use std::result::Result as StdResult;
+    #[cfg(feature = "dist-server")]
     use std::sync::Mutex;
+    #[cfg(feature = "dist-server")]
     use std::sync::atomic;
+    #[cfg(feature = "dist-server")]
     use std::thread;
     use std::time::Duration;
 
+    use super::common::JobJwt;
+    #[cfg(feature = "dist-server")]
     use super::common::{
-        AllocJobHttpResponse, HeartbeatServerHttpRequest, JobJwt, ReqwestRequestBuilderExt,
+        AllocJobHttpResponse, HeartbeatServerHttpRequest, ReqwestRequestBuilderExt,
         RunJobHttpRequest, ServerCertificateHttpResponse,
     };
+    #[cfg(feature = "dist-server")]
     use super::urls;
     use crate::dist::{
         self, AllocJobResult, AssignJobResult, HeartbeatServerResult, InputsReader, JobAuthorizer,
         JobId, JobState, RunJobResult, SchedulerStatusResult, ServerId, ServerNonce,
         SubmitToolchainResult, Toolchain, ToolchainReader, UpdateJobStateResult,
     };
-    use crate::errors::*;
+
+    #[cfg(feature = "dist-server")]
+    use crate::util::new_reqwest_blocking_client;
 
     const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
     const HEARTBEAT_ERROR_INTERVAL: Duration = Duration::from_secs(10);
     pub const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(90);
 
+    #[cfg(any(feature = "dist-server", feature = "dist-server-axum"))]
     pub fn bincode_req<T: serde::de::DeserializeOwned + 'static>(
         req: reqwest::blocking::RequestBuilder,
     ) -> Result<T> {
@@ -306,6 +318,7 @@ mod server {
         }
     }
 
+    #[cfg(any(feature = "dist-server", feature = "dist-server-axum"))]
     fn create_https_cert_and_privkey(addr: SocketAddr) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
         let rsa_key = openssl::rsa::Rsa::<openssl::pkey::Private>::generate(2048)
             .context("failed to generate rsa privkey")?;
@@ -388,7 +401,7 @@ mod server {
 
     // Messages that are non-sensitive and can be sent to the client
     #[derive(Debug)]
-    pub struct ClientVisibleMsg(String);
+    pub struct ClientVisibleMsg(pub String);
     impl ClientVisibleMsg {
         pub fn from_nonsensitive(s: String) -> Self {
             ClientVisibleMsg(s)
@@ -400,7 +413,7 @@ mod server {
     }
     pub type ServerAuthCheck = Box<dyn Fn(&str) -> Option<ServerId> + Send + Sync>;
 
-    const JWT_KEY_LENGTH: usize = 256 / 8;
+    pub const JWT_KEY_LENGTH: usize = 256 / 8;
     static JWT_HEADER: Lazy<jwt::Header> = Lazy::new(|| jwt::Header::new(jwt::Algorithm::HS256));
     static JWT_VALIDATION: Lazy<jwt::Validation> = Lazy::new(|| {
         let mut validation = jwt::Validation::new(jwt::Algorithm::HS256);
@@ -410,6 +423,7 @@ mod server {
         validation
     });
 
+    #[cfg(feature = "dist-server")]
     // Based on rouille::input::json::json_input
     #[derive(Debug)]
     pub enum RouilleBincodeError {
@@ -417,11 +431,13 @@ mod server {
         WrongContentType,
         ParseError(bincode::Error),
     }
+    #[cfg(feature = "dist-server")]
     impl From<bincode::Error> for RouilleBincodeError {
         fn from(err: bincode::Error) -> RouilleBincodeError {
             RouilleBincodeError::ParseError(err)
         }
     }
+    #[cfg(feature = "dist-server")]
     impl std::error::Error for RouilleBincodeError {
         fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
             match *self {
@@ -430,6 +446,7 @@ mod server {
             }
         }
     }
+    #[cfg(feature = "dist-server")]
     impl std::fmt::Display for RouilleBincodeError {
         fn fmt(
             &self,
@@ -450,6 +467,7 @@ mod server {
             )
         }
     }
+    #[cfg(feature = "dist-server")]
     fn bincode_input<O>(request: &rouille::Request) -> std::result::Result<O, RouilleBincodeError>
     where
         O: serde::de::DeserializeOwned,
@@ -469,6 +487,7 @@ mod server {
         }
     }
 
+    #[cfg(feature = "dist-server")]
     // Based on try_or_400 in rouille, but with logging
     #[derive(Serialize)]
     pub struct ErrJson {
@@ -476,6 +495,7 @@ mod server {
         cause: Option<Box<ErrJson>>,
     }
 
+    #[cfg(feature = "dist-server")]
     impl ErrJson {
         fn from_err<E: ?Sized + std::error::Error>(err: &E) -> ErrJson {
             let cause = err.source().map(ErrJson::from_err).map(Box::new);
@@ -489,6 +509,7 @@ mod server {
             serde_json::to_string(&self).expect("infallible serialization for ErrJson failed")
         }
     }
+    #[cfg(feature = "dist-server")]
     macro_rules! try_or_err_and_log {
         ($reqid:expr, $code:expr, $result:expr) => {
             match $result {
@@ -513,16 +534,19 @@ mod server {
             }
         };
     }
+    #[cfg(feature = "dist-server")]
     macro_rules! try_or_400_log {
         ($reqid:expr, $result:expr) => {
             try_or_err_and_log!($reqid, 400, $result)
         };
     }
+    #[cfg(feature = "dist-server")]
     macro_rules! try_or_500_log {
         ($reqid:expr, $result:expr) => {
             try_or_err_and_log!($reqid, 500, $result)
         };
     }
+    #[cfg(feature = "dist-server")]
     fn make_401_with_body(short_err: &str, body: ClientVisibleMsg) -> rouille::Response {
         rouille::Response {
             status_code: 401,
@@ -534,9 +558,11 @@ mod server {
             upgrade: None,
         }
     }
+    #[cfg(feature = "dist-server")]
     fn make_401(short_err: &str) -> rouille::Response {
         make_401_with_body(short_err, ClientVisibleMsg(String::new()))
     }
+    #[cfg(feature = "dist-server")]
     fn bearer_http_auth(request: &rouille::Request) -> Option<&str> {
         let header = request.header("Authorization")?;
 
@@ -550,6 +576,7 @@ mod server {
         split.next()
     }
 
+    #[cfg(feature = "dist-server")]
     /// Return `content` as a bincode-encoded `Response`.
     pub fn bincode_response<T>(content: &T) -> rouille::Response
     where
@@ -569,6 +596,7 @@ mod server {
         }
     }
 
+    #[cfg(feature = "dist-server")]
     /// Return `content` as either a bincode or json encoded `Response`
     /// depending on the Accept header in `request`.
     pub fn prepare_response<T>(request: &rouille::Request, content: &T) -> rouille::Response
@@ -581,6 +609,7 @@ mod server {
         )
     }
 
+    #[cfg(feature = "dist-server")]
     // Verification of job auth in a request
     macro_rules! job_auth_or_401 {
         ($request:ident, $job_authorizer:expr, $job_id:expr) => {{
@@ -598,15 +627,18 @@ mod server {
             }
         }};
     }
+    #[cfg(any(feature = "dist-server", feature = "dist-server-axum"))]
     // Generation and verification of job auth
     struct JWTJobAuthorizer {
         server_key: Vec<u8>,
     }
+    #[cfg(any(feature = "dist-server", feature = "dist-server-axum"))]
     impl JWTJobAuthorizer {
         fn new(server_key: Vec<u8>) -> Box<Self> {
             Box::new(Self { server_key })
         }
     }
+    #[cfg(any(feature = "dist-server", feature = "dist-server-axum"))]
     impl dist::JobAuthorizer for JWTJobAuthorizer {
         fn generate_token(&self, job_id: JobId) -> Result<String> {
             let claims = JobJwt { exp: 0, job_id };
@@ -631,8 +663,10 @@ mod server {
         }
     }
 
+    #[cfg(any(feature = "dist-server", feature = "dist-server-axum"))]
     #[test]
     fn test_job_token_verification() {
+        use crate::dist::JobAuthorizer;
         let ja = JWTJobAuthorizer::new(vec![1, 2, 2]);
 
         let job_id = JobId(55);
@@ -655,6 +689,7 @@ mod server {
         assert!(ja2.verify_token(job_id2, &token2).is_err());
     }
 
+    #[cfg(feature = "dist-server")]
     pub struct Scheduler<S> {
         public_addr: SocketAddr,
         handler: S,
@@ -664,6 +699,7 @@ mod server {
         check_server_auth: ServerAuthCheck,
     }
 
+    #[cfg(feature = "dist-server")]
     impl<S: dist::SchedulerIncoming + 'static> Scheduler<S> {
         pub fn new(
             public_addr: SocketAddr,
@@ -858,10 +894,12 @@ mod server {
         }
     }
 
+    #[cfg(feature = "dist-server")]
     struct SchedulerRequester {
         client: Mutex<reqwest::blocking::Client>,
     }
 
+    #[cfg(feature = "dist-server")]
     impl dist::SchedulerOutgoing for SchedulerRequester {
         fn do_assign_job(
             &self,
@@ -877,6 +915,7 @@ mod server {
         }
     }
 
+    #[cfg(feature = "dist-server")]
     pub struct Server<S> {
         bind_address: SocketAddr,
         scheduler_url: reqwest::Url,
@@ -892,6 +931,7 @@ mod server {
         handler: S,
     }
 
+    #[cfg(feature = "dist-server")]
     impl<S: dist::ServerIncoming + 'static> Server<S> {
         pub fn new(
             public_addr: SocketAddr,
@@ -1037,12 +1077,14 @@ mod server {
         }
     }
 
+    #[cfg(feature = "dist-server")]
     struct ServerRequester {
         client: reqwest::blocking::Client,
         scheduler_url: reqwest::Url,
         scheduler_auth: String,
     }
 
+    #[cfg(feature = "dist-server")]
     impl dist::ServerOutgoing for ServerRequester {
         fn do_update_job_state(
             &self,

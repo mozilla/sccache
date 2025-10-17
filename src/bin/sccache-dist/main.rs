@@ -22,7 +22,7 @@ use std::env;
 use std::io;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 #[cfg_attr(target_os = "freebsd", path = "build_freebsd.rs")]
@@ -219,13 +219,29 @@ fn run(command: Command) -> Result<i32> {
 
             daemonize()?;
             let scheduler = Scheduler::new();
-            let http_scheduler = dist::http::Scheduler::new(
-                public_addr,
-                scheduler,
-                check_client_auth,
-                check_server_auth,
-            );
-            http_scheduler.start()?;
+
+            #[cfg(all(feature = "dist-server", not(feature = "dist-server-axum")))]
+            {
+                let http_scheduler = dist::http::Scheduler::new(
+                    public_addr,
+                    scheduler,
+                    check_client_auth,
+                    check_server_auth,
+                );
+                http_scheduler.start()?;
+            }
+
+            #[cfg(feature = "dist-server-axum")]
+            {
+                let http_scheduler = dist::http_axum::Scheduler::new(
+                    public_addr,
+                    scheduler,
+                    check_client_auth,
+                    check_server_auth,
+                );
+                http_scheduler.start()?;
+            }
+
             unreachable!();
         }
 
@@ -296,15 +312,33 @@ fn run(command: Command) -> Result<i32> {
 
             let server = Server::new(builder, &cache_dir, toolchain_cache_size)
                 .context("Failed to create sccache server instance")?;
-            let http_server = dist::http::Server::new(
-                public_addr,
-                bind_address,
-                scheduler_url.to_url(),
-                scheduler_auth,
-                server,
-            )
-            .context("Failed to create sccache HTTP server instance")?;
-            http_server.start()?;
+
+            #[cfg(all(feature = "dist-server", not(feature = "dist-server-axum")))]
+            {
+                let http_server = dist::http::Server::new(
+                    public_addr,
+                    bind_address,
+                    scheduler_url.to_url(),
+                    scheduler_auth,
+                    server,
+                )
+                .context("Failed to create sccache HTTP server instance")?;
+                http_server.start()?;
+            }
+
+            #[cfg(feature = "dist-server-axum")]
+            {
+                let http_server = dist::http_axum::Server::new(
+                    public_addr,
+                    bind_address,
+                    scheduler_url.to_url(),
+                    scheduler_auth,
+                    server,
+                )
+                .context("Failed to create sccache HTTP server instance")?;
+                http_server.start()?;
+            }
+
             unreachable!();
         }
     }
@@ -340,13 +374,14 @@ struct JobDetail {
 
 // To avoid deadlicking, make sure to do all locking at once (i.e. no further locking in a downward scope),
 // in alphabetical order
+#[derive(Clone)]
 pub struct Scheduler {
-    job_count: AtomicUsize,
+    job_count: Arc<AtomicUsize>,
 
     // Currently running jobs, can never be Complete
-    jobs: Mutex<BTreeMap<JobId, JobDetail>>,
+    jobs: Arc<Mutex<BTreeMap<JobId, JobDetail>>>,
 
-    servers: Mutex<HashMap<ServerId, ServerDetails>>,
+    servers: Arc<Mutex<HashMap<ServerId, ServerDetails>>>,
 }
 
 struct ServerDetails {
@@ -364,9 +399,9 @@ struct ServerDetails {
 impl Scheduler {
     pub fn new() -> Self {
         Scheduler {
-            job_count: AtomicUsize::new(0),
-            jobs: Mutex::new(BTreeMap::new()),
-            servers: Mutex::new(HashMap::new()),
+            job_count: Arc::new(AtomicUsize::new(0)),
+            jobs: Arc::new(Mutex::new(BTreeMap::new())),
+            servers: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -748,10 +783,11 @@ impl SchedulerIncoming for Scheduler {
     }
 }
 
+#[derive(Clone)]
 pub struct Server {
-    builder: Box<dyn BuilderIncoming>,
-    cache: Mutex<TcCache>,
-    job_toolchains: Mutex<HashMap<JobId, Toolchain>>,
+    builder: Arc<Box<dyn BuilderIncoming>>,
+    cache: Arc<Mutex<TcCache>>,
+    job_toolchains: Arc<Mutex<HashMap<JobId, Toolchain>>>,
 }
 
 impl Server {
@@ -763,9 +799,9 @@ impl Server {
         let cache = TcCache::new(&cache_dir.join("tc"), toolchain_cache_size)
             .context("Failed to create toolchain cache")?;
         Ok(Server {
-            builder,
-            cache: Mutex::new(cache),
-            job_toolchains: Mutex::new(HashMap::new()),
+            builder: Arc::new(builder),
+            cache: Arc::new(Mutex::new(cache)),
+            job_toolchains: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 }

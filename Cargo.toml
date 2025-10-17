@@ -18,6 +18,11 @@ name = "sccache"
 name = "sccache-dist"
 required-features = ["dist-server"]
 
+[[bin]]
+name = "sccache-dist-axum"
+path = "src/bin/sccache-dist/main.rs"
+required-features = ["dist-server-axum"]
+
 [profile.release]
 codegen-units = 1
 lto = true
@@ -57,6 +62,18 @@ hyper-util = { version = "0.1.3", optional = true, features = [
   "server",
 ] }
 itertools = "0.12"
+
+# axum dependencies for dist-server-axum
+async-compression = { version = "0.4", optional = true, features = [
+  "tokio",
+  "zlib",
+] }
+axum = { version = "0.7", optional = true, features = ["macros"] }
+rustls = { version = "0.23", optional = true }
+rustls-pemfile = { version = "2", optional = true }
+tokio-rustls = { version = "0.26", optional = true }
+tower-http = { version = "0.6", optional = true, features = ["trace"] }
+
 jobserver = "0.1"
 jwt = { package = "jsonwebtoken", version = "9", optional = true }
 libc = "0.2.153"
@@ -190,7 +207,7 @@ dist-client = [
   "url",
   "sha2",
 ]
-# Enables the sccache-dist binary
+# Enables the sccache-dist binary (legacy rouille-based)
 dist-server = [
   "jwt",
   "flate2",
@@ -202,8 +219,29 @@ dist-server = [
   "syslog",
   "version-compare",
 ]
+# Enables the sccache-dist binary with modern axum-based implementation
+dist-server-axum = [
+  "jwt",
+  "flate2",
+  "libmount",
+  "nix",
+  "openssl",
+  "reqwest",
+  "syslog",
+  "version-compare",
+  "axum",
+  "hyper",
+  "hyper-util",
+  "tokio-rustls",
+  "rustls",
+  "rustls-pemfile",
+  "async-compression",
+  "tower-http",
+]
 # Enables dist tests with external requirements
 dist-tests = ["dist-client", "dist-server"]
+# Enables dist tests with axum-based server
+dist-tests-axum = ["dist-client", "dist-server-axum"]
 
 [workspace]
 exclude = ["tests/test-crate"]

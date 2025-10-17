@@ -23,21 +23,35 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process;
 use std::str::FromStr;
-#[cfg(feature = "dist-server")]
+#[cfg(any(feature = "dist-server", feature = "dist-server-axum"))]
 use std::sync::Mutex;
 
 use crate::errors::*;
 
-#[cfg(any(feature = "dist-client", feature = "dist-server"))]
+#[cfg(any(
+    feature = "dist-client",
+    feature = "dist-server",
+    feature = "dist-server-axum"
+))]
 mod cache;
 #[cfg(feature = "dist-client")]
 pub mod client_auth;
-#[cfg(any(feature = "dist-client", feature = "dist-server"))]
+#[cfg(any(
+    feature = "dist-client",
+    feature = "dist-server",
+    feature = "dist-server-axum"
+))]
 pub mod http;
+#[cfg(feature = "dist-server-axum")]
+pub mod http_axum;
 #[cfg(test)]
 mod test;
 
-#[cfg(any(feature = "dist-client", feature = "dist-server"))]
+#[cfg(any(
+    feature = "dist-client",
+    feature = "dist-server",
+    feature = "dist-server-axum"
+))]
 pub use crate::dist::cache::TcCache;
 
 // TODO: paths (particularly outputs, which are accessed by an unsandboxed program)
@@ -487,7 +501,11 @@ impl From<ProcessOutput> for process::Output {
 #[serde(deny_unknown_fields)]
 pub struct OutputData(Vec<u8>, u64);
 impl OutputData {
-    #[cfg(any(feature = "dist-server", all(feature = "dist-client", test)))]
+    #[cfg(any(
+        feature = "dist-server",
+        feature = "dist-server-axum",
+        all(feature = "dist-client", test)
+    ))]
     pub fn try_from_reader<R: Read>(r: R) -> io::Result<Self> {
         use flate2::Compression;
         use flate2::read::ZlibEncoder as ZlibReadEncoder;
@@ -634,10 +652,10 @@ impl Read for InputsReader<'_> {
     }
 }
 
-#[cfg(feature = "dist-server")]
+#[cfg(any(feature = "dist-server", feature = "dist-server-axum"))]
 type ExtResult<T, E> = ::std::result::Result<T, E>;
 
-#[cfg(feature = "dist-server")]
+#[cfg(any(feature = "dist-server", feature = "dist-server-axum"))]
 pub trait SchedulerOutgoing {
     // To Server
     fn do_assign_job(
@@ -649,20 +667,20 @@ pub trait SchedulerOutgoing {
     ) -> Result<AssignJobResult>;
 }
 
-#[cfg(feature = "dist-server")]
+#[cfg(any(feature = "dist-server", feature = "dist-server-axum"))]
 pub trait ServerOutgoing {
     // To Scheduler
     fn do_update_job_state(&self, job_id: JobId, state: JobState) -> Result<UpdateJobStateResult>;
 }
 
 // Trait to handle the creation and verification of job authorization tokens
-#[cfg(feature = "dist-server")]
+#[cfg(any(feature = "dist-server", feature = "dist-server-axum"))]
 pub trait JobAuthorizer: Send {
     fn generate_token(&self, job_id: JobId) -> Result<String>;
     fn verify_token(&self, job_id: JobId, token: &str) -> Result<()>;
 }
 
-#[cfg(feature = "dist-server")]
+#[cfg(any(feature = "dist-server", feature = "dist-server-axum"))]
 pub trait SchedulerIncoming: Send + Sync {
     // From Client
     fn handle_alloc_job(
@@ -689,7 +707,7 @@ pub trait SchedulerIncoming: Send + Sync {
     fn handle_status(&self) -> ExtResult<SchedulerStatusResult, Error>;
 }
 
-#[cfg(feature = "dist-server")]
+#[cfg(any(feature = "dist-server", feature = "dist-server-axum"))]
 pub trait ServerIncoming: Send + Sync {
     // From Scheduler
     fn handle_assign_job(&self, job_id: JobId, tc: Toolchain) -> ExtResult<AssignJobResult, Error>;
@@ -711,7 +729,7 @@ pub trait ServerIncoming: Send + Sync {
     ) -> ExtResult<RunJobResult, Error>;
 }
 
-#[cfg(feature = "dist-server")]
+#[cfg(any(feature = "dist-server", feature = "dist-server-axum"))]
 pub trait BuilderIncoming: Send + Sync {
     // From Server
     fn run_build(

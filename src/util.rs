@@ -942,7 +942,11 @@ pub fn daemonize() -> Result<()> {
 /// ---
 ///
 /// More details could be found at https://github.com/mozilla/sccache/pull/1563
-#[cfg(any(feature = "dist-server", feature = "dist-client"))]
+#[cfg(any(
+    feature = "dist-server",
+    feature = "dist-server-axum",
+    feature = "dist-client"
+))]
 pub fn new_reqwest_blocking_client() -> reqwest::blocking::Client {
     reqwest::blocking::Client::builder()
         .pool_max_idle_per_host(0)
