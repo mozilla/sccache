@@ -189,7 +189,11 @@ fn parse_http_url(url: &str) -> Result<reqwest::Url> {
     }
     Ok(url)
 }
-#[cfg(any(feature = "dist-client", feature = "dist-server"))]
+#[cfg(any(
+    feature = "dist-client",
+    feature = "dist-server",
+    feature = "dist-server-axum"
+))]
 impl HTTPUrl {
     pub fn from_url(u: reqwest::Url) -> Self {
         HTTPUrl(u)
