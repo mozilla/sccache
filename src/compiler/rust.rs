@@ -237,7 +237,7 @@ static ALLOWED_EMIT: LazyLock<HashSet<&'static str>> =
 /// Version number for cache key.
 const CACHE_VERSION: &[u8] = b"6";
 
-/// Get absolute paths for all source files and env-deps listed in rustc's dep-info output.
+/// Run `rustc --emit=dep-info` to get the list of source files and env-deps.
 async fn get_source_files_and_env_deps<T>(
     creator: &T,
     crate_name: &str,
@@ -381,22 +381,25 @@ async fn get_compiler_outputs<T>(
 where
     T: Clone + CommandCreatorSync,
 {
+    let start = time::Instant::now();
     let mut cmd = creator.clone().new_command_sync(executable);
     cmd.args(&arguments)
         .args(&["--print", "file-names"])
         .env_clear()
         .envs(env_vars.to_vec())
         .current_dir(cwd);
-    if log_enabled!(Trace) {
-        trace!("get_compiler_outputs: {:?}", cmd);
-    }
+    trace!("get_compiler_outputs: {:?}", cmd);
     let outputs = run_input_output(cmd, None).await?;
 
     let outstr = String::from_utf8(outputs.stdout).context("Error parsing rustc output")?;
-    if log_enabled!(Trace) {
-        trace!("get_compiler_outputs: {:?}", outstr);
-    }
-    Ok(outstr.lines().map(|l| l.to_owned()).collect())
+    let outputs = outstr.lines().map(|l| l.to_owned()).collect::<Vec<_>>();
+    trace!(
+        "get_compiler_outputs: got {} outputs in {}: {:?}",
+        outputs.len(),
+        fmt_duration_as_secs(&start.elapsed()),
+        outstr,
+    );
+    Ok(outputs)
 }
 
 impl Rust {
@@ -1381,6 +1384,20 @@ where
             Ok((source_files, source_hashes, env_deps))
         };
 
+        // Turn arguments into a simple Vec<OsString> to calculate outputs.
+        let flat_os_string_arguments: Vec<OsString> = os_string_arguments
+            .iter()
+            .cloned()
+            .flat_map(|(arg, val)| iter::once(arg).chain(val))
+            .collect();
+        let outputs = get_compiler_outputs(
+            creator,
+            &self.executable,
+            flat_os_string_arguments,
+            &cwd,
+            &env_vars,
+        );
+
         // Hash the contents of the externs listed on the commandline.
         trace!(
             "[{}]: hashing {} externs",
@@ -1422,17 +1439,19 @@ where
 
         let target_json_hash = hash_all(&target_json_files, pool);
 
-        // Perform all hashing operations on the files.
+        // Invoke the compiler and perform all hashing operations on the files.
         let (
             (source_files, source_hashes, mut env_deps),
             extern_hashes,
             staticlib_hashes,
             target_json_hash,
+            mut outputs,
         ) = futures::try_join!(
             source_files_and_hashes_and_env_deps,
             extern_hashes,
             staticlib_hashes,
-            target_json_hash
+            target_json_hash,
+            outputs,
         )?;
 
         // If you change any of the inputs to the hash, you should change `CACHE_VERSION`.
@@ -1538,21 +1557,6 @@ where
         cwd.hash(&mut HashToDigest { digest: &mut m });
         // 10. The version of the compiler.
         self.version.hash(&mut HashToDigest { digest: &mut m });
-
-        // Turn arguments into a simple Vec<OsString> to calculate outputs.
-        let flat_os_string_arguments: Vec<OsString> = os_string_arguments
-            .into_iter()
-            .flat_map(|(arg, val)| iter::once(arg).chain(val))
-            .collect();
-
-        let mut outputs = get_compiler_outputs(
-            creator,
-            &self.executable,
-            flat_os_string_arguments,
-            &cwd,
-            &env_vars,
-        )
-        .await?;
 
         // metadata / dep-info don't ever generate binaries, but
         // rustc still makes them appear in the --print
