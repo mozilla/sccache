@@ -39,7 +39,7 @@ chrono = "0.4"
 clap = { version = "4.5.13", features = ["derive", "env", "wrap_help"] }
 directories = "5.0.1"
 encoding_rs = "0.8"
-env_logger = "0.10"
+env_logger = "0.11"
 filetime = "0.2"
 flate2 = { version = "1.0", optional = true, default-features = false, features = [
   "rust_backend",
