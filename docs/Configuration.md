@@ -128,6 +128,8 @@ The latest `cache.XXX` entries may be found here: https://github.com/mozilla/scc
 Whatever is set by a file based configuration, it is overruled by the env
 configuration variables
 
+Note that some env variables may need sccache server restart to take effect.
+
 ### misc
 
 * `SCCACHE_ALLOW_CORE_DUMPS` to enable core dumps by the server
@@ -143,6 +145,8 @@ configuration variables
   - This option will only applied to newly compressed cache and don't affect existing cache.
   - If you want to be apply to all cache, you should reset cache and make new cache.
 * `SCCACHE_LOG_MILLIS` when set (to any value), enables millisecond precision timestamps in log output instead of the default second precision.
+* `SCCACHE_ERROR_LOG` path to a file where sccache will log errors
+* `SCCACHE_LOG` log level, accepting standard env_logger values, see [env_logger documentation](https://docs.rs/env_logger/latest/env_logger/#enabling-logging) for details
 
 ### cache configs
 
