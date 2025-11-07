@@ -29,7 +29,7 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::io::{self, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{self, Stdio};
+use std::process;
 
 use crate::errors::*;
 
@@ -212,7 +212,11 @@ where
     let output = run_input_output(cmd, None).await?;
 
     if !output.status.success() {
-        bail!("Failed to detect showIncludes prefix")
+        // bail!("Failed to detect showIncludes prefix")
+        eprintln!(
+            "Failed to detect showIncludes prefix (status: {:?})",
+            output.status.code().unwrap_or(-1)
+        )
     }
 
     let process::Output {
