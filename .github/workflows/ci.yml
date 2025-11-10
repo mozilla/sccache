@@ -73,9 +73,18 @@ jobs:
             extra_desc: dist-tests
             extra_args: --no-default-features --features=dist-tests test_dist_ -- --test-threads 1
           - os: ubuntu-22.04
+            # Oldest supported version, keep in sync with README.md
+            rustc: "1.85.0"
+            extra_desc: dist-tests-axum
+            extra_args: --no-default-features --features=dist-tests-axum test_dist_ -- --test-threads 1
+          - os: ubuntu-22.04
             rustc: stable
             extra_desc: dist-server
             extra_args: --features=dist-server
+          - os: ubuntu-22.04
+            rustc: stable
+            extra_desc: dist-server-axum
+            extra_args: --features=dist-server-axum
           - os: ubuntu-22.04
             rustc: stable
           - os: ubuntu-22.04
@@ -238,6 +247,11 @@ jobs:
           - os: ubuntu-22.04
             binary: sccache-dist
             extra_args: --no-default-features --features="dist-server"
+            target: x86_64-unknown-linux-musl
+            container: '{"image": "messense/rust-musl-cross:x86_64-musl"}'
+          - os: ubuntu-22.04
+            binary: sccache-dist-axum
+            extra_args: --no-default-features --features="dist-server-axum"
             target: x86_64-unknown-linux-musl
             container: '{"image": "messense/rust-musl-cross:x86_64-musl"}'
           - os: ubuntu-22.04

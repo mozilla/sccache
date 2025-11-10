@@ -17,7 +17,11 @@ use directories::ProjectDirs;
 use fs::File;
 use fs_err as fs;
 use once_cell::sync::Lazy;
-#[cfg(any(feature = "dist-client", feature = "dist-server"))]
+#[cfg(any(
+    feature = "dist-client",
+    feature = "dist-server",
+    feature = "dist-server-axum"
+))]
 use serde::ser::Serializer;
 use serde::{
     Deserialize, Serialize,
@@ -127,10 +131,18 @@ pub fn parse_size(val: &str) -> Option<u64> {
     u64::from_str(val).ok().map(|size| size * multiplier)
 }
 
-#[cfg(any(feature = "dist-client", feature = "dist-server"))]
+#[cfg(any(
+    feature = "dist-client",
+    feature = "dist-server",
+    feature = "dist-server-axum"
+))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HTTPUrl(reqwest::Url);
-#[cfg(any(feature = "dist-client", feature = "dist-server"))]
+#[cfg(any(
+    feature = "dist-client",
+    feature = "dist-server",
+    feature = "dist-server-axum"
+))]
 impl Serialize for HTTPUrl {
     fn serialize<S>(&self, serializer: S) -> StdResult<S::Ok, S::Error>
     where
@@ -139,7 +151,11 @@ impl Serialize for HTTPUrl {
         serializer.serialize_str(self.0.as_str())
     }
 }
-#[cfg(any(feature = "dist-client", feature = "dist-server"))]
+#[cfg(any(
+    feature = "dist-client",
+    feature = "dist-server",
+    feature = "dist-server-axum"
+))]
 impl<'a> Deserialize<'a> for HTTPUrl {
     fn deserialize<D>(deserializer: D) -> StdResult<Self, D::Error>
     where
@@ -151,7 +167,11 @@ impl<'a> Deserialize<'a> for HTTPUrl {
         Ok(HTTPUrl(url))
     }
 }
-#[cfg(any(feature = "dist-client", feature = "dist-server"))]
+#[cfg(any(
+    feature = "dist-client",
+    feature = "dist-server",
+    feature = "dist-server-axum"
+))]
 fn parse_http_url(url: &str) -> Result<reqwest::Url> {
     use std::net::SocketAddr;
     let url = if let Ok(sa) = url.parse::<SocketAddr>() {
@@ -169,7 +189,11 @@ fn parse_http_url(url: &str) -> Result<reqwest::Url> {
     }
     Ok(url)
 }
-#[cfg(any(feature = "dist-client", feature = "dist-server"))]
+#[cfg(any(
+    feature = "dist-client",
+    feature = "dist-server",
+    feature = "dist-server-axum"
+))]
 impl HTTPUrl {
     pub fn from_url(u: reqwest::Url) -> Self {
         HTTPUrl(u)
@@ -1103,7 +1127,7 @@ impl CachedConfig {
     }
 }
 
-#[cfg(feature = "dist-server")]
+#[cfg(any(feature = "dist-server", feature = "dist-server-axum"))]
 pub mod scheduler {
     use std::net::SocketAddr;
     use std::path::Path;
@@ -1158,7 +1182,7 @@ pub mod scheduler {
     }
 }
 
-#[cfg(feature = "dist-server")]
+#[cfg(any(feature = "dist-server", feature = "dist-server-axum"))]
 pub mod server {
     use super::HTTPUrl;
     use serde::{Deserialize, Serialize};
