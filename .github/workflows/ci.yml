@@ -96,6 +96,8 @@ jobs:
             # Oldest supported version, keep in sync with README.md
             rustc: "1.85.0"
             extra_desc: cuda12.8
+          - os: ubuntu-22.04-arm
+            extra_desc: cuda12.8
           - os: macos-13
             no_coverage: true
           # # M1 CPU
