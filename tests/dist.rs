@@ -54,7 +54,7 @@ fn basic_compile(tmpdir: &Path, sccache_cfg_path: &Path, sccache_cached_cfg_path
 }
 
 fn rust_compile(tmpdir: &Path, sccache_cfg_path: &Path, sccache_cached_cfg_path: &Path) -> Output {
-    let sccache_path = assert_cmd::cargo::cargo_bin("sccache").into_os_string();
+    let sccache_path = env!("CARGO_BIN_EXE_sccache");
     let envs: Vec<(_, &OsStr)> = vec![
         ("RUSTC_WRAPPER", sccache_path.as_ref()),
         ("CARGO_TARGET_DIR", "target".as_ref()),
