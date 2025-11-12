@@ -22,8 +22,9 @@ use which::which_in;
 
 const ENV_VAR_INTERNAL_START_SERVER: &str = "SCCACHE_START_SERVER";
 
-#[derive(Debug, Clone, ValueEnum)]
+#[derive(Debug, Clone, ValueEnum, Default)]
 pub enum StatsFormat {
+    #[default]
     Text,
     Json,
 }
@@ -46,12 +47,6 @@ impl FromStr for StatsFormat {
             "json" => Ok(Self::Json),
             _ => bail!("Unrecognized stats format: {:?}", s),
         }
-    }
-}
-
-impl Default for StatsFormat {
-    fn default() -> Self {
-        Self::Text
     }
 }
 
