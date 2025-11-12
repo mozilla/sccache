@@ -1518,15 +1518,19 @@ where
                 continue;
             }
 
-            // CARGO_MAKEFLAGS will have jobserver info which is extremely non-cacheable.
-            // CARGO_REGISTRIES_*_TOKEN contains non-cacheable secrets.
-            // Registry override config doesn't need to be hashed, because deps' package IDs
-            // already uniquely identify the relevant registries.
-            // CARGO_BUILD_JOBS only affects Cargo's parallelism, not rustc output.
-            if var == "CARGO_MAKEFLAGS"
-                || var.starts_with("CARGO_REGISTRIES_")
-                || var == "CARGO_BUILD_JOBS"
-            {
+            let may_skip = var == "CARGO_MAKEFLAGS" // will have jobserver info which is extremely non-cacheable.
+                || var == "CARGO_BUILD_JOBS" // does not affect results
+                || var.starts_with("CARGO_REGISTRIES_") // CARGO_REGISTRIES_*_TOKEN contains non-cacheable secrets, and package IDs already uniquely identify the relevant registries.
+                || var.starts_with("CARGO_REGISTRY_") // same as CARGO_REGISTRIES_*
+                || var == "CARGO_TARGET_DIR" // already included in the file paths
+                || var == "CARGO_BUILD_BUILD_DIR"
+                || var == "CARGO_BUILD_TARGET_DIR"
+                || var.starts_with("CARGO_HTTP_") // not relevant
+                || var.starts_with("CARGO_NET_")
+                || var.starts_with("CARGO_TERM_")
+                || var.starts_with("CARGO_ALIAS_")
+                || var == "CARGO_CACHE_AUTO_CLEAN_FREQUENCY";
+            if may_skip {
                 continue;
             }
 
@@ -3506,6 +3510,7 @@ proc_macro false
                         OsString::from("CARGO_BUILD_JOBS"),
                         OsString::from("ignored"),
                     ),
+                    (OsString::from("CARGO_TERM_COLOR"), OsString::from("never")),
                 ]
                 .to_vec(),
                 false,
