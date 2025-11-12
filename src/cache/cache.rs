@@ -507,10 +507,10 @@ impl Storage for opendal::Operator {
             // can do, so we will print our the error here to make users know
             // about it.
             Err(err) if err.kind() == ErrorKind::RateLimited => {
-                eprintln!("cache storage read check: {err:?}, but we decide to keep running")
+                eprintln!("cache storage read check: {err:?}, but we decide to keep running");
             }
             Err(err) => bail!("cache storage failed to read: {:?}", err),
-        };
+        }
 
         let can_write = match self.write(path, "Hello, World!").await {
             Ok(_) => true,

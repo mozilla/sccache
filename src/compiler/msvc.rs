@@ -610,7 +610,7 @@ pub fn parse_arguments(
                 common_args.extend(
                     arg.normalize(NormalizedDisposition::Concatenated)
                         .iter_os_strings(),
-                )
+                );
             }
             Some(ExternalIncludePath(_)) => common_args.extend(
                 arg.normalize(NormalizedDisposition::Separated)

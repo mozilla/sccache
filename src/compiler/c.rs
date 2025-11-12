@@ -320,7 +320,7 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compiler<T> for CCompiler<I> {
                 // Handle SCCACHE_EXTRAFILES
                 for (k, v) in env_vars.iter() {
                     if k.as_os_str() == OsStr::new("SCCACHE_EXTRAFILES") {
-                        args.extra_hash_files.extend(std::env::split_paths(&v))
+                        args.extra_hash_files.extend(std::env::split_paths(&v));
                     }
                 }
 
@@ -337,7 +337,7 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compiler<T> for CCompiler<I> {
                 // too much to handle on our side so we just hash every bitcode library we find.
                 if args.language == Language::Hip {
                     args.extra_hash_files
-                        .extend(Self::search_hip_device_libs(&args, env_vars))
+                        .extend(Self::search_hip_device_libs(&args, env_vars));
                 }
 
                 CompilerArguments::Ok(Box::new(CCompilerHasher {
@@ -758,7 +758,7 @@ fn process_preprocessed_file(
                     hash_start = h;
                     continue;
                 }
-            };
+            }
         } else if slice
             .strip_prefix(INCBIN_DIRECTIVE)
             .filter(|slice| {
@@ -924,7 +924,7 @@ fn process_preprocessor_line(
         fs_impl,
     )? {
         return Ok(ControlFlow::Break((start, hash_start, false)));
-    };
+    }
     // Everything of interest between hash_start and start has been hashed now.
     hash_start = start;
     Ok(ControlFlow::Continue((start, hash_start)))

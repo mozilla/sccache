@@ -328,7 +328,7 @@ pub fn generate_compile_commands(
                 keep = true;
                 unhashed_args.splice(idx..(idx + 1), []);
                 if keep_dir.is_none() {
-                    keep_dir = Some(cwd.to_path_buf())
+                    keep_dir = Some(cwd.to_path_buf());
                 }
                 continue;
             }
@@ -391,7 +391,7 @@ pub fn generate_compile_commands(
     let mut arguments = vec![];
 
     if let Some(lang) = gcc::language_to_gcc_arg(parsed_args.language) {
-        arguments.extend(vec!["-x".into(), lang.into()])
+        arguments.extend(vec!["-x".into(), lang.into()]);
     }
 
     let output = &parsed_args

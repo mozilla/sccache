@@ -137,7 +137,7 @@ impl State {
 
                     entries.shuffle(&mut thread_rng());
 
-                    *iter = Some(DirentIterator { entries, index: 0 })
+                    *iter = Some(DirentIterator { entries, index: 0 });
                 }
 
                 let iter = iter.as_mut().unwrap();

@@ -576,7 +576,7 @@ pub fn get_token_oauth2_code_grant_pkce(
             warn!(
                 "Something went wrong while waiting for auth server shutdown: {}",
                 e
-            )
+            );
         }
     });
     handle.abort();
@@ -623,7 +623,7 @@ pub fn get_token_oauth2_implicit(client_id: &str, mut auth_url: Url) -> Result<S
             warn!(
                 "Something went wrong while waiting for auth server shutdown: {}",
                 e
-            )
+            );
         }
     });
     handle.abort();

@@ -434,32 +434,32 @@ impl CacheConfigs {
         } = other;
 
         if azure.is_some() {
-            self.azure = azure
+            self.azure = azure;
         }
         if disk.is_some() {
-            self.disk = disk
+            self.disk = disk;
         }
         if gcs.is_some() {
-            self.gcs = gcs
+            self.gcs = gcs;
         }
         if gha.is_some() {
-            self.gha = gha
+            self.gha = gha;
         }
         if memcached.is_some() {
-            self.memcached = memcached
+            self.memcached = memcached;
         }
         if redis.is_some() {
-            self.redis = redis
+            self.redis = redis;
         }
         if s3.is_some() {
-            self.s3 = s3
+            self.s3 = s3;
         }
         if webdav.is_some() {
-            self.webdav = webdav
+            self.webdav = webdav;
         }
 
         if oss.is_some() {
-            self.oss = oss
+            self.oss = oss;
         }
     }
 }
@@ -1042,7 +1042,7 @@ impl CachedConfig {
 
         if cached_file_config.is_none() {
             let cfg = Self::load_file_config().context("Unable to initialise cached config")?;
-            *cached_file_config = Some(cfg)
+            *cached_file_config = Some(cfg);
         }
         Ok(CachedConfig(()))
     }
@@ -1082,14 +1082,14 @@ impl CachedConfig {
                 .expect("Cached conf file has no parent directory");
             if !file_conf_dir.is_dir() {
                 fs::create_dir_all(file_conf_dir)
-                    .context("Failed to create dir to hold cached config")?
+                    .context("Failed to create dir to hold cached config")?;
             }
             Self::save_file_config(&Default::default()).with_context(|| {
                 format!(
                     "Unable to create cached config file at {}",
                     file_conf_path.display()
                 )
-            })?
+            })?;
         }
         try_read_config_file(file_conf_path)
             .context("Failed to load cached config file")?

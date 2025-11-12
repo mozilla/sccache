@@ -192,14 +192,14 @@ impl LruDiskCache {
                 .starts_with(TEMPFILE_PREFIX)
             {
                 fs::remove_file(&file).unwrap_or_else(|e| {
-                    error!("Error removing temporary file `{}`: {}", file.display(), e)
+                    error!("Error removing temporary file `{}`: {}", file.display(), e);
                 });
             } else if !self.can_store(size) {
                 fs::remove_file(file).unwrap_or_else(|e| {
                     error!(
                         "Error removing file `{}` which is too large for the cache ({} bytes)",
                         e, size
-                    )
+                    );
                 });
             } else {
                 self.add_file(AddFile::AbsPath(file), size)
@@ -315,7 +315,7 @@ impl LruDiskCache {
                 warn!("fs::rename failed, falling back to copy!");
                 fs::copy(path.as_ref(), new_path)?;
                 fs::remove_file(path.as_ref()).unwrap_or_else(|e| {
-                    error!("Failed to remove original file in insert_file: {}", e)
+                    error!("Failed to remove original file in insert_file: {}", e);
                 });
                 Ok(())
             })

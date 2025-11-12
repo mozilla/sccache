@@ -163,7 +163,7 @@ impl PreprocessorCacheEntry {
                         self.number_of_entries += includes.len();
                         vacant.insert(includes);
                     }
-                };
+                }
                 debug!("Added result key {result_key} to preprocessor cache entry");
             }
             Err(e) => {
@@ -310,7 +310,7 @@ impl PreprocessorCacheEntry {
                     // SOURCE_DATE_EPOCH and the current date since we can't be sure that the
                     // compiler honors SOURCE_DATE_EPOCH.
                     if let Ok(source_date_epoch) = std::env::var("SOURCE_DATE_EPOCH") {
-                        new_digest.update(source_date_epoch.as_bytes())
+                        new_digest.update(source_date_epoch.as_bytes());
                     }
                 }
 

@@ -196,7 +196,7 @@ where
                 args.extend(arg.iter_os_strings());
             }
             _ => continue,
-        };
+        }
     }
 
     if let Some(module_id_path) = module_id_file_name {
