@@ -140,7 +140,7 @@ pub fn prune_command(mut cmd: Command) -> Command {
 }
 
 pub fn sccache_command() -> Command {
-    prune_command(Command::new(assert_cmd::cargo::cargo_bin("sccache")))
+    prune_command(Command::new(env!("CARGO_BIN_EXE_sccache")))
 }
 
 pub fn cargo_command() -> Command {
@@ -149,7 +149,7 @@ pub fn cargo_command() -> Command {
 
 #[cfg(feature = "dist-server")]
 pub fn sccache_dist_path() -> PathBuf {
-    assert_cmd::cargo::cargo_bin("sccache-dist")
+    env!("CARGO_BIN_EXE_sccache-dist").into()
 }
 
 pub fn sccache_client_cfg(
