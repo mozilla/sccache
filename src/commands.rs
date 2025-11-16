@@ -231,8 +231,8 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
     // TODO: Expose `bInheritHandles` argument of `CreateProcessW` through the
     //       standard library's `Command` type and then use that instead.
     let mut pi = PROCESS_INFORMATION {
-        hProcess: 0,
-        hThread: 0,
+        hProcess: std::ptr::null_mut(),
+        hThread: std::ptr::null_mut(),
         dwProcessId: 0,
         dwThreadId: 0,
     };
