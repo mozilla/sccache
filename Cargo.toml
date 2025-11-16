@@ -30,7 +30,7 @@ async-trait = "0.1"
 backon = { version = "1", default-features = false, features = [
   "std-blocking-sleep",
 ] }
-base64 = "0.21"
+base64 = "0.22"
 bincode = "1"
 blake3 = "1"
 byteorder = "1.5"
