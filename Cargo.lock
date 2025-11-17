@@ -2787,7 +2787,6 @@ dependencies = [
  "nix 0.28.0",
  "number_prefix",
  "object 0.37.1",
- "once_cell",
  "opendal",
  "openssl",
  "predicates",

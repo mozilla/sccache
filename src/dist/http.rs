@@ -254,7 +254,6 @@ mod server {
     use crate::util::{new_reqwest_blocking_client, num_cpus};
     use byteorder::{BigEndian, ReadBytesExt};
     use flate2::read::ZlibDecoder as ZlibReadDecoder;
-    use once_cell::sync::Lazy;
     use rand::{RngCore, rngs::OsRng};
     use rouille::accept;
     use serde::Serialize;
@@ -263,8 +262,8 @@ mod server {
     use std::io::Read;
     use std::net::SocketAddr;
     use std::result::Result as StdResult;
-    use std::sync::Mutex;
     use std::sync::atomic;
+    use std::sync::{LazyLock, Mutex};
     use std::thread;
     use std::time::Duration;
 
@@ -401,8 +400,9 @@ mod server {
     pub type ServerAuthCheck = Box<dyn Fn(&str) -> Option<ServerId> + Send + Sync>;
 
     const JWT_KEY_LENGTH: usize = 256 / 8;
-    static JWT_HEADER: Lazy<jwt::Header> = Lazy::new(|| jwt::Header::new(jwt::Algorithm::HS256));
-    static JWT_VALIDATION: Lazy<jwt::Validation> = Lazy::new(|| {
+    static JWT_HEADER: LazyLock<jwt::Header> =
+        LazyLock::new(|| jwt::Header::new(jwt::Algorithm::HS256));
+    static JWT_VALIDATION: LazyLock<jwt::Validation> = LazyLock::new(|| {
         let mut validation = jwt::Validation::new(jwt::Algorithm::HS256);
         validation.leeway = 0;
         validation.validate_exp = false;
