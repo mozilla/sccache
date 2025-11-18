@@ -15,7 +15,8 @@ use std::process::{Command, Stdio};
 pub static CRATE_DIR: Lazy<PathBuf> =
     Lazy::new(|| Path::new(file!()).parent().unwrap().join("../test-crate"));
 pub static CARGO: Lazy<OsString> = Lazy::new(|| std::env::var_os("CARGO").unwrap());
-pub static SCCACHE_BIN: Lazy<PathBuf> = Lazy::new(|| assert_cmd::cargo::cargo_bin("sccache"));
+pub static SCCACHE_BIN: Lazy<&Path> = Lazy::new(|| Path::new(env!("CARGO_BIN_EXE_sccache")));
+
 /// Ensures the logger is only initialized once. Panics if initialization fails.
 static LOGGER: Lazy<Result<(), Infallible>> = Lazy::new(|| {
     env_logger::Builder::new()
