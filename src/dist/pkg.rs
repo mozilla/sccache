@@ -180,7 +180,7 @@ mod toolchain_imp {
                 file_set,
                 symlinks,
             } = self;
-            let par: ParCompress<Gzip> = ParCompressBuilder::new()
+            let par: ParCompress<'_, Gzip, W> = ParCompressBuilder::new()
                 .compression_level(Compression::default())
                 .from_writer(writer);
             let mut builder = tar::Builder::new(par);

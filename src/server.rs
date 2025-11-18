@@ -1237,7 +1237,7 @@ where
     ) -> SccacheResponse {
         match compiler {
             Err(e) => {
-                debug!("check_compiler: Unsupported compiler: {}", e.to_string());
+                debug!("check_compiler: Unsupported compiler: {e}");
                 self.stats.lock().await.requests_unsupported_compiler += 1;
                 return Message::WithoutBody(Response::Compile(
                     CompileResponse::UnsupportedCompiler(OsString::from(e.to_string())),
