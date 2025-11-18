@@ -135,7 +135,7 @@ test-case = "3.3.1"
 thirtyfour_sync = "0.27"
 
 [target.'cfg(unix)'.dependencies]
-daemonize = "0.5"
+daemonix = "0.1"
 
 [target.'cfg(not(target_os = "freebsd"))'.dependencies.libmount]
 optional = true
