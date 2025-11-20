@@ -843,7 +843,7 @@ impl Hasher for HashToDigest<'_> {
 #[cfg(not(windows))]
 pub fn daemonize() -> Result<()> {
     use crate::jobserver::discard_inherited_jobserver;
-    use daemonize::Daemonize;
+    use daemonix::Daemonize;
     use std::env;
     use std::mem;
 
