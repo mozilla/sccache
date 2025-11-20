@@ -30,7 +30,6 @@ use crate::util::{
 };
 use async_trait::async_trait;
 use fs_err as fs;
-use once_cell::sync::Lazy;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
@@ -40,7 +39,7 @@ use std::io;
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::process;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use crate::errors::*;
 
@@ -1425,7 +1424,7 @@ impl pkg::ToolchainPackager for CToolchainPackager {
 pub const CACHE_VERSION: &[u8] = b"11";
 
 /// Environment variables that are factored into the cache key.
-static CACHED_ENV_VARS: Lazy<HashSet<&'static OsStr>> = Lazy::new(|| {
+static CACHED_ENV_VARS: LazyLock<HashSet<&'static OsStr>> = LazyLock::new(|| {
     [
         // SCCACHE_C_CUSTOM_CACHE_BUSTER has no particular meaning behind it,
         // serving as a way for the user to factor custom data into the hash.
