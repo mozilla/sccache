@@ -1462,6 +1462,7 @@ where
                 .filter(|&(arg, _)| {
                     !(arg == "--extern"
                         || arg == "-L"
+                        || arg == "--check-cfg"
                         || arg == "--out-dir"
                         || arg == "--diagnostic-width")
                 })
