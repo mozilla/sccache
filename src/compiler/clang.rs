@@ -935,6 +935,17 @@ mod test {
     }
 
     #[test]
+    fn test_parse_fplugin_concatenated() {
+        let a = parses!("-c", "foo.c", "-o", "foo.o", "-fplugin=plugin.so");
+        println!("A {:#?}", a);
+        assert_eq!(ovec!["-fplugin", "plugin.so"], a.common_args);
+        assert_eq!(
+            ovec![std::env::current_dir().unwrap().join("plugin.so")],
+            a.extra_hash_files
+        );
+    }
+
+    #[test]
     fn test_parse_fsanitize_blacklist() {
         let a = parses!(
             "-c",
