@@ -3777,6 +3777,54 @@ proc_macro false
 
     #[test_case(true ; "with preprocessor cache")]
     #[test_case(false ; "without preprocessor cache")]
+    fn test_equal_hashes_ignored_check_cfg_arg(preprocessor_cache_mode: bool) {
+        let f = TestFixture::new();
+        assert_eq!(
+            hash_key(
+                &f,
+                &[
+                    "--emit",
+                    "link",
+                    "-L",
+                    "x=x",
+                    "foo.rs",
+                    "--out-dir",
+                    "out",
+                    "--crate-name",
+                    "foo",
+                    "--crate-type",
+                    "lib",
+                ],
+                &[],
+                nothing,
+                preprocessor_cache_mode,
+            ),
+            hash_key(
+                &f,
+                &[
+                    "--emit",
+                    "link",
+                    "-L",
+                    "x=x",
+                    "foo.rs",
+                    "--out-dir",
+                    "out",
+                    "--crate-name",
+                    "foo",
+                    "--crate-type",
+                    "lib",
+                    "--check-cfg",
+                    "cfg(verbose)",
+                ],
+                &[],
+                nothing,
+                preprocessor_cache_mode,
+            )
+        );
+    }
+
+    #[test_case(true ; "with preprocessor cache")]
+    #[test_case(false ; "without preprocessor cache")]
     fn test_equal_hashes_cfg_features(preprocessor_cache_mode: bool) {
         let f = TestFixture::new();
         assert_eq!(
