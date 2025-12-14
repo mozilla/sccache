@@ -858,7 +858,7 @@ where
                 )
             })?;
 
-        let jc = match jres {
+        let mut jc = match jres {
             dist::RunJobResult::Complete(jc) => jc,
             dist::RunJobResult::JobNotFound => bail!("Job {} not found on server", job_id),
         };
@@ -922,6 +922,16 @@ where
                 .handle_outputs(&path_transformer, &output_paths, &extra_inputs)
                 .with_context(|| "failed to rewrite outputs from compile")
         );
+
+        if jc.output.code != 0 {
+            // Add server info to help diagnose host-specific failures, e.g. due to flaky hardware.
+            // Failed builds are not cached so this tampering should not cause too much trouble.
+            let server_info = format!("sccache: Job failed on server {}:\n", server_id.addr());
+            jc.output
+                .stderr
+                .splice(0..0, server_info.as_bytes().to_vec());
+        }
+
         Ok((DistType::Ok(server_id), jc.output.into()))
     };
 
