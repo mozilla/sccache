@@ -426,9 +426,9 @@ pub struct CompileCommand {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProcessOutput {
-    code: i32,
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
+    pub code: i32,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
 }
 impl ProcessOutput {
     #[cfg(unix)]
