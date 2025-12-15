@@ -18,6 +18,9 @@ name = "sccache"
 name = "sccache-dist"
 required-features = ["dist-server"]
 
+[profile.test]
+debug = false # save disk space
+
 [profile.release]
 codegen-units = 1
 lto = true
