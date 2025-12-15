@@ -128,7 +128,8 @@ jobs:
       NOTEST_CUDA_COMPILERS: ${{ matrix.notest_cuda_compilers || '' }}
       CARGO_PROFILE_DEV_DEBUG: '0' # save disk space
     steps:
-      - uses: ilammy/msvc-dev-cmd@v1
+      - if: ${{ contains(matrix.os, 'windows') }}
+        uses: ilammy/msvc-dev-cmd@v1
 
       - name: Clone repository
         uses: actions/checkout@v5
