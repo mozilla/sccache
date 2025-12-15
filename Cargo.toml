@@ -71,7 +71,7 @@ mime = "0.3"
 number_prefix = "0.4"
 object = "0.37"
 opendal = { version = "0.54.0", optional = true, default-features = false }
-openssl = { version = "0.10.72", optional = true }
+openssl = { version = "0.10.75", optional = true }
 rand = "0.8.4"
 regex = "1.10.3"
 reqsign = { version = "0.18.0", optional = true }

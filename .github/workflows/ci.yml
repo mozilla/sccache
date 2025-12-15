@@ -241,6 +241,10 @@ jobs:
             container: '{"image": "messense/rust-musl-cross:s390x-musl"}'
             lto: "false"
           - os: ubuntu-22.04
+            target: riscv64gc-unknown-linux-musl
+            container: '{"image": "messense/rust-musl-cross:riscv64gc-musl"}'
+            lto: "false"
+          - os: ubuntu-22.04
             binary: sccache-dist
             extra_args: --no-default-features --features="dist-server"
             target: x86_64-unknown-linux-musl
