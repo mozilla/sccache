@@ -126,6 +126,7 @@ jobs:
       GRCOV_IGNORE_OPTION: '--ignore build.rs --ignore "/*" --ignore "[a-zA-Z]:/*"'
       GRCOV_EXCLUDE_OPTION: '--excl-br-line "^\s*((debug_)?assert(_eq|_ne)?!|#\[derive\()"'
       NOTEST_CUDA_COMPILERS: ${{ matrix.notest_cuda_compilers || '' }}
+      CARGO_PROFILE_DEV_DEBUG: '0' # save disk space
     steps:
       - uses: ilammy/msvc-dev-cmd@v1
 
