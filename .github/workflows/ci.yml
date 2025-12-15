@@ -96,8 +96,6 @@ jobs:
             # Oldest supported version, keep in sync with README.md
             rustc: "1.85.0"
             extra_desc: cuda12.8
-          - os: macos-13
-            no_coverage: true
           # # M1 CPU
           - os: macos-14
           - os: windows-2022
@@ -249,9 +247,6 @@ jobs:
           - os: ubuntu-22.04
             target: i686-unknown-linux-musl
             container: '{"image": "messense/rust-musl-cross:i686-musl"}'
-          - os: macos-13
-            target: x86_64-apple-darwin
-            macosx_deployment_target: 10.13
           - os: macos-14
             target: aarch64-apple-darwin
             macosx_deployment_target: 11.0
