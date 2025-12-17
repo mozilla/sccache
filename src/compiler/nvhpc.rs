@@ -19,10 +19,10 @@ use crate::compiler::args::*;
 use crate::compiler::c::{ArtifactDescriptor, CCompilerImpl, CCompilerKind, ParsedArguments};
 use crate::compiler::gcc::ArgData::*;
 use crate::compiler::{
-    gcc, write_temp_file, CCompileCommand, Cacheable, CompileCommand, CompilerArguments, Language,
+    CCompileCommand, Cacheable, CompileCommand, CompilerArguments, Language, gcc, write_temp_file,
 };
 use crate::mock_command::{CommandCreator, CommandCreatorSync, RunCommand};
-use crate::util::{run_input_output, OsStrExt};
+use crate::util::{OsStrExt, run_input_output};
 use crate::{counted_array, dist};
 use async_trait::async_trait;
 use fs::File;
@@ -191,36 +191,36 @@ impl CCompilerImpl for Nvhpc {
 
 counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     //todo: refactor show_includes into dependency_args
-    take_arg!("--gcc-toolchain", OsString, CanBeSeparated('='), PassThrough),
+    take_arg!("--gcc-toolchain", OsString, CanBeSeparated(b'='), PassThrough),
     take_arg!("--include-path", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
     take_arg!("--linker-options", OsString, CanBeSeparated, PassThrough),
     take_arg!("--system-include-path", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
 
-    take_arg!("-Mconcur", OsString, CanBeSeparated('='), PassThrough),
+    take_arg!("-Mconcur", OsString, CanBeSeparated(b'='), PassThrough),
     flag!("-Mnostdlib", PreprocessorArgumentFlag),
     take_arg!("-Werror", OsString, CanBeSeparated, PreprocessorArgument),
-    take_arg!("-Xcompiler", OsString, CanBeSeparated('='), PreprocessorArgument),
+    take_arg!("-Xcompiler", OsString, CanBeSeparated(b'='), PreprocessorArgument),
     take_arg!("-Xfatbinary", OsString, CanBeSeparated, PassThrough),
-    take_arg!("-Xlinker", OsString, CanBeSeparated('='), PassThrough),
+    take_arg!("-Xlinker", OsString, CanBeSeparated(b'='), PassThrough),
     take_arg!("-Xnvlink", OsString, CanBeSeparated, PassThrough),
     take_arg!("-Xptxas", OsString, CanBeSeparated, PassThrough),
-    take_arg!("-acc", OsString, CanBeSeparated('='), PassThrough),
+    take_arg!("-acc", OsString, CanBeSeparated(b'='), PassThrough),
     flag!("-acclibs", PassThroughFlag),
     take_arg!("-c++", OsString, Concatenated, Standard),
     flag!("-c++libs", PassThroughFlag),
     flag!("-cuda", PreprocessorArgumentFlag),
     flag!("-cudaforlibs", PassThroughFlag),
-    take_arg!("-cudalib", OsString, CanBeSeparated('='), PassThrough),
+    take_arg!("-cudalib", OsString, CanBeSeparated(b'='), PassThrough),
     flag!("-fortranlibs", PassThroughFlag),
     flag!("-gopt", PassThroughFlag),
-    take_arg!("-gpu", OsString, CanBeSeparated('='), PassThrough),
-    take_arg!("-mcmodel", OsString, CanBeSeparated('='), PassThrough),
-    take_arg!("-mcpu", OsString, CanBeSeparated('='), PassThrough),
+    take_arg!("-gpu", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("-mcmodel", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("-mcpu", OsString, CanBeSeparated(b'='), PassThrough),
     flag!("-noswitcherror", PassThroughFlag),
-    take_arg!("-ta", OsString, CanBeSeparated('='), PassThrough),
-    take_arg!("-target", OsString, CanBeSeparated('='), PassThrough),
-    take_arg!("-tp", OsString, CanBeSeparated('='), PassThrough),
-    take_arg!("-x", OsString, CanBeSeparated('='), Language)
+    take_arg!("-ta", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("-target", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("-tp", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("-x", OsString, CanBeSeparated(b'='), Language)
 ]);
 
 #[cfg(test)]

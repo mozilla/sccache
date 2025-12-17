@@ -19,13 +19,13 @@ use crate::compiler::args::*;
 use crate::compiler::c::{ArtifactDescriptor, CCompilerImpl, CCompilerKind, ParsedArguments};
 use crate::compiler::gcc::ArgData::*;
 use crate::compiler::{
-    self, gcc, get_compiler_info, write_temp_file, CCompileCommand, Cacheable, CompileCommand,
-    CompileCommandImpl, CompilerArguments, Language,
+    self, CCompileCommand, Cacheable, CompileCommand, CompileCommandImpl, CompilerArguments,
+    Language, gcc, get_compiler_info, write_temp_file,
 };
 use crate::mock_command::{
-    exit_status, CommandChild, CommandCreator, CommandCreatorSync, ExitStatusValue, RunCommand,
+    CommandChild, CommandCreator, CommandCreatorSync, ExitStatusValue, RunCommand, exit_status,
 };
-use crate::util::{run_input_output, OsStrExt};
+use crate::util::{OsStrExt, run_input_output};
 use crate::{counted_array, dist, protocol, server};
 use async_trait::async_trait;
 use fs::File;
@@ -328,7 +328,7 @@ pub fn generate_compile_commands(
                 keep = true;
                 unhashed_args.splice(idx..(idx + 1), []);
                 if keep_dir.is_none() {
-                    keep_dir = Some(cwd.to_path_buf())
+                    keep_dir = Some(cwd.to_path_buf());
                 }
                 continue;
             }
@@ -391,7 +391,7 @@ pub fn generate_compile_commands(
     let mut arguments = vec![];
 
     if let Some(lang) = gcc::language_to_gcc_arg(parsed_args.language) {
-        arguments.extend(vec!["-x".into(), lang.into()])
+        arguments.extend(vec!["-x".into(), lang.into()]);
     }
 
     let output = &parsed_args
@@ -1133,8 +1133,8 @@ fn remap_generated_filenames(
             // If the argument doesn't start with `-` and is a file that
             // ends in one of the below extensions, rename the file to an
             // auto-incrementing stable name
-            let maybe_extension = (!arg.starts_with('-'))
-                .then(|| {
+            let maybe_extension = if !arg.starts_with('-') {
+                {
                     [
                         ".cpp1.ii",
                         ".cpp4.ii",
@@ -1145,8 +1145,10 @@ fn remap_generated_filenames(
                     .iter()
                     .find(|ext| arg.ends_with(*ext))
                     .copied()
-                })
-                .unwrap_or(None);
+                }
+            } else {
+                None
+            };
 
             // If the argument is a file that ends in one of the above extensions:
             // * If it's our first time seeing this file, create a unique name for it
@@ -1382,13 +1384,13 @@ fn status_to_code(res: process::ExitStatus) -> ExitStatusValue {
 
 counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     //todo: refactor show_includes into dependency_args
-    take_arg!("--Werror", OsString, CanBeSeparated('='), PreprocessorArgument),
-    take_arg!("--archive-options options", OsString, CanBeSeparated('='), PassThrough),
+    take_arg!("--Werror", OsString, CanBeSeparated(b'='), PreprocessorArgument),
+    take_arg!("--archive-options options", OsString, CanBeSeparated(b'='), PassThrough),
     flag!("--compile", DoCompilation),
-    take_arg!("--compiler-bindir", OsString, CanBeSeparated('='), PassThrough),
-    take_arg!("--compiler-options", OsString, CanBeSeparated('='), PreprocessorArgument),
+    take_arg!("--compiler-bindir", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("--compiler-options", OsString, CanBeSeparated(b'='), PreprocessorArgument),
     flag!("--cubin", DoCompilation),
-    take_arg!("--default-stream", OsString, CanBeSeparated('='), PassThrough),
+    take_arg!("--default-stream", OsString, CanBeSeparated(b'='), PassThrough),
     flag!("--device-c", DoCompilation),
     flag!("--device-w", DoCompilation),
     flag!("--expt-extended-lambda", PreprocessorArgumentFlag),
@@ -1397,42 +1399,42 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     flag!("--fatbin", DoCompilation),
     take_arg!("--fdevice-time-trace", OsString, CanBeSeparated, TooHard),
     take_arg!("--fdevice-time-trace=", OsString, Concatenated, TooHard),
-    take_arg!("--generate-code", OsString, CanBeSeparated('='), PassThrough),
+    take_arg!("--generate-code", OsString, CanBeSeparated(b'='), PassThrough),
     flag!("--generate-dependencies-with-compile", NeedDepTarget),
     flag!("--generate-nonsystem-dependencies-with-compile", NeedDepTarget),
-    take_arg!("--gpu-architecture", OsString, CanBeSeparated('='), PassThrough),
-    take_arg!("--gpu-code", OsString, CanBeSeparated('='), PassThrough),
-    take_arg!("--include-path", PathBuf, CanBeSeparated('='), PreprocessorArgumentPath),
+    take_arg!("--gpu-architecture", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("--gpu-code", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("--include-path", PathBuf, CanBeSeparated(b'='), PreprocessorArgumentPath),
     flag!("--keep", UnhashedFlag),
-    take_arg!("--keep-dir", OsString, CanBeSeparated('='), Unhashed),
-    take_arg!("--linker-options", OsString, CanBeSeparated('='), PassThrough),
-    take_arg!("--maxrregcount", OsString, CanBeSeparated('='), PassThrough),
+    take_arg!("--keep-dir", OsString, CanBeSeparated(b'='), Unhashed),
+    take_arg!("--linker-options", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("--maxrregcount", OsString, CanBeSeparated(b'='), PassThrough),
     flag!("--no-host-device-initializer-list", PreprocessorArgumentFlag),
-    take_arg!("--nvlink-options", OsString, CanBeSeparated('='), PassThrough),
-    take_arg!("--options-file", PathBuf, CanBeSeparated('='), ExtraHashFile),
+    take_arg!("--nvlink-options", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("--options-file", PathBuf, CanBeSeparated(b'='), ExtraHashFile),
     flag!("--optix-ir", DoCompilation),
     flag!("--ptx", DoCompilation),
-    take_arg!("--ptxas-options", OsString, CanBeSeparated('='), PassThrough),
-    take_arg!("--relocatable-device-code", OsString, CanBeSeparated('='), PreprocessorArgument),
+    take_arg!("--ptxas-options", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("--relocatable-device-code", OsString, CanBeSeparated(b'='), PreprocessorArgument),
     flag!("--save-temps", UnhashedFlag),
-    take_arg!("--system-include", PathBuf, CanBeSeparated('='), PreprocessorArgumentPath),
-    take_arg!("--threads", OsString, CanBeSeparated('='), Unhashed),
+    take_arg!("--system-include", PathBuf, CanBeSeparated(b'='), PreprocessorArgumentPath),
+    take_arg!("--threads", OsString, CanBeSeparated(b'='), Unhashed),
     take_arg!("--time", OsString, CanBeSeparated, TooHard),
     take_arg!("--time=", OsString, Concatenated, TooHard),
-    take_arg!("--x", OsString, CanBeSeparated('='), Language),
+    take_arg!("--x", OsString, CanBeSeparated(b'='), Language),
 
-    take_arg!("-Werror", OsString, CanBeSeparated('='), PreprocessorArgument),
-    take_arg!("-Xarchive", OsString, CanBeSeparated('='), PassThrough),
-    take_arg!("-Xcompiler", OsString, CanBeSeparated('='), PreprocessorArgument),
-    take_arg!("-Xlinker", OsString, CanBeSeparated('='), PassThrough),
-    take_arg!("-Xnvlink", OsString, CanBeSeparated('='), PassThrough),
-    take_arg!("-Xptxas", OsString, CanBeSeparated('='), PassThrough),
-    take_arg!("-arch", OsString, CanBeSeparated('='), PassThrough),
-    take_arg!("-ccbin", OsString, CanBeSeparated('='), PassThrough),
-    take_arg!("-code", OsString, CanBeSeparated('='), PassThrough),
+    take_arg!("-Werror", OsString, CanBeSeparated(b'='), PreprocessorArgument),
+    take_arg!("-Xarchive", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("-Xcompiler", OsString, CanBeSeparated(b'='), PreprocessorArgument),
+    take_arg!("-Xlinker", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("-Xnvlink", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("-Xptxas", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("-arch", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("-ccbin", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("-code", OsString, CanBeSeparated(b'='), PassThrough),
     flag!("-cubin", DoCompilation),
     flag!("-dc", DoCompilation),
-    take_arg!("-default-stream", OsString, CanBeSeparated('='), PassThrough),
+    take_arg!("-default-stream", OsString, CanBeSeparated(b'='), PassThrough),
     flag!("-dw", DoCompilation),
     flag!("-expt-extended-lambda", PreprocessorArgumentFlag),
     flag!("-expt-relaxed-constexpr", PreprocessorArgumentFlag),
@@ -1440,21 +1442,21 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     flag!("-fatbin", DoCompilation),
     take_arg!("-fdevice-time-trace", OsString, CanBeSeparated, TooHard),
     take_arg!("-fdevice-time-trace=", OsString, Concatenated, TooHard),
-    take_arg!("-gencode", OsString, CanBeSeparated('='), PassThrough),
-    take_arg!("-isystem", PathBuf, CanBeSeparated('='), PreprocessorArgumentPath),
+    take_arg!("-gencode", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("-isystem", PathBuf, CanBeSeparated(b'='), PreprocessorArgumentPath),
     flag!("-keep", UnhashedFlag),
-    take_arg!("-keep-dir", OsString, CanBeSeparated('='), Unhashed),
-    take_arg!("-maxrregcount", OsString, CanBeSeparated('='), PassThrough),
+    take_arg!("-keep-dir", OsString, CanBeSeparated(b'='), Unhashed),
+    take_arg!("-maxrregcount", OsString, CanBeSeparated(b'='), PassThrough),
     flag!("-nohdinitlist", PreprocessorArgumentFlag),
     flag!("-optix-ir", DoCompilation),
     flag!("-ptx", DoCompilation),
-    take_arg!("-rdc", OsString, CanBeSeparated('='), PreprocessorArgument),
+    take_arg!("-rdc", OsString, CanBeSeparated(b'='), PreprocessorArgument),
     flag!("-save-temps", UnhashedFlag),
     take_arg!("-t", OsString, CanBeSeparated, Unhashed),
     take_arg!("-t=", OsString, Concatenated, Unhashed),
     take_arg!("-time", OsString, CanBeSeparated, TooHard),
     take_arg!("-time=", OsString, Concatenated, TooHard),
-    take_arg!("-x", OsString, CanBeSeparated('='), Language),
+    take_arg!("-x", OsString, CanBeSeparated(b'='), Language),
 ]);
 
 #[cfg(test)]

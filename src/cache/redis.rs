@@ -14,9 +14,9 @@
 // limitations under the License.
 
 use crate::errors::*;
+use opendal::Operator;
 use opendal::layers::LoggingLayer;
 use opendal::services::Redis;
-use opendal::Operator;
 use std::collections::HashMap;
 use std::time::Duration;
 use url::Url;

@@ -15,11 +15,11 @@
 use crate::compiler::args::*;
 use crate::compiler::c::{ArtifactDescriptor, CCompilerImpl, CCompilerKind, ParsedArguments};
 use crate::compiler::{
-    clang, gcc, write_temp_file, CCompileCommand, Cacheable, ColorMode, CompileCommand,
-    CompilerArguments, Language, SingleCompileCommand,
+    CCompileCommand, Cacheable, ColorMode, CompileCommand, CompilerArguments, Language,
+    SingleCompileCommand, clang, gcc, write_temp_file,
 };
 use crate::mock_command::{CommandCreatorSync, RunCommand};
-use crate::util::{encode_path, run_input_output, OsStrExt};
+use crate::util::{OsStrExt, encode_path, run_input_output};
 use crate::{counted_array, dist};
 use async_trait::async_trait;
 use fs::File;
@@ -125,7 +125,7 @@ fn from_local_codepage(multi_byte_str: &[u8]) -> io::Result<String> {
 
 #[cfg(windows)]
 pub fn from_local_codepage(multi_byte_str: &[u8]) -> io::Result<String> {
-    use windows_sys::Win32::Globalization::{MultiByteToWideChar, CP_OEMCP, MB_ERR_INVALID_CHARS};
+    use windows_sys::Win32::Globalization::{CP_OEMCP, MB_ERR_INVALID_CHARS, MultiByteToWideChar};
 
     let codepage = CP_OEMCP;
     let flags = MB_ERR_INVALID_CHARS;
@@ -451,7 +451,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("external:anglebrackets", PassThrough),
     msvc_take_arg!("favor:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("fp:", OsString, Concatenated, PassThroughWithSuffix),
-    msvc_take_arg!("fsanitize-blacklist", PathBuf, Concatenated('='), ExtraHashFile),
+    msvc_take_arg!("fsanitize-blacklist", PathBuf, Concatenated(b'='), ExtraHashFile),
     msvc_flag!("fsanitize=address", PassThrough),
     msvc_flag!("fsyntax-only", SuppressCompilation),
     msvc_take_arg!("guard:cf", OsString, Concatenated, PassThroughWithSuffix),
@@ -610,7 +610,7 @@ pub fn parse_arguments(
                 common_args.extend(
                     arg.normalize(NormalizedDisposition::Concatenated)
                         .iter_os_strings(),
-                )
+                );
             }
             Some(ExternalIncludePath(_)) => common_args.extend(
                 arg.normalize(NormalizedDisposition::Separated)
@@ -664,9 +664,10 @@ pub fn parse_arguments(
             let args = match arg.get_data() {
                 Some(SplitDwarf) | Some(TestCoverage) | Some(Coverage) | Some(DoCompilation)
                 | Some(Language(_)) | Some(Output(_)) | Some(TooHardFlag) | Some(XClang(_))
-                | Some(TooHard(_)) => cannot_cache!(arg
-                    .flag_str()
-                    .unwrap_or("Can't handle complex arguments through clang",)),
+                | Some(TooHard(_)) => cannot_cache!(
+                    arg.flag_str()
+                        .unwrap_or("Can't handle complex arguments through clang",)
+                ),
                 None => match arg {
                     Argument::Raw(_) | Argument::UnknownFlag(_) => &mut common_args,
                     _ => unreachable!(),
@@ -749,7 +750,21 @@ pub fn parse_arguments(
             );
         }
         Some(o) => {
-            if o.extension().is_none() && compilation {
+            if o.as_os_str()
+                .to_string_lossy()
+                .ends_with(std::path::MAIN_SEPARATOR)
+            {
+                match Path::new(&input).file_name() {
+                    Some(i) => outputs.insert(
+                        "obj",
+                        ArtifactDescriptor {
+                            path: o.join(Path::new(i)).with_extension("obj"),
+                            optional: false,
+                        },
+                    ),
+                    None => cannot_cache!("invalid input file"),
+                };
+            } else if o.extension().is_none() {
                 outputs.insert(
                     "obj",
                     ArtifactDescriptor {
@@ -1853,6 +1868,39 @@ mod test {
         assert_eq!(dependency_args, ovec!["/showIncludes"]);
         assert_eq!(common_args, ovec!["/winsysroot../../some/dir"]);
         assert!(msvc_show_includes);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn parse_argument_output_file_trailing_backslash() {
+        let args = ovec!["-c", "foo.c", "/Fomyrelease\\folder\\"];
+        let ParsedArguments {
+            input,
+            language,
+            outputs,
+            preprocessor_args,
+            msvc_show_includes,
+            common_args,
+            ..
+        } = match parse_arguments(args) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(Some("foo.c"), input.to_str());
+        assert_eq!(Language::C, language);
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("myrelease/folder/foo.obj"),
+                    optional: false
+                }
+            )
+        );
+        assert!(preprocessor_args.is_empty());
+        assert!(common_args.is_empty());
+        assert!(!msvc_show_includes);
     }
 
     #[test]

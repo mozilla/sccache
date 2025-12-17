@@ -64,7 +64,7 @@ fn config_with_dist_auth(
 }
 
 fn sccache_command() -> Command {
-    Command::new(assert_cmd::cargo::cargo_bin("sccache"))
+    Command::new(env!("CARGO_BIN_EXE_sccache"))
 }
 
 fn retry<F: FnMut() -> Option<T>, T>(interval: Duration, until: Duration, mut f: F) -> Option<T> {

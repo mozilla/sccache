@@ -1,8 +1,8 @@
 [package]
-edition = "2021"
+edition = "2024"
 name = "sccache"
-rust-version = "1.75.0"
-version = "0.10.0"
+rust-version = "1.85.0"
+version = "0.12.0"
 
 categories = ["command-line-utilities", "development-tools::build-utils"]
 description = "Sccache is a ccache-like tool. It is used as a compiler wrapper and avoids compilation when possible. Sccache has the capability to utilize caching in remote storage environments, including various cloud storage options, or alternatively, in local storage."
@@ -17,6 +17,9 @@ name = "sccache"
 [[bin]]
 name = "sccache-dist"
 required-features = ["dist-server"]
+
+[profile.test]
+debug = false # save disk space
 
 [profile.release]
 codegen-units = 1
@@ -37,9 +40,9 @@ byteorder = "1.5"
 bytes = "1"
 chrono = "0.4"
 clap = { version = "4.5.13", features = ["derive", "env", "wrap_help"] }
-directories = "5.0.1"
+directories = "6.0"
 encoding_rs = "0.8"
-env_logger = "0.10"
+env_logger = "0.11"
 filetime = "0.2"
 flate2 = { version = "1.0", optional = true, default-features = false, features = [
   "rust_backend",
@@ -56,7 +59,7 @@ hyper-util = { version = "0.1.3", optional = true, features = [
   "tokio",
   "server",
 ] }
-itertools = "0.12"
+itertools = "0.14"
 jobserver = "0.1"
 jwt = { package = "jsonwebtoken", version = "9", optional = true }
 libc = "0.2.153"
@@ -66,13 +69,12 @@ memchr = "2"
 memmap2 = "0.9.4"
 mime = "0.3"
 number_prefix = "0.4"
-object = "0.36"
-once_cell = "1.19"
-opendal = { version = "0.52.0", optional = true, default-features = false }
-openssl = { version = "0.10.72", optional = true }
+object = "0.37"
+opendal = { version = "0.54.0", optional = true, default-features = false }
+openssl = { version = "0.10.75", optional = true }
 rand = "0.8.4"
 regex = "1.10.3"
-reqsign = { version = "0.16.0", optional = true }
+reqsign = { version = "0.18.0", optional = true }
 reqwest = { version = "0.12", features = [
   "json",
   "blocking",
@@ -100,7 +102,7 @@ tokio = { version = "1", features = [
 tokio-serde = "0.8"
 tokio-util = { version = "0.7", features = ["codec", "io"] }
 toml = "0.8"
-tower = "0.4"
+tower-service = "0.3"
 url = { version = "2", optional = true }
 uuid = { version = "1.9", features = ["v4"] }
 walkdir = "2"
@@ -128,7 +130,6 @@ assert_cmd = "2.0.13"
 cc = "1.0"
 chrono = "0.4.42"
 filetime = "0.2"
-itertools = "0.12"
 predicates = "=3.1.0"
 serial_test = "3.1"
 temp-env = "0.3.6"

@@ -6,7 +6,7 @@ use tempfile::tempdir;
 use std::{
     env::{consts::DLL_SUFFIX, var_os},
     ffi::OsString,
-    fs::{self, create_dir, create_dir_all, remove_file, set_permissions, File},
+    fs::{self, File, create_dir, create_dir_all, remove_file, set_permissions},
     io::Write,
     os::unix::{
         fs::symlink,
@@ -18,8 +18,7 @@ use std::{
 struct StopServer;
 impl Drop for StopServer {
     fn drop(&mut self) {
-        let _ = Command::cargo_bin("sccache")
-            .unwrap()
+        let _ = Command::from_std(std::process::Command::new(env!("CARGO_BIN_EXE_sccache")))
             .arg("--stop-server")
             .ok();
     }

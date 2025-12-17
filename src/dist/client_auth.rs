@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use futures::channel::oneshot;
-use http::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use http::StatusCode;
+use http::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use http_body_util::Full;
 use hyper::Response;
 use serde::Serialize;
@@ -82,22 +82,22 @@ const REDIRECT_WITH_AUTH_JSON: &str = r##"<!doctype html>
 
 mod code_grant_pkce {
     use super::{
-        html_response, json_response, query_pairs, MIN_TOKEN_VALIDITY, MIN_TOKEN_VALIDITY_WARNING,
-        REDIRECT_WITH_AUTH_JSON,
+        MIN_TOKEN_VALIDITY, MIN_TOKEN_VALIDITY_WARNING, REDIRECT_WITH_AUTH_JSON, html_response,
+        json_response, query_pairs,
     };
-    use crate::util::new_reqwest_blocking_client;
     use crate::util::BASE64_URL_SAFE_ENGINE;
+    use crate::util::new_reqwest_blocking_client;
     use base64::Engine;
     use bytes::Bytes;
     use futures::channel::oneshot;
     use http_body_util::Full;
     use hyper::{Method, Request, Response, StatusCode};
-    use rand::{rngs::OsRng, RngCore};
+    use rand::{RngCore, rngs::OsRng};
     use serde::{Deserialize, Serialize};
     use sha2::{Digest, Sha256};
     use std::collections::HashMap;
-    use std::sync::mpsc;
     use std::sync::Mutex;
+    use std::sync::mpsc;
     use std::time::{Duration, Instant};
     use url::Url;
 
@@ -276,16 +276,16 @@ mod code_grant_pkce {
 
 mod implicit {
     use super::{
-        html_response, json_response, query_pairs, MIN_TOKEN_VALIDITY, MIN_TOKEN_VALIDITY_WARNING,
-        REDIRECT_WITH_AUTH_JSON,
+        MIN_TOKEN_VALIDITY, MIN_TOKEN_VALIDITY_WARNING, REDIRECT_WITH_AUTH_JSON, html_response,
+        json_response, query_pairs,
     };
     use bytes::Bytes;
     use futures::channel::oneshot;
     use http_body_util::Full;
     use hyper::{Method, Request, Response, StatusCode};
     use std::collections::HashMap;
-    use std::sync::mpsc;
     use std::sync::Mutex;
+    use std::sync::mpsc;
     use std::time::{Duration, Instant};
     use url::Url;
 
@@ -510,7 +510,7 @@ async fn try_bind() -> Result<HyperBuilderWrap> {
             Err(ref e) if e.kind() == io::ErrorKind::ConnectionRefused => (),
             Err(e) => {
                 return Err(e)
-                    .with_context(|| format!("Failed to check {} is available for binding", addr))
+                    .with_context(|| format!("Failed to check {} is available for binding", addr));
             }
         }
 
@@ -523,7 +523,7 @@ async fn try_bind() -> Result<HyperBuilderWrap> {
                     .map(|err| err.kind() == io::ErrorKind::AddrInUse)
                     .unwrap_or(false) =>
             {
-                continue
+                continue;
             }
             Err(e) => return Err(e).with_context(|| format!("Failed to bind to {}", addr)),
         }
@@ -576,7 +576,7 @@ pub fn get_token_oauth2_code_grant_pkce(
             warn!(
                 "Something went wrong while waiting for auth server shutdown: {}",
                 e
-            )
+            );
         }
     });
     handle.abort();
@@ -623,7 +623,7 @@ pub fn get_token_oauth2_implicit(client_id: &str, mut auth_url: Url) -> Result<S
             warn!(
                 "Something went wrong while waiting for auth server shutdown: {}",
                 e
-            )
+            );
         }
     });
     handle.abort();

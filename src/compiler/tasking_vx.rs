@@ -15,13 +15,13 @@
 
 use crate::{
     compiler::{
+        CCompileCommand, Cacheable, ColorMode, CompileCommand, CompilerArguments, Language,
+        SingleCompileCommand,
         args::{
             ArgDisposition, ArgInfo, ArgToStringResult, ArgsIter, Argument, FromArg, IntoArg,
             NormalizedDisposition, PathTransformerFn, SearchableArgInfo,
         },
         c::{ArtifactDescriptor, CCompilerImpl, CCompilerKind, ParsedArguments},
-        CCompileCommand, Cacheable, ColorMode, CompileCommand, CompilerArguments, Language,
-        SingleCompileCommand,
     },
     counted_array, dist,
     errors::*,
@@ -130,17 +130,17 @@ ArgData! { pub
 use self::ArgData::*;
 
 counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
-    take_arg!("--define", OsString, Concatenated('='), PreprocessorArgument),
-    take_arg!("--dep-file", PathBuf, Concatenated('='), DepFile),
+    take_arg!("--define", OsString, Concatenated(b'='), PreprocessorArgument),
+    take_arg!("--dep-file", PathBuf, Concatenated(b'='), DepFile),
     flag!("--dry-run", TooHardFlag),
-    take_arg!("--help", OsString, Concatenated('='), NotCompilation),
-    take_arg!("--include-directory", PathBuf, Concatenated('='), PreprocessorArgumentPath),
-    take_arg!("--include-file", PathBuf, Concatenated('='), PreprocessorArgumentPath),
-    take_arg!("--library-directory", OsString, Concatenated('='), PassThrough),
-    take_arg!("--mil-split", OsString, Concatenated('='), TooHard),
-    take_arg!("--option-file", OsString, Concatenated('='), TooHard),
-    take_arg!("--output", PathBuf, Concatenated('='), Output),
-    take_arg!("--preprocess", OsString, Concatenated('='), TooHard),
+    take_arg!("--help", OsString, Concatenated(b'='), NotCompilation),
+    take_arg!("--include-directory", PathBuf, Concatenated(b'='), PreprocessorArgumentPath),
+    take_arg!("--include-file", PathBuf, Concatenated(b'='), PreprocessorArgumentPath),
+    take_arg!("--library-directory", OsString, Concatenated(b'='), PassThrough),
+    take_arg!("--mil-split", OsString, Concatenated(b'='), TooHard),
+    take_arg!("--option-file", OsString, Concatenated(b'='), TooHard),
+    take_arg!("--output", PathBuf, Concatenated(b'='), Output),
+    take_arg!("--preprocess", OsString, Concatenated(b'='), TooHard),
     take_arg!("--undefine", OsString, Separated, PreprocessorArgument), // ok
     flag!("--version", NotCompilationFlag),
     flag!("-?", NotCompilationFlag),
@@ -190,7 +190,7 @@ where
                 cannot_cache!(arg.flag_str().expect("Can't be Argument::Raw/UnknownFlag",))
             }
             Some(NotCompilationFlag) | Some(NotCompilation(_)) => {
-                return CompilerArguments::NotCompilation
+                return CompilerArguments::NotCompilation;
             }
             Some(DoCompilation) => compilation = true,
             Some(Output(p)) => output_arg = Some(p.clone()),
@@ -264,9 +264,7 @@ where
         }
     });
 
-    let output = output_arg
-        .map(PathBuf::from)
-        .unwrap_or_else(|| Path::new(&input).with_extension("o"));
+    let output = output_arg.unwrap_or_else(|| Path::new(&input).with_extension("o"));
 
     let mut outputs = HashMap::with_capacity(1);
     outputs.insert(
@@ -401,8 +399,8 @@ fn generate_compile_commands(
 #[cfg(test)]
 mod test {
     use super::{
-        dist, generate_compile_commands, parse_arguments, Language, OsString, ParsedArguments,
-        PathBuf, ARGS,
+        ARGS, Language, OsString, ParsedArguments, PathBuf, dist, generate_compile_commands,
+        parse_arguments,
     };
     use crate::compiler::c::ArtifactDescriptor;
     use crate::compiler::*;
@@ -514,8 +512,9 @@ mod test {
 
     #[test]
     fn test_parse_arguments_values() {
-        let args =
-            stringvec!["-c", "foo.cxx", "-fabc", "-I", "include", "-o", "foo.o", "-H", "file"];
+        let args = stringvec![
+            "-c", "foo.cxx", "-fabc", "-I", "include", "-o", "foo.o", "-H", "file"
+        ];
         let ParsedArguments {
             input,
             language,

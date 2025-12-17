@@ -14,7 +14,7 @@
 
 use crate::compiler;
 use async_trait::async_trait;
-use rand::{rngs::OsRng, RngCore};
+use rand::{RngCore, rngs::OsRng};
 use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
 use std::fmt;
@@ -489,8 +489,8 @@ pub struct OutputData(Vec<u8>, u64);
 impl OutputData {
     #[cfg(any(feature = "dist-server", all(feature = "dist-client", test)))]
     pub fn try_from_reader<R: Read>(r: R) -> io::Result<Self> {
-        use flate2::read::ZlibEncoder as ZlibReadEncoder;
         use flate2::Compression;
+        use flate2::read::ZlibEncoder as ZlibReadEncoder;
         let mut compressor = ZlibReadEncoder::new(r, Compression::fast());
         let mut res = vec![];
         io::copy(&mut compressor, &mut res)?;

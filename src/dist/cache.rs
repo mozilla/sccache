@@ -1,7 +1,7 @@
 use crate::dist::Toolchain;
 use crate::lru_disk_cache::Result as LruResult;
 use crate::lru_disk_cache::{LruDiskCache, ReadSeek};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use fs_err as fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -14,17 +14,17 @@ use std::io::Read;
 #[cfg(feature = "dist-client")]
 mod client {
     use crate::config;
-    use crate::dist::pkg::ToolchainPackager;
     use crate::dist::Toolchain;
+    use crate::dist::pkg::ToolchainPackager;
     use crate::lru_disk_cache::Error as LruError;
-    use anyhow::{bail, Context, Error, Result};
+    use anyhow::{Context, Error, Result, bail};
     use fs_err as fs;
     use std::collections::{HashMap, HashSet};
     use std::io::Write;
     use std::path::{Path, PathBuf};
     use std::sync::Mutex;
 
-    use super::{path_key, TcCache};
+    use super::{TcCache, path_key};
 
     #[derive(Clone, Debug)]
     pub struct CustomToolchain {
@@ -71,7 +71,7 @@ mod client {
                 fs::remove_dir_all(&toolchain_creation_dir).context(format!(
                     "failed to clean up temporary toolchain creation directory: {}",
                     toolchain_creation_dir.display()
-                ))?
+                ))?;
             }
             fs::create_dir(&toolchain_creation_dir).context(format!(
                 "failed to create temporary toolchain creation directory: {}",
@@ -85,7 +85,7 @@ mod client {
                     .context(format!(
                         "failed to create new toolchain weak map file: {}",
                         weak_map_path.display()
-                    ))?
+                    ))?;
             }
             let weak_map = fs::File::open(&weak_map_path)
                 .map_err(Error::from)
@@ -257,7 +257,7 @@ mod client {
                                 "Detected interchangeable toolchain archives at {} and {}",
                                 old_path.display(),
                                 custom_tc.archive.display()
-                            )
+                            );
                         }
                     }
                     Some(Ok((
@@ -417,13 +417,15 @@ mod client {
             )
             .unwrap();
 
-            assert!(client_toolchains
-                .put_toolchain(
-                    "/my/compiler".as_ref(),
-                    "weak_key",
-                    PanicToolchainPackager::new()
-                )
-                .is_err());
+            assert!(
+                client_toolchains
+                    .put_toolchain(
+                        "/my/compiler".as_ref(),
+                        "weak_key",
+                        PanicToolchainPackager::new()
+                    )
+                    .is_err()
+            );
         }
 
         #[test]

@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 
 use crate::errors::*;
 
-use super::{normalize_key, PreprocessorCacheModeConfig};
+use super::{PreprocessorCacheModeConfig, normalize_key};
 
 enum LazyDiskCache {
     Uninit { root: OsString, max_size: u64 },

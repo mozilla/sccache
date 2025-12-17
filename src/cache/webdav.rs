@@ -11,9 +11,9 @@
 // limitations under the License.
 
 use crate::errors::*;
-use opendal::layers::LoggingLayer;
-use opendal::services::Webdav;
 use opendal::Operator;
+use opendal::layers::{HttpClientLayer, LoggingLayer};
+use opendal::services::Webdav;
 
 use super::http_client::set_user_agent;
 
@@ -34,10 +34,10 @@ impl WebdavCache {
             .root(key_prefix)
             .username(username.unwrap_or_default())
             .password(password.unwrap_or_default())
-            .token(token.unwrap_or_default())
-            .http_client(set_user_agent());
+            .token(token.unwrap_or_default());
 
         let op = Operator::new(builder)?
+            .layer(HttpClientLayer::new(set_user_agent()))
             .layer(LoggingLayer::default())
             .finish();
         Ok(op)

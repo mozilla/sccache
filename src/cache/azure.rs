@@ -15,7 +15,7 @@
 
 use opendal::Operator;
 
-use opendal::layers::LoggingLayer;
+use opendal::layers::{HttpClientLayer, LoggingLayer};
 use opendal::services::Azblob;
 
 use crate::errors::*;
@@ -28,10 +28,10 @@ impl AzureBlobCache {
     pub fn build(connection_string: &str, container: &str, key_prefix: &str) -> Result<Operator> {
         let builder = Azblob::from_connection_string(connection_string)?
             .container(container)
-            .root(key_prefix)
-            .http_client(set_user_agent());
+            .root(key_prefix);
 
         let op = Operator::new(builder)?
+            .layer(HttpClientLayer::new(set_user_agent()))
             .layer(LoggingLayer::default())
             .finish();
         Ok(op)

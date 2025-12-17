@@ -13,10 +13,10 @@
 // limitations under the License.
 
 use crate::cache::storage_from_config;
-use crate::client::{connect_to_server, connect_with_retry, ServerConnection};
+use crate::client::{ServerConnection, connect_to_server, connect_with_retry};
 use crate::cmdline::{Command, StatsFormat};
 use crate::compiler::ColorMode;
-use crate::config::{default_disk_cache_dir, Config};
+use crate::config::{Config, default_disk_cache_dir};
 use crate::jobserver::Client;
 use crate::mock_command::{CommandChild, CommandCreatorSync, ProcessCommandCreator, RunCommand};
 use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
@@ -139,7 +139,7 @@ fn redirect_stderr(f: File) {
 #[cfg(windows)]
 fn redirect_stderr(f: File) {
     use std::os::windows::io::IntoRawHandle;
-    use windows_sys::Win32::System::Console::{SetStdHandle, STD_ERROR_HANDLE};
+    use windows_sys::Win32::System::Console::{STD_ERROR_HANDLE, SetStdHandle};
     // Ignore errors here.
     unsafe {
         SetStdHandle(STD_ERROR_HANDLE, f.into_raw_handle() as _);
@@ -183,7 +183,7 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
     use uuid::Uuid;
     use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::System::Threading::{
-        CreateProcessW, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT,
+        CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
         PROCESS_INFORMATION, STARTUPINFOW,
     };
 
@@ -318,16 +318,19 @@ fn connect_or_start_server(
                 ServerStartup::Ok { addr: actual_addr } => {
                     if addr.to_string() != actual_addr {
                         // bail as the next connect_with_retry will fail
-                        bail!(
-                            "sccache: Listening on address {actual_addr} instead of {addr}"
-                        );
+                        bail!("sccache: Listening on address {actual_addr} instead of {addr}");
                     }
                 }
                 ServerStartup::AddrInUse => {
-                    debug!("AddrInUse: possible parallel server bootstraps, retrying..")
+                    debug!("AddrInUse: possible parallel server bootstraps, retrying..");
                 }
-                ServerStartup::TimedOut => bail!("Timed out waiting for server startup. Maybe the remote service is unreachable?\nRun with SCCACHE_LOG=debug SCCACHE_NO_DAEMON=1 to get more information"),
-                ServerStartup::Err { reason } => bail!("Server startup failed: {}\nRun with SCCACHE_LOG=debug SCCACHE_NO_DAEMON=1 to get more information", reason),
+                ServerStartup::TimedOut => bail!(
+                    "Timed out waiting for server startup. Maybe the remote service is unreachable?\nRun with SCCACHE_LOG=debug SCCACHE_NO_DAEMON=1 to get more information"
+                ),
+                ServerStartup::Err { reason } => bail!(
+                    "Server startup failed: {}\nRun with SCCACHE_LOG=debug SCCACHE_NO_DAEMON=1 to get more information",
+                    reason
+                ),
             }
             let server = connect_with_retry(addr)?;
             Ok(server)
@@ -521,7 +524,7 @@ where
             // Wait for CompileFinished.
             match conn.read_one_response() {
                 Ok(Response::CompileFinished(result)) => {
-                    return handle_compile_finished(result, stdout, stderr)
+                    return handle_compile_finished(result, stdout, stderr);
                 }
                 Ok(_) => bail!("unexpected response from server"),
                 Err(e) => {
@@ -555,7 +558,7 @@ where
         CompileResponse::UnhandledCompile => {
             debug!("Server sent UnhandledCompile");
         }
-    };
+    }
 
     let mut cmd = creator.new_command_sync(exe);
     cmd.args(&cmdline).current_dir(cwd);
@@ -700,7 +703,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 
             match &config.dist.auth {
                 config::DistAuth::Token { .. } => {
-                    info!("No authentication needed for type 'token'")
+                    info!("No authentication needed for type 'token'");
                 }
                 config::DistAuth::Oauth2CodeGrantPKCE {
                     client_id,
@@ -722,7 +725,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                             c.dist.auth_tokens.insert(auth_url.to_owned(), token);
                         })
                         .context("Unable to save auth token")?;
-                    println!("Saved token")
+                    println!("Saved token");
                 }
                 config::DistAuth::Oauth2Implicit {
                     client_id,
@@ -740,9 +743,9 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                             c.dist.auth_tokens.insert(auth_url.to_owned(), token);
                         })
                         .context("Unable to save auth token")?;
-                    println!("Saved token")
+                    println!("Saved token");
                 }
-            };
+            }
         }
         #[cfg(not(feature = "dist-client"))]
         Command::DistAuth => bail!(
@@ -774,7 +777,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                     .await
                     .map(|compiler| compiler.0.get_toolchain_packager())
                     .and_then(|packager| packager.write_pkg(out_file))
-            })?
+            })?;
         }
         #[cfg(not(feature = "dist-client"))]
         Command::PackageToolchain(_executable, _out) => bail!(

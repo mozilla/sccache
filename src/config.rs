@@ -16,27 +16,26 @@ use crate::cache::CacheMode;
 use directories::ProjectDirs;
 use fs::File;
 use fs_err as fs;
-use once_cell::sync::Lazy;
 #[cfg(any(feature = "dist-client", feature = "dist-server"))]
 use serde::ser::Serializer;
 use serde::{
-    de::{DeserializeOwned, Deserializer},
     Deserialize, Serialize,
+    de::{self, DeserializeOwned, Deserializer},
 };
 #[cfg(test)]
 use serial_test::serial;
-use std::collections::HashMap;
 use std::env;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::result::Result as StdResult;
 use std::str::FromStr;
-use std::sync::Mutex;
+use std::sync::{LazyLock, Mutex};
+use std::{collections::HashMap, fmt};
 
 pub use crate::cache::PreprocessorCacheModeConfig;
 use crate::errors::*;
 
-static CACHED_CONFIG_PATH: Lazy<PathBuf> = Lazy::new(CachedConfig::file_config_path);
+static CACHED_CONFIG_PATH: LazyLock<PathBuf> = LazyLock::new(CachedConfig::file_config_path);
 static CACHED_CONFIG: Mutex<Option<CachedFileConfig>> = Mutex::new(None);
 
 const ORGANIZATION: &str = "Mozilla";
@@ -69,8 +68,50 @@ fn default_toolchain_cache_size() -> u64 {
     TEN_GIGS
 }
 
+struct StringOrU64Visitor;
+
+impl de::Visitor<'_> for StringOrU64Visitor {
+    type Value = u64;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a string with size suffix (like '20G') or a u64")
+    }
+
+    fn visit_str<E>(self, value: &str) -> StdResult<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        parse_size(value).ok_or_else(|| E::custom(format!("Invalid size value: {}", value)))
+    }
+
+    fn visit_u64<E>(self, value: u64) -> StdResult<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(value)
+    }
+
+    fn visit_i64<E>(self, value: i64) -> StdResult<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        if value < 0 {
+            Err(E::custom("negative values not supported"))
+        } else {
+            Ok(value as u64)
+        }
+    }
+}
+
+fn deserialize_size_from_str<'de, D>(deserializer: D) -> StdResult<u64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserializer.deserialize_any(StringOrU64Visitor)
+}
+
 pub fn parse_size(val: &str) -> Option<u64> {
-    let multiplier = match val.chars().last() {
+    let multiplier = match val.chars().last().map(|v| v.to_ascii_uppercase()) {
         Some('K') => 1024,
         Some('M') => 1024 * 1024,
         Some('G') => 1024 * 1024 * 1024,
@@ -150,7 +191,7 @@ pub struct AzureCacheConfig {
 #[serde(default)]
 pub struct DiskCacheConfig {
     pub dir: PathBuf,
-    // TODO: use deserialize_with to allow human-readable sizes in toml
+    #[serde(deserialize_with = "deserialize_size_from_str")]
     pub size: u64,
     pub preprocessor_cache_mode: PreprocessorCacheModeConfig,
     pub rw_mode: CacheModeConfig,
@@ -392,32 +433,32 @@ impl CacheConfigs {
         } = other;
 
         if azure.is_some() {
-            self.azure = azure
+            self.azure = azure;
         }
         if disk.is_some() {
-            self.disk = disk
+            self.disk = disk;
         }
         if gcs.is_some() {
-            self.gcs = gcs
+            self.gcs = gcs;
         }
         if gha.is_some() {
-            self.gha = gha
+            self.gha = gha;
         }
         if memcached.is_some() {
-            self.memcached = memcached
+            self.memcached = memcached;
         }
         if redis.is_some() {
-            self.redis = redis
+            self.redis = redis;
         }
         if s3.is_some() {
-            self.s3 = s3
+            self.s3 = s3;
         }
         if webdav.is_some() {
-            self.webdav = webdav
+            self.webdav = webdav;
         }
 
         if oss.is_some() {
-            self.oss = oss
+            self.oss = oss;
         }
     }
 }
@@ -517,6 +558,7 @@ pub struct DistConfig {
     pub scheduler_url: Option<String>,
     pub cache_dir: PathBuf,
     pub toolchains: Vec<DistToolchainConfig>,
+    #[serde(deserialize_with = "deserialize_size_from_str")]
     pub toolchain_cache_size: u64,
     pub rewrite_includes_only: bool,
 }
@@ -717,7 +759,9 @@ fn config_from_env() -> Result<EnvConfig> {
     if env::var_os("SCCACHE_MEMCACHED").is_some()
         && env::var_os("SCCACHE_MEMCACHED_ENDPOINT").is_some()
     {
-        bail!("You mustn't set both SCCACHE_MEMCACHED and SCCACHE_MEMCACHED_ENDPOINT. Please, use only SCCACHE_MEMCACHED_ENDPOINT.");
+        bail!(
+            "You mustn't set both SCCACHE_MEMCACHED and SCCACHE_MEMCACHED_ENDPOINT. Please, use only SCCACHE_MEMCACHED_ENDPOINT."
+        );
     }
 
     // ======= GCP/GCS =======
@@ -997,7 +1041,7 @@ impl CachedConfig {
 
         if cached_file_config.is_none() {
             let cfg = Self::load_file_config().context("Unable to initialise cached config")?;
-            *cached_file_config = Some(cfg)
+            *cached_file_config = Some(cfg);
         }
         Ok(CachedConfig(()))
     }
@@ -1037,14 +1081,14 @@ impl CachedConfig {
                 .expect("Cached conf file has no parent directory");
             if !file_conf_dir.is_dir() {
                 fs::create_dir_all(file_conf_dir)
-                    .context("Failed to create dir to hold cached config")?
+                    .context("Failed to create dir to hold cached config")?;
             }
             Self::save_file_config(&Default::default()).with_context(|| {
                 format!(
                     "Unable to create cached config file at {}",
                     file_conf_path.display()
                 )
-            })?
+            })?;
         }
         try_read_config_file(file_conf_path)
             .context("Failed to load cached config file")?
@@ -1211,6 +1255,7 @@ fn test_parse_size() {
     assert_eq!(None, parse_size("bogus value"));
     assert_eq!(Some(100), parse_size("100"));
     assert_eq!(Some(2048), parse_size("2K"));
+    assert_eq!(Some(2048), parse_size("2k"));
     assert_eq!(Some(10 * 1024 * 1024), parse_size("10M"));
     assert_eq!(Some(TEN_GIGS), parse_size("10G"));
     assert_eq!(Some(1024 * TEN_GIGS), parse_size("10T"));
@@ -1298,17 +1343,21 @@ fn config_overrides() {
 #[serial]
 #[cfg(feature = "s3")]
 fn test_s3_no_credentials_conflict() {
-    env::set_var("SCCACHE_S3_NO_CREDENTIALS", "true");
-    env::set_var("SCCACHE_BUCKET", "my-bucket");
-    env::set_var("AWS_ACCESS_KEY_ID", "aws-access-key-id");
-    env::set_var("AWS_SECRET_ACCESS_KEY", "aws-secret-access-key");
+    unsafe {
+        env::set_var("SCCACHE_S3_NO_CREDENTIALS", "true");
+        env::set_var("SCCACHE_BUCKET", "my-bucket");
+        env::set_var("AWS_ACCESS_KEY_ID", "aws-access-key-id");
+        env::set_var("AWS_SECRET_ACCESS_KEY", "aws-secret-access-key");
+    }
 
     let cfg = config_from_env();
 
-    env::remove_var("SCCACHE_S3_NO_CREDENTIALS");
-    env::remove_var("SCCACHE_BUCKET");
-    env::remove_var("AWS_ACCESS_KEY_ID");
-    env::remove_var("AWS_SECRET_ACCESS_KEY");
+    unsafe {
+        env::remove_var("SCCACHE_S3_NO_CREDENTIALS");
+        env::remove_var("SCCACHE_BUCKET");
+        env::remove_var("AWS_ACCESS_KEY_ID");
+        env::remove_var("AWS_SECRET_ACCESS_KEY");
+    }
 
     let error = cfg.unwrap_err();
     assert_eq!(
@@ -1320,13 +1369,17 @@ fn test_s3_no_credentials_conflict() {
 #[test]
 #[serial]
 fn test_s3_no_credentials_invalid() {
-    env::set_var("SCCACHE_S3_NO_CREDENTIALS", "yes");
-    env::set_var("SCCACHE_BUCKET", "my-bucket");
+    unsafe {
+        env::set_var("SCCACHE_S3_NO_CREDENTIALS", "yes");
+        env::set_var("SCCACHE_BUCKET", "my-bucket");
+    }
 
     let cfg = config_from_env();
 
-    env::remove_var("SCCACHE_S3_NO_CREDENTIALS");
-    env::remove_var("SCCACHE_BUCKET");
+    unsafe {
+        env::remove_var("SCCACHE_S3_NO_CREDENTIALS");
+        env::remove_var("SCCACHE_BUCKET");
+    }
 
     let error = cfg.unwrap_err();
     assert_eq!(
@@ -1338,13 +1391,17 @@ fn test_s3_no_credentials_invalid() {
 #[test]
 #[serial]
 fn test_s3_no_credentials_valid_true() {
-    env::set_var("SCCACHE_S3_NO_CREDENTIALS", "true");
-    env::set_var("SCCACHE_BUCKET", "my-bucket");
+    unsafe {
+        env::set_var("SCCACHE_S3_NO_CREDENTIALS", "true");
+        env::set_var("SCCACHE_BUCKET", "my-bucket");
+    }
 
     let cfg = config_from_env();
 
-    env::remove_var("SCCACHE_S3_NO_CREDENTIALS");
-    env::remove_var("SCCACHE_BUCKET");
+    unsafe {
+        env::remove_var("SCCACHE_S3_NO_CREDENTIALS");
+        env::remove_var("SCCACHE_BUCKET");
+    }
 
     let env_cfg = cfg.unwrap();
     match env_cfg.cache.s3 {
@@ -1363,13 +1420,17 @@ fn test_s3_no_credentials_valid_true() {
 #[test]
 #[serial]
 fn test_s3_no_credentials_valid_false() {
-    env::set_var("SCCACHE_S3_NO_CREDENTIALS", "false");
-    env::set_var("SCCACHE_BUCKET", "my-bucket");
+    unsafe {
+        env::set_var("SCCACHE_S3_NO_CREDENTIALS", "false");
+        env::set_var("SCCACHE_BUCKET", "my-bucket");
+    }
 
     let cfg = config_from_env();
 
-    env::remove_var("SCCACHE_S3_NO_CREDENTIALS");
-    env::remove_var("SCCACHE_BUCKET");
+    unsafe {
+        env::remove_var("SCCACHE_S3_NO_CREDENTIALS");
+        env::remove_var("SCCACHE_BUCKET");
+    }
 
     let env_cfg = cfg.unwrap();
     match env_cfg.cache.s3 {
@@ -1389,15 +1450,19 @@ fn test_s3_no_credentials_valid_false() {
 #[serial]
 #[cfg(feature = "gcs")]
 fn test_gcs_service_account() {
-    env::set_var("SCCACHE_GCS_BUCKET", "my-bucket");
-    env::set_var("SCCACHE_GCS_SERVICE_ACCOUNT", "my@example.com");
-    env::set_var("SCCACHE_GCS_RW_MODE", "READ_WRITE");
+    unsafe {
+        env::set_var("SCCACHE_GCS_BUCKET", "my-bucket");
+        env::set_var("SCCACHE_GCS_SERVICE_ACCOUNT", "my@example.com");
+        env::set_var("SCCACHE_GCS_RW_MODE", "READ_WRITE");
+    }
 
     let cfg = config_from_env();
 
-    env::remove_var("SCCACHE_GCS_BUCKET");
-    env::remove_var("SCCACHE_GCS_SERVICE_ACCOUNT");
-    env::remove_var("SCCACHE_GCS_RW_MODE");
+    unsafe {
+        env::remove_var("SCCACHE_GCS_BUCKET");
+        env::remove_var("SCCACHE_GCS_SERVICE_ACCOUNT");
+        env::remove_var("SCCACHE_GCS_RW_MODE");
+    }
 
     let env_cfg = cfg.unwrap();
     match env_cfg.cache.gcs {
@@ -1643,4 +1708,34 @@ fn server_toml_parse() {
             toolchain_cache_size: 10737418240,
         }
     )
+}
+
+#[test]
+fn human_units_parse() {
+    const CONFIG_STR: &str = r#"
+[dist]
+toolchain_cache_size = "5g"
+
+[cache.disk]
+size = "7g"
+"#;
+
+    let file_config: FileConfig = toml::from_str(CONFIG_STR).expect("Is valid toml.");
+    assert_eq!(
+        file_config,
+        FileConfig {
+            cache: CacheConfigs {
+                disk: Some(DiskCacheConfig {
+                    size: 7 * 1024 * 1024 * 1024,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            dist: DistConfig {
+                toolchain_cache_size: 5 * 1024 * 1024 * 1024,
+                ..Default::default()
+            },
+            server_startup_timeout_ms: None,
+        }
+    );
 }

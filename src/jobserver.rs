@@ -2,9 +2,9 @@ use std::io;
 use std::process::Command;
 use std::sync::Arc;
 
+use futures::StreamExt;
 use futures::channel::mpsc;
 use futures::channel::oneshot;
-use futures::StreamExt;
 
 use crate::errors::*;
 
@@ -117,7 +117,7 @@ impl Client {
 
     /// Configures this jobserver to be inherited by the specified command
     pub fn configure(&self, cmd: &mut Command) {
-        self.inner.configure(cmd)
+        self.inner.configure(cmd);
     }
 
     /// Returns a future that represents an acquired jobserver token.

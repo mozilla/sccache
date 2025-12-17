@@ -15,9 +15,9 @@
 use crate::cache::{FileObjectSource, Storage};
 use crate::compiler::args::*;
 use crate::compiler::{
-    c::ArtifactDescriptor, CCompileCommand, Cacheable, ColorMode, Compilation, CompileCommand,
-    Compiler, CompilerArguments, CompilerHasher, CompilerKind, CompilerProxy, HashResult, Language,
-    SingleCompileCommand,
+    CCompileCommand, Cacheable, ColorMode, Compilation, CompileCommand, Compiler,
+    CompilerArguments, CompilerHasher, CompilerKind, CompilerProxy, HashResult, Language,
+    SingleCompileCommand, c::ArtifactDescriptor,
 };
 #[cfg(feature = "dist-client")]
 use crate::compiler::{DistPackagers, OutputsRewriter};
@@ -26,14 +26,13 @@ use crate::dist::pkg;
 #[cfg(feature = "dist-client")]
 use crate::lru_disk_cache::{LruCache, Meter};
 use crate::mock_command::{CommandCreatorSync, RunCommand};
-use crate::util::{fmt_duration_as_secs, hash_all, hash_all_archives, run_input_output, Digest};
+use crate::util::{Digest, fmt_duration_as_secs, hash_all, hash_all_archives, run_input_output};
 use crate::util::{HashToDigest, OsStrExt};
 use crate::{counted_array, dist};
 use async_trait::async_trait;
 use filetime::FileTime;
 use fs_err as fs;
 use log::Level::Trace;
-use once_cell::sync::Lazy;
 #[cfg(feature = "dist-client")]
 use semver::Version;
 #[cfg(feature = "dist-client")]
@@ -56,9 +55,9 @@ use std::iter;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process;
-use std::sync::Arc;
 #[cfg(feature = "dist-client")]
 use std::sync::Mutex;
+use std::sync::{Arc, LazyLock};
 use std::time;
 
 use crate::errors::*;
@@ -232,8 +231,8 @@ pub struct CrateTypes {
 }
 
 /// Emit types that we will cache.
-static ALLOWED_EMIT: Lazy<HashSet<&'static str>> =
-    Lazy::new(|| ["link", "metadata", "dep-info"].iter().copied().collect());
+static ALLOWED_EMIT: LazyLock<HashSet<&'static str>> =
+    LazyLock::new(|| ["link", "metadata", "dep-info"].iter().copied().collect());
 
 /// Version number for cache key.
 const CACHE_VERSION: &[u8] = b"6";
@@ -455,7 +454,7 @@ impl Rust {
             if let Some(path) = dist_archive {
                 trace!("Hashing {:?} along with rustc libs.", path);
                 libs.push(path);
-            };
+            }
             libs.sort();
             Result::Ok((sysroot, libs))
         };
@@ -476,7 +475,10 @@ impl Rust {
             let rlib_dep_reader = match rlib_dep_reader {
                 Ok(r) => Some(Arc::new(r)),
                 Err(e) => {
-                    warn!("Failed to initialise RlibDepDecoder, distributed compiles will be inefficient: {}", e);
+                    warn!(
+                        "Failed to initialise RlibDepDecoder, distributed compiles will be inefficient: {}",
+                        e
+                    );
                     None
                 }
             };
@@ -1025,32 +1027,32 @@ use super::CacheControl;
 // These are taken from https://github.com/rust-lang/rust/blob/b671c32ddc8c36d50866428d83b7716233356721/src/librustc/session/config.rs#L1186
 counted_array!(static ARGS: [ArgInfo<ArgData>; _] = [
     flag!("-", TooHardFlag),
-    take_arg!("--allow", OsString, CanBeSeparated('='), PassThrough),
-    take_arg!("--cap-lints", OsString, CanBeSeparated('='), PassThrough),
-    take_arg!("--cfg", OsString, CanBeSeparated('='), PassThrough),
-    take_arg!("--check-cfg", OsString, CanBeSeparated('='), PassThrough),
-    take_arg!("--codegen", ArgCodegen, CanBeSeparated('='), CodeGen),
-    take_arg!("--color", String, CanBeSeparated('='), Color),
-    take_arg!("--crate-name", String, CanBeSeparated('='), CrateName),
-    take_arg!("--crate-type", ArgCrateTypes, CanBeSeparated('='), CrateType),
-    take_arg!("--deny", OsString, CanBeSeparated('='), PassThrough),
-    take_arg!("--diagnostic-width", OsString, CanBeSeparated('='), PassThrough),
-    take_arg!("--emit", String, CanBeSeparated('='), Emit),
-    take_arg!("--error-format", OsString, CanBeSeparated('='), PassThrough),
-    take_arg!("--explain", OsString, CanBeSeparated('='), NotCompilation),
-    take_arg!("--extern", ArgExtern, CanBeSeparated('='), Extern),
-    take_arg!("--forbid", OsString, CanBeSeparated('='), PassThrough),
+    take_arg!("--allow", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("--cap-lints", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("--cfg", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("--check-cfg", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("--codegen", ArgCodegen, CanBeSeparated(b'='), CodeGen),
+    take_arg!("--color", String, CanBeSeparated(b'='), Color),
+    take_arg!("--crate-name", String, CanBeSeparated(b'='), CrateName),
+    take_arg!("--crate-type", ArgCrateTypes, CanBeSeparated(b'='), CrateType),
+    take_arg!("--deny", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("--diagnostic-width", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("--emit", String, CanBeSeparated(b'='), Emit),
+    take_arg!("--error-format", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("--explain", OsString, CanBeSeparated(b'='), NotCompilation),
+    take_arg!("--extern", ArgExtern, CanBeSeparated(b'='), Extern),
+    take_arg!("--forbid", OsString, CanBeSeparated(b'='), PassThrough),
     flag!("--help", NotCompilationFlag),
-    take_arg!("--json", String, CanBeSeparated('='), Json),
-    take_arg!("--out-dir", PathBuf, CanBeSeparated('='), OutDir),
-    take_arg!("--pretty", OsString, CanBeSeparated('='), NotCompilation),
-    take_arg!("--print", OsString, CanBeSeparated('='), NotCompilation),
-    take_arg!("--remap-path-prefix", OsString, CanBeSeparated('='), PassThrough),
-    take_arg!("--sysroot", PathBuf, CanBeSeparated('='), TooHardPath),
-    take_arg!("--target", ArgTarget, CanBeSeparated('='), Target),
-    take_arg!("--unpretty", OsString, CanBeSeparated('='), NotCompilation),
+    take_arg!("--json", String, CanBeSeparated(b'='), Json),
+    take_arg!("--out-dir", PathBuf, CanBeSeparated(b'='), OutDir),
+    take_arg!("--pretty", OsString, CanBeSeparated(b'='), NotCompilation),
+    take_arg!("--print", OsString, CanBeSeparated(b'='), NotCompilation),
+    take_arg!("--remap-path-prefix", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("--sysroot", PathBuf, CanBeSeparated(b'='), TooHardPath),
+    take_arg!("--target", ArgTarget, CanBeSeparated(b'='), Target),
+    take_arg!("--unpretty", OsString, CanBeSeparated(b'='), NotCompilation),
     flag!("--version", NotCompilationFlag),
-    take_arg!("--warn", OsString, CanBeSeparated('='), PassThrough),
+    take_arg!("--warn", OsString, CanBeSeparated(b'='), PassThrough),
     take_arg!("-A", OsString, CanBeSeparated, PassThrough),
     take_arg!("-C", ArgCodegen, CanBeSeparated, CodeGen),
     take_arg!("-D", OsString, CanBeSeparated, PassThrough),
@@ -1092,21 +1094,21 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                 cannot_cache!(arg.flag_str().expect("Can't be Argument::Raw/UnknownFlag",))
             }
             Some(NotCompilationFlag) | Some(NotCompilation(_)) => {
-                return CompilerArguments::NotCompilation
+                return CompilerArguments::NotCompilation;
             }
             Some(LinkLibrary(ArgLinkLibrary { kind, name })) => {
                 if kind == "static" {
-                    static_lib_names.push(name.to_owned())
+                    static_lib_names.push(name.to_owned());
                 }
             }
             Some(LinkPath(ArgLinkPath { kind, path })) => {
                 // "crate" is not typically necessary as cargo will normally
                 // emit explicit --extern arguments
                 if kind == "crate" || kind == "dependency" || kind == "all" {
-                    crate_link_paths.push(cwd.join(path))
+                    crate_link_paths.push(cwd.join(path));
                 }
                 if kind == "native" || kind == "all" {
-                    static_link_paths.push(cwd.join(path))
+                    static_link_paths.push(cwd.join(path));
                 }
             }
             Some(Emit(value)) => {
@@ -1114,7 +1116,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                     // We don't support passing --emit more than once.
                     cannot_cache!("more than one --emit");
                 }
-                emit = Some(value.split(',').map(str::to_owned).collect())
+                emit = Some(value.split(',').map(str::to_owned).collect());
             }
             Some(CrateType(ArgCrateTypes {
                 rlib,
@@ -1460,6 +1462,7 @@ where
                 .filter(|&(arg, _)| {
                     !(arg == "--extern"
                         || arg == "-L"
+                        || arg == "--check-cfg"
                         || arg == "--out-dir"
                         || arg == "--diagnostic-width")
                 })
@@ -1506,7 +1509,7 @@ where
             .iter()
             // Filter out RUSTC_COLOR since we control color usage with command line flags.
             // rustc reports an error when both are present.
-            .filter(|(ref k, _)| k != "RUSTC_COLOR")
+            .filter(|(k, _)| k != "RUSTC_COLOR")
             .cloned()
             .collect();
         env_vars.sort();
@@ -1519,7 +1522,11 @@ where
             // CARGO_REGISTRIES_*_TOKEN contains non-cacheable secrets.
             // Registry override config doesn't need to be hashed, because deps' package IDs
             // already uniquely identify the relevant registries.
-            if var == "CARGO_MAKEFLAGS" || var.starts_with("CARGO_REGISTRIES_") {
+            // CARGO_BUILD_JOBS only affects Cargo's parallelism, not rustc output.
+            if var == "CARGO_MAKEFLAGS"
+                || var.starts_with("CARGO_REGISTRIES_")
+                || var == "CARGO_BUILD_JOBS"
+            {
                 continue;
             }
 
@@ -1763,13 +1770,13 @@ impl<T: CommandCreatorSync> Compilation<T> for RustCompilation {
                     let input_path = Path::new(input_path).to_owned();
                     dist_arguments.push(try_string_arg!(
                         input_path.into_arg_string(path_transformer_fn)
-                    ))
+                    ));
                 } else {
                     if let Some(Target(_)) = argument.get_data() {
-                        saw_target = true
+                        saw_target = true;
                     }
                     for string_arg in argument.iter_strings(path_transformer_fn) {
-                        dist_arguments.push(try_string_arg!(string_arg))
+                        dist_arguments.push(try_string_arg!(string_arg));
                     }
                 }
             }
@@ -1777,7 +1784,7 @@ impl<T: CommandCreatorSync> Compilation<T> for RustCompilation {
             // We can't rely on the packaged toolchain necessarily having the same default target triple
             // as us (typically host triple), so make sure to always explicitly specify a target.
             if !saw_target {
-                dist_arguments.push(format!("--target={}", host))
+                dist_arguments.push(format!("--target={}", host));
             }
 
             // Convert the paths of some important environment variables
@@ -1791,14 +1798,14 @@ impl<T: CommandCreatorSync> Compilation<T> for RustCompilation {
                         if dist_out_dir != *v {
                             changed_out_dir = Some(v.to_owned().into());
                         }
-                        *v = dist_out_dir
+                        *v = dist_out_dir;
                     }
                     "TMPDIR" => {
                         // The server will need to find its own tempdir.
                         *v = "".to_string();
                     }
                     "CARGO" | "CARGO_MANIFEST_DIR" => {
-                        *v = path_transformer.as_dist(Path::new(v))?
+                        *v = path_transformer.as_dist(Path::new(v))?;
                     }
                     _ => (),
                 }
@@ -1861,8 +1868,7 @@ impl<T: CommandCreatorSync> Compilation<T> for RustCompilation {
         } = *{ self };
         trace!(
             "Dist inputs: inputs={:?} crate_link_paths={:?}",
-            inputs,
-            crate_link_paths
+            inputs, crate_link_paths
         );
 
         let inputs_packager = Box::new(RustInputsPackager {
@@ -2046,7 +2052,7 @@ impl pkg::InputsPackager for RustInputsPackager {
                                 .with_context(|| {
                                     format!("Failed to read deps of {}", input_path.display())
                                 })?,
-                        )
+                        );
                     }
                 }
             }
@@ -2067,12 +2073,12 @@ impl pkg::InputsPackager for RustInputsPackager {
                 format!("unable to transform input path {}", input_path.display())
             })?;
 
-            tar_inputs.push((input_path, dist_input_path))
+            tar_inputs.push((input_path, dist_input_path));
         }
 
         if log_enabled!(Trace) {
             if let Some((_, ref dep_crate_names)) = rlib_dep_reader_and_names {
-                trace!("Identified dependency crate names: {:?}", dep_crate_names)
+                trace!("Identified dependency crate names: {:?}", dep_crate_names);
             }
         }
 
@@ -2142,7 +2148,7 @@ impl pkg::InputsPackager for RustInputsPackager {
                 let dist_path = path_transformer
                     .as_dist(&path)
                     .with_context(|| format!("unable to transform lib path {}", path.display()))?;
-                tar_crate_libs.push((path, dist_path))
+                tar_crate_libs.push((path, dist_path));
             }
         }
 
@@ -2178,7 +2184,7 @@ impl pkg::InputsPackager for RustInputsPackager {
                     {
                         let mut ar_builder = ar::Builder::new(&mut metadata_ar);
                         let header = entry.header().clone();
-                        ar_builder.append(&header, &mut entry)?
+                        ar_builder.append(&header, &mut entry)?;
                     }
                     file_header.set_size(metadata_ar.len() as u64);
                     file_header.set_cksum();
@@ -2187,7 +2193,7 @@ impl pkg::InputsPackager for RustInputsPackager {
                 }
             } else {
                 file_header.set_cksum();
-                builder.append(&file_header, file)?
+                builder.append(&file_header, file)?;
             }
         }
 
@@ -3130,15 +3136,17 @@ LLVM version: 15.0.2
     fn test_get_compiler_outputs_fail() {
         let creator = new_creator();
         next_command(&creator, Ok(MockChild::new(exit_status(1), "", "error")));
-        assert!(get_compiler_outputs(
-            &creator,
-            "rustc".as_ref(),
-            ovec!("a", "b"),
-            "cwd".as_ref(),
-            &[]
-        )
-        .wait()
-        .is_err());
+        assert!(
+            get_compiler_outputs(
+                &creator,
+                "rustc".as_ref(),
+                ovec!("a", "b"),
+                "cwd".as_ref(),
+                &[]
+            )
+            .wait()
+            .is_err()
+        );
     }
 
     #[test]
@@ -3490,6 +3498,10 @@ proc_macro false
                         OsString::from("CARGO_REGISTRIES_A_TOKEN"),
                         OsString::from("ignored"),
                     ),
+                    (
+                        OsString::from("CARGO_BUILD_JOBS"),
+                        OsString::from("ignored"),
+                    ),
                 ]
                 .to_vec(),
                 false,
@@ -3754,6 +3766,54 @@ proc_macro false
                     "foo",
                     "--crate-type",
                     "lib"
+                ],
+                &[],
+                nothing,
+                preprocessor_cache_mode,
+            )
+        );
+    }
+
+    #[test_case(true ; "with preprocessor cache")]
+    #[test_case(false ; "without preprocessor cache")]
+    fn test_equal_hashes_ignored_check_cfg_arg(preprocessor_cache_mode: bool) {
+        let f = TestFixture::new();
+        assert_eq!(
+            hash_key(
+                &f,
+                &[
+                    "--emit",
+                    "link",
+                    "-L",
+                    "x=x",
+                    "foo.rs",
+                    "--out-dir",
+                    "out",
+                    "--crate-name",
+                    "foo",
+                    "--crate-type",
+                    "lib",
+                ],
+                &[],
+                nothing,
+                preprocessor_cache_mode,
+            ),
+            hash_key(
+                &f,
+                &[
+                    "--emit",
+                    "link",
+                    "-L",
+                    "x=x",
+                    "foo.rs",
+                    "--out-dir",
+                    "out",
+                    "--crate-name",
+                    "foo",
+                    "--crate-type",
+                    "lib",
+                    "--check-cfg",
+                    "cfg(verbose)",
                 ],
                 &[],
                 nothing,

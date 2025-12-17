@@ -13,10 +13,10 @@
 // limitations under the License.SCCACHE_MAX_FRAME_LENGTH
 
 use crate::cache::readonly::ReadOnlyStorage;
-use crate::cache::{storage_from_config, CacheMode, Storage};
+use crate::cache::{CacheMode, Storage, storage_from_config};
 use crate::compiler::{
-    get_compiler_info, CacheControl, CompileResult, Compiler, CompilerArguments, CompilerHasher,
-    CompilerKind, CompilerProxy, DistType, Language, MissType,
+    CacheControl, CompileResult, Compiler, CompilerArguments, CompilerHasher, CompilerKind,
+    CompilerProxy, DistType, Language, MissType, get_compiler_info,
 };
 #[cfg(feature = "dist-client")]
 use crate::config;
@@ -28,13 +28,13 @@ use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Respon
 use crate::util;
 #[cfg(feature = "dist-client")]
 use anyhow::Context as _;
-use bytes::{buf::BufMut, Bytes, BytesMut};
+use bytes::{Bytes, BytesMut, buf::BufMut};
 use filetime::FileTime;
 use fs::metadata;
 use fs_err as fs;
 use futures::channel::mpsc;
 use futures::future::FutureExt;
-use futures::{future, stream, Sink, SinkExt, Stream, StreamExt, TryFutureExt};
+use futures::{Sink, SinkExt, Stream, StreamExt, TryFutureExt, future, stream};
 use number_prefix::NumberPrefix;
 use serde::{Deserialize, Serialize};
 use std::cell::Cell;
@@ -63,11 +63,11 @@ use tokio::sync::RwLock;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     runtime::Runtime,
-    time::{self, sleep, Sleep},
+    time::{self, Sleep, sleep},
 };
 use tokio_serde::Framed;
-use tokio_util::codec::{length_delimited, LengthDelimitedCodec};
-use tower::Service;
+use tokio_util::codec::{LengthDelimitedCodec, length_delimited};
+use tower_service::Service;
 
 use crate::errors::*;
 
@@ -175,7 +175,9 @@ impl DistClientContainer {
     #[cfg(not(feature = "dist-client"))]
     fn new(config: &Config, _: &tokio::runtime::Handle) -> Self {
         if config.dist.scheduler_url.is_some() {
-            warn!("Scheduler address configured but dist feature disabled, disabling distributed sccache")
+            warn!(
+                "Scheduler address configured but dist feature disabled, disabling distributed sccache"
+            )
         }
         Self {}
     }
@@ -258,7 +260,7 @@ impl DistClientContainer {
                 return DistInfo::NotConnected(
                     cfg.scheduler_url.clone(),
                     "enabled, auth not configured".to_string(),
-                )
+                );
             }
             DistClientState::RetryCreateAt(cfg, time) => {
                 return DistInfo::NotConnected(
@@ -267,7 +269,7 @@ impl DistClientContainer {
                         "enabled, not connected, will retry in {:.1}s",
                         time.duration_since(Instant::now()).as_secs_f32()
                     ),
-                )
+                );
             }
             DistClientState::Some(cfg, client) => (Arc::clone(client), cfg.scheduler_url.clone()),
         };
@@ -315,7 +317,7 @@ impl DistClientContainer {
                 _ => unreachable!(),
             };
             info!("Attempting to recreate the dist client");
-            *state = Self::create_state(*config).await
+            *state = Self::create_state(*config).await;
         }
     }
 
@@ -364,8 +366,10 @@ impl DistClientContainer {
                         Self::get_cached_config_auth_token(auth_url)
                     }
                 };
-                let auth_token = try_or_fail_with_message!(auth_token
-                    .context("could not load client auth token, run |sccache --dist-auth|"));
+                let auth_token = try_or_fail_with_message!(
+                    auth_token
+                        .context("could not load client auth token, run |sccache --dist-auth|")
+                );
                 let dist_client = dist::http::Client::new(
                     &config.pool,
                     url,
@@ -387,7 +391,9 @@ impl DistClientContainer {
                         DistClientState::Some(Box::new(config), Arc::new(dist_client))
                     }
                     Err(_) => {
-                        warn!("Scheduler address configured, but could not communicate with scheduler");
+                        warn!(
+                            "Scheduler address configured, but could not communicate with scheduler"
+                        );
                         DistClientState::RetryCreateAt(
                             Box::new(config),
                             Instant::now() + DIST_CLIENT_RECREATE_TIMEOUT,
@@ -429,9 +435,9 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
             l.set(
                 info.location()
                     .map(|loc| (loc.file().to_string(), loc.line(), loc.column())),
-            )
+            );
         });
-        panic_hook(info)
+        panic_hook(info);
     }));
     let client = Client::new();
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -483,7 +489,7 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
         _ => raw_storage,
     };
 
-    let res = (|| -> io::Result<_> {
+    let res: io::Result<(crate::net::SocketAddr, Box<dyn FnOnce(_) -> io::Result<()>>)> = (|| {
         match addr {
             crate::net::SocketAddr::Net(addr) => {
                 trace!("binding TCP {addr}");
@@ -540,7 +546,7 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
                     addr: addr.to_string(),
                 },
             )?;
-            run(future::pending::<()>())?;
+            run(future::pending::<()>()).map_err(anyhow::Error::from)?;
             Ok(())
         }
         Err(e) => {
@@ -550,8 +556,7 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
             } else if cfg!(windows) && Some(10013) == e.raw_os_error() {
                 // 10013 is the "WSAEACCES" error, which can occur if the requested port
                 // has been allocated for other purposes, such as winNAT or Hyper-V.
-                let windows_help_message =
-                    "A Windows port exclusion is blocking use of the configured port.\nTry setting SCCACHE_SERVER_PORT to a new value.";
+                let windows_help_message = "A Windows port exclusion is blocking use of the configured port.\nTry setting SCCACHE_SERVER_PORT to a new value.";
                 let reason: String = format!("{windows_help_message}\n{e}");
                 notify_server_startup(&notify, ServerStartup::Err { reason })?;
             } else {
@@ -902,8 +907,8 @@ where
     }
 }
 
-use futures::future::Either;
 use futures::TryStreamExt;
+use futures::future::Either;
 
 impl<C> SccacheService<C>
 where
@@ -1194,9 +1199,7 @@ where
                 if let Some(proxy) = proxy {
                     trace!(
                         "Inserting new path proxy {:?} @ {:?} -> {:?}",
-                        &path,
-                        &cwd,
-                        resolved_compiler_path
+                        &path, &cwd, resolved_compiler_path
                     );
                     me.compiler_proxies
                         .write()
@@ -1264,9 +1267,9 @@ where
                             debug!(
                                 "parse_arguments: CannotCache({}, {}): {:?}",
                                 why, extra_info, cmd
-                            )
+                            );
                         } else {
-                            debug!("parse_arguments: CannotCache({}): {:?}", why, cmd)
+                            debug!("parse_arguments: CannotCache({}): {:?}", why, cmd);
                         }
                         let mut stats = self.stats.lock().await;
                         stats.requests_not_cacheable += 1;
@@ -1330,40 +1333,37 @@ where
 
         self.rt
             .spawn(async move {
-
                 let result = match me.dist_client.get_client().await {
-                    Ok(client) => {
-                        std::panic::AssertUnwindSafe(hasher
-                            .get_cached_or_compile(
-                                &me,
-                                client,
-                                me.creator.clone(),
-                                me.storage.clone(),
-                                arguments,
-                                cwd,
-                                env_vars,
-                                cache_control,
-                                me.rt.clone(),
+                    Ok(client) => std::panic::AssertUnwindSafe(hasher.get_cached_or_compile(
+                        &me,
+                        client,
+                        me.creator.clone(),
+                        me.storage.clone(),
+                        arguments,
+                        cwd,
+                        env_vars,
+                        cache_control,
+                        me.rt.clone(),
+                    ))
+                    .catch_unwind()
+                    .await
+                    .map_err(|e| {
+                        let panic = e
+                            .downcast_ref::<&str>()
+                            .map(|s| &**s)
+                            .or_else(|| e.downcast_ref::<String>().map(|s| &**s))
+                            .unwrap_or("An unknown panic was caught.");
+                        let thread = std::thread::current();
+                        let thread_name = thread.name().unwrap_or("unnamed");
+                        if let Some((file, line, column)) = PANIC_LOCATION.with(|l| l.take()) {
+                            anyhow!(
+                                "thread '{thread_name}' panicked at {file}:{line}:{column}: {panic}"
                             )
-                        )
-                        .catch_unwind()
-                        .await
-                        .map_err(|e| {
-                            let panic = e
-                                .downcast_ref::<&str>()
-                                .map(|s| &**s)
-                                .or_else(|| e.downcast_ref::<String>().map(|s| &**s))
-                                .unwrap_or("An unknown panic was caught.");
-                            let thread = std::thread::current();
-                            let thread_name = thread.name().unwrap_or("unnamed");
-                            if let Some((file, line, column)) = PANIC_LOCATION.with(|l| l.take()) {
-                                anyhow!("thread '{thread_name}' panicked at {file}:{line}:{column}: {panic}")
-                            } else {
-                                anyhow!("thread '{thread_name}' panicked: {panic}")
-                            }
-                        })
-                        .and_then(std::convert::identity)
-                    }
+                        } else {
+                            anyhow!("thread '{thread_name}' panicked: {panic}")
+                        }
+                    })
+                    .and_then(std::convert::identity),
                     Err(e) => Err(e),
                 };
 
@@ -1377,7 +1377,6 @@ where
 
                 match result {
                     Ok((compiled, out)) => {
-
                         let mut dist_type = DistType::NoDist;
 
                         match compiled {
@@ -1435,7 +1434,7 @@ where
                                 stats.compiler_write_duration += duration;
                                 stats.compile_fails += 1;
                             }
-                        };
+                        }
 
                         match dist_type {
                             DistType::NoDist => {}
@@ -1461,7 +1460,7 @@ where
                         match status.code() {
                             Some(code) => res.retcode = Some(code),
                             None => res.signal = Some(get_signal(status)),
-                        };
+                        }
 
                         res.stdout = stdout;
                         res.stderr = stderr;
@@ -1477,7 +1476,7 @@ where
                                 match output.status.code() {
                                     Some(code) => res.retcode = Some(code),
                                     None => res.signal = Some(get_signal(output.status)),
-                                };
+                                }
                                 res.stdout = output.stdout;
                                 res.stderr = output.stderr;
                             }
@@ -1486,7 +1485,8 @@ where
                                     // Make sure the write guard has been dropped ASAP.
                                     drop(stats);
                                     me.dist_client.reset_state().await;
-                                    let errmsg = format!("[{:?}] http error status: {}", out_pretty, msg);
+                                    let errmsg =
+                                        format!("[{:?}] http error status: {}", out_pretty, msg);
                                     error!("{}", errmsg);
                                     res.retcode = Some(1);
                                     res.stderr = errmsg.as_bytes().to_vec();
@@ -1500,7 +1500,8 @@ where
 
                                     error!("[{:?}] fatal error: {}", out_pretty, err);
 
-                                    let mut error = "sccache: encountered fatal error\n".to_string();
+                                    let mut error =
+                                        "sccache: encountered fatal error\n".to_string();
                                     let _ = writeln!(error, "sccache: error: {}", err);
                                     for e in err.chain() {
                                         error!("[{:?}] \t{}", out_pretty, e);
@@ -1513,7 +1514,7 @@ where
                             },
                         }
                     }
-                };
+                }
 
                 if let Some(cache_write) = cache_write {
                     match cache_write.await {
@@ -1818,10 +1819,19 @@ impl ServerStats {
                 stat_width = stat_width + suffix_len
             ));
         }
+
+        // Compare values. If equal, compare keys to have a fully deterministic order.
+        let sort_func =
+            |(k1, v1): &(&String, &usize), (k2, v2): &(&String, &usize)| match v1.cmp(v2).reverse()
+            {
+                std::cmp::Ordering::Equal => k1.cmp(k2),
+                other => other,
+            };
+
         if !self.dist_compiles.is_empty() {
             writer.write("\nSuccessful distributed compiles");
             let mut counts: Vec<_> = self.dist_compiles.iter().collect();
-            counts.sort_by(|(_, c1), (_, c2)| c1.cmp(c2).reverse());
+            counts.sort_by(sort_func);
             for (reason, count) in counts {
                 writer.write(&format!(
                     "  {:<name_width$} {:>stat_width$}",
@@ -1835,7 +1845,7 @@ impl ServerStats {
         if !self.not_cached.is_empty() {
             writer.write("\nNon-cacheable reasons:");
             let mut counts: Vec<_> = self.not_cached.iter().collect();
-            counts.sort_by(|(_, c1), (_, c2)| c1.cmp(c2).reverse());
+            counts.sort_by(sort_func);
             for (reason, count) in counts {
                 writer.write(&format!(
                     "{:<name_width$} {:>stat_width$}",
@@ -2322,5 +2332,33 @@ mod tests {
         assert!(output.contains("Cache hits rate (c/c++ [clang])   100.00 %"));
         assert!(output.contains("Cache hits rate (cuda)              0.00 %"));
         assert!(output.contains("Cache hits rate (rust)             33.33 %"));
+    }
+
+    // Test that 2 servers with the same hits will always be printed in the same order.
+    // This test will **randomly** (not consistently) fail in case of a regression, due to HashMap iteration behaviour.
+    #[test]
+    fn test_print_deterministic_hits() {
+        // Test a bunch of time to make the test fail often enough
+        for _ in 0..5 {
+            let mut stats = ServerStats::default();
+            stats.dist_compiles.insert("server1".to_string(), 10);
+            stats.dist_compiles.insert("server2".to_string(), 10);
+
+            let mut writer = StringWriter::new();
+            stats.print(&mut writer, false);
+
+            // Check that the order is deterministic
+            let output = writer.get_output();
+            let lines: Vec<&str> = output.lines().collect();
+            let find_s1 = lines
+                .iter()
+                .position(|line| line.contains("server1"))
+                .unwrap();
+            let find_s2 = lines
+                .iter()
+                .position(|line| line.contains("server2"))
+                .unwrap();
+            assert!(find_s1 < find_s2);
+        }
     }
 }
