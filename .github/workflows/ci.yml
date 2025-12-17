@@ -96,8 +96,6 @@ jobs:
             # Oldest supported version, keep in sync with README.md
             rustc: "1.85.0"
             extra_desc: cuda12.8
-          - os: macos-13
-            no_coverage: true
           # # M1 CPU
           - os: macos-14
           - os: windows-2022
@@ -128,8 +126,10 @@ jobs:
       GRCOV_IGNORE_OPTION: '--ignore build.rs --ignore "/*" --ignore "[a-zA-Z]:/*"'
       GRCOV_EXCLUDE_OPTION: '--excl-br-line "^\s*((debug_)?assert(_eq|_ne)?!|#\[derive\()"'
       NOTEST_CUDA_COMPILERS: ${{ matrix.notest_cuda_compilers || '' }}
+      CARGO_PROFILE_DEV_DEBUG: '0' # save disk space
     steps:
-      - uses: ilammy/msvc-dev-cmd@v1
+      - if: ${{ contains(matrix.os, 'windows') }}
+        uses: ilammy/msvc-dev-cmd@v1
 
       - name: Clone repository
         uses: actions/checkout@v5
@@ -157,7 +157,7 @@ jobs:
           echo 'clang version:'
           clang --version
 
-      - if: matrix.cuda != '' && contains(fromJSON('["Linux", "Windows"]'), runner.os)
+      - if: ${{ matrix.cuda != '' && (runner.os == 'Linux' || runner.os == 'Windows') }}
         name: Install nvcc
         uses: ./.github/actions/nvcc-toolchain
         with:
@@ -174,6 +174,11 @@ jobs:
           echo '[env]
           LLVM_PROFILE_FILE = { value = "target/debug/coverage/default-%p-%8m.profraw", relative = true }' >> .cargo/config.toml
 
+      - if: ${{ matrix.cuda != '' && runner.os == 'Linux' }}
+        name: Free disk space for CUDA tests
+        run: |
+          sudo apt clean
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/share/boost /usr/share/swift /var/lib/apt/lists/*
 
       - name: Execute tests
         run: cargo test --locked --all-targets ${{ matrix.extra_args }}
@@ -236,6 +241,10 @@ jobs:
             container: '{"image": "messense/rust-musl-cross:s390x-musl"}'
             lto: "false"
           - os: ubuntu-22.04
+            target: riscv64gc-unknown-linux-musl
+            container: '{"image": "messense/rust-musl-cross:riscv64gc-musl"}'
+            lto: "false"
+          - os: ubuntu-22.04
             binary: sccache-dist
             extra_args: --no-default-features --features="dist-server"
             target: x86_64-unknown-linux-musl
@@ -249,9 +258,6 @@ jobs:
           - os: ubuntu-22.04
             target: i686-unknown-linux-musl
             container: '{"image": "messense/rust-musl-cross:i686-musl"}'
-          - os: macos-13
-            target: x86_64-apple-darwin
-            macosx_deployment_target: 10.13
           - os: macos-14
             target: aarch64-apple-darwin
             macosx_deployment_target: 11.0
@@ -271,6 +277,14 @@ jobs:
           toolchain: ${{ matrix.target == 'aarch64-apple-darwin' && 'beta' || 'stable' }}
           target: ${{ matrix.target }}
         if: ${{ !matrix.container }}
+      
+      - name: fix build openssl error on s390x
+        if: ${{  matrix.target  == 's390x-unknown-linux-musl' }}
+        run: |
+          # see https://github.com/openssl/openssl/issues/27323
+          echo CFLAGS="-march=z10 -mzarch" >> $GITHUB_ENV
+          echo CXXFLAGS="$CFLAGS" >> $GITHUB_ENV
+          echo RUSTFLAGS="-C target-cpu=z10" >> $GITHUB_ENV
 
       - name: Build
         run: cargo build --locked --release --bin ${{ matrix.binary || 'sccache' }} --target ${{ matrix.target }} --features=openssl/vendored ${{ matrix.extra_args }}
@@ -388,7 +402,7 @@ jobs:
             cp README.md LICENSE "$d/"
             tar -zcvf "$d.tar.gz" "$d"
             echo -n "$(shasum -ba 256 "$d.tar.gz" | cut -d " " -f 1)" > "$d.tar.gz.sha256"
-            if [[ $d =~ (sccache-)(.*)?(x86_64-pc-windows)(.*)? ]]; then
+            if [[ $d =~ (sccache-)(.*)?pc-windows)(.*)? ]]; then
               zip -r "$d.zip" "$d"
               echo -n "$(shasum -ba 256 "$d.zip" | cut -d " " -f 1)" > "$d.zip.sha256"
             fi

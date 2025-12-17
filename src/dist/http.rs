@@ -25,7 +25,6 @@ mod common {
     use serde::{Deserialize, Serialize};
     #[cfg(feature = "dist-server")]
     use std::collections::HashMap;
-    use std::fmt;
 
     use crate::dist;
 
@@ -93,13 +92,6 @@ mod common {
         }
     }
 
-    #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
-    #[serde(deny_unknown_fields)]
-    pub struct JobJwt {
-        pub exp: u64,
-        pub job_id: dist::JobId,
-    }
-
     #[derive(Clone, Debug, Serialize, Deserialize)]
     #[serde(deny_unknown_fields)]
     pub enum AllocJobHttpResponse {
@@ -150,6 +142,7 @@ mod common {
         pub cert_pem: Vec<u8>,
     }
 
+    #[cfg(feature = "dist-server")]
     #[derive(Clone, Serialize, Deserialize)]
     #[serde(deny_unknown_fields)]
     pub struct HeartbeatServerHttpRequest {
@@ -159,9 +152,11 @@ mod common {
         pub cert_digest: Vec<u8>,
         pub cert_pem: Vec<u8>,
     }
+
+    #[cfg(feature = "dist-server")]
     // cert_pem is quite long so elide it (you can retrieve it by hitting the server url anyway)
-    impl fmt::Debug for HeartbeatServerHttpRequest {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    impl std::fmt::Debug for HeartbeatServerHttpRequest {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             let HeartbeatServerHttpRequest {
                 jwt_key,
                 num_cpus,
@@ -254,22 +249,21 @@ mod server {
     use crate::util::{new_reqwest_blocking_client, num_cpus};
     use byteorder::{BigEndian, ReadBytesExt};
     use flate2::read::ZlibDecoder as ZlibReadDecoder;
-    use once_cell::sync::Lazy;
     use rand::{RngCore, rngs::OsRng};
     use rouille::accept;
-    use serde::Serialize;
+    use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
     use std::convert::Infallible;
     use std::io::Read;
     use std::net::SocketAddr;
     use std::result::Result as StdResult;
-    use std::sync::Mutex;
     use std::sync::atomic;
+    use std::sync::{LazyLock, Mutex};
     use std::thread;
     use std::time::Duration;
 
     use super::common::{
-        AllocJobHttpResponse, HeartbeatServerHttpRequest, JobJwt, ReqwestRequestBuilderExt,
+        AllocJobHttpResponse, HeartbeatServerHttpRequest, ReqwestRequestBuilderExt,
         RunJobHttpRequest, ServerCertificateHttpResponse,
     };
     use super::urls;
@@ -401,8 +395,9 @@ mod server {
     pub type ServerAuthCheck = Box<dyn Fn(&str) -> Option<ServerId> + Send + Sync>;
 
     const JWT_KEY_LENGTH: usize = 256 / 8;
-    static JWT_HEADER: Lazy<jwt::Header> = Lazy::new(|| jwt::Header::new(jwt::Algorithm::HS256));
-    static JWT_VALIDATION: Lazy<jwt::Validation> = Lazy::new(|| {
+    static JWT_HEADER: LazyLock<jwt::Header> =
+        LazyLock::new(|| jwt::Header::new(jwt::Algorithm::HS256));
+    static JWT_VALIDATION: LazyLock<jwt::Validation> = LazyLock::new(|| {
         let mut validation = jwt::Validation::new(jwt::Algorithm::HS256);
         validation.leeway = 0;
         validation.validate_exp = false;
@@ -598,6 +593,14 @@ mod server {
             }
         }};
     }
+
+    #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
+    #[serde(deny_unknown_fields)]
+    struct JobJwt {
+        pub exp: u64,
+        pub job_id: dist::JobId,
+    }
+
     // Generation and verification of job auth
     struct JWTJobAuthorizer {
         server_key: Vec<u8>,

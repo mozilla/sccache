@@ -33,7 +33,6 @@ use async_trait::async_trait;
 use filetime::FileTime;
 use fs_err as fs;
 use log::Level::Trace;
-use once_cell::sync::Lazy;
 #[cfg(feature = "dist-client")]
 use semver::Version;
 #[cfg(feature = "dist-client")]
@@ -56,9 +55,9 @@ use std::iter;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process;
-use std::sync::Arc;
 #[cfg(feature = "dist-client")]
 use std::sync::Mutex;
+use std::sync::{Arc, LazyLock};
 use std::time;
 
 use crate::errors::*;
@@ -232,8 +231,8 @@ pub struct CrateTypes {
 }
 
 /// Emit types that we will cache.
-static ALLOWED_EMIT: Lazy<HashSet<&'static str>> =
-    Lazy::new(|| ["link", "metadata", "dep-info"].iter().copied().collect());
+static ALLOWED_EMIT: LazyLock<HashSet<&'static str>> =
+    LazyLock::new(|| ["link", "metadata", "dep-info"].iter().copied().collect());
 
 /// Version number for cache key.
 const CACHE_VERSION: &[u8] = b"6";
@@ -1463,6 +1462,7 @@ where
                 .filter(|&(arg, _)| {
                     !(arg == "--extern"
                         || arg == "-L"
+                        || arg == "--check-cfg"
                         || arg == "--out-dir"
                         || arg == "--diagnostic-width")
                 })
@@ -3766,6 +3766,54 @@ proc_macro false
                     "foo",
                     "--crate-type",
                     "lib"
+                ],
+                &[],
+                nothing,
+                preprocessor_cache_mode,
+            )
+        );
+    }
+
+    #[test_case(true ; "with preprocessor cache")]
+    #[test_case(false ; "without preprocessor cache")]
+    fn test_equal_hashes_ignored_check_cfg_arg(preprocessor_cache_mode: bool) {
+        let f = TestFixture::new();
+        assert_eq!(
+            hash_key(
+                &f,
+                &[
+                    "--emit",
+                    "link",
+                    "-L",
+                    "x=x",
+                    "foo.rs",
+                    "--out-dir",
+                    "out",
+                    "--crate-name",
+                    "foo",
+                    "--crate-type",
+                    "lib",
+                ],
+                &[],
+                nothing,
+                preprocessor_cache_mode,
+            ),
+            hash_key(
+                &f,
+                &[
+                    "--emit",
+                    "link",
+                    "-L",
+                    "x=x",
+                    "foo.rs",
+                    "--out-dir",
+                    "out",
+                    "--crate-name",
+                    "foo",
+                    "--crate-type",
+                    "lib",
+                    "--check-cfg",
+                    "cfg(verbose)",
                 ],
                 &[],
                 nothing,
