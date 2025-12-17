@@ -742,14 +742,19 @@ mod server {
                     server_id.addr()
                 );
                 let mut client_builder = reqwest::blocking::ClientBuilder::new();
-                // Add all the certificates we know about
+                // Add the new/updated certificate for this server
                 client_builder = client_builder.add_root_certificate(
                     reqwest::Certificate::from_pem(&cert_pem)
                         .context("failed to interpret pem as certificate")?,
                 );
-                for (_, cert_pem) in certs.values() {
+                // Add all OTHER existing certificates (skip the one we're updating)
+                for (sid, (_, existing_cert_pem)) in certs.iter() {
+                    if sid == &server_id {
+                        continue;
+                    }
                     client_builder = client_builder.add_root_certificate(
-                        reqwest::Certificate::from_pem(cert_pem).expect("previously valid cert"),
+                        reqwest::Certificate::from_pem(existing_cert_pem)
+                            .expect("previously valid cert"),
                     );
                 }
                 // Finish the client
