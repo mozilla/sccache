@@ -177,8 +177,8 @@ jobs:
       - if: ${{ matrix.cuda != '' && runner.os == 'Linux' }}
         name: Free disk space for CUDA tests
         run: |
-          apt clean
-          rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/share/boost /usr/share/swift /var/lib/apt/lists/*
+          sudo apt clean
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/share/boost /usr/share/swift /var/lib/apt/lists/*
 
       - name: Execute tests
         run: cargo test --locked --all-targets ${{ matrix.extra_args }}
