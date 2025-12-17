@@ -883,7 +883,7 @@ pub fn daemonize() -> Result<()> {
         PREV_SIGBUS = Box::into_raw(Box::new(mem::zeroed::<libc::sigaction>()));
         PREV_SIGILL = Box::into_raw(Box::new(mem::zeroed::<libc::sigaction>()));
         let mut new: libc::sigaction = mem::zeroed();
-        new.sa_sigaction = handler as usize;
+        new.sa_sigaction = (handler as *const libc::c_void).expose_provenance();
         new.sa_flags = libc::SA_SIGINFO | libc::SA_RESTART;
         libc::sigaction(libc::SIGSEGV, &new, &mut *PREV_SIGSEGV);
         libc::sigaction(libc::SIGBUS, &new, &mut *PREV_SIGBUS);
