@@ -277,10 +277,10 @@ impl TimeMacroFinder {
         }
         if memchr::memmem::find(buffer, b"__TIME__").is_some() {
             self.found_time.set(true);
-        };
+        }
         if memchr::memmem::find(buffer, b"__DATE__").is_some() {
             self.found_date.set(true);
-        };
+        }
     }
 
     pub fn found_time_macros(&self) -> bool {
@@ -780,7 +780,7 @@ impl From<std::time::SystemTime> for Timestamp {
                     nanoseconds = NSEC_PER_SEC - negative_nanos;
                 }
             }
-        };
+        }
         Self {
             seconds,
             nanoseconds,
@@ -831,7 +831,7 @@ pub struct HashToDigest<'a> {
 
 impl Hasher for HashToDigest<'_> {
     fn write(&mut self, bytes: &[u8]) {
-        self.digest.update(bytes)
+        self.digest.update(bytes);
     }
 
     fn finish(&self) -> u64 {
@@ -858,9 +858,9 @@ pub fn daemonize() -> Result<()> {
         discard_inherited_jobserver();
     }
 
-    static mut PREV_SIGSEGV: *mut libc::sigaction = 0 as *mut _;
-    static mut PREV_SIGBUS: *mut libc::sigaction = 0 as *mut _;
-    static mut PREV_SIGILL: *mut libc::sigaction = 0 as *mut _;
+    static mut PREV_SIGSEGV: *mut libc::sigaction = std::ptr::null_mut();
+    static mut PREV_SIGBUS: *mut libc::sigaction = std::ptr::null_mut();
+    static mut PREV_SIGILL: *mut libc::sigaction = std::ptr::null_mut();
 
     // We don't have a parent process any more once we've reached this point,
     // which means that no one's probably listening for our exit status.
@@ -883,7 +883,7 @@ pub fn daemonize() -> Result<()> {
         PREV_SIGBUS = Box::into_raw(Box::new(mem::zeroed::<libc::sigaction>()));
         PREV_SIGILL = Box::into_raw(Box::new(mem::zeroed::<libc::sigaction>()));
         let mut new: libc::sigaction = mem::zeroed();
-        new.sa_sigaction = handler as usize;
+        new.sa_sigaction = (handler as *const libc::c_void).expose_provenance();
         new.sa_flags = libc::SA_SIGINFO | libc::SA_RESTART;
         libc::sigaction(libc::SIGSEGV, &new, &mut *PREV_SIGSEGV);
         libc::sigaction(libc::SIGBUS, &new, &mut *PREV_SIGBUS);

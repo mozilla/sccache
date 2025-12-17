@@ -5,19 +5,21 @@ use assert_cmd::assert::OutputAssertExt;
 use chrono::Local;
 use fs_err as fs;
 use log::trace;
-use once_cell::sync::Lazy;
 use std::convert::Infallible;
 use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::LazyLock;
 
-pub static CRATE_DIR: Lazy<PathBuf> =
-    Lazy::new(|| Path::new(file!()).parent().unwrap().join("../test-crate"));
-pub static CARGO: Lazy<OsString> = Lazy::new(|| std::env::var_os("CARGO").unwrap());
-pub static SCCACHE_BIN: Lazy<PathBuf> = Lazy::new(|| assert_cmd::cargo::cargo_bin("sccache"));
+pub static CRATE_DIR: LazyLock<PathBuf> =
+    LazyLock::new(|| Path::new(file!()).parent().unwrap().join("../test-crate"));
+pub static CARGO: LazyLock<OsString> = LazyLock::new(|| std::env::var_os("CARGO").unwrap());
+pub static SCCACHE_BIN: LazyLock<&Path> =
+    LazyLock::new(|| Path::new(env!("CARGO_BIN_EXE_sccache")));
+
 /// Ensures the logger is only initialized once. Panics if initialization fails.
-static LOGGER: Lazy<Result<(), Infallible>> = Lazy::new(|| {
+static LOGGER: LazyLock<Result<(), Infallible>> = LazyLock::new(|| {
     env_logger::Builder::new()
         .format(|f, record| {
             writeln!(

@@ -18,8 +18,7 @@ use std::{
 struct StopServer;
 impl Drop for StopServer {
     fn drop(&mut self) {
-        let _ = Command::cargo_bin("sccache")
-            .unwrap()
+        let _ = Command::from_std(std::process::Command::new(env!("CARGO_BIN_EXE_sccache")))
             .arg("--stop-server")
             .ok();
     }

@@ -42,9 +42,12 @@
 //! not defined, which is not ideal.
 
 use ctor::ctor;
-use libc::{c_char, c_int, c_void, dirent, dirent64, dlsym, DIR, RTLD_NEXT};
+#[cfg(target_vendor = "apple")]
+use libc::dirent as dirent64;
+#[cfg(not(target_vendor = "apple"))]
+use libc::dirent64;
+use libc::{c_char, c_int, c_void, dirent, dlsym, DIR, RTLD_NEXT};
 use log::{error, info};
-use once_cell::sync::OnceCell;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 use simplelog::{Config, LevelFilter, WriteLogger};
@@ -53,7 +56,7 @@ use std::env;
 use std::ffi::CStr;
 use std::fs::File;
 use std::process;
-use std::sync::RwLock;
+use std::sync::{OnceLock, RwLock};
 
 type Opendir = unsafe extern "C" fn(dirname: *const c_char) -> *mut DIR;
 type Fdopendir = unsafe extern "C" fn(fd: c_int) -> *mut DIR;
@@ -137,7 +140,7 @@ impl State {
 
                     entries.shuffle(&mut thread_rng());
 
-                    *iter = Some(DirentIterator { entries, index: 0 })
+                    *iter = Some(DirentIterator { entries, index: 0 });
                 }
 
                 let iter = iter.as_mut().unwrap();
@@ -169,7 +172,7 @@ impl State {
     }
 }
 
-static STATE: OnceCell<State> = OnceCell::new();
+static STATE: OnceLock<State> = OnceLock::new();
 
 fn load_next<Prototype: Copy>(name: &[u8]) -> Prototype {
     unsafe {

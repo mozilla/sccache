@@ -117,7 +117,7 @@ impl Client {
 
     /// Configures this jobserver to be inherited by the specified command
     pub fn configure(&self, cmd: &mut Command) {
-        self.inner.configure(cmd)
+        self.inner.configure(cmd);
     }
 
     /// Returns a future that represents an acquired jobserver token.

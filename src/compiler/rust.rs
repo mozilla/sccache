@@ -33,7 +33,6 @@ use async_trait::async_trait;
 use filetime::FileTime;
 use fs_err as fs;
 use log::Level::Trace;
-use once_cell::sync::Lazy;
 #[cfg(feature = "dist-client")]
 use semver::Version;
 #[cfg(feature = "dist-client")]
@@ -56,9 +55,9 @@ use std::iter;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process;
-use std::sync::Arc;
 #[cfg(feature = "dist-client")]
 use std::sync::Mutex;
+use std::sync::{Arc, LazyLock};
 use std::time;
 
 use crate::errors::*;
@@ -232,8 +231,8 @@ pub struct CrateTypes {
 }
 
 /// Emit types that we will cache.
-static ALLOWED_EMIT: Lazy<HashSet<&'static str>> =
-    Lazy::new(|| ["link", "metadata", "dep-info"].iter().copied().collect());
+static ALLOWED_EMIT: LazyLock<HashSet<&'static str>> =
+    LazyLock::new(|| ["link", "metadata", "dep-info"].iter().copied().collect());
 
 /// Version number for cache key.
 const CACHE_VERSION: &[u8] = b"6";
@@ -455,7 +454,7 @@ impl Rust {
             if let Some(path) = dist_archive {
                 trace!("Hashing {:?} along with rustc libs.", path);
                 libs.push(path);
-            };
+            }
             libs.sort();
             Result::Ok((sysroot, libs))
         };
@@ -1099,17 +1098,17 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
             }
             Some(LinkLibrary(ArgLinkLibrary { kind, name })) => {
                 if kind == "static" {
-                    static_lib_names.push(name.to_owned())
+                    static_lib_names.push(name.to_owned());
                 }
             }
             Some(LinkPath(ArgLinkPath { kind, path })) => {
                 // "crate" is not typically necessary as cargo will normally
                 // emit explicit --extern arguments
                 if kind == "crate" || kind == "dependency" || kind == "all" {
-                    crate_link_paths.push(cwd.join(path))
+                    crate_link_paths.push(cwd.join(path));
                 }
                 if kind == "native" || kind == "all" {
-                    static_link_paths.push(cwd.join(path))
+                    static_link_paths.push(cwd.join(path));
                 }
             }
             Some(Emit(value)) => {
@@ -1117,7 +1116,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                     // We don't support passing --emit more than once.
                     cannot_cache!("more than one --emit");
                 }
-                emit = Some(value.split(',').map(str::to_owned).collect())
+                emit = Some(value.split(',').map(str::to_owned).collect());
             }
             Some(CrateType(ArgCrateTypes {
                 rlib,
@@ -1463,6 +1462,7 @@ where
                 .filter(|&(arg, _)| {
                     !(arg == "--extern"
                         || arg == "-L"
+                        || arg == "--check-cfg"
                         || arg == "--out-dir"
                         || arg == "--diagnostic-width")
                 })
@@ -1770,13 +1770,13 @@ impl<T: CommandCreatorSync> Compilation<T> for RustCompilation {
                     let input_path = Path::new(input_path).to_owned();
                     dist_arguments.push(try_string_arg!(
                         input_path.into_arg_string(path_transformer_fn)
-                    ))
+                    ));
                 } else {
                     if let Some(Target(_)) = argument.get_data() {
-                        saw_target = true
+                        saw_target = true;
                     }
                     for string_arg in argument.iter_strings(path_transformer_fn) {
-                        dist_arguments.push(try_string_arg!(string_arg))
+                        dist_arguments.push(try_string_arg!(string_arg));
                     }
                 }
             }
@@ -1784,7 +1784,7 @@ impl<T: CommandCreatorSync> Compilation<T> for RustCompilation {
             // We can't rely on the packaged toolchain necessarily having the same default target triple
             // as us (typically host triple), so make sure to always explicitly specify a target.
             if !saw_target {
-                dist_arguments.push(format!("--target={}", host))
+                dist_arguments.push(format!("--target={}", host));
             }
 
             // Convert the paths of some important environment variables
@@ -1798,14 +1798,14 @@ impl<T: CommandCreatorSync> Compilation<T> for RustCompilation {
                         if dist_out_dir != *v {
                             changed_out_dir = Some(v.to_owned().into());
                         }
-                        *v = dist_out_dir
+                        *v = dist_out_dir;
                     }
                     "TMPDIR" => {
                         // The server will need to find its own tempdir.
                         *v = "".to_string();
                     }
                     "CARGO" | "CARGO_MANIFEST_DIR" => {
-                        *v = path_transformer.as_dist(Path::new(v))?
+                        *v = path_transformer.as_dist(Path::new(v))?;
                     }
                     _ => (),
                 }
@@ -2052,7 +2052,7 @@ impl pkg::InputsPackager for RustInputsPackager {
                                 .with_context(|| {
                                     format!("Failed to read deps of {}", input_path.display())
                                 })?,
-                        )
+                        );
                     }
                 }
             }
@@ -2073,12 +2073,12 @@ impl pkg::InputsPackager for RustInputsPackager {
                 format!("unable to transform input path {}", input_path.display())
             })?;
 
-            tar_inputs.push((input_path, dist_input_path))
+            tar_inputs.push((input_path, dist_input_path));
         }
 
         if log_enabled!(Trace) {
             if let Some((_, ref dep_crate_names)) = rlib_dep_reader_and_names {
-                trace!("Identified dependency crate names: {:?}", dep_crate_names)
+                trace!("Identified dependency crate names: {:?}", dep_crate_names);
             }
         }
 
@@ -2148,7 +2148,7 @@ impl pkg::InputsPackager for RustInputsPackager {
                 let dist_path = path_transformer
                     .as_dist(&path)
                     .with_context(|| format!("unable to transform lib path {}", path.display()))?;
-                tar_crate_libs.push((path, dist_path))
+                tar_crate_libs.push((path, dist_path));
             }
         }
 
@@ -2184,7 +2184,7 @@ impl pkg::InputsPackager for RustInputsPackager {
                     {
                         let mut ar_builder = ar::Builder::new(&mut metadata_ar);
                         let header = entry.header().clone();
-                        ar_builder.append(&header, &mut entry)?
+                        ar_builder.append(&header, &mut entry)?;
                     }
                     file_header.set_size(metadata_ar.len() as u64);
                     file_header.set_cksum();
@@ -2193,7 +2193,7 @@ impl pkg::InputsPackager for RustInputsPackager {
                 }
             } else {
                 file_header.set_cksum();
-                builder.append(&file_header, file)?
+                builder.append(&file_header, file)?;
             }
         }
 
@@ -3766,6 +3766,54 @@ proc_macro false
                     "foo",
                     "--crate-type",
                     "lib"
+                ],
+                &[],
+                nothing,
+                preprocessor_cache_mode,
+            )
+        );
+    }
+
+    #[test_case(true ; "with preprocessor cache")]
+    #[test_case(false ; "without preprocessor cache")]
+    fn test_equal_hashes_ignored_check_cfg_arg(preprocessor_cache_mode: bool) {
+        let f = TestFixture::new();
+        assert_eq!(
+            hash_key(
+                &f,
+                &[
+                    "--emit",
+                    "link",
+                    "-L",
+                    "x=x",
+                    "foo.rs",
+                    "--out-dir",
+                    "out",
+                    "--crate-name",
+                    "foo",
+                    "--crate-type",
+                    "lib",
+                ],
+                &[],
+                nothing,
+                preprocessor_cache_mode,
+            ),
+            hash_key(
+                &f,
+                &[
+                    "--emit",
+                    "link",
+                    "-L",
+                    "x=x",
+                    "foo.rs",
+                    "--out-dir",
+                    "out",
+                    "--crate-name",
+                    "foo",
+                    "--crate-type",
+                    "lib",
+                    "--check-cfg",
+                    "cfg(verbose)",
                 ],
                 &[],
                 nothing,

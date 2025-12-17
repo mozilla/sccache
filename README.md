@@ -160,7 +160,7 @@ By default, sccache will fail your build if it fails to successfully communicate
 
 **For versions of cmake 3.25 and later**, to compile with MSVC, you have to use the new `CMAKE_MSVC_DEBUG_INFORMATION_FORMAT` option, meant to configure the `-Z7` flag.  Additionally, you must set the cmake policy number 0141 to the NEW setting:
 ```cmake
-set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT Embedded)
+set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<$<CONFIG:Debug,RelWithDebInfo>:Embedded>")
 cmake_policy(SET CMP0141 NEW)
 ```
 
@@ -170,7 +170,7 @@ find_program(SCCACHE sccache REQUIRED)
 
 set(CMAKE_C_COMPILER_LAUNCHER ${SCCACHE})
 set(CMAKE_CXX_COMPILER_LAUNCHER ${SCCACHE})
-set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT Embedded)
+set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<$<CONFIG:Debug,RelWithDebInfo>:Embedded>")
 cmake_policy(SET CMP0141 NEW)
 ```
 
@@ -188,7 +188,7 @@ And you can build code as usual without any additional flags in the command line
 Build Requirements
 ------------------
 
-sccache is a [Rust](https://www.rust-lang.org/) program. Building it requires `cargo` (and thus`rustc`). sccache currently requires **Rust 1.75.0**. We recommend you install Rust via [Rustup](https://rustup.rs/).
+sccache is a [Rust](https://www.rust-lang.org/) program. Building it requires `cargo` (and thus`rustc`). sccache currently requires **Rust 1.85.0**. We recommend you install Rust via [Rustup](https://rustup.rs/).
 
 Build
 -----

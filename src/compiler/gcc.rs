@@ -421,7 +421,7 @@ where
                         )
                     }
                     _ => {}
-                };
+                }
                 seen_arch = Some(arch.clone());
             }
             Some(XClang(s)) => xclangs.push(s.clone()),
@@ -566,7 +566,7 @@ where
         };
         for arg in arg.normalize(norm).iter_os_strings() {
             args.push("-Xclang".into());
-            args.push(arg)
+            args.push(arg);
         }
     }
 
@@ -868,7 +868,7 @@ where
     let language = language_to_arg(parsed_args.language);
     let mut arguments: Vec<OsString> = vec![];
     if let Some(lang) = &language {
-        arguments.extend(vec!["-x".into(), lang.into()])
+        arguments.extend(vec!["-x".into(), lang.into()]);
     }
     arguments.extend(vec![
         parsed_args.compilation_flag.clone(),
@@ -927,7 +927,7 @@ where
             let mut arguments: Vec<String> = vec![];
             // Language needs to be before input
             if let Some(lang) = &language {
-                arguments.extend(vec!["-x".into(), lang.into()])
+                arguments.extend(vec!["-x".into(), lang.into()]);
             }
             arguments.extend(vec![
                 parsed_args.compilation_flag.clone().into_string().ok()?,

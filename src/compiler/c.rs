@@ -30,7 +30,6 @@ use crate::util::{
 };
 use async_trait::async_trait;
 use fs_err as fs;
-use once_cell::sync::Lazy;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
@@ -40,7 +39,7 @@ use std::io;
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::process;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use crate::errors::*;
 
@@ -320,7 +319,7 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compiler<T> for CCompiler<I> {
                 // Handle SCCACHE_EXTRAFILES
                 for (k, v) in env_vars.iter() {
                     if k.as_os_str() == OsStr::new("SCCACHE_EXTRAFILES") {
-                        args.extra_hash_files.extend(std::env::split_paths(&v))
+                        args.extra_hash_files.extend(std::env::split_paths(&v));
                     }
                 }
 
@@ -337,7 +336,7 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compiler<T> for CCompiler<I> {
                 // too much to handle on our side so we just hash every bitcode library we find.
                 if args.language == Language::Hip {
                     args.extra_hash_files
-                        .extend(Self::search_hip_device_libs(&args, env_vars))
+                        .extend(Self::search_hip_device_libs(&args, env_vars));
                 }
 
                 CompilerArguments::Ok(Box::new(CCompilerHasher {
@@ -758,7 +757,7 @@ fn process_preprocessed_file(
                     hash_start = h;
                     continue;
                 }
-            };
+            }
         } else if slice
             .strip_prefix(INCBIN_DIRECTIVE)
             .filter(|slice| {
@@ -924,7 +923,7 @@ fn process_preprocessor_line(
         fs_impl,
     )? {
         return Ok(ControlFlow::Break((start, hash_start, false)));
-    };
+    }
     // Everything of interest between hash_start and start has been hashed now.
     hash_start = start;
     Ok(ControlFlow::Continue((start, hash_start)))
@@ -1425,7 +1424,7 @@ impl pkg::ToolchainPackager for CToolchainPackager {
 pub const CACHE_VERSION: &[u8] = b"11";
 
 /// Environment variables that are factored into the cache key.
-static CACHED_ENV_VARS: Lazy<HashSet<&'static OsStr>> = Lazy::new(|| {
+static CACHED_ENV_VARS: LazyLock<HashSet<&'static OsStr>> = LazyLock::new(|| {
     [
         // SCCACHE_C_CUSTOM_CACHE_BUSTER has no particular meaning behind it,
         // serving as a way for the user to factor custom data into the hash.

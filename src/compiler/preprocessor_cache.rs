@@ -24,12 +24,12 @@ use std::{
     hash::Hash,
     io::Write,
     path::{Path, PathBuf},
+    sync::LazyLock,
     time::SystemTime,
 };
 
 use anyhow::Context;
 use chrono::Datelike;
-use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -163,7 +163,7 @@ impl PreprocessorCacheEntry {
                         self.number_of_entries += includes.len();
                         vacant.insert(includes);
                     }
-                };
+                }
                 debug!("Added result key {result_key} to preprocessor cache entry");
             }
             Err(e) => {
@@ -310,7 +310,7 @@ impl PreprocessorCacheEntry {
                     // SOURCE_DATE_EPOCH and the current date since we can't be sure that the
                     // compiler honors SOURCE_DATE_EPOCH.
                     if let Ok(source_date_epoch) = std::env::var("SOURCE_DATE_EPOCH") {
-                        new_digest.update(source_date_epoch.as_bytes())
+                        new_digest.update(source_date_epoch.as_bytes());
                     }
                 }
 
@@ -352,7 +352,7 @@ impl PreprocessorCacheEntry {
 }
 
 /// Environment variables that are factored into the preprocessor cache entry cached key.
-static CACHED_ENV_VARS: Lazy<HashSet<&'static OsStr>> = Lazy::new(|| {
+static CACHED_ENV_VARS: LazyLock<HashSet<&'static OsStr>> = LazyLock::new(|| {
     [
         // SCCACHE_C_CUSTOM_CACHE_BUSTER has no particular meaning behind it,
         // serving as a way for the user to factor custom data into the hash.
