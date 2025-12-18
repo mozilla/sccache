@@ -1248,7 +1248,8 @@ mod tests {
         assert_eq!(output, expected);
 
         // Multiple occurrences
-        let input = b"# 1 \"/home/user/project/src/main.c\"\n# 2 \"/home/user/project/include/header.h\"";
+        let input =
+            b"# 1 \"/home/user/project/src/main.c\"\n# 2 \"/home/user/project/include/header.h\"";
         let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
         let expected = b"# 1 \"./src/main.c\"\n# 2 \"./include/header.h\"";
         assert_eq!(output, expected);
@@ -1323,7 +1324,8 @@ mod tests {
             PathBuf::from("/home/user1/project"),
             PathBuf::from("/home/user2/workspace"),
         ];
-        let input = b"# 1 \"/home/user1/project/src/main.c\"\n# 2 \"/home/user2/workspace/lib/util.c\"";
+        let input =
+            b"# 1 \"/home/user1/project/src/main.c\"\n# 2 \"/home/user2/workspace/lib/util.c\"";
         let output = super::strip_basedirs(input, &basedirs);
         let expected = b"# 1 \"./src/main.c\"\n# 2 \"./lib/util.c\"";
         assert_eq!(output, expected);
@@ -1331,7 +1333,7 @@ mod tests {
         // Longest prefix wins
         let basedirs = vec![
             PathBuf::from("/home/user"),
-            PathBuf::from("/home/user/project"),  // This should match first (longest)
+            PathBuf::from("/home/user/project"), // This should match first (longest)
         ];
         let input = b"# 1 \"/home/user/project/src/main.c\"";
         let output = super::strip_basedirs(input, &basedirs);
