@@ -728,10 +728,6 @@ where
         if let Some(module_output_path) = module_output_path {
             let empty_os_string = OsString::new();
 
-            if multiple_input {
-                cannot_cache!("module output with multiple input files");
-            }
-
             let module_output_path = module_output_path.unwrap_or_else(|| {
                 let input_file_name = Path::new(&input).file_name().unwrap_or(&empty_os_string);
                 output
