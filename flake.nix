@@ -14,35 +14,31 @@
     cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
     version = cargoToml.package.version;
 
-    # NixOS module
-    nixosModule = {
-      config,
-      lib,
-      pkgs,
-      ...
-    }: {
-      options.programs.sccache.enable = lib.mkEnableOption "sccache compilation cache";
+    mkSccache = final:
+      final.rustPlatform.buildRustPackage {
+        pname = "sccache";
+        inherit version;
 
-      config = lib.mkIf config.programs.sccache.enable {
-        environment.systemPackages = [self.packages.${pkgs.system}.sccache];
+        src = ./.;
+
+        cargoLock = {
+          lockFile = ./Cargo.lock;
+        };
+
+        nativeBuildInputs = [final.pkg-config];
+        buildInputs = [final.openssl];
+
+        doCheck = false;
+
+        meta = with final.lib; {
+          description = "Ccache with Cloud Storage";
+          homepage = "https://github.com/mozilla/sccache";
+          changelog = "https://github.com/mozilla/sccache/releases/tag/v${version}";
+          license = licenses.asl20;
+          mainProgram = "sccache";
+        };
       };
-    };
-
-    # Home-manager module
-    homeManagerModule = {
-      config,
-      lib,
-      pkgs,
-      ...
-    }: {
-      options.programs.sccache.enable = lib.mkEnableOption "sccache compilation cache";
-
-      config = lib.mkIf config.programs.sccache.enable {
-        home.packages = [self.packages.${pkgs.system}.sccache];
-      };
-    };
   in
-    # Per-system outputs
     flake-utils.lib.eachSystem [
       "x86_64-linux"
       "aarch64-linux"
@@ -53,67 +49,31 @@
       system: let
         pkgs = import nixpkgs {
           inherit system;
+          overlays = [self.overlays.default];
         };
       in {
         packages = {
-          default = self.packages.${system}.sccache;
-
-          sccache = pkgs.rustPlatform.buildRustPackage {
-            pname = "sccache";
-            inherit version;
-
-            src = ./.;
-
-            cargoLock = {
-              lockFile = ./Cargo.lock;
-            };
-
-            nativeBuildInputs = [
-              pkgs.pkg-config
-            ];
-            buildInputs = [
-              pkgs.openssl
-            ];
-
-            # Tests cannot run in a pure environment
-            # See, https://github.com/mozilla/sccache/issues/460
-            doCheck = false;
-
-            meta = with pkgs.lib; {
-              description = "Ccache with Cloud Storage";
-              homepage = "https://github.com/mozilla/sccache";
-              changelog = "https://github.com/mozilla/sccache/releases/tag/v${version}";
-              license = licenses.asl20;
-              mainProgram = "sccache";
-            };
-          };
+          default = pkgs.sccache;
+          sccache = pkgs.sccache;
         };
 
         devShells.default = pkgs.mkShell {
           name = "sccache-dev";
 
-          buildInputs = with pkgs;
-            [
-              # Rust toolchain management
-              rustup
-
-              # OpenSSL for TLS/crypto
-              openssl
-              pkg-config
-
-              # Build essentials
-              gcc
-            ];
+          buildInputs = with pkgs; [
+            rustup
+            openssl
+            pkg-config
+            gcc
+          ];
         };
 
         formatter = pkgs.alejandra;
       }
     )
     // {
-      nixosModules.default = nixosModule;
-      nixosModules.sccache = nixosModule;
-
-      homeManagerModules.default = homeManagerModule;
-      homeManagerModules.sccache = homeManagerModule;
+      overlays.default = final: prev: {
+        sccache = mkSccache final;
+      };
     };
 }
