@@ -321,12 +321,34 @@ This is most useful when using sccache for Rust compilation, as rustc supports u
 
 ---
 
+Normalizing Paths with `SCCACHE_BASEDIR`
+-----------------------------------------
+
+By default, sccache requires absolute paths to match for cache hits. To enable cache sharing across different build directories, you can set `SCCACHE_BASEDIR` to strip a base directory from paths before hashing:
+
+```bash
+export SCCACHE_BASEDIR=/home/user/project
+```
+
+This is similar to ccache's `CCACHE_BASEDIR` and helps when:
+* Building the same project from different directories
+* Sharing cache between CI jobs with different checkout paths
+* Multiple developers working with different username paths
+
+You can also configure this in the sccache config file:
+
+```toml
+basedir = "/home/user/project"
+```
+
+---
+
 Known Caveats
 -------------
 
 ### General
 
-* Absolute paths to files must match to get a cache hit. This means that even if you are using a shared cache, everyone will have to build at the same absolute path (i.e. not in `$HOME`) in order to benefit each other. In Rust this includes the source for third party crates which are stored in `$HOME/.cargo/registry/cache` by default.
+* By default, absolute paths to files must match to get a cache hit. To work around this, use `SCCACHE_BASEDIR` (see above) to normalize paths before hashing.
 
 ### Rust
 

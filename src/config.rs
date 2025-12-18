@@ -19,8 +19,8 @@ use fs_err as fs;
 #[cfg(any(feature = "dist-client", feature = "dist-server"))]
 use serde::ser::Serializer;
 use serde::{
-    Deserialize, Serialize,
     de::{self, DeserializeOwned, Deserializer},
+    Deserialize, Serialize,
 };
 #[cfg(test)]
 use serial_test::serial;
@@ -600,6 +600,8 @@ pub struct FileConfig {
     pub cache: CacheConfigs,
     pub dist: DistConfig,
     pub server_startup_timeout_ms: Option<u64>,
+    /// Base directory to strip from paths for cache key computation.
+    pub basedir: Option<PathBuf>,
 }
 
 // If the file doesn't exist or we can't read it, log the issue and proceed. If the
@@ -637,6 +639,7 @@ pub fn try_read_config_file<T: DeserializeOwned>(path: &Path) -> Result<Option<T
 #[derive(Debug)]
 pub struct EnvConfig {
     cache: CacheConfigs,
+    basedir: Option<PathBuf>,
 }
 
 fn key_prefix_from_env_var(env_var_name: &str) -> String {
@@ -977,7 +980,10 @@ fn config_from_env() -> Result<EnvConfig> {
         cos,
     };
 
-    Ok(EnvConfig { cache })
+    // ======= Base directory =======
+    let basedir = env::var_os("SCCACHE_BASEDIR").map(PathBuf::from);
+
+    Ok(EnvConfig { cache, basedir })
 }
 
 // The directories crate changed the location of `config_dir` on macos in version 3,
@@ -1009,6 +1015,9 @@ pub struct Config {
     pub fallback_cache: DiskCacheConfig,
     pub dist: DistConfig,
     pub server_startup_timeout: Option<std::time::Duration>,
+    /// Base directory to strip from paths for cache key computation.
+    /// Similar to ccache's CCACHE_BASEDIR.
+    pub basedir: Option<PathBuf>,
 }
 
 impl Config {
@@ -1030,14 +1039,21 @@ impl Config {
             cache,
             dist,
             server_startup_timeout_ms,
+            basedir: file_basedir,
         } = file_conf;
         conf_caches.merge(cache);
 
         let server_startup_timeout =
             server_startup_timeout_ms.map(std::time::Duration::from_millis);
 
-        let EnvConfig { cache } = env_conf;
+        let EnvConfig {
+            cache,
+            basedir: env_basedir,
+        } = env_conf;
         conf_caches.merge(cache);
+
+        // Environment variable takes precedence over file config
+        let basedir = env_basedir.or(file_basedir);
 
         let (caches, fallback_cache) = conf_caches.into_fallback();
         Self {
@@ -1045,6 +1061,7 @@ impl Config {
             fallback_cache,
             dist,
             server_startup_timeout,
+            basedir,
         }
     }
 }
@@ -1318,6 +1335,7 @@ fn config_overrides() {
             }),
             ..Default::default()
         },
+        basedir: None,
     };
 
     let file_conf = FileConfig {
@@ -1344,6 +1362,7 @@ fn config_overrides() {
         },
         dist: Default::default(),
         server_startup_timeout_ms: None,
+        basedir: None,
     };
 
     assert_eq!(
@@ -1366,8 +1385,62 @@ fn config_overrides() {
             },
             dist: Default::default(),
             server_startup_timeout: None,
+            basedir: None,
         }
     );
+}
+
+#[test]
+fn config_basedir_overrides() {
+    use std::path::PathBuf;
+
+    // Test that env variable takes precedence over file config
+    let env_conf = EnvConfig {
+        cache: Default::default(),
+        basedir: Some(PathBuf::from("/env/basedir")),
+    };
+
+    let file_conf = FileConfig {
+        cache: Default::default(),
+        dist: Default::default(),
+        server_startup_timeout_ms: None,
+        basedir: Some(PathBuf::from("/file/basedir")),
+    };
+
+    let config = Config::from_env_and_file_configs(env_conf, file_conf);
+    assert_eq!(config.basedir, Some(PathBuf::from("/env/basedir")));
+
+    // Test that file config is used when env is None
+    let env_conf = EnvConfig {
+        cache: Default::default(),
+        basedir: None,
+    };
+
+    let file_conf = FileConfig {
+        cache: Default::default(),
+        dist: Default::default(),
+        server_startup_timeout_ms: None,
+        basedir: Some(PathBuf::from("/file/basedir")),
+    };
+
+    let config = Config::from_env_and_file_configs(env_conf, file_conf);
+    assert_eq!(config.basedir, Some(PathBuf::from("/file/basedir")));
+
+    // Test that both None results in None
+    let env_conf = EnvConfig {
+        cache: Default::default(),
+        basedir: None,
+    };
+
+    let file_conf = FileConfig {
+        cache: Default::default(),
+        dist: Default::default(),
+        server_startup_timeout_ms: None,
+        basedir: None,
+    };
+
+    let config = Config::from_env_and_file_configs(env_conf, file_conf);
+    assert_eq!(config.basedir, None);
 }
 
 #[test]
@@ -1685,6 +1758,7 @@ key_prefix = "cosprefix"
                 rewrite_includes_only: false,
             },
             server_startup_timeout_ms: Some(10000),
+            basedir: None,
         }
     )
 }
@@ -1777,6 +1851,7 @@ size = "7g"
                 ..Default::default()
             },
             server_startup_timeout_ms: None,
+            basedir: None,
         }
     );
 }
