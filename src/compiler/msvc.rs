@@ -457,7 +457,15 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_take_arg!("guard:cf", OsString, Concatenated, PassThroughWithSuffix),
     msvc_flag!("homeparams", PassThrough),
     msvc_flag!("hotpatch", PassThrough),
+    // New: C++20 msvc modules flags.
+    // TODO: Add support for msvc modules
+    msvc_take_arg!("ifcMap", PathBuf, Separated, TooHardPath),
+    msvc_flag!("ifcOnly", TooHardFlag),
+    msvc_take_arg!("ifcOutput", PathBuf, Separated, TooHardPath),
+    msvc_take_arg!("ifcSearchDir", PathBuf, Separated, TooHardPath),
     msvc_take_arg!("imsvc", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
+    msvc_flag!("interface", TooHardFlag),
+    msvc_flag!("internalPartition", TooHardFlag),
     msvc_flag!("kernel", PassThrough),
     msvc_flag!("kernel-", PassThrough),
     msvc_flag!("nologo", PassThrough),
@@ -467,12 +475,14 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("openmp:experimental", PassThrough),
     msvc_flag!("permissive", PassThrough),
     msvc_flag!("permissive-", PassThrough),
+    msvc_take_arg!("reference", OsString, Separated, TooHard),
     msvc_flag!("sdl", PassThrough),
     msvc_flag!("sdl-", PassThrough),
     msvc_flag!("showIncludes", ShowIncludes),
     msvc_take_arg!("source-charset:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("sourceDependencies", PathBuf, CanBeSeparated, DepFile),
     msvc_take_arg!("std:", OsString, Concatenated, PassThroughWithSuffix),
+    msvc_take_arg!("stdIfcDir", PathBuf, Separated, TooHardPath),
     msvc_flag!("u", PassThrough),
     msvc_flag!("utf-8", PassThrough),
     msvc_flag!("validate-charset", PassThrough),
@@ -662,8 +672,17 @@ pub fn parse_arguments(
             // Eagerly bail if it looks like we need to do more complicated work
             use crate::compiler::gcc::ArgData::*;
             let args = match arg.get_data() {
-                Some(SplitDwarf) | Some(TestCoverage) | Some(Coverage) | Some(DoCompilation)
-                | Some(Language(_)) | Some(Output(_)) | Some(TooHardFlag) | Some(XClang(_))
+                Some(SplitDwarf)
+                | Some(TestCoverage)
+                | Some(Coverage)
+                | Some(DoCompilation)
+                | Some(Language(_))
+                | Some(Output(_))
+                | Some(TooHardFlag)
+                | Some(XClang(_))
+                | Some(ClangModuleOutput(_))
+                | Some(ExtraHashFileClangModuleFile(_))
+                | Some(ModuleOnlyFlag)
                 | Some(TooHard(_)) => cannot_cache!(
                     arg.flag_str()
                         .unwrap_or("Can't handle complex arguments through clang",)
@@ -2164,6 +2183,89 @@ mod test {
         assert_eq!(
             CompilerArguments::CannotCache("-Yc", None),
             parse_arguments(ovec!["-c", "-Ycfoo.h", "foo.c"])
+        );
+    }
+
+    #[test]
+    fn test_parse_arguments_cxx20_modules_unsupported() {
+        // C++20 modules are not yet supported in MSVC mode
+
+        // /interface - indicates the input is a module interface
+        assert_eq!(
+            CompilerArguments::CannotCache("-interface", None),
+            parse_arguments(ovec!["-c", "foo.ixx", "-Fofoo.obj", "-interface"])
+        );
+
+        // /internalPartition - indicates the input is an internal partition
+        assert_eq!(
+            CompilerArguments::CannotCache("-internalPartition", None),
+            parse_arguments(ovec!["-c", "foo.ixx", "-Fofoo.obj", "-internalPartition"])
+        );
+
+        // /ifcOutput - specifies output path for IFC (module interface)
+        assert_eq!(
+            CompilerArguments::CannotCache("-ifcOutput", None),
+            parse_arguments(ovec![
+                "-c",
+                "foo.ixx",
+                "-Fofoo.obj",
+                "-ifcOutput",
+                "foo.ifc"
+            ])
+        );
+
+        // /ifcOnly - only produce IFC, no object file
+        assert_eq!(
+            CompilerArguments::CannotCache("-ifcOnly", None),
+            parse_arguments(ovec!["-c", "foo.ixx", "-ifcOnly"])
+        );
+
+        // /ifcSearchDir - directory to search for IFC files
+        assert_eq!(
+            CompilerArguments::CannotCache("-ifcSearchDir", None),
+            parse_arguments(ovec![
+                "-c",
+                "foo.cpp",
+                "-Fofoo.obj",
+                "-ifcSearchDir",
+                "/path/to/ifcs"
+            ])
+        );
+
+        // /reference - reference a named module IFC
+        assert_eq!(
+            CompilerArguments::CannotCache("-reference", None),
+            parse_arguments(ovec![
+                "-c",
+                "foo.cpp",
+                "-Fofoo.obj",
+                "-reference",
+                "mymodule=mymodule.ifc"
+            ])
+        );
+
+        // /stdIfcDir - directory for standard library IFCs
+        assert_eq!(
+            CompilerArguments::CannotCache("-stdIfcDir", None),
+            parse_arguments(ovec![
+                "-c",
+                "foo.cpp",
+                "-Fofoo.obj",
+                "-stdIfcDir",
+                "/path/to/std/ifcs"
+            ])
+        );
+
+        // /ifcMap - specifies a module map file
+        assert_eq!(
+            CompilerArguments::CannotCache("-ifcMap", None),
+            parse_arguments(ovec![
+                "-c",
+                "foo.cpp",
+                "-Fofoo.obj",
+                "-ifcMap",
+                "module.map"
+            ])
         );
     }
 

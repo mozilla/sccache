@@ -187,6 +187,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("--dependent-lib", OsString, Concatenated(b'='), PassThrough),
     take_arg!("--hip-device-lib-path", PathBuf, Concatenated(b'='), PassThroughPath),
     take_arg!("--hip-path", PathBuf, Concatenated(b'='), PassThroughPath),
+    flag!("--precompile", ModuleOnlyFlag),
     take_arg!("--rocm-path", PathBuf, Concatenated(b'='), PassThroughPath),
     take_arg!("--serialize-diagnostics", OsString, Separated, PassThrough),
     take_arg!("--target", OsString, Separated, PassThrough),
@@ -207,12 +208,16 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("-fdebug-compilation-dir", OsString, Separated, PassThrough),
     take_arg!("-fembed-offload-object", PathBuf, Concatenated(b'='), ExtraHashFile),
     take_arg!("-fexperimental-assignment-tracking", OsString, Concatenated(b'='), PassThrough),
-    flag!("-fmodules", TooHardFlag),
+    take_arg!("-fmodule-file", OsString, Concatenated(b'='), ExtraHashFileClangModuleFile),
+    take_arg!("-fmodule-output", OsString, Concatenated, ClangModuleOutput),
+    flag!("-fmodules-reduced-bmi", PassThroughFlag),
     flag!("-fno-color-diagnostics", NoDiagnosticsColorFlag),
     flag!("-fno-pch-timestamp", PassThroughFlag),
     flag!("-fno-profile-instr-generate", TooHardFlag),
     flag!("-fno-profile-instr-use", TooHardFlag),
     take_arg!("-fplugin", PathBuf, CanBeConcatenated(b'='), ExtraHashFile),
+    flag!("-fprebuilt-implicit-modules", TooHardFlag),
+    take_arg!("-fprebuilt-module-path", OsString, Concatenated, TooHard),
     flag!("-fprofile-instr-generate", ProfileGenerate),
     // Note: the PathBuf argument is optional
     take_arg!("-fprofile-instr-use", PathBuf, Concatenated(b'='), ClangProfileUse),
@@ -1127,6 +1132,197 @@ mod test {
                 "-fprofile-instr-generate",
                 "-fno-profile-instr-generate"
             ])
+        );
+    }
+
+    #[test]
+    fn test_parse_arguments_cxx20_modules_unsupported() {
+        // -fprebuilt-implicit-modules is not supported (implicit module discovery)
+        assert_eq!(
+            CompilerArguments::CannotCache("-fprebuilt-implicit-modules", None),
+            parse_arguments_(stringvec![
+                "-c",
+                "foo.c",
+                "-fprebuilt-implicit-modules",
+                "-o",
+                "foo.o"
+            ])
+        );
+
+        // -fprebuilt-module-path is not supported (implicit module path discovery)
+        assert_eq!(
+            CompilerArguments::CannotCache("-fprebuilt-module-path", None),
+            parse_arguments_(stringvec![
+                "-c",
+                "foo.c",
+                "-fprebuilt-module-path=/path/to/modules",
+                "-o",
+                "foo.o"
+            ])
+        );
+    }
+
+    #[test]
+    fn test_parse_arguments_cxx20_module_precompile() {
+        // Test --precompile flag for creating module interface units
+        let a = parses!(
+            "-c",
+            "module.cppm",
+            "-o",
+            "module.pcm",
+            "--precompile",
+            "-x",
+            "c++-module"
+        );
+        assert_eq!(Some("module.cppm"), a.input.to_str());
+        assert_eq!(Language::CxxModule, a.language);
+        assert_map_contains!(
+            a.outputs,
+            (
+                "module",
+                ArtifactDescriptor {
+                    path: PathBuf::from("module.pcm"),
+                    optional: false
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn test_parse_arguments_cxx20_module_fmodule_file() {
+        // Test -fmodule-file= for importing precompiled modules
+        let a = parses!("-c", "foo.cpp", "-o", "foo.o", "-fmodule-file=mymodule.pcm");
+        assert_eq!(Some("foo.cpp"), a.input.to_str());
+        assert_eq!(ovec!["-fmodule-file=mymodule.pcm"], a.common_args);
+        assert_eq!(
+            ovec![std::env::current_dir().unwrap().join("mymodule.pcm")],
+            a.extra_hash_files
+        );
+    }
+
+    #[test]
+    fn test_parse_arguments_cxx20_module_fmodule_file_with_name() {
+        // Test -fmodule-file=name=path syntax
+        let a = parses!(
+            "-c",
+            "foo.cpp",
+            "-o",
+            "foo.o",
+            "-fmodule-file=mymodule=path/to/mymodule.pcm"
+        );
+        assert_eq!(Some("foo.cpp"), a.input.to_str());
+        assert_eq!(
+            ovec!["-fmodule-file=mymodule=path/to/mymodule.pcm"],
+            a.common_args
+        );
+        assert_eq!(
+            ovec![
+                std::env::current_dir()
+                    .unwrap()
+                    .join("path/to/mymodule.pcm")
+            ],
+            a.extra_hash_files
+        );
+    }
+
+    #[test]
+    fn test_parse_arguments_cxx20_module_fmodule_output() {
+        // Test -fmodule-output= for generating module output alongside object file
+        let a = parses!(
+            "-c",
+            "module.cppm",
+            "-o",
+            "module.o",
+            "-fmodule-output=module.pcm"
+        );
+        assert_eq!(Some("module.cppm"), a.input.to_str());
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("module.o"),
+                    optional: false
+                }
+            ),
+            (
+                "module",
+                ArtifactDescriptor {
+                    path: PathBuf::from("module.pcm"),
+                    optional: false
+                }
+            )
+        );
+        assert_eq!(ovec!["-fmodule-output=module.pcm"], a.common_args);
+    }
+
+    #[test]
+    fn test_parse_arguments_cxx20_module_fmodule_output_implicit_path() {
+        // Test -fmodule-output without explicit path (uses input name + .pcm)
+        let a = parses!("-c", "mymodule.cppm", "-o", "mymodule.o", "-fmodule-output");
+        assert_eq!(Some("mymodule.cppm"), a.input.to_str());
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("mymodule.o"),
+                    optional: false
+                }
+            ),
+            (
+                "module",
+                ArtifactDescriptor {
+                    path: PathBuf::from("mymodule.cppm.pcm"),
+                    optional: false
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn test_parse_arguments_cxx20_module_fmodules_reduced_bmi() {
+        // Test -fmodules-reduced-bmi flag (Clang 18+)
+        let a = parses!(
+            "-c",
+            "module.cppm",
+            "-o",
+            "module.o",
+            "-fmodule-output=module.pcm",
+            "-fmodules-reduced-bmi"
+        );
+        assert_eq!(Some("module.cppm"), a.input.to_str());
+        assert_eq!(
+            ovec!["-fmodule-output=module.pcm", "-fmodules-reduced-bmi"],
+            a.common_args
+        );
+    }
+
+    #[test]
+    fn test_parse_arguments_cxx20_module_combined_flags() {
+        // Test combination of module flags as typically used in practice
+        let a = parses!(
+            "-c",
+            "consumer.cpp",
+            "-o",
+            "consumer.o",
+            "-fmodule-file=mymodule=mymodule.pcm",
+            "-fmodule-file=othermodule=other.pcm"
+        );
+        assert_eq!(Some("consumer.cpp"), a.input.to_str());
+        assert_eq!(
+            ovec![
+                "-fmodule-file=mymodule=mymodule.pcm",
+                "-fmodule-file=othermodule=other.pcm"
+            ],
+            a.common_args
+        );
+        assert_eq!(
+            vec![
+                std::env::current_dir().unwrap().join("mymodule.pcm"),
+                std::env::current_dir().unwrap().join("other.pcm"),
+            ],
+            a.extra_hash_files
         );
     }
 

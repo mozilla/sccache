@@ -372,6 +372,22 @@ Known Caveats
 
 [More details on Rust caveats](/docs/Rust.md)
 
+### C++20 Modules
+
+sccache has partial support for C++20 named modules when using **Clang**. The following flags are supported:
+
+* `-fmodule-file=<path>` and `-fmodule-file=<name>=<path>` - importing precompiled module interfaces
+* `-fmodule-output=<path>` - generating module interface output alongside object files
+* `--precompile` - compiling module interface units
+* `-fmodules-reduced-bmi` - generating reduced BMI files
+
+The following module-related flags are **not supported** and will bypass the cache:
+
+* `-fmodules` and `-fcxx-modules` - Clang header modules (not C++20 named modules)
+* `-fprebuilt-implicit-modules` and `-fprebuilt-module-path` - implicit module discovery
+
+**GCC** and **MSVC** C++20 modules are not yet supported. Compilations using `-fmodules-ts` (GCC) or `/interface`, `/ifcOutput`, etc. (MSVC) will bypass the cache.
+
 ### User Agent
 
 * Requests sent to your storage option of choice will have a user agent header indicating the current sccache version, e.g. `sccache/0.8.2`.
