@@ -228,6 +228,7 @@ pub enum Language {
     Cubin,
     Rust,
     Hip,
+    CxxModule,
 }
 
 impl Language {
@@ -243,6 +244,7 @@ impl Language {
             // TODO ii
             Some("H") | Some("hh") | Some("hp") | Some("hpp") | Some("HPP") | Some("hxx")
             | Some("h++") | Some("tcc") => Some(Language::CxxHeader),
+            Some("cppm") | Some("ixx") => Some(Language::CxxModule),
             Some("m") => Some(Language::ObjectiveC),
             // TODO mi
             Some("M") | Some("mm") => Some(Language::ObjectiveCxx),
@@ -275,6 +277,7 @@ impl Language {
             Language::Cubin => "cubin",
             Language::Rust => "rust",
             Language::Hip => "hip",
+            Language::CxxModule => "c++-module",
         }
     }
 }
@@ -289,6 +292,7 @@ impl CompilerKind {
             | Language::GenericHeader
             | Language::ObjectiveC
             | Language::ObjectiveCxx
+            | Language::CxxModule
             | Language::ObjectiveCxxHeader => "C/C++",
             Language::Cuda => "CUDA",
             Language::CudaFE => "CUDA (Device code)",

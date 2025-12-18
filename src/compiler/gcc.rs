@@ -159,8 +159,13 @@ ArgData! { pub
     ClangProfileUse(PathBuf),
     TestCoverage,
     Coverage,
+    ModuleOnlyFlag,
     ExtraHashFile(PathBuf),
     // Only valid for clang, but this needs to be here since clang shares gcc's arg parsing.
+    // For -fmodule-file which can be either "path" or "name=path"
+    ExtraHashFileClangModuleFile(OsString),
+    // For -fmodule-output
+    ClangModuleOutput(OsString),
     XClang(OsString),
     Arch(OsString),
     PedanticFlag,
@@ -210,6 +215,11 @@ counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     take_arg!("-b", OsString, Separated, PassThrough),
     flag!("-c", DoCompilation),
     take_arg!("-fdiagnostics-color", OsString, Concatenated(b'='), DiagnosticsColor),
+    // Old: gcc/clang header module flag.
+    flag!("-fmodules", TooHardFlag),
+    // New: C++20 gcc modules flag.
+    // TODO: Add support for GCC modules
+    flag!("-fmodules-ts", TooHardFlag),
     flag!("-fno-diagnostics-color", NoDiagnosticsColorFlag),
     flag!("-fno-profile-generate", TooHardFlag),
     flag!("-fno-profile-use", TooHardFlag),
@@ -273,6 +283,8 @@ where
     S: SearchableArgInfo<ArgData>,
 {
     let mut output_arg = None;
+    let mut module_output_path = None;
+    let mut module_only_flag = false;
     let mut input_arg = None;
     let mut double_dash_input = false;
     let mut dep_target = None;
@@ -343,6 +355,7 @@ where
             Some(TooHardFlag) | Some(TooHard(_)) => {
                 cannot_cache!(arg.flag_str().expect("Can't be Argument::Raw/UnknownFlag",))
             }
+            Some(ModuleOnlyFlag) => module_only_flag = true,
             Some(PedanticFlag) => pedantic_flag = true,
             // standard values vary, but extension values all start with "gnu"
             Some(Standard(version)) => language_extensions = version.starts_with("gnu"),
@@ -371,6 +384,15 @@ where
                 };
             }
             Some(Output(p)) => output_arg = Some(p.clone()),
+            Some(ClangModuleOutput(p)) => {
+                if let Some(p) = p.split_prefix("=") {
+                    module_output_path = Some(Some(PathBuf::from(p)));
+                } else if p.is_empty() {
+                    module_output_path = Some(None);
+                } else {
+                    cannot_cache!("unknown module output format");
+                }
+            }
             Some(NeedDepTarget) => {
                 need_explicit_dep_target = true;
                 if let DepArgumentRequirePath::NotNeeded = need_explicit_dep_argument_path {
@@ -389,6 +411,7 @@ where
                 serialize_diagnostics = Some(path.clone());
             }
             Some(ExtraHashFile(_))
+            | Some(ExtraHashFileClangModuleFile(_))
             | Some(PassThroughFlag)
             | Some(PreprocessorArgumentFlag)
             | Some(PreprocessorArgument(_))
@@ -403,6 +426,7 @@ where
                     "c-header" => Some(Language::CHeader),
                     "c++" => Some(Language::Cxx),
                     "c++-header" => Some(Language::CxxHeader),
+                    "c++-module" => Some(Language::CxxModule),
                     "objective-c" => Some(Language::ObjectiveC),
                     "objective-c++" => Some(Language::ObjectiveCxx),
                     "objective-c++-header" => Some(Language::ObjectiveCxxHeader),
@@ -444,6 +468,7 @@ where
         }
         let args = match arg.get_data() {
             Some(SplitDwarf)
+            | Some(ModuleOnlyFlag)
             | Some(PedanticFlag)
             | Some(Standard(_))
             | Some(ProfileGenerate)
@@ -455,10 +480,22 @@ where
             | Some(NoDiagnosticsColorFlag)
             | Some(PassThroughFlag)
             | Some(PassThrough(_))
+            | Some(ClangModuleOutput(_))
             | Some(PassThroughPath(_)) => &mut common_args,
             Some(UnhashedFlag) | Some(Unhashed(_)) => &mut unhashed_args,
             Some(Arch(_)) => &mut arch_args,
             Some(ExtraHashFile(path)) => {
+                extra_hash_files.push(cwd.join(path));
+                &mut common_args
+            }
+            Some(ExtraHashFileClangModuleFile(val)) => {
+                // -fmodule-file can be either "path" or "name=path"
+                let val_str = val.to_string_lossy();
+                let path = if let Some(idx) = val_str.find('=') {
+                    PathBuf::from(&val_str[idx + 1..])
+                } else {
+                    PathBuf::from(val)
+                };
                 extra_hash_files.push(cwd.join(path));
                 &mut common_args
             }
@@ -503,6 +540,7 @@ where
         let arg = try_or_cannot_cache!(arg, "argument parse");
         let args = match arg.get_data() {
             Some(SplitDwarf)
+            | Some(ModuleOnlyFlag)
             | Some(PedanticFlag)
             | Some(Standard(_))
             | Some(ProfileGenerate)
@@ -512,6 +550,7 @@ where
             | Some(DoCompilation)
             | Some(Language(_))
             | Some(Output(_))
+            | Some(ClangModuleOutput(_))
             | Some(TooHardFlag)
             | Some(XClang(_))
             | Some(TooHard(_)) => cannot_cache!(
@@ -542,6 +581,17 @@ where
             | Some(SerializeDiagnostics(_)) => &mut common_args,
             Some(UnhashedFlag) | Some(Unhashed(_)) => &mut unhashed_args,
             Some(ExtraHashFile(path)) => {
+                extra_hash_files.push(cwd.join(path));
+                &mut common_args
+            }
+            Some(ExtraHashFileClangModuleFile(val)) => {
+                // -fmodule-file can be either "path" or "name=path"
+                let val_str = val.to_string_lossy();
+                let path = if let Some(idx) = val_str.find('=') {
+                    PathBuf::from(&val_str[idx + 1..])
+                } else {
+                    PathBuf::from(val)
+                };
                 extra_hash_files.push(cwd.join(path));
                 &mut common_args
             }
@@ -664,8 +714,33 @@ where
         );
     }
 
+    if !module_only_flag {
+        if let Some(module_output_path) = module_output_path {
+            let empty_os_string = OsString::new();
+
+            if multiple_input {
+                cannot_cache!("module output with multiple input files");
+            }
+
+            let module_output_path = module_output_path.unwrap_or_else(|| {
+                let input_file_name = Path::new(&input).file_name().unwrap_or(&empty_os_string);
+                output
+                    .with_file_name(input_file_name)
+                    .with_added_extension("pcm")
+            });
+
+            outputs.insert(
+                "module",
+                ArtifactDescriptor {
+                    path: module_output_path,
+                    optional: false,
+                },
+            );
+        }
+    }
+
     outputs.insert(
-        "obj",
+        if module_only_flag { "module" } else { "obj" },
         ArtifactDescriptor {
             path: output,
             optional: false,
@@ -710,6 +785,7 @@ pub fn language_to_gcc_arg(lang: Language) -> Option<&'static str> {
         Language::Rust => None, // Let the compiler decide
         Language::Hip => Some("hip"),
         Language::GenericHeader => None, // Let the compiler decide
+        Language::CxxModule => Some("c++-module"),
     }
 }
 
@@ -2014,6 +2090,29 @@ mod test {
             CompilerArguments::CannotCache("-fprofile-use", None),
             parse_arguments_(
                 stringvec!["-c", "foo.c", "-fprofile-use=file", "-o", "foo.o"],
+                false
+            )
+        );
+    }
+
+    #[test]
+    fn test_parse_arguments_cxx20_modules_unsupported() {
+        // C++20 modules are not yet supported in GCC mode
+
+        // -fmodules-ts - enables C++20 modules support in GCC
+        assert_eq!(
+            CompilerArguments::CannotCache("-fmodules-ts", None),
+            parse_arguments_(
+                stringvec!["-c", "foo.cpp", "-fmodules-ts", "-o", "foo.o"],
+                false
+            )
+        );
+
+        // -fmodules - older/clang-style modules flag
+        assert_eq!(
+            CompilerArguments::CannotCache("-fmodules", None),
+            parse_arguments_(
+                stringvec!["-c", "foo.cpp", "-fmodules", "-o", "foo.o"],
                 false
             )
         );
