@@ -19,8 +19,8 @@ use fs_err as fs;
 #[cfg(any(feature = "dist-client", feature = "dist-server"))]
 use serde::ser::Serializer;
 use serde::{
-    de::{self, DeserializeOwned, Deserializer},
     Deserialize, Serialize,
+    de::{self, DeserializeOwned, Deserializer},
 };
 #[cfg(test)]
 use serial_test::serial;

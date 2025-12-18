@@ -757,12 +757,17 @@ pub fn storage_from_config(
     debug!("Init disk cache with dir {:?}, size {}", dir, size);
 
     // Validate that all basedirs are absolute paths
-    let basedirs: Vec<PathBuf> = config.basedir.iter()
+    let basedirs: Vec<PathBuf> = config
+        .basedir
+        .iter()
         .filter_map(|p| {
             if p.is_absolute() {
                 Some(p.clone())
             } else {
-                warn!("Ignoring relative basedir path: {:?}. Only absolute paths are supported.", p);
+                warn!(
+                    "Ignoring relative basedir path: {:?}. Only absolute paths are supported.",
+                    p
+                );
                 None
             }
         })
