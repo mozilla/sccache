@@ -381,6 +381,10 @@ pub trait Storage: Send + Sync {
         // Enable by default, only in local mode
         PreprocessorCacheModeConfig::default()
     }
+    /// Return the base directory for path normalization if configured
+    fn basedir(&self) -> Option<&Path> {
+        None
+    }
     /// Return the preprocessor cache entry for a given preprocessor key,
     /// if it exists.
     /// Only applicable when using preprocessor cache mode.
@@ -742,6 +746,7 @@ pub fn storage_from_config(
         pool,
         preprocessor_cache_mode_config,
         rw_mode,
+        config.basedir.clone(),
     )))
 }
 
