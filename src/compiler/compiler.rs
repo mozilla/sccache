@@ -240,6 +240,7 @@ pub enum Language {
     Cubin,
     Rust,
     Hip,
+    CxxModule,
 }
 
 impl Language {
@@ -257,6 +258,7 @@ impl Language {
             Some("ii") => Some(Language::CxxPreprocessed),
             Some("H") | Some("hh") | Some("hp") | Some("hpp") | Some("HPP") | Some("hxx")
             | Some("h++") | Some("tcc") => Some(Language::CxxHeader),
+            Some("cppm") | Some("ixx") => Some(Language::CxxModule),
             Some("m") => Some(Language::ObjectiveC),
             Some("mi") => Some(Language::ObjectiveCPreprocessed),
             Some("M") | Some("mm") => Some(Language::ObjectiveCxx),
@@ -295,6 +297,7 @@ impl Language {
             Language::Cubin => "cubin",
             Language::Rust => "rust",
             Language::Hip => "hip",
+            Language::CxxModule => "c++-module",
         }
     }
 
@@ -356,6 +359,7 @@ impl Language {
             Language::Rust => None, // Let the compiler decide
             Language::Hip => Some("hip"),
             Language::GenericHeader => None, // Let the compiler decide
+            Language::CxxModule => Some("c++-module"),
         }
     }
 
@@ -381,6 +385,7 @@ impl CompilerKind {
             | Language::CPreprocessed
             | Language::Cxx
             | Language::CxxHeader
+            | Language::CxxModule
             | Language::CxxPreprocessed
             | Language::GenericHeader
             | Language::ObjectiveC
