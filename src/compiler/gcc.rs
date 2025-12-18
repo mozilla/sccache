@@ -730,9 +730,14 @@ where
 
             let module_output_path = module_output_path.unwrap_or_else(|| {
                 let input_file_name = Path::new(&input).file_name().unwrap_or(&empty_os_string);
-                output
-                    .with_file_name(input_file_name)
-                    .with_added_extension("pcm")
+                let mut path = output.with_file_name(input_file_name);
+                let mut ext = path
+                    .extension()
+                    .map(|e| e.to_os_string())
+                    .unwrap_or_default();
+                ext.push(".pcm");
+                path.set_extension(ext);
+                path
             });
 
             outputs.insert(
