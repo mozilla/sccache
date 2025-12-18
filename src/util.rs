@@ -1015,6 +1015,54 @@ pub fn num_cpus() -> usize {
     std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
 }
 
+/// Strip the base directory from the preprocessor output to enable cache hits
+/// across different absolute paths.
+///
+/// This function searches for the basedir path in the preprocessor output and
+/// replaces it with a relative path marker.
+///
+/// The function handles both Unix-style (`/`) and Windows-style (`\`) path separators,
+/// and normalizes trailing slashes.
+pub fn strip_basedir(preprocessor_output: &[u8], basedir: &Path) -> Vec<u8> {
+    // Normalize the basedir by removing trailing slashes
+    let basedir_normalized = basedir.to_string_lossy();
+    let basedir_str = basedir_normalized.trim_end_matches('/').trim_end_matches('\\');
+    let basedir_bytes = basedir_str.as_bytes();
+
+    // If basedir is empty or preprocessor output is empty, return as-is
+    if basedir_bytes.is_empty() || preprocessor_output.is_empty() {
+        return preprocessor_output.to_vec();
+    }
+
+    let mut result = Vec::with_capacity(preprocessor_output.len());
+    let mut i = 0;
+
+    while i < preprocessor_output.len() {
+        // Check if we have a match for basedir at current position
+        if i + basedir_bytes.len() <= preprocessor_output.len()
+            && &preprocessor_output[i..i + basedir_bytes.len()] == basedir_bytes
+        {
+            // Check if this is actually a path boundary (preceded by whitespace, quote, or start)
+            let is_boundary = i == 0
+                || preprocessor_output[i - 1].is_ascii_whitespace()
+                || preprocessor_output[i - 1] == b'"'
+                || preprocessor_output[i - 1] == b'<';
+
+            if is_boundary {
+                // Replace basedir with "."
+                result.push(b'.');
+                i += basedir_bytes.len();
+                continue;
+            }
+        }
+
+        result.push(preprocessor_output[i]);
+        i += 1;
+    }
+
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::{OsStrExt, TimeMacroFinder};
@@ -1166,5 +1214,104 @@ mod tests {
         assert_eq!(tested_cases, (alphabet.len() + 1).pow(3) - 1);
         let empty_result = super::ascii_unescape_default(&[]).unwrap();
         assert!(empty_result.is_empty(), "{:?}", empty_result);
+    }
+
+    #[test]
+    fn test_strip_basedir_simple() {
+        use std::path::Path;
+
+        // Simple cases
+        let basedir = Path::new("/home/user/project");
+        let input = b"# 1 \"/home/user/project/src/main.c\"\nint main() { return 0; }";
+        let output = super::strip_basedir(input, basedir);
+        let expected = b"# 1 \"./src/main.c\"\nint main() { return 0; }";
+        assert_eq!(output, expected);
+
+        // Multiple occurrences
+        let input = b"# 1 \"/home/user/project/src/main.c\"\n# 2 \"/home/user/project/include/header.h\"";
+        let output = super::strip_basedir(input, basedir);
+        let expected = b"# 1 \"./src/main.c\"\n# 2 \"./include/header.h\"";
+        assert_eq!(output, expected);
+
+        // No occurrences
+        let input = b"# 1 \"/other/path/main.c\"\nint main() { return 0; }";
+        let output = super::strip_basedir(input, basedir);
+        assert_eq!(output, input);
+    }
+
+    #[test]
+    fn test_strip_basedir_empty() {
+        use std::path::Path;
+
+        // Empty basedir
+        let basedir = Path::new("");
+        let input = b"# 1 \"/home/user/project/src/main.c\"";
+        let output = super::strip_basedir(input, basedir);
+        assert_eq!(output, input);
+
+        // Empty input
+        let basedir = Path::new("/home/user/project");
+        let input = b"";
+        let output = super::strip_basedir(input, basedir);
+        assert_eq!(output, input);
+    }
+
+    #[test]
+    fn test_strip_basedir_not_at_boundary() {
+        use std::path::Path;
+
+        // basedir should only match at word boundaries
+        let basedir = Path::new("/home/user");
+        let input = b"text/home/user/file.c and \"/home/user/other.c\"";
+        let output = super::strip_basedir(input, basedir);
+        // Should only replace the second occurrence (after quote)
+        let expected = b"text/home/user/file.c and \"./other.c\"";
+        assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn test_strip_basedir_trailing_slashes() {
+        use std::path::Path;
+
+        // Without trailing slash
+        let basedir = Path::new("/home/user/project");
+        let input = b"# 1 \"/home/user/project/src/main.c\"";
+        let output = super::strip_basedir(input, basedir);
+        let expected = b"# 1 \"./src/main.c\"";
+        assert_eq!(output, expected);
+
+        // With single trailing slash
+        let basedir = Path::new("/home/user/project/");
+        let input = b"# 1 \"/home/user/project/src/main.c\"";
+        let output = super::strip_basedir(input, basedir);
+        let expected = b"# 1 \"./src/main.c\"";
+        assert_eq!(output, expected);
+
+        // With multiple trailing slashes
+        let basedir = Path::new("/home/user/project////");
+        let input = b"# 1 \"/home/user/project/src/main.c\"";
+        let output = super::strip_basedir(input, basedir);
+        let expected = b"# 1 \"./src/main.c\"";
+        assert_eq!(output, expected);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_strip_basedir_windows_backslashes() {
+        use std::path::Path;
+
+        // Without trailing backslash
+        let basedir = Path::new("C:\\Users\\test\\project");
+        let input = b"# 1 \"C:\\Users\\test\\project\\src\\main.c\"";
+        let output = super::strip_basedir(input, basedir);
+        let expected = b"# 1 \".\\src\\main.c\"";
+        assert_eq!(output, expected);
+
+        // With multiple trailing backslashes
+        let basedir = Path::new("C:\\Users\\test\\project\\\\\\");
+        let input = b"# 1 \"C:\\Users\\test\\project\\src\\main.c\"";
+        let output = super::strip_basedir(input, basedir);
+        let expected = b"# 1 \".\\src\\main.c\"";
+        assert_eq!(output, expected);
     }
 }

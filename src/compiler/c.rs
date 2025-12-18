@@ -632,6 +632,7 @@ where
                 &env_vars,
                 &preprocessor_output,
                 self.compiler.plusplus(),
+                storage.basedir(),
             )
         };
 
@@ -1440,7 +1441,7 @@ impl pkg::ToolchainPackager for CToolchainPackager {
 }
 
 /// The cache is versioned by the inputs to `hash_key`.
-pub const CACHE_VERSION: &[u8] = b"11";
+pub const CACHE_VERSION: &[u8] = b"12";
 
 /// Environment variables that are factored into the cache key.
 static CACHED_ENV_VARS: LazyLock<HashSet<&'static OsStr>> = LazyLock::new(|| {
@@ -1471,6 +1472,7 @@ pub fn hash_key(
     env_vars: &[(OsString, OsString)],
     preprocessor_output: &[u8],
     plusplus: bool,
+    basedir: Option<&Path>,
 ) -> String {
     // If you change any of the inputs to the hash, you should change `CACHE_VERSION`.
     let mut m = Digest::new();
@@ -1494,7 +1496,16 @@ pub fn hash_key(
             val.hash(&mut HashToDigest { digest: &mut m });
         }
     }
-    m.update(preprocessor_output);
+
+    // Strip basedir from preprocessor output if configured
+    let preprocessor_output_to_hash = if let Some(base) = basedir {
+        use crate::util::strip_basedir;
+        Cow::Owned(strip_basedir(preprocessor_output, base))
+    } else {
+        Cow::Borrowed(preprocessor_output)
+    };
+
+    m.update(&preprocessor_output_to_hash);
     m.finish()
 }
 
@@ -1509,8 +1520,8 @@ mod test {
         let args = ovec!["a", "b", "c"];
         const PREPROCESSED: &[u8] = b"hello world";
         assert_eq!(
-            hash_key("abcd", Language::C, &args, &[], &[], PREPROCESSED, false),
-            hash_key("abcd", Language::C, &args, &[], &[], PREPROCESSED, false)
+            hash_key("abcd", Language::C, &args, &[], &[], PREPROCESSED, false, None),
+            hash_key("abcd", Language::C, &args, &[], &[], PREPROCESSED, false, None)
         );
     }
 
@@ -1519,8 +1530,8 @@ mod test {
         let args = ovec!["a", "b", "c"];
         const PREPROCESSED: &[u8] = b"hello world";
         assert_neq!(
-            hash_key("abcd", Language::C, &args, &[], &[], PREPROCESSED, false),
-            hash_key("abcd", Language::C, &args, &[], &[], PREPROCESSED, true)
+            hash_key("abcd", Language::C, &args, &[], &[], PREPROCESSED, false, None),
+            hash_key("abcd", Language::C, &args, &[], &[], PREPROCESSED, true, None)
         );
     }
 
@@ -1529,7 +1540,7 @@ mod test {
         let args = ovec!["a", "b", "c"];
         const PREPROCESSED: &[u8] = b"hello world";
         assert_neq!(
-            hash_key("abcd", Language::C, &args, &[], &[], PREPROCESSED, false),
+            hash_key("abcd", Language::C, &args, &[], &[], PREPROCESSED, false, None),
             hash_key(
                 "abcd",
                 Language::CHeader,
@@ -1537,7 +1548,8 @@ mod test {
                 &[],
                 &[],
                 PREPROCESSED,
-                false
+                false,
+                None
             )
         );
     }
@@ -1547,7 +1559,7 @@ mod test {
         let args = ovec!["a", "b", "c"];
         const PREPROCESSED: &[u8] = b"hello world";
         assert_neq!(
-            hash_key("abcd", Language::Cxx, &args, &[], &[], PREPROCESSED, true),
+            hash_key("abcd", Language::Cxx, &args, &[], &[], PREPROCESSED, true, None),
             hash_key(
                 "abcd",
                 Language::CxxHeader,
@@ -1555,7 +1567,8 @@ mod test {
                 &[],
                 &[],
                 PREPROCESSED,
-                true
+                true,
+                None
             )
         );
     }
@@ -1565,8 +1578,8 @@ mod test {
         let args = ovec!["a", "b", "c"];
         const PREPROCESSED: &[u8] = b"hello world";
         assert_neq!(
-            hash_key("abcd", Language::C, &args, &[], &[], PREPROCESSED, false),
-            hash_key("wxyz", Language::C, &args, &[], &[], PREPROCESSED, false)
+            hash_key("abcd", Language::C, &args, &[], &[], PREPROCESSED, false, None),
+            hash_key("wxyz", Language::C, &args, &[], &[], PREPROCESSED, false, None)
         );
     }
 
@@ -1579,18 +1592,18 @@ mod test {
         let a = ovec!["a"];
         const PREPROCESSED: &[u8] = b"hello world";
         assert_neq!(
-            hash_key(digest, Language::C, &abc, &[], &[], PREPROCESSED, false),
-            hash_key(digest, Language::C, &xyz, &[], &[], PREPROCESSED, false)
+            hash_key(digest, Language::C, &abc, &[], &[], PREPROCESSED, false, None),
+            hash_key(digest, Language::C, &xyz, &[], &[], PREPROCESSED, false, None)
         );
 
         assert_neq!(
-            hash_key(digest, Language::C, &abc, &[], &[], PREPROCESSED, false),
-            hash_key(digest, Language::C, &ab, &[], &[], PREPROCESSED, false)
+            hash_key(digest, Language::C, &abc, &[], &[], PREPROCESSED, false, None),
+            hash_key(digest, Language::C, &ab, &[], &[], PREPROCESSED, false, None)
         );
 
         assert_neq!(
-            hash_key(digest, Language::C, &abc, &[], &[], PREPROCESSED, false),
-            hash_key(digest, Language::C, &a, &[], &[], PREPROCESSED, false)
+            hash_key(digest, Language::C, &abc, &[], &[], PREPROCESSED, false, None),
+            hash_key(digest, Language::C, &a, &[], &[], PREPROCESSED, false, None)
         );
     }
 
@@ -1605,9 +1618,10 @@ mod test {
                 &[],
                 &[],
                 &b"hello world"[..],
-                false
+                false,
+                None
             ),
-            hash_key("abcd", Language::C, &args, &[], &[], &b"goodbye"[..], false)
+            hash_key("abcd", Language::C, &args, &[], &[], &b"goodbye"[..], false, None)
         );
     }
 
@@ -1617,11 +1631,11 @@ mod test {
         let digest = "abcd";
         const PREPROCESSED: &[u8] = b"hello world";
         for var in CACHED_ENV_VARS.iter() {
-            let h1 = hash_key(digest, Language::C, &args, &[], &[], PREPROCESSED, false);
+            let h1 = hash_key(digest, Language::C, &args, &[], &[], PREPROCESSED, false, None);
             let vars = vec![(OsString::from(var), OsString::from("something"))];
-            let h2 = hash_key(digest, Language::C, &args, &[], &vars, PREPROCESSED, false);
+            let h2 = hash_key(digest, Language::C, &args, &[], &vars, PREPROCESSED, false, None);
             let vars = vec![(OsString::from(var), OsString::from("something else"))];
-            let h3 = hash_key(digest, Language::C, &args, &[], &vars, PREPROCESSED, false);
+            let h3 = hash_key(digest, Language::C, &args, &[], &vars, PREPROCESSED, false, None);
             assert_neq!(h1, h2);
             assert_neq!(h2, h3);
         }
@@ -1642,10 +1656,52 @@ mod test {
                 &extra_data,
                 &[],
                 PREPROCESSED,
-                false
+                false,
+                None
             ),
-            hash_key(digest, Language::C, &args, &[], &[], PREPROCESSED, false)
+            hash_key(digest, Language::C, &args, &[], &[], PREPROCESSED, false, None)
         );
+    }
+
+    #[test]
+    fn test_hash_key_basedir() {
+        use std::path::Path;
+
+        let args = ovec!["a", "b", "c"];
+        let digest = "abcd";
+
+        // Test 1: Same hash with different absolute paths when basedir is used
+        let preprocessed1 = b"# 1 \"/home/user1/project/src/main.c\"\nint main() { return 0; }";
+        let preprocessed2 = b"# 1 \"/home/user2/project/src/main.c\"\nint main() { return 0; }";
+
+        let basedir1 = Path::new("/home/user1/project");
+        let basedir2 = Path::new("/home/user2/project");
+
+        let h1 = hash_key(digest, Language::C, &args, &[], &[], preprocessed1, false, Some(basedir1));
+        let h2 = hash_key(digest, Language::C, &args, &[], &[], preprocessed2, false, Some(basedir2));
+
+        assert_eq!(h1, h2);
+
+        // Test 2: Different hashes without basedir
+        let h1_no_base = hash_key(digest, Language::C, &args, &[], &[], preprocessed1, false, None);
+        let h2_no_base = hash_key(digest, Language::C, &args, &[], &[], preprocessed2, false, None);
+
+        assert_neq!(h1_no_base, h2_no_base);
+
+        // Test 3: Works for C++ files too
+        let preprocessed_cpp1 = b"# 1 \"/home/user1/project/src/main.cpp\"\nint main() { return 0; }";
+        let preprocessed_cpp2 = b"# 1 \"/home/user2/project/src/main.cpp\"\nint main() { return 0; }";
+
+        let h_cpp1 = hash_key(digest, Language::Cxx, &args, &[], &[], preprocessed_cpp1, true, Some(basedir1));
+        let h_cpp2 = hash_key(digest, Language::Cxx, &args, &[], &[], preprocessed_cpp2, true, Some(basedir2));
+
+        assert_eq!(h_cpp1, h_cpp2);
+
+        // Test 4: Works with trailing slashes
+        let basedir_slash = Path::new("/home/user1/project/");
+        let h_slash = hash_key(digest, Language::C, &args, &[], &[], preprocessed1, false, Some(basedir_slash));
+
+        assert_eq!(h1, h_slash);
     }
 
     #[test]
