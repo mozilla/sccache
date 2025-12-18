@@ -384,9 +384,9 @@ pub trait Storage: Send + Sync {
         // Enable by default, only in local mode
         PreprocessorCacheModeConfig::default()
     }
-    /// Return the base directory for path normalization if configured
-    fn basedir(&self) -> Option<&Path> {
-        None
+    /// Return the base directories for path normalization if configured
+    fn basedirs(&self) -> &[PathBuf] {
+        &[]
     }
     /// Return the preprocessor cache entry for a given preprocessor key,
     /// if it exists.
@@ -755,13 +755,30 @@ pub fn storage_from_config(
     let preprocessor_cache_mode_config = config.fallback_cache.preprocessor_cache_mode;
     let rw_mode = config.fallback_cache.rw_mode.into();
     debug!("Init disk cache with dir {:?}, size {}", dir, size);
+
+    // Validate that all basedirs are absolute paths
+    let basedirs: Vec<PathBuf> = config.basedir.iter()
+        .filter_map(|p| {
+            if p.is_absolute() {
+                Some(p.clone())
+            } else {
+                warn!("Ignoring relative basedir path: {:?}. Only absolute paths are supported.", p);
+                None
+            }
+        })
+        .collect();
+
+    if !basedirs.is_empty() {
+        debug!("Using basedirs for path normalization: {:?}", basedirs);
+    }
+
     Ok(Arc::new(DiskCache::new(
         dir,
         size,
         pool,
         preprocessor_cache_mode_config,
         rw_mode,
-        config.basedir.clone(),
+        basedirs,
     )))
 }
 

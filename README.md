@@ -330,15 +330,28 @@ By default, sccache requires absolute paths to match for cache hits. To enable c
 export SCCACHE_BASEDIR=/home/user/project
 ```
 
+You can also specify multiple base directories by separating them with `|` (pipe character). When multiple directories are provided, the longest matching prefix is used:
+
+```bash
+export SCCACHE_BASEDIR="/home/user/project|/home/user/workspace"
+```
+
 This is similar to ccache's `CCACHE_BASEDIR` and helps when:
 * Building the same project from different directories
 * Sharing cache between CI jobs with different checkout paths
 * Multiple developers working with different username paths
+* Working with multiple project checkouts simultaneously
+
+**Note:** Only absolute paths are supported. Relative paths will be ignored with a warning.
 
 You can also configure this in the sccache config file:
 
 ```toml
+# Single directory
 basedir = "/home/user/project"
+
+# Or multiple directories
+basedir = ["/home/user/project", "/home/user/workspace"]
 ```
 
 ---

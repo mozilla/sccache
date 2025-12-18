@@ -6,13 +6,17 @@
 # If specified, wait this long for the server to start up.
 server_startup_timeout_ms = 10000
 
-# Base directory to strip from paths for cache key computation.
+# Base directory (or directories) to strip from paths for cache key computation.
 # Similar to ccache's CCACHE_BASEDIR. This enables cache hits across
 # different absolute paths when compiling the same source code.
+# Can be a single path or an array of paths. When multiple paths are provided,
+# the longest matching prefix is used.
 # For example, if basedir is "/home/user/project", then paths like
 # "/home/user/project/src/main.c" will be normalized to "./src/main.c"
 # for caching purposes.
 basedir = "/home/user/project"
+# Or multiple directories:
+# basedir = ["/home/user/project", "/home/user/workspace"]
 
 [dist]
 # where to find the scheduler
@@ -147,7 +151,7 @@ Note that some env variables may need sccache server restart to take effect.
 
 * `SCCACHE_ALLOW_CORE_DUMPS` to enable core dumps by the server
 * `SCCACHE_CONF` configuration file path
-* `SCCACHE_BASEDIR` base directory to strip from paths for cache key computation. This is similar to ccache's `CCACHE_BASEDIR` and enables cache hits across different absolute paths when compiling the same source code. Environment variable takes precedence over file configuration.
+* `SCCACHE_BASEDIR` base directory (or directories) to strip from paths for cache key computation. This is similar to ccache's `CCACHE_BASEDIR` and enables cache hits across different absolute paths when compiling the same source code. Multiple directories can be separated by `|` (pipe character). When multiple directories are specified, the longest matching prefix is used. Environment variable takes precedence over file configuration. Only absolute paths are supported; relative paths will be ignored with a warning.
 * `SCCACHE_CACHED_CONF`
 * `SCCACHE_IDLE_TIMEOUT` how long the local daemon process waits for more client requests before exiting, in seconds. Set to `0` to run sccache permanently
 * `SCCACHE_STARTUP_NOTIFY` specify a path to a socket which will be used for server completion notification
