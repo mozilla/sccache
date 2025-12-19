@@ -220,6 +220,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     flag!("-fcxx-modules", TooHardFlag),
     take_arg!("-fdebug-compilation-dir", OsString, Separated, PassThrough),
     take_arg!("-fembed-offload-object", PathBuf, Concatenated(b'='), ExtraHashFile),
+    take_arg!("-fexperimental-assignment-tracking", OsString, Concatenated(b'='), PassThrough),
     flag!("-fmodules", TooHardFlag),
     flag!("-fno-color-diagnostics", NoDiagnosticsColorFlag),
     flag!("-fno-pch-timestamp", PassThroughFlag),
@@ -801,6 +802,36 @@ mod test {
                 "-debug-info-kind=constructor"
             ],
             a.common_args
+        );
+    }
+
+    #[test]
+    fn test_parse_xclang_fexperimental_assignment_tracking() {
+        // Test via -Xclang (internal clang flag)
+        let a = parses!(
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "-Xclang",
+            "-fexperimental-assignment-tracking=disabled"
+        );
+        assert_eq!(
+            ovec!["-Xclang", "-fexperimental-assignment-tracking=disabled"],
+            a.common_args
+        );
+
+        // Also works as a direct flag
+        let b = parses!(
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "-fexperimental-assignment-tracking=disabled"
+        );
+        assert_eq!(
+            ovec!["-fexperimental-assignment-tracking=disabled"],
+            b.common_args
         );
     }
 
