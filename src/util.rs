@@ -1015,10 +1015,124 @@ pub fn num_cpus() -> usize {
     std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
 }
 
+/// Filter out ccache directories from PATH environment variable.
+///
+/// This prevents double-caching when ccache is installed and has
+/// /usr/lib/ccache or /usr/lib64/ccache (or similar) in PATH, since those
+/// directories contain wrapper scripts that would call ccache.
+pub fn filter_ccache_from_path(env_vars: Vec<(OsString, OsString)>) -> Vec<(OsString, OsString)> {
+    use std::env;
+
+    const CCACHE_DIR_COMPONENT: &str = "ccache";
+
+    let path_contains_ccache = |value: &OsString| -> bool {
+        std::env::split_paths(value).any(|p| {
+            p.components()
+                .any(|c| c.as_os_str() == CCACHE_DIR_COMPONENT)
+        })
+    };
+
+    // First pass: check if any PATH contains ccache
+    let has_ccache = env_vars
+        .iter()
+        .any(|(key, value)| key == "PATH" && path_contains_ccache(value));
+
+    if !has_ccache {
+        return env_vars;
+    }
+
+    // Second pass: filter out ccache directories from PATH
+    env_vars
+        .into_iter()
+        .map(|(key, value)| {
+            if key == "PATH" {
+                let filtered_path = env::split_paths(&value)
+                    .filter(|p| {
+                        !p.components()
+                            .any(|c| c.as_os_str() == CCACHE_DIR_COMPONENT)
+                    })
+                    .collect::<Vec<_>>();
+                let new_value = env::join_paths(filtered_path).unwrap_or(value.clone());
+                (key, new_value)
+            } else {
+                (key, value)
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{OsStrExt, TimeMacroFinder};
+    use super::{OsStrExt, TimeMacroFinder, filter_ccache_from_path};
     use std::ffi::{OsStr, OsString};
+
+    #[test]
+    fn test_filter_ccache_from_path() {
+        use std::env;
+
+        // Create a PATH with ccache directories
+        let path_with_ccache = env::join_paths([
+            "/usr/bin",
+            "/usr/lib64/ccache",
+            "/usr/local/bin",
+            "/usr/lib/ccache",
+            "/home/user/bin",
+        ])
+        .unwrap();
+
+        let env_vars = vec![
+            (OsString::from("HOME"), OsString::from("/home/user")),
+            (OsString::from("PATH"), path_with_ccache),
+            (OsString::from("LANG"), OsString::from("en_US.UTF-8")),
+        ];
+
+        let filtered = filter_ccache_from_path(env_vars);
+
+        // Other env vars should be unchanged
+        assert_eq!(filtered.len(), 3);
+        assert_eq!(
+            filtered.iter().find(|(k, _)| k == "HOME").unwrap().1,
+            OsString::from("/home/user")
+        );
+        assert_eq!(
+            filtered.iter().find(|(k, _)| k == "LANG").unwrap().1,
+            OsString::from("en_US.UTF-8")
+        );
+
+        // PATH should have ccache directories removed
+        let new_path = &filtered.iter().find(|(k, _)| k == "PATH").unwrap().1;
+        let expected_path =
+            env::join_paths(["/usr/bin", "/usr/local/bin", "/home/user/bin"]).unwrap();
+        assert_eq!(new_path, &expected_path);
+    }
+
+    #[test]
+    fn test_filter_ccache_from_path_no_ccache() {
+        use std::env;
+
+        // Create a PATH without ccache directories
+        let path_without_ccache = env::join_paths(["/usr/bin", "/usr/local/bin"]).unwrap();
+
+        let env_vars = vec![(OsString::from("PATH"), path_without_ccache.clone())];
+
+        let filtered = filter_ccache_from_path(env_vars);
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].1, path_without_ccache);
+    }
+
+    #[test]
+    fn test_filter_ccache_from_path_no_path() {
+        // No PATH variable at all
+        let env_vars = vec![
+            (OsString::from("HOME"), OsString::from("/home/user")),
+            (OsString::from("LANG"), OsString::from("en_US.UTF-8")),
+        ];
+
+        let filtered = filter_ccache_from_path(env_vars.clone());
+
+        assert_eq!(filtered, env_vars);
+    }
 
     #[test]
     fn simple_starts_with() {

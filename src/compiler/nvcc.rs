@@ -25,7 +25,7 @@ use crate::compiler::{
 use crate::mock_command::{
     CommandChild, CommandCreator, CommandCreatorSync, ExitStatusValue, RunCommand, exit_status,
 };
-use crate::util::{OsStrExt, run_input_output};
+use crate::util::{OsStrExt, filter_ccache_from_path, run_input_output};
 use crate::{counted_array, dist, protocol, server};
 use async_trait::async_trait;
 use fs::File;
@@ -180,6 +180,10 @@ impl CCompilerImpl for Nvcc {
             Language::Cuda => Ok("cu"),
             _ => Err(anyhow!("PCH not supported by nvcc")),
         }?;
+
+        // Filter out ccache directories from PATH to avoid double-caching
+        // when ccache is also installed on the system.
+        let env_vars = filter_ccache_from_path(env_vars.clone());
 
         let initialize_cmd_and_args = || {
             let mut command = creator.clone().new_command_sync(executable);
@@ -913,7 +917,7 @@ async fn select_nvcc_subcommands<T, F>(
     creator: &T,
     executable: &Path,
     cwd: &Path,
-    env_vars: &mut Vec<(OsString, OsString)>,
+    env_vars: &mut [(OsString, OsString)],
     remap_filenames: bool,
     arguments: &[OsString],
     select_subcommand: F,
@@ -938,13 +942,17 @@ where
         );
     }
 
+    // Filter out ccache directories from PATH to avoid double-caching
+    // when ccache is also installed on the system.
+    let mut env_vars = filter_ccache_from_path(env_vars.to_vec());
+
     let mut nvcc_dryrun_cmd = creator.clone().new_command_sync(executable);
 
     nvcc_dryrun_cmd
         .args(&[arguments, &["--dryrun".into(), "--keep".into()][..]].concat())
         .env_clear()
         .current_dir(cwd)
-        .envs(env_vars.to_vec());
+        .envs(env_vars.clone());
 
     let nvcc_dryrun_output = run_input_output(nvcc_dryrun_cmd, None).await?;
 
@@ -1257,6 +1265,10 @@ where
             );
         }
 
+        // Filter out ccache directories from PATH to avoid double-caching
+        // when ccache is also installed on the system.
+        let env_vars = filter_ccache_from_path(env_vars.to_vec());
+
         let out = match cacheable {
             Cacheable::No => {
                 let mut cmd = creator.clone().new_command_sync(exe);
@@ -1264,7 +1276,7 @@ where
                 cmd.args(args)
                     .current_dir(cwd)
                     .env_clear()
-                    .envs(env_vars.to_vec());
+                    .envs(env_vars.clone());
 
                 run_input_output(cmd, None)
                     .await
@@ -1275,11 +1287,11 @@ where
                 let args = dist::strings_to_osstrings(args);
 
                 match srvc
-                    .compiler_info(exe.clone(), cwd.to_owned(), &args, env_vars)
+                    .compiler_info(exe.clone(), cwd.to_owned(), &args, &env_vars)
                     .await
                 {
                     Err(err) => error_to_output(err),
-                    Ok(compiler) => match compiler.parse_arguments(&args, cwd, env_vars) {
+                    Ok(compiler) => match compiler.parse_arguments(&args, cwd, &env_vars) {
                         CompilerArguments::NotCompilation => Err(anyhow!("Not compilation")),
                         CompilerArguments::CannotCache(why, extra_info) => Err(extra_info
                             .map_or_else(
