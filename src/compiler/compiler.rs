@@ -35,7 +35,7 @@ use crate::dist::pkg;
 use crate::lru_disk_cache;
 use crate::mock_command::{CommandChild, CommandCreatorSync, RunCommand, exit_status};
 use crate::server;
-use crate::util::{fmt_duration_as_secs, run_input_output};
+use crate::util::{fmt_duration_as_secs, resolve_compiler_avoiding_ccache, run_input_output};
 use crate::{counted_array, dist};
 use async_trait::async_trait;
 use filetime::FileTime;
@@ -194,7 +194,9 @@ impl CompileCommandImpl for SingleCompileCommand {
             env_vars,
             cwd,
         } = self;
-        let mut cmd = creator.clone().new_command_sync(executable);
+        // Resolve compiler avoiding ccache wrappers to prevent double-caching.
+        let resolved_executable = resolve_compiler_avoiding_ccache(executable, env_vars);
+        let mut cmd = creator.clone().new_command_sync(&resolved_executable);
         cmd.args(arguments)
             .env_clear()
             .envs(env_vars.clone())
@@ -1692,8 +1694,11 @@ compiler_version=__VERSION__
     .to_vec();
     let (tempdir, src) = write_temp_file(&pool, "testfile.c".as_ref(), test).await?;
 
+    // Resolve compiler avoiding ccache wrappers to prevent double-caching.
     let executable = executable.as_ref();
-    let mut cmd = creator.clone().new_command_sync(executable);
+    let resolved_executable = resolve_compiler_avoiding_ccache(executable, &env);
+
+    let mut cmd = creator.clone().new_command_sync(&resolved_executable);
     cmd.stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .envs(env.iter().map(|s| (&s.0, &s.1)));
@@ -1734,7 +1739,7 @@ compiler_version=__VERSION__
         }
     });
     if let Some(kind) = lines.next() {
-        let executable = executable.to_owned();
+        let executable = resolved_executable;
         let version = lines
             .next()
             // In case the compiler didn't expand the macro.
