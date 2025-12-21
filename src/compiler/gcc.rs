@@ -750,8 +750,10 @@ where
         }
     }
 
+    // Sometimes if this is precompiled this will be a module file,
+    // however we call it an object because there MUST be an object file output.
     outputs.insert(
-        if module_only_flag { "module" } else { "obj" },
+        "obj" ,
         ArtifactDescriptor {
             path: output,
             optional: false,
