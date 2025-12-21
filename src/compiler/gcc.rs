@@ -753,7 +753,7 @@ where
     // Sometimes if this is precompiled this will be a module file,
     // however we call it an object because there MUST be an object file output.
     outputs.insert(
-        "obj" ,
+        "obj",
         ArtifactDescriptor {
             path: output,
             optional: false,

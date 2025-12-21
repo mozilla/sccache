@@ -1179,7 +1179,7 @@ mod test {
         assert_map_contains!(
             a.outputs,
             (
-                "module",
+                "obj",
                 ArtifactDescriptor {
                     path: PathBuf::from("module.pcm"),
                     optional: false
