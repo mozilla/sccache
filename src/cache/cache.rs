@@ -758,7 +758,7 @@ pub fn storage_from_config(
 
     // Validate that all basedirs are absolute paths
     let basedirs: Vec<PathBuf> = config
-        .basedir
+        .basedirs
         .iter()
         .filter_map(|p| {
             if p.is_absolute() {

@@ -1029,7 +1029,7 @@ pub fn strip_basedirs(preprocessor_output: &[u8], basedirs: &[PathBuf]) -> Vec<u
     }
 
     // Prepare normalized basedirs sorted by length (longest first) to match longest prefix first
-    let mut basedir_data: Vec<_> = basedirs
+    let mut basedirs_data: Vec<_> = basedirs
         .iter()
         .map(|basedir| {
             let normalized = basedir.to_string_lossy();
@@ -1039,12 +1039,12 @@ pub fn strip_basedirs(preprocessor_output: &[u8], basedirs: &[PathBuf]) -> Vec<u
         .filter(|(bytes, _)| !bytes.is_empty())
         .collect();
 
-    if basedir_data.is_empty() {
+    if basedirs_data.is_empty() {
         return preprocessor_output.to_vec();
     }
 
     // Sort by length descending (longest first)
-    basedir_data.sort_by(|a, b| b.1.cmp(&a.1));
+    basedirs_data.sort_by(|a, b| b.1.cmp(&a.1));
 
     let mut result = Vec::with_capacity(preprocessor_output.len());
     let mut i = 0;
@@ -1053,7 +1053,7 @@ pub fn strip_basedirs(preprocessor_output: &[u8], basedirs: &[PathBuf]) -> Vec<u
         let mut matched = false;
 
         // Try to match each basedir (longest first)
-        for (basedir_bytes, basedir_len) in &basedir_data {
+        for (basedir_bytes, basedir_len) in &basedirs_data {
             // Check if we have a match for this basedir at current position
             if i + basedir_len <= preprocessor_output.len()
                 && preprocessor_output[i..i + basedir_len] == basedir_bytes[..]

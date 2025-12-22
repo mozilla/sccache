@@ -602,27 +602,7 @@ pub struct FileConfig {
     pub server_startup_timeout_ms: Option<u64>,
     /// Base directory (or directories) to strip from paths for cache key computation.
     /// Can be a single path or an array of paths.
-    #[serde(default, deserialize_with = "deserialize_basedir")]
-    pub basedir: Vec<PathBuf>,
-}
-
-fn deserialize_basedir<'de, D>(deserializer: D) -> std::result::Result<Vec<PathBuf>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    use serde::Deserialize;
-
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum StringOrVec {
-        String(PathBuf),
-        Vec(Vec<PathBuf>),
-    }
-
-    match StringOrVec::deserialize(deserializer)? {
-        StringOrVec::String(s) => Ok(vec![s]),
-        StringOrVec::Vec(v) => Ok(v),
-    }
+    pub basedirs: Vec<PathBuf>,
 }
 
 // If the file doesn't exist or we can't read it, log the issue and proceed. If the
@@ -660,7 +640,7 @@ pub fn try_read_config_file<T: DeserializeOwned>(path: &Path) -> Result<Option<T
 #[derive(Debug)]
 pub struct EnvConfig {
     cache: CacheConfigs,
-    basedir: Vec<PathBuf>,
+    basedirs: Vec<PathBuf>,
 }
 
 fn key_prefix_from_env_var(env_var_name: &str) -> String {
@@ -1003,7 +983,7 @@ fn config_from_env() -> Result<EnvConfig> {
 
     // ======= Base directory =======
     // Support multiple paths separated by '|' (a character forbidden in paths)
-    let basedir = env::var_os("SCCACHE_BASEDIR")
+    let basedirs = env::var_os("SCCACHE_BASEDIRS")
         .map(|s| {
             s.to_string_lossy()
                 .split('|')
@@ -1013,7 +993,7 @@ fn config_from_env() -> Result<EnvConfig> {
         })
         .unwrap_or_default();
 
-    Ok(EnvConfig { cache, basedir })
+    Ok(EnvConfig { cache, basedirs })
 }
 
 // The directories crate changed the location of `config_dir` on macos in version 3,
@@ -1047,8 +1027,7 @@ pub struct Config {
     pub server_startup_timeout: Option<std::time::Duration>,
     /// Base directory (or directories) to strip from paths for cache key computation.
     /// Similar to ccache's CCACHE_BASEDIR.
-    /// Currently only the first directory is used if multiple are specified.
-    pub basedir: Vec<PathBuf>,
+    pub basedirs: Vec<PathBuf>,
 }
 
 impl Config {
@@ -1070,7 +1049,7 @@ impl Config {
             cache,
             dist,
             server_startup_timeout_ms,
-            basedir: file_basedir,
+            basedirs: file_basedirs,
         } = file_conf;
         conf_caches.merge(cache);
 
@@ -1079,15 +1058,15 @@ impl Config {
 
         let EnvConfig {
             cache,
-            basedir: env_basedir,
+            basedirs: env_basedirs,
         } = env_conf;
         conf_caches.merge(cache);
 
         // Environment variable takes precedence over file config
-        let basedir = if !env_basedir.is_empty() {
-            env_basedir
+        let basedirs = if !env_basedirs.is_empty() {
+            env_basedirs
         } else {
-            file_basedir
+            file_basedirs
         };
 
         let (caches, fallback_cache) = conf_caches.into_fallback();
@@ -1096,7 +1075,7 @@ impl Config {
             fallback_cache,
             dist,
             server_startup_timeout,
-            basedir,
+            basedirs,
         }
     }
 }
@@ -1370,7 +1349,7 @@ fn config_overrides() {
             }),
             ..Default::default()
         },
-        basedir: vec![],
+        basedirs: vec![],
     };
 
     let file_conf = FileConfig {
@@ -1397,7 +1376,7 @@ fn config_overrides() {
         },
         dist: Default::default(),
         server_startup_timeout_ms: None,
-        basedir: vec![],
+        basedirs: vec![],
     };
 
     assert_eq!(
@@ -1420,90 +1399,71 @@ fn config_overrides() {
             },
             dist: Default::default(),
             server_startup_timeout: None,
-            basedir: vec![],
+            basedirs: vec![],
         }
     );
 }
 
 #[test]
-fn config_basedir_overrides() {
+fn config_basedirs_overrides() {
     use std::path::PathBuf;
 
     // Test that env variable takes precedence over file config
     let env_conf = EnvConfig {
         cache: Default::default(),
-        basedir: vec![PathBuf::from("/env/basedir")],
+        basedirs: vec![PathBuf::from("/env/basedir")],
     };
 
     let file_conf = FileConfig {
         cache: Default::default(),
         dist: Default::default(),
         server_startup_timeout_ms: None,
-        basedir: vec![PathBuf::from("/file/basedir")],
+        basedirs: vec![PathBuf::from("/file/basedir")],
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf);
-    assert_eq!(config.basedir, vec![PathBuf::from("/env/basedir")]);
+    assert_eq!(config.basedirs, vec![PathBuf::from("/env/basedir")]);
 
     // Test that file config is used when env is empty
     let env_conf = EnvConfig {
         cache: Default::default(),
-        basedir: vec![],
+        basedirs: vec![],
     };
 
     let file_conf = FileConfig {
         cache: Default::default(),
         dist: Default::default(),
         server_startup_timeout_ms: None,
-        basedir: vec![PathBuf::from("/file/basedir")],
+        basedirs: vec![PathBuf::from("/file/basedir")],
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf);
-    assert_eq!(config.basedir, vec![PathBuf::from("/file/basedir")]);
+    assert_eq!(config.basedirs, vec![PathBuf::from("/file/basedir")]);
 
     // Test that both empty results in empty
     let env_conf = EnvConfig {
         cache: Default::default(),
-        basedir: vec![],
+        basedirs: vec![],
     };
 
     let file_conf = FileConfig {
         cache: Default::default(),
         dist: Default::default(),
         server_startup_timeout_ms: None,
-        basedir: vec![],
+        basedirs: vec![],
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf);
-    assert_eq!(config.basedir, Vec::<PathBuf>::new());
+    assert_eq!(config.basedirs, Vec::<PathBuf>::new());
 }
 
 #[test]
-fn test_deserialize_basedir_single() {
-    use std::path::PathBuf;
-
-    // Test single string value
-    let toml = r#"
-        basedir = "/home/user/project"
-
-        [cache.disk]
-        dir = "/tmp/cache"
-        size = 1073741824
-
-        [dist]
-    "#;
-
-    let config: FileConfig = toml::from_str(toml).unwrap();
-    assert_eq!(config.basedir, vec![PathBuf::from("/home/user/project")]);
-}
-
-#[test]
-fn test_deserialize_basedir_multiple() {
+fn test_deserialize_basedirs() {
     use std::path::PathBuf;
 
     // Test array of paths
     let toml = r#"
-        basedir = ["/home/user/project", "/home/user/workspace"]
+        basedirs = ["/home/user/project", "/home/user/workspace"]
 
         [cache.disk]
         dir = "/tmp/cache"
@@ -1514,7 +1474,7 @@ fn test_deserialize_basedir_multiple() {
 
     let config: FileConfig = toml::from_str(toml).unwrap();
     assert_eq!(
-        config.basedir,
+        config.basedirs,
         vec![
             PathBuf::from("/home/user/project"),
             PathBuf::from("/home/user/workspace")
@@ -1523,10 +1483,10 @@ fn test_deserialize_basedir_multiple() {
 }
 
 #[test]
-fn test_deserialize_basedir_missing() {
+fn test_deserialize_basedirs_missing() {
     use std::path::PathBuf;
 
-    // Test no basedir specified (should default to empty vec)
+    // Test no basedirs specified (should default to empty vec)
     let toml = r#"
         [cache.disk]
         dir = "/tmp/cache"
@@ -1536,103 +1496,106 @@ fn test_deserialize_basedir_missing() {
     "#;
 
     let config: FileConfig = toml::from_str(toml).unwrap();
-    assert_eq!(config.basedir, Vec::<PathBuf>::new());
+    assert_eq!(config.basedirs, Vec::<PathBuf>::new());
 }
 
 #[test]
 #[serial]
-fn test_env_basedir_single() {
+fn test_env_basedirs_single() {
     use std::path::PathBuf;
 
     unsafe {
-        std::env::set_var("SCCACHE_BASEDIR", "/home/user/project");
+        std::env::set_var("SCCACHE_BASEDIRS", "/home/user/project");
     }
     let config = config_from_env().unwrap();
-    assert_eq!(config.basedir, vec![PathBuf::from("/home/user/project")]);
+    assert_eq!(config.basedirs, vec![PathBuf::from("/home/user/project")]);
     unsafe {
-        std::env::remove_var("SCCACHE_BASEDIR");
+        std::env::remove_var("SCCACHE_BASEDIRS");
     }
 }
 
 #[test]
 #[serial]
-fn test_env_basedir_multiple() {
+fn test_env_basedirs_multiple() {
     use std::path::PathBuf;
 
     unsafe {
-        std::env::set_var("SCCACHE_BASEDIR", "/home/user/project|/home/user/workspace");
+        std::env::set_var(
+            "SCCACHE_BASEDIRS",
+            "/home/user/project|/home/user/workspace",
+        );
     }
     let config = config_from_env().unwrap();
     assert_eq!(
-        config.basedir,
+        config.basedirs,
         vec![
             PathBuf::from("/home/user/project"),
             PathBuf::from("/home/user/workspace")
         ]
     );
     unsafe {
-        std::env::remove_var("SCCACHE_BASEDIR");
+        std::env::remove_var("SCCACHE_BASEDIRS");
     }
 }
 
 #[test]
 #[serial]
-fn test_env_basedir_with_spaces() {
+fn test_env_basedirs_with_spaces() {
     use std::path::PathBuf;
 
     // Test that spaces around paths are trimmed
     unsafe {
         std::env::set_var(
-            "SCCACHE_BASEDIR",
+            "SCCACHE_BASEDIRS",
             " /home/user/project | /home/user/workspace ",
         );
     }
     let config = config_from_env().unwrap();
     assert_eq!(
-        config.basedir,
+        config.basedirs,
         vec![
             PathBuf::from("/home/user/project"),
             PathBuf::from("/home/user/workspace")
         ]
     );
     unsafe {
-        std::env::remove_var("SCCACHE_BASEDIR");
+        std::env::remove_var("SCCACHE_BASEDIRS");
     }
 }
 
 #[test]
 #[serial]
-fn test_env_basedir_empty_entries() {
+fn test_env_basedirs_empty_entries() {
     use std::path::PathBuf;
 
     // Test that empty entries are filtered out
     unsafe {
         std::env::set_var(
-            "SCCACHE_BASEDIR",
+            "SCCACHE_BASEDIRS",
             "/home/user/project||/home/user/workspace",
         );
     }
     let config = config_from_env().unwrap();
     assert_eq!(
-        config.basedir,
+        config.basedirs,
         vec![
             PathBuf::from("/home/user/project"),
             PathBuf::from("/home/user/workspace")
         ]
     );
     unsafe {
-        std::env::remove_var("SCCACHE_BASEDIR");
+        std::env::remove_var("SCCACHE_BASEDIRS");
     }
 }
 
 #[test]
 #[serial]
-fn test_env_basedir_not_set() {
+fn test_env_basedirs_not_set() {
     unsafe {
-        std::env::remove_var("SCCACHE_BASEDIR");
+        std::env::remove_var("SCCACHE_BASEDIRS");
     }
     let config = config_from_env().unwrap();
-    assert_eq!(config.basedir, Vec::<std::path::PathBuf>::new());
+    assert_eq!(config.basedirs, Vec::<std::path::PathBuf>::new());
 }
 
 #[test]
@@ -1950,7 +1913,7 @@ key_prefix = "cosprefix"
                 rewrite_includes_only: false,
             },
             server_startup_timeout_ms: Some(10000),
-            basedir: vec![],
+            basedirs: vec![],
         }
     )
 }
@@ -2043,7 +2006,7 @@ size = "7g"
                 ..Default::default()
             },
             server_startup_timeout_ms: None,
-            basedir: vec![],
+            basedirs: vec![],
         }
     );
 }

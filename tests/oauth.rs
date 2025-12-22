@@ -60,7 +60,7 @@ fn config_with_dist_auth(
             rewrite_includes_only: true,
         },
         server_startup_timeout_ms: None,
-        basedir: vec![],
+        basedirs: vec![],
     }
 }
 
@@ -226,7 +226,7 @@ fn test_auth_with_config(dist_auth: sccache::config::DistAuth) {
         .tempdir()
         .unwrap();
     let sccache_config = config_with_dist_auth(conf_dir.path(), dist_auth);
-    assert!(sccache_config.basedir.is_empty());
+    assert!(sccache_config.basedirs.is_empty());
     let sccache_config_path = conf_dir.path().join("sccache-config.json");
     fs::File::create(&sccache_config_path)
         .unwrap()

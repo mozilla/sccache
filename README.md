@@ -321,19 +321,19 @@ This is most useful when using sccache for Rust compilation, as rustc supports u
 
 ---
 
-Normalizing Paths with `SCCACHE_BASEDIR`
+Normalizing Paths with `SCCACHE_BASEDIRS`
 -----------------------------------------
 
-By default, sccache requires absolute paths to match for cache hits. To enable cache sharing across different build directories, you can set `SCCACHE_BASEDIR` to strip a base directory from paths before hashing:
+By default, sccache requires absolute paths to match for cache hits. To enable cache sharing across different build directories, you can set `SCCACHE_BASEDIRS` to strip a base directory from paths before hashing:
 
 ```bash
-export SCCACHE_BASEDIR=/home/user/project
+export SCCACHE_BASEDIRS=/home/user/project
 ```
 
 You can also specify multiple base directories by separating them with `|` (pipe character). When multiple directories are provided, the longest matching prefix is used:
 
 ```bash
-export SCCACHE_BASEDIR="/home/user/project|/home/user/workspace"
+export SCCACHE_BASEDIRS="/home/user/project|/home/user/workspace"
 ```
 
 This is similar to ccache's `CCACHE_BASEDIR` and helps when:
@@ -348,10 +348,10 @@ You can also configure this in the sccache config file:
 
 ```toml
 # Single directory
-basedir = "/home/user/project"
+basedirs = ["/home/user/project"]
 
 # Or multiple directories
-basedir = ["/home/user/project", "/home/user/workspace"]
+basedirs = ["/home/user/project", "/home/user/workspace"]
 ```
 
 ---
@@ -361,7 +361,7 @@ Known Caveats
 
 ### General
 
-* By default, absolute paths to files must match to get a cache hit. To work around this, use `SCCACHE_BASEDIR` (see above) to normalize paths before hashing.
+* By default, absolute paths to files must match to get a cache hit. To work around this, use `SCCACHE_BASEDIRS` (see above) to normalize paths before hashing.
 
 ### Rust
 
