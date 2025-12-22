@@ -99,8 +99,11 @@ We also provide a flake with an overlay for getting the latest version:
 ```nix
 {
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";
-    sccache.url = "github:mozilla/sccache";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    sccache = {
+      url = "github:mozilla/sccache";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs = { self, nixpkgs, sccache, ... }:
