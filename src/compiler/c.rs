@@ -1822,7 +1822,7 @@ mod test {
     }
 
     #[test]
-    fn test_hash_key_basedir() {
+    fn test_hash_key_basedirs() {
         use std::path::PathBuf;
 
         let args = ovec!["a", "b", "c"];
@@ -1832,8 +1832,10 @@ mod test {
         let preprocessed1 = b"# 1 \"/home/user1/project/src/main.c\"\nint main() { return 0; }";
         let preprocessed2 = b"# 1 \"/home/user2/project/src/main.c\"\nint main() { return 0; }";
 
-        let basedir1 = PathBuf::from("/home/user1/project");
-        let basedir2 = PathBuf::from("/home/user2/project");
+        let basedirs = [
+            PathBuf::from("/home/user1/project"),
+            PathBuf::from("/home/user2/project"),
+        ];
 
         let h1 = hash_key(
             digest,
@@ -1843,7 +1845,7 @@ mod test {
             &[],
             preprocessed1,
             false,
-            std::slice::from_ref(&basedir1),
+            &basedirs,
         );
         let h2 = hash_key(
             digest,
@@ -1853,7 +1855,7 @@ mod test {
             &[],
             preprocessed2,
             false,
-            std::slice::from_ref(&basedir2),
+            &basedirs,
         );
 
         assert_eq!(h1, h2);
@@ -1896,7 +1898,7 @@ mod test {
             &[],
             preprocessed_cpp1,
             true,
-            std::slice::from_ref(&basedir1),
+            &basedirs,
         );
         let h_cpp2 = hash_key(
             digest,
@@ -1906,7 +1908,7 @@ mod test {
             &[],
             preprocessed_cpp2,
             true,
-            std::slice::from_ref(&basedir2),
+            &basedirs,
         );
 
         assert_eq!(h_cpp1, h_cpp2);
