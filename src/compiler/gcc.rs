@@ -395,7 +395,10 @@ where
                 } else if p.is_empty() {
                     module_output_path = Some(None);
                 } else {
-                    cannot_cache!("unknown module output format", p.to_string_lossy().into_owned());
+                    cannot_cache!(
+                        "unknown module output format",
+                        p.to_string_lossy().into_owned()
+                    );
                 }
             }
             Some(NeedDepTarget) => {
