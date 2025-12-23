@@ -1021,6 +1021,9 @@ pub fn num_cpus() -> usize {
 /// replaces them with relative path markers. When multiple basedirs are provided,
 /// the longest matching prefix is used. This is similar to ccache's CCACHE_BASEDIR.
 ///
+/// On Windows, this function handles paths with mixed forward and backward slashes,
+/// which can occur when different build tools produce preprocessor output.
+///
 /// Only paths that start with one of the basedirs are modified. The paths are expected to be
 /// in the format found in preprocessor output (e.g., `# 1 "/path/to/file"`).
 pub fn strip_basedirs(preprocessor_output: &[u8], basedirs: &[PathBuf]) -> Vec<u8> {
@@ -1055,21 +1058,33 @@ pub fn strip_basedirs(preprocessor_output: &[u8], basedirs: &[PathBuf]) -> Vec<u
         // Try to match each basedir (longest first)
         for (basedir_bytes, basedir_len) in &basedirs_data {
             // Check if we have a match for this basedir at current position
-            if i + basedir_len <= preprocessor_output.len()
-                && preprocessor_output[i..i + basedir_len] == basedir_bytes[..]
-            {
-                // Check if this is actually a path boundary (preceded by whitespace, quote, or start)
-                let is_boundary = i == 0
-                    || preprocessor_output[i - 1].is_ascii_whitespace()
-                    || preprocessor_output[i - 1] == b'"'
-                    || preprocessor_output[i - 1] == b'<';
+            if i + basedir_len <= preprocessor_output.len() {
+                // On Windows, we need to handle mixed forward and backward slashes
+                // Check for exact match first
+                let exact_match = preprocessor_output[i..i + basedir_len] == basedir_bytes[..];
 
-                if is_boundary {
-                    // Replace basedir with "."
-                    result.push(b'.');
-                    i += basedir_len;
-                    matched = true;
-                    break;
+                let slash_normalized_match = if cfg!(target_os = "windows") && !exact_match {
+                    // Try matching with normalized slashes (convert all backslashes to forward slashes)
+                    normalize_path_slashes(&preprocessor_output[i..i + basedir_len])
+                        == normalize_path_slashes(basedir_bytes)
+                } else {
+                    false
+                };
+
+                if exact_match || slash_normalized_match {
+                    // Check if this is actually a path boundary (preceded by whitespace, quote, or start)
+                    let is_boundary = i == 0
+                        || preprocessor_output[i - 1].is_ascii_whitespace()
+                        || preprocessor_output[i - 1] == b'"'
+                        || preprocessor_output[i - 1] == b'<';
+
+                    if is_boundary {
+                        // Replace basedir with "."
+                        result.push(b'.');
+                        i += basedir_len;
+                        matched = true;
+                        break;
+                    }
                 }
             }
         }
@@ -1081,6 +1096,20 @@ pub fn strip_basedirs(preprocessor_output: &[u8], basedirs: &[PathBuf]) -> Vec<u
     }
 
     result
+}
+
+/// Normalize path slashes for comparison (Windows only).
+/// Converts all backslashes to forward slashes for consistent comparison.
+#[cfg(target_os = "windows")]
+fn normalize_path_slashes(path: &[u8]) -> Vec<u8> {
+    path.iter()
+        .map(|&b| if b == b'\\' { b'/' } else { b })
+        .collect()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn normalize_path_slashes(path: &[u8]) -> Vec<u8> {
+    path.to_vec()
 }
 
 #[cfg(test)]
@@ -1359,5 +1388,24 @@ mod tests {
         let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
         let expected = b"# 1 \".\\src\\main.c\"";
         assert_eq!(output, expected);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_strip_basedir_windows_mixed_slashes() {
+        use std::path::PathBuf;
+
+        // Mixed forward and backslashes in input (common from certain build systems)
+        let basedir = PathBuf::from("C:\\Users\\test\\project");
+        let input = b"# 1 \"C:/Users\\test\\project\\src/main.c\"";
+        let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
+        let expected = b"# 1 \".\\src/main.c\"";
+        assert_eq!(output, expected, "Failed to strip mixed slash path");
+
+        // Also test the reverse case
+        let input = b"# 1 \"C:\\Users/test/project/src\\main.c\"";
+        let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
+        let expected = b"# 1 \"./src\\main.c\"";
+        assert_eq!(output, expected, "Failed to strip reverse mixed slash path");
     }
 }
