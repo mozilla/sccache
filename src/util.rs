@@ -1021,8 +1021,10 @@ pub fn num_cpus() -> usize {
 /// replaces them with relative path markers. When multiple basedirs are provided,
 /// the longest matching prefix is used. This is similar to ccache's CCACHE_BASEDIR.
 ///
-/// On Windows, this function handles paths with mixed forward and backward slashes,
-/// which can occur when different build tools produce preprocessor output.
+/// Path matching is case-insensitive to handle various filesystem behaviors and build system
+/// configurations uniformly across all operating systems. On Windows, this function also handles
+/// paths with mixed forward and backward slashes, which can occur when different build tools
+/// produce preprocessor output.
 ///
 /// Only paths that start with one of the basedirs are modified. The paths are expected to be
 /// in the format found in preprocessor output (e.g., `# 1 "/path/to/file"`).
@@ -1059,19 +1061,19 @@ pub fn strip_basedirs(preprocessor_output: &[u8], basedirs: &[PathBuf]) -> Vec<u
         for (basedir_bytes, basedir_len) in &basedirs_data {
             // Check if we have a match for this basedir at current position
             if i + basedir_len <= preprocessor_output.len() {
-                // On Windows, we need to handle mixed forward and backward slashes
-                // Check for exact match first
-                let exact_match = preprocessor_output[i..i + basedir_len] == basedir_bytes[..];
+                let candidate = &preprocessor_output[i..i + basedir_len];
 
-                let slash_normalized_match = if cfg!(target_os = "windows") && !exact_match {
-                    // Try matching with normalized slashes (convert all backslashes to forward slashes)
-                    normalize_path_slashes(&preprocessor_output[i..i + basedir_len])
-                        == normalize_path_slashes(basedir_bytes)
+                // Try exact match first
+                let exact_match = candidate == basedir_bytes;
+
+                // Try case-insensitive match
+                let normalized_match = if !exact_match {
+                    normalize_path(candidate) == normalize_path(basedir_bytes)
                 } else {
                     false
                 };
 
-                if exact_match || slash_normalized_match {
+                if exact_match || normalized_match {
                     // Check if this is actually a path boundary (preceded by whitespace, quote, or start)
                     let is_boundary = i == 0
                         || preprocessor_output[i - 1].is_ascii_whitespace()
@@ -1098,17 +1100,22 @@ pub fn strip_basedirs(preprocessor_output: &[u8], basedirs: &[PathBuf]) -> Vec<u
     result
 }
 
-/// Normalize path slashes for comparison (Windows only).
-/// Converts all backslashes to forward slashes for consistent comparison.
+/// Normalize path for case-insensitive comparison.
+/// On Windows: converts all backslashes to forward slashes;
+///             lowercases ASCII characters for consistency.
 #[cfg(target_os = "windows")]
-fn normalize_path_slashes(path: &[u8]) -> Vec<u8> {
+fn normalize_path(path: &[u8]) -> Vec<u8> {
     path.iter()
-        .map(|&b| if b == b'\\' { b'/' } else { b })
+        .map(|&b| match b {
+            b'A'..=b'Z' => b + 32,
+            b'\\' => b'/',
+            _ => b,
+        })
         .collect()
 }
 
 #[cfg(not(target_os = "windows"))]
-fn normalize_path_slashes(path: &[u8]) -> Vec<u8> {
+fn normalize_path(path: &[u8]) -> Vec<u8> {
     path.to_vec()
 }
 
@@ -1367,6 +1374,29 @@ mod tests {
         let input = b"# 1 \"/home/user/project/src/main.c\"";
         let output = super::strip_basedirs(input, &basedirs);
         let expected = b"# 1 \"./src/main.c\"";
+        assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn test_strip_basedir_case_insensitive() {
+        use std::path::PathBuf;
+
+        // Case insensitive matching - basedir in lowercase, input in uppercase
+        let basedir = PathBuf::from("/home/user/project");
+        let input = b"# 1 \"/HOME/USER/PROJECT/src/main.c\"";
+        let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
+        let expected = b"# 1 \"./src/main.c\"";
+        assert_eq!(output, expected);
+
+        // Mixed case in both
+        let input = b"# 1 \"/Home/User/Project/src/main.c\"";
+        let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
+        assert_eq!(output, expected);
+
+        // Basedir in uppercase, input in lowercase
+        let basedir = PathBuf::from("/HOME/USER/PROJECT");
+        let input = b"# 1 \"/home/user/project/src/main.c\"";
+        let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
         assert_eq!(output, expected);
     }
 

@@ -336,6 +336,8 @@ You can also specify multiple base directories by separating them with `|` (pipe
 export SCCACHE_BASEDIRS="/home/user/project|/home/user/workspace"
 ```
 
+Path matching is **case-insensitive** on Windows and **case-sensitive** on other operating systems.
+
 This is similar to ccache's `CCACHE_BASEDIR` and helps when:
 * Building the same project from different directories
 * Sharing cache between CI jobs with different checkout paths
