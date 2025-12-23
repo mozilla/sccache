@@ -3303,17 +3303,24 @@ proc_macro false
     #[cfg(feature = "dist-client")]
     #[test]
     fn test_rlib_dep_reader_call() {
-        let cargo_home = std::env::var("CARGO_HOME");
-        assert!(cargo_home.is_ok());
-
         let mut env_vars = vec![];
         if let Some(rustup_home) = std::env::var_os("RUSTUP_HOME") {
             env_vars.push(("RUSTUP_HOME".into(), rustup_home));
         }
 
-        let mut rustc_path = PathBuf::from(cargo_home.unwrap());
-        rustc_path.push("bin");
-        rustc_path.push("rustc");
+        // Try to find rustc from CARGO_HOME first, then fall back to `which`
+        let rustc_path = if let Ok(cargo_home) = std::env::var("CARGO_HOME") {
+            let mut path = PathBuf::from(cargo_home);
+            path.push("bin");
+            path.push("rustc");
+            if path.exists() {
+                path
+            } else {
+                which::which("rustc").expect("rustc not found in CARGO_HOME or PATH")
+            }
+        } else {
+            which::which("rustc").expect("rustc not found in PATH")
+        };
 
         let rlib_dep_reader = RlibDepReader::new_with_check(rustc_path, &env_vars);
         let is_ok = rlib_dep_reader.is_ok();
