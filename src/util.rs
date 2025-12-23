@@ -1051,6 +1051,12 @@ pub fn strip_basedirs(preprocessor_output: &[u8], basedirs: &[PathBuf]) -> Vec<u
     // Sort by length descending (longest first)
     basedirs_data.sort_by(|a, b| b.1.cmp(&a.1));
 
+    trace!(
+        "Stripping basedirs from preprocessor output with length {}: {:?}",
+        preprocessor_output.len(),
+        basedirs
+    );
+
     let mut result = Vec::with_capacity(preprocessor_output.len());
     let mut i = 0;
 
@@ -1085,6 +1091,10 @@ pub fn strip_basedirs(preprocessor_output: &[u8], basedirs: &[PathBuf]) -> Vec<u
                         result.push(b'.');
                         i += basedir_len;
                         matched = true;
+                        trace!(
+                            "Stripped basedir: {}",
+                            String::from_utf8_lossy(basedir_bytes)
+                        );
                         break;
                     }
                 }
