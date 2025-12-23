@@ -381,6 +381,7 @@ pub fn preprocessor_cache_entry_hash_key(
     input_file: &Path,
     plusplus: bool,
     config: PreprocessorCacheModeConfig,
+    basedirs: &[PathBuf],
 ) -> anyhow::Result<Option<String>> {
     // If you change any of the inputs to the hash, you should change `FORMAT_VERSION`.
     let mut m = Digest::new();
@@ -414,7 +415,15 @@ pub fn preprocessor_cache_entry_hash_key(
     // share preprocessor cache entries and a/r.h exists.
     let mut buf = vec![];
     encode_path(&mut buf, input_file)?;
-    m.update(&buf);
+
+    // Strip basedirs from the input file path if configured
+    let buf_to_hash = if !basedirs.is_empty() {
+        use crate::util::strip_basedirs;
+        strip_basedirs(&buf, basedirs)
+    } else {
+        buf.clone()
+    };
+    m.update(&buf_to_hash);
     let reader = std::fs::File::open(input_file)
         .with_context(|| format!("while hashing the input file '{}'", input_file.display()))?;
 
@@ -633,5 +642,93 @@ mod test {
         assert!(!finder.found_time());
         assert!(!finder.found_timestamp());
         assert!(!finder.found_date());
+    }
+
+    #[test]
+    fn test_preprocessor_cache_entry_hash_key_basedirs() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        // Create two different base directories
+        let dir1 = TempDir::new().unwrap();
+        let dir2 = TempDir::new().unwrap();
+
+        // Create identical files with the same relative path in each directory
+        let file1_path = dir1.path().join("test.c");
+        let file2_path = dir2.path().join("test.c");
+
+        let content = b"int main() { return 0; }";
+        fs::write(&file1_path, content).unwrap();
+        fs::write(&file2_path, content).unwrap();
+
+        let config = PreprocessorCacheModeConfig::activated();
+
+        // Test 1: With basedirs, hashes should be the same
+        let hash1_with_basedirs = preprocessor_cache_entry_hash_key(
+            "test_digest",
+            Language::C,
+            &[],
+            &[],
+            &[],
+            &file1_path,
+            false,
+            config,
+            &[dir1.path().to_path_buf(), dir2.path().to_path_buf()],
+        )
+        .unwrap()
+        .unwrap();
+
+        let hash2_with_basedirs = preprocessor_cache_entry_hash_key(
+            "test_digest",
+            Language::C,
+            &[],
+            &[],
+            &[],
+            &file2_path,
+            false,
+            config,
+            &[dir1.path().to_path_buf(), dir2.path().to_path_buf()],
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(
+            hash1_with_basedirs, hash2_with_basedirs,
+            "Hashes should be equal when using basedirs with identical files in different directories"
+        );
+
+        // Test 2: Without basedirs, hashes should be different
+        let hash1_no_basedirs = preprocessor_cache_entry_hash_key(
+            "test_digest",
+            Language::C,
+            &[],
+            &[],
+            &[],
+            &file1_path,
+            false,
+            config,
+            &[],
+        )
+        .unwrap()
+        .unwrap();
+
+        let hash2_no_basedirs = preprocessor_cache_entry_hash_key(
+            "test_digest",
+            Language::C,
+            &[],
+            &[],
+            &[],
+            &file2_path,
+            false,
+            config,
+            &[],
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_ne!(
+            hash1_no_basedirs, hash2_no_basedirs,
+            "Hashes should be different without basedirs for files in different directories"
+        );
     }
 }

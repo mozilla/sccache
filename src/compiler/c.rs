@@ -452,6 +452,7 @@ where
                 &absolute_input_path,
                 self.compiler.plusplus(),
                 preprocessor_cache_mode_config,
+                storage.basedirs(),
             )?
         } else {
             None
