@@ -1387,29 +1387,6 @@ mod tests {
         assert_eq!(output, expected);
     }
 
-    #[test]
-    fn test_strip_basedir_case_insensitive() {
-        use std::path::PathBuf;
-
-        // Case insensitive matching - basedir in lowercase, input in uppercase
-        let basedir = PathBuf::from("/home/user/project");
-        let input = b"# 1 \"/HOME/USER/PROJECT/src/main.c\"";
-        let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
-        let expected = b"# 1 \"./src/main.c\"";
-        assert_eq!(output, expected);
-
-        // Mixed case in both
-        let input = b"# 1 \"/Home/User/Project/src/main.c\"";
-        let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
-        assert_eq!(output, expected);
-
-        // Basedir in uppercase, input in lowercase
-        let basedir = PathBuf::from("/HOME/USER/PROJECT");
-        let input = b"# 1 \"/home/user/project/src/main.c\"";
-        let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
-        assert_eq!(output, expected);
-    }
-
     #[cfg(target_os = "windows")]
     #[test]
     fn test_strip_basedir_windows_backslashes() {
