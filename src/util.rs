@@ -1034,22 +1034,20 @@ pub fn strip_basedirs(preprocessor_output: &[u8], basedirs: &[PathBuf]) -> Vec<u
     }
 
     // Prepare normalized basedirs sorted by length (longest first) to match longest prefix first
-    let mut basedirs_data: Vec<_> = basedirs
+    let basedirs_data: Vec<_> = basedirs
         .iter()
         .map(|basedir| {
-            let normalized = basedir.to_string_lossy();
-            let trimmed = normalized.trim_end_matches('/').trim_end_matches('\\');
-            (trimmed.as_bytes().to_vec(), trimmed.len())
+            let basedir_str = basedir.to_string_lossy();
+            let trimmed = basedir_str.trim_end_matches('/').trim_end_matches('\\');
+            let normalized = normalize_path(trimmed.as_bytes());
+            (trimmed.as_bytes().to_vec(), normalized, trimmed.len())
         })
-        .filter(|(bytes, _)| !bytes.is_empty())
+        .filter(|(bytes, _, _)| !bytes.is_empty())
         .collect();
 
     if basedirs_data.is_empty() {
         return preprocessor_output.to_vec();
     }
-
-    // Sort by length descending (longest first)
-    basedirs_data.sort_by(|a, b| b.1.cmp(&a.1));
 
     trace!(
         "Stripping basedirs from preprocessor output with length {}: {:?}",
@@ -1057,55 +1055,72 @@ pub fn strip_basedirs(preprocessor_output: &[u8], basedirs: &[PathBuf]) -> Vec<u
         basedirs
     );
 
-    let mut result = Vec::with_capacity(preprocessor_output.len());
-    let mut i = 0;
+    // Find all potential matches for each basedir using fast substring search
+    // Store as (position, basedir_index, length) sorted by position
+    let mut matches: Vec<(usize, usize, usize)> = Vec::new();
+    #[cfg(target_os = "windows")]
+    let preprocessor_output_normalized = normalize_path(preprocessor_output);
 
-    while i < preprocessor_output.len() {
-        let mut matched = false;
+    for (basedir_idx, basedir) in basedirs_data.iter().enumerate() {
+        let basedir_len = basedir.2;
+        // Use memchr's fast substring search
+        // Case sensitive
+        #[cfg(not(target_os = "windows"))]
+        let finder = memchr::memmem::find_iter(preprocessor_output, &basedir.0);
+        // Case insensitive
+        #[cfg(target_os = "windows")]
+        let finder = memchr::memmem::find_iter(&preprocessor_output_normalized, &basedir.1);
 
-        // Try to match each basedir (longest first)
-        for (basedir_bytes, basedir_len) in &basedirs_data {
-            // Check if we have a match for this basedir at current position
-            if i + basedir_len <= preprocessor_output.len() {
-                let candidate = &preprocessor_output[i..i + basedir_len];
+        for pos in finder {
+            // Check if this is a valid boundary (start, whitespace, quote, or '<')
+            let is_boundary = pos == 0
+                || preprocessor_output[pos - 1].is_ascii_whitespace()
+                || preprocessor_output[pos - 1] == b'"'
+                || preprocessor_output[pos - 1] == b'<';
 
-                // Try exact match first
-                let exact_match = candidate == basedir_bytes;
-
-                // Try case-insensitive match
-                let normalized_match = if !exact_match {
-                    normalize_path(candidate) == normalize_path(basedir_bytes)
-                } else {
-                    false
-                };
-
-                if exact_match || normalized_match {
-                    // Check if this is actually a path boundary (preceded by whitespace, quote, or start)
-                    let is_boundary = i == 0
-                        || preprocessor_output[i - 1].is_ascii_whitespace()
-                        || preprocessor_output[i - 1] == b'"'
-                        || preprocessor_output[i - 1] == b'<';
-
-                    if is_boundary {
-                        // Replace basedir with "."
-                        result.push(b'.');
-                        i += basedir_len;
-                        matched = true;
-                        trace!(
-                            "Stripped basedir: {}",
-                            String::from_utf8_lossy(basedir_bytes)
-                        );
-                        break;
-                    }
-                }
+            if is_boundary {
+                matches.push((pos, basedir_idx, basedir_len));
             }
         }
+    }
 
-        if !matched {
-            result.push(preprocessor_output[i]);
-            i += 1;
+    if matches.is_empty() {
+        return preprocessor_output.to_vec();
+    }
+
+    // Sort matches by position, then by length descending (longest first for overlaps)
+    matches.sort_by(|a, b| a.0.cmp(&b.0).then(b.2.cmp(&a.2)));
+
+    // Remove overlapping matches, keeping the longest match at each position
+    let mut filtered_matches: Vec<(usize, usize)> = Vec::new();
+    let mut last_end = 0;
+
+    for (pos, _basedir_idx, len) in matches {
+        if pos >= last_end {
+            filtered_matches.push((pos, len));
+            last_end = pos + len;
+            trace!(
+                "Matched basedir at position {} with length {}",
+                pos,
+                len
+            );
         }
     }
+
+    // Build the result in a single pass
+    let mut result = Vec::with_capacity(preprocessor_output.len());
+    let mut current_pos = 0;
+
+    for (match_pos, match_len) in filtered_matches {
+        // Copy everything before the match
+        result.extend_from_slice(&preprocessor_output[current_pos..match_pos]);
+        // Replace the basedir with "."
+        result.push(b'.');
+        current_pos = match_pos + match_len;
+    }
+
+    // Copy remaining data
+    result.extend_from_slice(&preprocessor_output[current_pos..]);
 
     result
 }
