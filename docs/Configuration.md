@@ -6,17 +6,24 @@
 # If specified, wait this long for the server to start up.
 server_startup_timeout_ms = 10000
 
-# Base directory (or directories) to strip from paths for cache key computation.
-# Similar to ccache's CCACHE_BASEDIR. This enables cache hits across
-# different absolute paths when compiling the same source code.
-# Can be an array of paths. When multiple paths are provided,
-# the longest matching prefix is used.
+# Base directories to strip from source paths during cache key
+# computation.
+#
+# Similar to ccache's CCACHE_BASEDIR, but supports multiple paths.
+#
+# 'basedirs' enables cache hits across different absolute root
+# paths when compiling the same source code, such as between
+# parallel checkouts of the same project, Git worktrees, or different
+# users in a shared environment.
+# When multiple paths are provided, the longest matching prefix
+# is applied.
+# 
 # Path matching is case-insensitive on Windows and case-sensitive on other OSes.
-# For example, if basedir is "/home/user/project", then paths like
-# "/home/user/project/src/main.c" will be normalized to "./src/main.c"
-# for caching purposes.
+#
+# Example:
+#   basedir = ["/home/user/project"] results in the path prefix rewrite:
+#   "/home/user/project/src/main.c" -> "./src/main.c"
 basedirs = ["/home/user/project"]
-# Or multiple directories:
 # basedirs = ["/home/user/project", "/home/user/workspace"]
 
 [dist]
