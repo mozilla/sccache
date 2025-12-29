@@ -330,10 +330,10 @@ By default, sccache requires absolute paths to match for cache hits. To enable c
 export SCCACHE_BASEDIRS=/home/user/project
 ```
 
-You can also specify multiple base directories by separating them with `|` (pipe character). When multiple directories are provided, the longest matching prefix is used:
+You can also specify multiple base directories by separating them by `;` on Windows hosts and by `:` on any other. When multiple directories are provided, the longest matching prefix is used:
 
 ```bash
-export SCCACHE_BASEDIRS="/home/user/project|/home/user/workspace"
+export SCCACHE_BASEDIRS="/home/user/project:/home/user/workspace"
 ```
 
 Path matching is **case-insensitive** on Windows and **case-sensitive** on other operating systems.
@@ -344,7 +344,7 @@ This is similar to ccache's `CCACHE_BASEDIR` and helps when:
 * Multiple developers working with different username paths
 * Working with multiple project checkouts simultaneously
 
-**Note:** Only absolute paths are supported. Relative paths will be ignored with a warning.
+**Note:** Only absolute paths are supported. Relative paths will prevent server from start.
 
 You can also configure this in the sccache config file:
 

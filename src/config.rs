@@ -981,11 +981,17 @@ fn config_from_env() -> Result<EnvConfig> {
     };
 
     // ======= Base directory =======
-    // Support multiple paths separated by '|' (a character forbidden in paths)
+    // Support multiple paths separated by ';' on Windows and ':' on other platforms
+    // to match PATH behavior.
+    let split_symbol = if cfg!(target_os = "windows") {
+        ';'
+    } else {
+        ':'
+    };
     let basedirs = env::var_os("SCCACHE_BASEDIRS")
         .map(|s| {
             s.to_string_lossy()
-                .split('|')
+                .split(split_symbol)
                 .map(|p| PathBuf::from(p.trim()))
                 .filter(|p| !p.as_os_str().is_empty())
                 .collect()
@@ -1417,6 +1423,61 @@ fn config_overrides() {
 }
 
 #[test]
+#[cfg(target_os = "windows")]
+fn config_basedirs_overrides() {
+    use std::path::PathBuf;
+
+    // Test that env variable takes precedence over file config
+    let env_conf = EnvConfig {
+        cache: Default::default(),
+        basedirs: vec![PathBuf::from("C:/env/basedir")],
+    };
+
+    let file_conf = FileConfig {
+        cache: Default::default(),
+        dist: Default::default(),
+        server_startup_timeout_ms: None,
+        basedirs: vec![PathBuf::from("C:/file/basedir")],
+    };
+
+    let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
+    assert_eq!(config.basedirs, vec![PathBuf::from("C:\\env\\basedir")]);
+
+    // Test that file config is used when env is empty
+    let env_conf = EnvConfig {
+        cache: Default::default(),
+        basedirs: vec![],
+    };
+
+    let file_conf = FileConfig {
+        cache: Default::default(),
+        dist: Default::default(),
+        server_startup_timeout_ms: None,
+        basedirs: vec![PathBuf::from("C:/file/basedir")],
+    };
+
+    let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
+    assert_eq!(config.basedirs, vec![PathBuf::from("C:\\file\\basedir")]);
+
+    // Test that both empty results in empty
+    let env_conf = EnvConfig {
+        cache: Default::default(),
+        basedirs: vec![],
+    };
+
+    let file_conf = FileConfig {
+        cache: Default::default(),
+        dist: Default::default(),
+        server_startup_timeout_ms: None,
+        basedirs: vec![],
+    };
+
+    let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
+    assert_eq!(config.basedirs, Vec::<PathBuf>::new());
+}
+
+#[test]
+#[cfg(not(target_os = "windows"))]
 fn config_basedirs_overrides() {
     use std::path::PathBuf;
 
@@ -1470,6 +1531,7 @@ fn config_basedirs_overrides() {
 }
 
 #[test]
+#[cfg(not(target_os = "windows"))]
 fn test_deserialize_basedirs() {
     use std::path::PathBuf;
 
@@ -1513,6 +1575,7 @@ fn test_deserialize_basedirs_missing() {
 
 #[test]
 #[serial]
+#[cfg(not(target_os = "windows"))]
 fn test_env_basedirs_single() {
     use std::path::PathBuf;
 
@@ -1528,13 +1591,33 @@ fn test_env_basedirs_single() {
 
 #[test]
 #[serial]
+#[cfg(target_os = "windows")]
+fn test_env_basedirs_single() {
+    use std::path::PathBuf;
+
+    unsafe {
+        std::env::set_var("SCCACHE_BASEDIRS", "C:/home/user/project");
+    }
+    let config = config_from_env().unwrap();
+    assert_eq!(
+        config.basedirs,
+        vec![PathBuf::from("C:\\home\\user\\project")]
+    );
+    unsafe {
+        std::env::remove_var("SCCACHE_BASEDIRS");
+    }
+}
+
+#[test]
+#[serial]
+#[cfg(not(target_os = "windows"))]
 fn test_env_basedirs_multiple() {
     use std::path::PathBuf;
 
     unsafe {
         std::env::set_var(
             "SCCACHE_BASEDIRS",
-            "/home/user/project|/home/user/workspace",
+            "/home/user/project:/home/user/workspace",
         );
     }
     let config = config_from_env().unwrap();
@@ -1552,6 +1635,32 @@ fn test_env_basedirs_multiple() {
 
 #[test]
 #[serial]
+#[cfg(target_os = "windows")]
+fn test_env_basedirs_multiple() {
+    use std::path::PathBuf;
+
+    unsafe {
+        std::env::set_var(
+            "SCCACHE_BASEDIRS",
+            "C:/home/user/project;C:/home/user/workspace",
+        );
+    }
+    let config = config_from_env().unwrap();
+    assert_eq!(
+        config.basedirs,
+        vec![
+            PathBuf::from("C:\\home\\user\\project"),
+            PathBuf::from("C:\\home\\user\\workspace")
+        ]
+    );
+    unsafe {
+        std::env::remove_var("SCCACHE_BASEDIRS");
+    }
+}
+
+#[test]
+#[serial]
+#[cfg(not(target_os = "windows"))]
 fn test_env_basedirs_with_spaces() {
     use std::path::PathBuf;
 
@@ -1559,7 +1668,7 @@ fn test_env_basedirs_with_spaces() {
     unsafe {
         std::env::set_var(
             "SCCACHE_BASEDIRS",
-            " /home/user/project | /home/user/workspace ",
+            " /home/user/project : /home/user/workspace ",
         );
     }
     let config = config_from_env().unwrap();
@@ -1577,6 +1686,33 @@ fn test_env_basedirs_with_spaces() {
 
 #[test]
 #[serial]
+#[cfg(target_os = "windows")]
+fn test_env_basedirs_with_spaces() {
+    use std::path::PathBuf;
+
+    // Test that spaces around paths are trimmed
+    unsafe {
+        std::env::set_var(
+            "SCCACHE_BASEDIRS",
+            " C:/home/user/project ; C:/home/user/workspace ",
+        );
+    }
+    let config = config_from_env().unwrap();
+    assert_eq!(
+        config.basedirs,
+        vec![
+            PathBuf::from("C:\\home\\user\\project"),
+            PathBuf::from("C:\\home\\user\\workspace")
+        ]
+    );
+    unsafe {
+        std::env::remove_var("SCCACHE_BASEDIRS");
+    }
+}
+
+#[test]
+#[serial]
+#[cfg(not(target_os = "windows"))]
 fn test_env_basedirs_empty_entries() {
     use std::path::PathBuf;
 
@@ -1584,7 +1720,7 @@ fn test_env_basedirs_empty_entries() {
     unsafe {
         std::env::set_var(
             "SCCACHE_BASEDIRS",
-            "/home/user/project||/home/user/workspace",
+            "/home/user/project::/home/user/workspace",
         );
     }
     let config = config_from_env().unwrap();
@@ -1593,6 +1729,32 @@ fn test_env_basedirs_empty_entries() {
         vec![
             PathBuf::from("/home/user/project"),
             PathBuf::from("/home/user/workspace")
+        ]
+    );
+    unsafe {
+        std::env::remove_var("SCCACHE_BASEDIRS");
+    }
+}
+
+#[test]
+#[serial]
+#[cfg(target_os = "windows")]
+fn test_env_basedirs_empty_entries() {
+    use std::path::PathBuf;
+
+    // Test that empty entries are filtered out
+    unsafe {
+        std::env::set_var(
+            "SCCACHE_BASEDIRS",
+            "c:/home/user/project;;c:/home/user/workspace",
+        );
+    }
+    let config = config_from_env().unwrap();
+    assert_eq!(
+        config.basedirs,
+        vec![
+            PathBuf::from("c:\\home\\user\\project"),
+            PathBuf::from("c:\\home\\user\\workspace")
         ]
     );
     unsafe {
