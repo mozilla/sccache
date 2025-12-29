@@ -10,6 +10,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -62,6 +63,11 @@ impl Storage for ReadOnlyStorage {
     /// Return the config for preprocessor cache mode if applicable
     fn preprocessor_cache_mode_config(&self) -> PreprocessorCacheModeConfig {
         self.0.preprocessor_cache_mode_config()
+    }
+
+    /// Return the base directories for path normalization if configured
+    fn basedirs(&self) -> &[PathBuf] {
+        self.0.basedirs()
     }
 
     /// Return the preprocessor cache entry for a given preprocessor key,
@@ -119,6 +125,40 @@ mod test {
                 .preprocessor_cache_mode_config()
                 .use_preprocessor_cache_mode
         );
+    }
+
+    #[test]
+    fn readonly_storage_forwards_basedirs() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .worker_threads(1)
+            .build()
+            .unwrap();
+
+        let tempdir = tempfile::Builder::new()
+            .prefix("sccache_test_readonly_basedirs")
+            .tempdir()
+            .expect("Failed to create tempdir");
+        let cache_dir = tempdir.path().join("cache");
+        std::fs::create_dir(&cache_dir).unwrap();
+
+        let basedirs = vec![
+            std::path::PathBuf::from("/home/user/project"),
+            std::path::PathBuf::from("/home/user/workspace"),
+        ];
+
+        let disk_cache = crate::cache::disk::DiskCache::new(
+            &cache_dir,
+            1024 * 1024,
+            runtime.handle(),
+            super::super::PreprocessorCacheModeConfig::default(),
+            super::super::CacheMode::ReadWrite,
+            basedirs.clone(),
+        );
+
+        let readonly_storage = ReadOnlyStorage(std::sync::Arc::new(disk_cache));
+
+        assert_eq!(readonly_storage.basedirs(), basedirs.as_slice());
     }
 
     #[test]
