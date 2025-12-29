@@ -600,8 +600,7 @@ pub struct FileConfig {
     pub cache: CacheConfigs,
     pub dist: DistConfig,
     pub server_startup_timeout_ms: Option<u64>,
-    /// Base directory (or directories) to strip from paths for cache key computation.
-    /// Can be a single path or an array of paths.
+    /// Base directories to strip from paths for cache key computation.
     pub basedirs: Vec<PathBuf>,
 }
 
