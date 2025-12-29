@@ -1033,22 +1033,6 @@ pub fn strip_basedirs(preprocessor_output: &[u8], basedirs: &[PathBuf]) -> Vec<u
         return preprocessor_output.to_vec();
     }
 
-    // Prepare normalized basedirs sorted by length (longest first) to match longest prefix first
-    let basedirs_data: Vec<_> = basedirs
-        .iter()
-        .map(|basedir| {
-            let basedir_str = basedir.to_string_lossy();
-            let trimmed = basedir_str.trim_end_matches('/').trim_end_matches('\\');
-            let normalized = normalize_path(trimmed.as_bytes());
-            (trimmed.as_bytes().to_vec(), normalized, trimmed.len())
-        })
-        .filter(|(bytes, _, _)| !bytes.is_empty())
-        .collect();
-
-    if basedirs_data.is_empty() {
-        return preprocessor_output.to_vec();
-    }
-
     trace!(
         "Stripping basedirs from preprocessor output with length {}: {:?}",
         preprocessor_output.len(),
@@ -1056,20 +1040,22 @@ pub fn strip_basedirs(preprocessor_output: &[u8], basedirs: &[PathBuf]) -> Vec<u
     );
 
     // Find all potential matches for each basedir using fast substring search
-    // Store as (position, basedir_index, length) sorted by position
-    let mut matches: Vec<(usize, usize, usize)> = Vec::new();
+    // Store as (position, length) sorted by position
+    let mut matches: Vec<(usize, usize)> = Vec::new();
     #[cfg(target_os = "windows")]
-    let preprocessor_output_normalized = normalize_path(preprocessor_output);
+    let preprocessor_output = &normalize_path(preprocessor_output);
 
-    for (basedir_idx, basedir) in basedirs_data.iter().enumerate() {
-        let basedir_len = basedir.2;
-        // Use memchr's fast substring search
-        // Case sensitive
-        #[cfg(not(target_os = "windows"))]
-        let finder = memchr::memmem::find_iter(preprocessor_output, &basedir.0);
-        // Case insensitive
+    for basedir_path in basedirs.iter() {
+        let basedir_str = basedir_path.to_string_lossy();
+        let basedir = basedir_str
+            .trim_end_matches('/')
+            .trim_end_matches('\\')
+            .as_bytes();
         #[cfg(target_os = "windows")]
-        let finder = memchr::memmem::find_iter(&preprocessor_output_normalized, &basedir.1);
+        // Case insensitive
+        let basedir = normalize_path(basedir);
+        // Use memchr's fast substring search
+        let finder = memchr::memmem::find_iter(preprocessor_output, &basedir);
 
         for pos in finder {
             // Check if this is a valid boundary (start, whitespace, quote, or '<')
@@ -1079,7 +1065,7 @@ pub fn strip_basedirs(preprocessor_output: &[u8], basedirs: &[PathBuf]) -> Vec<u
                 || preprocessor_output[pos - 1] == b'<';
 
             if is_boundary {
-                matches.push((pos, basedir_idx, basedir_len));
+                matches.push((pos, basedir.len()));
             }
         }
     }
@@ -1089,13 +1075,13 @@ pub fn strip_basedirs(preprocessor_output: &[u8], basedirs: &[PathBuf]) -> Vec<u
     }
 
     // Sort matches by position, then by length descending (longest first for overlaps)
-    matches.sort_by(|a, b| a.0.cmp(&b.0).then(b.2.cmp(&a.2)));
+    matches.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
 
     // Remove overlapping matches, keeping the longest match at each position
     let mut filtered_matches: Vec<(usize, usize)> = Vec::new();
     let mut last_end = 0;
 
-    for (pos, _basedir_idx, len) in matches {
+    for (pos, len) in matches {
         if pos >= last_end {
             filtered_matches.push((pos, len));
             last_end = pos + len;
@@ -1124,6 +1110,10 @@ pub fn strip_basedirs(preprocessor_output: &[u8], basedirs: &[PathBuf]) -> Vec<u
 /// Normalize path for case-insensitive comparison.
 /// On Windows: converts all backslashes to forward slashes;
 ///             lowercases ASCII characters for consistency.
+/// This function used for two purposes:
+///     - basedir_path: already normalized by std::path::absolute,
+///       but still can mismatch the case of the actual file name
+///     - preprocessor_output: plain text
 #[cfg(target_os = "windows")]
 fn normalize_path(path: &[u8]) -> Vec<u8> {
     path.iter()
@@ -1133,11 +1123,6 @@ fn normalize_path(path: &[u8]) -> Vec<u8> {
             _ => b,
         })
         .collect()
-}
-
-#[cfg(not(target_os = "windows"))]
-fn normalize_path(path: &[u8]) -> Vec<u8> {
-    path.to_vec()
 }
 
 #[cfg(test)]
@@ -1407,14 +1392,15 @@ mod tests {
         let basedir = PathBuf::from("C:\\Users\\test\\project");
         let input = b"# 1 \"C:\\Users\\test\\project\\src\\main.c\"";
         let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
-        let expected = b"# 1 \".\\src\\main.c\"";
+        // normalized backslash to slash
+        let expected = b"# 1 \"./src/main.c\"";
         assert_eq!(output, expected);
 
         // With multiple trailing backslashes
         let basedir = PathBuf::from("C:\\Users\\test\\project\\\\\\");
         let input = b"# 1 \"C:\\Users\\test\\project\\src\\main.c\"";
         let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
-        let expected = b"# 1 \".\\src\\main.c\"";
+        let expected = b"# 1 \"./src/main.c\"";
         assert_eq!(output, expected);
     }
 
@@ -1427,13 +1413,13 @@ mod tests {
         let basedir = PathBuf::from("C:\\Users\\test\\project");
         let input = b"# 1 \"C:/Users\\test\\project\\src/main.c\"";
         let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
-        let expected = b"# 1 \".\\src/main.c\"";
+        let expected = b"# 1 \"./src/main.c\"";
         assert_eq!(output, expected, "Failed to strip mixed slash path");
 
         // Also test the reverse case
         let input = b"# 1 \"C:\\Users/test/project/src\\main.c\"";
         let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
-        let expected = b"# 1 \"./src\\main.c\"";
+        let expected = b"# 1 \"./src/main.c\"";
         assert_eq!(output, expected, "Failed to strip reverse mixed slash path");
     }
 }
