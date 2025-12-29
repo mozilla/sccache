@@ -26,7 +26,7 @@ use serde::{
 use serial_test::serial;
 use std::env;
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Path, PathBuf, absolute};
 use std::result::Result as StdResult;
 use std::str::FromStr;
 use std::sync::{LazyLock, Mutex};
@@ -1038,10 +1038,10 @@ impl Config {
             .context("Failed to load config file")?
             .unwrap_or_default();
 
-        Ok(Self::from_env_and_file_configs(env_conf, file_conf))
+        Self::from_env_and_file_configs(env_conf, file_conf)
     }
 
-    fn from_env_and_file_configs(env_conf: EnvConfig, file_conf: FileConfig) -> Self {
+    fn from_env_and_file_configs(env_conf: EnvConfig, file_conf: FileConfig) -> Result<Self> {
         let mut conf_caches: CacheConfigs = Default::default();
 
         let FileConfig {
@@ -1062,20 +1062,33 @@ impl Config {
         conf_caches.merge(cache);
 
         // Environment variable takes precedence over file config
-        let basedirs = if !env_basedirs.is_empty() {
+        let basedirs_raw = if !env_basedirs.is_empty() {
             env_basedirs
         } else {
             file_basedirs
         };
 
+        // Validate that all basedirs are absolute paths
+        let mut basedirs = Vec::new();
+        for p in basedirs_raw {
+            if !p.is_absolute() {
+                bail!("Basedir path must be absolute: {:?}", p);
+            }
+            basedirs.push(absolute(&p)?);
+        }
+
+        if !basedirs.is_empty() {
+            debug!("Using basedirs for path normalization: {:?}", basedirs);
+        }
+
         let (caches, fallback_cache) = conf_caches.into_fallback();
-        Self {
+        Ok(Self {
             cache: caches,
             fallback_cache,
             dist,
             server_startup_timeout,
             basedirs,
-        }
+        })
     }
 }
 
@@ -1379,7 +1392,7 @@ fn config_overrides() {
     };
 
     assert_eq!(
-        Config::from_env_and_file_configs(env_conf, file_conf),
+        Config::from_env_and_file_configs(env_conf, file_conf).unwrap(),
         Config {
             cache: Some(CacheType::Redis(RedisCacheConfig {
                 endpoint: Some("myotherredisurl".to_owned()),
@@ -1420,7 +1433,7 @@ fn config_basedirs_overrides() {
         basedirs: vec![PathBuf::from("/file/basedir")],
     };
 
-    let config = Config::from_env_and_file_configs(env_conf, file_conf);
+    let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
     assert_eq!(config.basedirs, vec![PathBuf::from("/env/basedir")]);
 
     // Test that file config is used when env is empty
@@ -1436,7 +1449,7 @@ fn config_basedirs_overrides() {
         basedirs: vec![PathBuf::from("/file/basedir")],
     };
 
-    let config = Config::from_env_and_file_configs(env_conf, file_conf);
+    let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
     assert_eq!(config.basedirs, vec![PathBuf::from("/file/basedir")]);
 
     // Test that both empty results in empty
@@ -1452,7 +1465,7 @@ fn config_basedirs_overrides() {
         basedirs: vec![],
     };
 
-    let config = Config::from_env_and_file_configs(env_conf, file_conf);
+    let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
     assert_eq!(config.basedirs, Vec::<PathBuf>::new());
 }
 

@@ -756,34 +756,13 @@ pub fn storage_from_config(
     let rw_mode = config.fallback_cache.rw_mode.into();
     debug!("Init disk cache with dir {:?}, size {}", dir, size);
 
-    // Validate that all basedirs are absolute paths
-    let basedirs: Vec<PathBuf> = config
-        .basedirs
-        .iter()
-        .filter_map(|p| {
-            if p.is_absolute() {
-                Some(p.clone())
-            } else {
-                warn!(
-                    "Ignoring relative basedir path: {:?}. Only absolute paths are supported.",
-                    p
-                );
-                None
-            }
-        })
-        .collect();
-
-    if !basedirs.is_empty() {
-        debug!("Using basedirs for path normalization: {:?}", basedirs);
-    }
-
     Ok(Arc::new(DiskCache::new(
         dir,
         size,
         pool,
         preprocessor_cache_mode_config,
         rw_mode,
-        basedirs,
+        config.basedirs.clone(),
     )))
 }
 
