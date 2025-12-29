@@ -1099,11 +1099,7 @@ pub fn strip_basedirs(preprocessor_output: &[u8], basedirs: &[PathBuf]) -> Vec<u
         if pos >= last_end {
             filtered_matches.push((pos, len));
             last_end = pos + len;
-            trace!(
-                "Matched basedir at position {} with length {}",
-                pos,
-                len
-            );
+            trace!("Matched basedir at position {} with length {}", pos, len);
         }
     }
 
