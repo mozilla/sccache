@@ -13,6 +13,8 @@
 // limitations under the License.
 
 use crate::cache::CacheMode;
+#[cfg(target_os = "windows")]
+use crate::util::normalize_win_path;
 use directories::ProjectDirs;
 use fs::File;
 use fs_err as fs;
@@ -1000,7 +1002,7 @@ pub struct Config {
     pub server_startup_timeout: Option<std::time::Duration>,
     /// Base directory (or directories) to strip from paths for cache key computation.
     /// Similar to ccache's CCACHE_BASEDIR.
-    pub basedirs: Vec<PathBuf>,
+    pub basedirs: Vec<Vec<u8>>,
 }
 
 impl Config {
@@ -1043,16 +1045,42 @@ impl Config {
         };
 
         // Validate that all basedirs are absolute paths
+        // basedirs_raw is Vec<PathBuf>
         let mut basedirs = Vec::with_capacity(basedirs_raw.len());
         for p in basedirs_raw {
             if !p.is_absolute() {
                 bail!("Basedir path must be absolute: {:?}", p);
             }
-            basedirs.push(absolute(&p)?);
+            // Normalize basedir:
+            // remove double separators, cur_dirs
+            let abs = absolute(&p)?;
+            let mut bytes = abs.to_string_lossy().into_owned().into_bytes();
+
+            // remove trailing slashes
+            while matches!(bytes.last(), Some(b'/' | b'\\')) {
+                bytes.pop();
+            }
+            // normalize windows paths
+            let normalized = {
+                #[cfg(target_os = "windows")]
+                {
+                    normalize_win_path(&bytes)
+                }
+
+                #[cfg(not(target_os = "windows"))]
+                {
+                    bytes
+                }
+            };
+            basedirs.push(normalized);
         }
 
         if !basedirs.is_empty() {
-            debug!("Using basedirs for path normalization: {:?}", basedirs);
+            let basedirs_str: Vec<String> = basedirs
+                .iter()
+                .map(|b| String::from_utf8_lossy(b).into_owned())
+                .collect();
+            debug!("Using basedirs for path normalization: {:?}", basedirs_str);
         }
 
         let (caches, fallback_cache) = conf_caches.into_fallback();
@@ -1393,8 +1421,6 @@ fn config_overrides() {
 #[test]
 #[cfg(target_os = "windows")]
 fn config_basedirs_overrides() {
-    use std::path::PathBuf;
-
     // Test that env variable takes precedence over file config
     let env_conf = EnvConfig {
         cache: Default::default(),
@@ -1409,7 +1435,7 @@ fn config_basedirs_overrides() {
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
-    assert_eq!(config.basedirs, vec![PathBuf::from("C:\\env\\basedir")]);
+    assert_eq!(config.basedirs, vec![b"C:\\env\\basedir".to_vec()]);
 
     // Test that file config is used when env is empty
     let env_conf = EnvConfig {
@@ -1425,7 +1451,7 @@ fn config_basedirs_overrides() {
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
-    assert_eq!(config.basedirs, vec![PathBuf::from("C:\\file\\basedir")]);
+    assert_eq!(config.basedirs, vec![b"C:\\file\\basedir".to_vec()]);
 
     // Test that both empty results in empty
     let env_conf = EnvConfig {
@@ -1441,14 +1467,12 @@ fn config_basedirs_overrides() {
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
-    assert_eq!(config.basedirs, Vec::<PathBuf>::new());
+    assert!(config.basedirs.is_empty());
 }
 
 #[test]
 #[cfg(not(target_os = "windows"))]
 fn config_basedirs_overrides() {
-    use std::path::PathBuf;
-
     // Test that env variable takes precedence over file config
     let env_conf = EnvConfig {
         cache: Default::default(),
@@ -1463,7 +1487,7 @@ fn config_basedirs_overrides() {
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
-    assert_eq!(config.basedirs, vec![PathBuf::from("/env/basedir")]);
+    assert_eq!(config.basedirs, vec![b"/env/basedir".to_vec()]);
 
     // Test that file config is used when env is empty
     let env_conf = EnvConfig {
@@ -1479,7 +1503,7 @@ fn config_basedirs_overrides() {
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
-    assert_eq!(config.basedirs, vec![PathBuf::from("/file/basedir")]);
+    assert_eq!(config.basedirs, vec![b"/file/basedir".to_vec()]);
 
     // Test that both empty results in empty
     let env_conf = EnvConfig {
@@ -1495,14 +1519,12 @@ fn config_basedirs_overrides() {
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
-    assert_eq!(config.basedirs, Vec::<PathBuf>::new());
+    assert!(config.basedirs.is_empty());
 }
 
 #[test]
 #[cfg(not(target_os = "windows"))]
 fn test_deserialize_basedirs() {
-    use std::path::PathBuf;
-
     // Test array of paths
     let toml = r#"
         basedirs = ["/home/user/project", "/home/user/workspace"]
@@ -1526,8 +1548,6 @@ fn test_deserialize_basedirs() {
 
 #[test]
 fn test_deserialize_basedirs_missing() {
-    use std::path::PathBuf;
-
     // Test no basedirs specified (should default to empty vec)
     let toml = r#"
         [cache.disk]
@@ -1538,15 +1558,13 @@ fn test_deserialize_basedirs_missing() {
     "#;
 
     let config: FileConfig = toml::from_str(toml).unwrap();
-    assert_eq!(config.basedirs, Vec::<PathBuf>::new());
+    assert!(config.basedirs.is_empty());
 }
 
 #[test]
-#[serial]
+#[serial(SCCACHE_BASEDIRS)]
 #[cfg(not(target_os = "windows"))]
 fn test_env_basedirs_single() {
-    use std::path::PathBuf;
-
     unsafe {
         std::env::set_var("SCCACHE_BASEDIRS", "/home/user/project");
     }
@@ -1558,11 +1576,9 @@ fn test_env_basedirs_single() {
 }
 
 #[test]
-#[serial]
+#[serial(SCCACHE_BASEDIRS)]
 #[cfg(target_os = "windows")]
 fn test_env_basedirs_single() {
-    use std::path::PathBuf;
-
     unsafe {
         std::env::set_var("SCCACHE_BASEDIRS", "C:/home/user/project");
     }
@@ -1577,11 +1593,9 @@ fn test_env_basedirs_single() {
 }
 
 #[test]
-#[serial]
+#[serial(SCCACHE_BASEDIRS)]
 #[cfg(not(target_os = "windows"))]
 fn test_env_basedirs_multiple() {
-    use std::path::PathBuf;
-
     unsafe {
         std::env::set_var(
             "SCCACHE_BASEDIRS",
@@ -1602,11 +1616,9 @@ fn test_env_basedirs_multiple() {
 }
 
 #[test]
-#[serial]
+#[serial(SCCACHE_BASEDIRS)]
 #[cfg(target_os = "windows")]
 fn test_env_basedirs_multiple() {
-    use std::path::PathBuf;
-
     unsafe {
         std::env::set_var(
             "SCCACHE_BASEDIRS",
@@ -1627,11 +1639,9 @@ fn test_env_basedirs_multiple() {
 }
 
 #[test]
-#[serial]
+#[serial(SCCACHE_BASEDIRS)]
 #[cfg(not(target_os = "windows"))]
 fn test_env_basedirs_with_spaces() {
-    use std::path::PathBuf;
-
     // Test that spaces around paths are trimmed
     unsafe {
         std::env::set_var(
@@ -1653,11 +1663,9 @@ fn test_env_basedirs_with_spaces() {
 }
 
 #[test]
-#[serial]
+#[serial(SCCACHE_BASEDIRS)]
 #[cfg(target_os = "windows")]
 fn test_env_basedirs_with_spaces() {
-    use std::path::PathBuf;
-
     // Test that spaces around paths are trimmed
     unsafe {
         std::env::set_var(
@@ -1679,11 +1687,9 @@ fn test_env_basedirs_with_spaces() {
 }
 
 #[test]
-#[serial]
+#[serial(SCCACHE_BASEDIRS)]
 #[cfg(not(target_os = "windows"))]
 fn test_env_basedirs_empty_entries() {
-    use std::path::PathBuf;
-
     // Test that empty entries are filtered out
     unsafe {
         std::env::set_var(
@@ -1705,11 +1711,9 @@ fn test_env_basedirs_empty_entries() {
 }
 
 #[test]
-#[serial]
+#[serial(SCCACHE_BASEDIRS)]
 #[cfg(target_os = "windows")]
 fn test_env_basedirs_empty_entries() {
-    use std::path::PathBuf;
-
     // Test that empty entries are filtered out
     unsafe {
         std::env::set_var(
@@ -1731,13 +1735,13 @@ fn test_env_basedirs_empty_entries() {
 }
 
 #[test]
-#[serial]
+#[serial(SCCACHE_BASEDIRS)]
 fn test_env_basedirs_not_set() {
     unsafe {
         std::env::remove_var("SCCACHE_BASEDIRS");
     }
     let config = config_from_env().unwrap();
-    assert_eq!(config.basedirs, Vec::<std::path::PathBuf>::new());
+    assert!(config.basedirs.is_empty());
 }
 
 #[test]

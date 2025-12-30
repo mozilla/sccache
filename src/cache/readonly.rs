@@ -10,7 +10,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -66,7 +65,7 @@ impl Storage for ReadOnlyStorage {
     }
 
     /// Return the base directories for path normalization if configured
-    fn basedirs(&self) -> &[PathBuf] {
+    fn basedirs(&self) -> &[Vec<u8>] {
         self.0.basedirs()
     }
 
@@ -143,8 +142,8 @@ mod test {
         std::fs::create_dir(&cache_dir).unwrap();
 
         let basedirs = vec![
-            PathBuf::from("/home/user/project"),
-            PathBuf::from("/home/user/workspace"),
+            b"/home/user/project".to_vec(),
+            b"/home/user/workspace".to_vec(),
         ];
 
         let disk_cache = crate::cache::disk::DiskCache::new(

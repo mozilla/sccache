@@ -1028,31 +1028,27 @@ pub fn num_cpus() -> usize {
 ///
 /// Only paths that start with one of the basedirs are modified. The paths are expected to be
 /// in the format found in preprocessor output (e.g., `# 1 "/path/to/file"`).
-pub fn strip_basedirs(preprocessor_output: &[u8], basedirs: &[PathBuf]) -> Vec<u8> {
+pub fn strip_basedirs(preprocessor_output: &[u8], basedirs: &[Vec<u8>]) -> Vec<u8> {
     if basedirs.is_empty() || preprocessor_output.is_empty() {
         return preprocessor_output.to_vec();
     }
 
     trace!(
-        "Stripping basedirs from preprocessor output with length {}: {:?}",
+        "Stripping basedirs from preprocessor output with length {}",
         preprocessor_output.len(),
-        basedirs
     );
 
     // Find all potential matches for each basedir using fast substring search
-    // Store as (position, length) sorted by position
-    let mut matches: Vec<(usize, usize)> = Vec::new();
+    // Store as (position, length, basedir_idx) sorted by position
+    let mut matches: Vec<(usize, usize, usize)> = Vec::new();
     #[cfg(target_os = "windows")]
-    let preprocessor_output = &normalize_path(preprocessor_output);
+    let preprocessor_output = &normalize_win_path(preprocessor_output);
 
-    for basedir_path in basedirs.iter() {
-        let basedir_str = basedir_path.to_string_lossy();
-        let basedir = basedir_str
-            .trim_end_matches(|c| c == '/' || c == '\\')
-            .as_bytes();
+    for (idx, basedir_bytes) in basedirs.iter().enumerate() {
+        let basedir = basedir_bytes.as_slice();
         #[cfg(target_os = "windows")]
         // Case insensitive
-        let basedir = normalize_path(basedir);
+        let basedir = normalize_win_path(basedir);
         // Use memchr's fast substring search
         let finder = memchr::memmem::find_iter(preprocessor_output, &basedir);
 
@@ -1064,7 +1060,7 @@ pub fn strip_basedirs(preprocessor_output: &[u8], basedirs: &[PathBuf]) -> Vec<u
                 || preprocessor_output[pos - 1] == b'<';
 
             if is_boundary {
-                matches.push((pos, basedir.len()));
+                matches.push((pos, basedir.len(), idx));
             }
         }
     }
@@ -1080,11 +1076,16 @@ pub fn strip_basedirs(preprocessor_output: &[u8], basedirs: &[PathBuf]) -> Vec<u
     let mut filtered_matches: Vec<(usize, usize)> = Vec::with_capacity(matches.len());
     let mut last_end = 0;
 
-    for (pos, len) in matches {
+    for (pos, len, idx) in matches {
         if pos >= last_end {
             filtered_matches.push((pos, len));
             last_end = pos + len;
-            trace!("Matched basedir at position {} with length {}", pos, len);
+            trace!(
+                "Matched basedir {} at position {} with length {}",
+                String::from_utf8_lossy(&basedirs[idx]),
+                pos,
+                len
+            );
         }
     }
 
@@ -1114,10 +1115,10 @@ pub fn strip_basedirs(preprocessor_output: &[u8], basedirs: &[PathBuf]) -> Vec<u
 ///       but still can mismatch the case of the actual file name
 ///     - preprocessor_output: plain text
 #[cfg(target_os = "windows")]
-fn normalize_path(path: &[u8]) -> Vec<u8> {
+pub fn normalize_win_path(path: &[u8]) -> Vec<u8> {
     path.iter()
         .map(|&b| match b {
-            b'A'..=b'Z' => b + 'a' - 'A',
+            b'A'..=b'Z' => b + (b'a' - b'A'),
             b'\\' => b'/',
             _ => b,
         })
@@ -1128,7 +1129,6 @@ fn normalize_path(path: &[u8]) -> Vec<u8> {
 mod tests {
     use super::{OsStrExt, TimeMacroFinder};
     use std::ffi::{OsStr, OsString};
-    use std::path::PathBuf;
 
     #[test]
     fn simple_starts_with() {
@@ -1281,7 +1281,7 @@ mod tests {
     #[test]
     fn test_strip_basedir_simple() {
         // Simple cases
-        let basedir = PathBuf::from("/home/user/project");
+        let basedir = b"/home/user/project".to_vec();
         let input = b"# 1 \"/home/user/project/src/main.c\"\nint main() { return 0; }";
         let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
         let expected = b"# 1 \"./src/main.c\"\nint main() { return 0; }";
@@ -1308,7 +1308,7 @@ mod tests {
         assert_eq!(output, input);
 
         // Empty input
-        let basedir = PathBuf::from("/home/user/project");
+        let basedir = b"/home/user/project".to_vec();
         let input = b"";
         let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
         assert_eq!(output, input);
@@ -1317,7 +1317,7 @@ mod tests {
     #[test]
     fn test_strip_basedir_not_at_boundary() {
         // basedir should only match at word boundaries
-        let basedir = PathBuf::from("/home/user");
+        let basedir = b"/home/user".to_vec();
         let input = b"text/home/user/file.c and \"/home/user/other.c\"";
         let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
         // Should only replace the second occurrence (after quote)
@@ -1328,24 +1328,17 @@ mod tests {
     #[test]
     fn test_strip_basedir_trailing_slashes() {
         // Without trailing slash
-        let basedir = PathBuf::from("/home/user/project");
+        let basedir = b"/home/user/project".to_vec();
         let input = b"# 1 \"/home/user/project/src/main.c\"";
         let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
         let expected = b"# 1 \"./src/main.c\"";
         assert_eq!(output, expected);
 
-        // With single trailing slash
-        let basedir = PathBuf::from("/home/user/project/");
+        // Trailing slashes aren't ignored, they must be cleaned in config reader
+        let basedir = b"/home/user/project/".to_vec();
         let input = b"# 1 \"/home/user/project/src/main.c\"";
         let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
-        let expected = b"# 1 \"./src/main.c\"";
-        assert_eq!(output, expected);
-
-        // With multiple trailing slashes
-        let basedir = PathBuf::from("/home/user/project////");
-        let input = b"# 1 \"/home/user/project/src/main.c\"";
-        let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
-        let expected = b"# 1 \"./src/main.c\"";
+        let expected = b"# 1 \".src/main.c\""; // Wrong, but expected
         assert_eq!(output, expected);
     }
 
@@ -1353,8 +1346,8 @@ mod tests {
     fn test_strip_basedirs_multiple() {
         // Multiple basedirs - should match longest first
         let basedirs = vec![
-            PathBuf::from("/home/user1/project"),
-            PathBuf::from("/home/user2/workspace"),
+            b"/home/user1/project".to_vec(),
+            b"/home/user2/workspace".to_vec(),
         ];
         let input =
             b"# 1 \"/home/user1/project/src/main.c\"\n# 2 \"/home/user2/workspace/lib/util.c\"";
@@ -1363,10 +1356,7 @@ mod tests {
         assert_eq!(output, expected);
 
         // Longest prefix wins
-        let basedirs = vec![
-            PathBuf::from("/home/user"),
-            PathBuf::from("/home/user/project"), // This should match first (longest)
-        ];
+        let basedirs = vec![b"/home/user".to_vec(), b"/home/user/project".to_vec()];
         let input = b"# 1 \"/home/user/project/src/main.c\"";
         let output = super::strip_basedirs(input, &basedirs);
         let expected = b"# 1 \"./src/main.c\"";
@@ -1377,7 +1367,7 @@ mod tests {
     #[test]
     fn test_strip_basedir_windows_backslashes() {
         // Without trailing backslash
-        let basedir = PathBuf::from("C:\\Users\\test\\project");
+        let basedir = b"C:\\Users\\test\\project".to_vec();
         let input = b"# 1 \"C:\\Users\\test\\project\\src\\main.c\"";
         let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
         // normalized backslash to slash
@@ -1385,7 +1375,7 @@ mod tests {
         assert_eq!(output, expected);
 
         // With multiple trailing backslashes
-        let basedir = PathBuf::from("C:\\Users\\test\\project\\\\\\");
+        let basedir = b"C:\\Users\\test\\project\\\\\\".to_vec();
         let input = b"# 1 \"C:\\Users\\test\\project\\src\\main.c\"";
         let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
         let expected = b"# 1 \"./src/main.c\"";
@@ -1396,7 +1386,7 @@ mod tests {
     #[test]
     fn test_strip_basedir_windows_mixed_slashes() {
         // Mixed forward and backslashes in input (common from certain build systems)
-        let basedir = PathBuf::from("C:\\Users\\test\\project");
+        let basedir = b"C:\\Users\\test\\project".to_vec();
         let input = b"# 1 \"C:/Users\\test\\project\\src/main.c\"";
         let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
         let expected = b"# 1 \"./src/main.c\"";
