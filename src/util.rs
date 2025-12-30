@@ -1129,6 +1129,7 @@ fn normalize_path(path: &[u8]) -> Vec<u8> {
 mod tests {
     use super::{OsStrExt, TimeMacroFinder};
     use std::ffi::{OsStr, OsString};
+    use std::path::PathBuf;
 
     #[test]
     fn simple_starts_with() {
@@ -1280,8 +1281,6 @@ mod tests {
 
     #[test]
     fn test_strip_basedir_simple() {
-        use std::path::PathBuf;
-
         // Simple cases
         let basedir = PathBuf::from("/home/user/project");
         let input = b"# 1 \"/home/user/project/src/main.c\"\nint main() { return 0; }";
@@ -1304,8 +1303,6 @@ mod tests {
 
     #[test]
     fn test_strip_basedir_empty() {
-        use std::path::PathBuf;
-
         // Empty basedir slice
         let input = b"# 1 \"/home/user/project/src/main.c\"";
         let output = super::strip_basedirs(input, &[]);
@@ -1320,8 +1317,6 @@ mod tests {
 
     #[test]
     fn test_strip_basedir_not_at_boundary() {
-        use std::path::PathBuf;
-
         // basedir should only match at word boundaries
         let basedir = PathBuf::from("/home/user");
         let input = b"text/home/user/file.c and \"/home/user/other.c\"";
@@ -1333,8 +1328,6 @@ mod tests {
 
     #[test]
     fn test_strip_basedir_trailing_slashes() {
-        use std::path::PathBuf;
-
         // Without trailing slash
         let basedir = PathBuf::from("/home/user/project");
         let input = b"# 1 \"/home/user/project/src/main.c\"";
@@ -1359,8 +1352,6 @@ mod tests {
 
     #[test]
     fn test_strip_basedirs_multiple() {
-        use std::path::PathBuf;
-
         // Multiple basedirs - should match longest first
         let basedirs = vec![
             PathBuf::from("/home/user1/project"),
@@ -1386,8 +1377,6 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn test_strip_basedir_windows_backslashes() {
-        use std::path::PathBuf;
-
         // Without trailing backslash
         let basedir = PathBuf::from("C:\\Users\\test\\project");
         let input = b"# 1 \"C:\\Users\\test\\project\\src\\main.c\"";
@@ -1407,8 +1396,6 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn test_strip_basedir_windows_mixed_slashes() {
-        use std::path::PathBuf;
-
         // Mixed forward and backslashes in input (common from certain build systems)
         let basedir = PathBuf::from("C:\\Users\\test\\project");
         let input = b"# 1 \"C:/Users\\test\\project\\src/main.c\"";
