@@ -1041,8 +1041,12 @@ pub fn strip_basedirs(preprocessor_output: &[u8], basedirs: &[Vec<u8>]) -> Vec<u
     // Find all potential matches for each basedir using fast substring search
     // Store as (position, length, basedir_idx) sorted by position
     let mut matches: Vec<(usize, usize, usize)> = Vec::new();
+    // We must return the original preprocessor output on all platforms,
+    // so we only normalize a copy for searching.
+    #[cfg(not(target_os = "windows"))]
+    let normalized_output = preprocessor_output;
     #[cfg(target_os = "windows")]
-    let preprocessor_output = &normalize_win_path(preprocessor_output);
+    let normalized_output = &normalize_win_path(preprocessor_output);
 
     for (idx, basedir_bytes) in basedirs.iter().enumerate() {
         let basedir = basedir_bytes.as_slice();
@@ -1050,14 +1054,14 @@ pub fn strip_basedirs(preprocessor_output: &[u8], basedirs: &[Vec<u8>]) -> Vec<u
         // Case insensitive
         let basedir = normalize_win_path(basedir);
         // Use memchr's fast substring search
-        let finder = memchr::memmem::find_iter(preprocessor_output, &basedir);
+        let finder = memchr::memmem::find_iter(normalized_output, &basedir);
 
         for pos in finder {
             // Check if this is a valid boundary (start, whitespace, quote, or '<')
             let is_boundary = pos == 0
-                || preprocessor_output[pos - 1].is_ascii_whitespace()
-                || preprocessor_output[pos - 1] == b'"'
-                || preprocessor_output[pos - 1] == b'<';
+                || normalized_output[pos - 1].is_ascii_whitespace()
+                || normalized_output[pos - 1] == b'"'
+                || normalized_output[pos - 1] == b'<';
 
             if is_boundary {
                 matches.push((pos, basedir.len(), idx));
@@ -1368,34 +1372,36 @@ mod tests {
     fn test_strip_basedir_windows_backslashes() {
         // Without trailing backslash
         let basedir = b"C:\\Users\\test\\project".to_vec();
-        let input = b"# 1 \"C:\\Users\\test\\project\\src\\main.c\"";
+        let input = b"# 1 \"C:\\Users\\test\\project\\Src\\Main.c\"";
         let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
         // normalized backslash to slash
-        let expected = b"# 1 \"./src/main.c\"";
+        let expected = b"# 1 \".\\Src\\Main.c\"";
         assert_eq!(output, expected);
 
-        // With multiple trailing backslashes
-        let basedir = b"C:\\Users\\test\\project\\\\\\".to_vec();
+        // Trailing slashes aren't ignored, they must be cleaned in config reader
+        let basedir = b"C:\\Users\\test\\project\\".to_vec();
         let input = b"# 1 \"C:\\Users\\test\\project\\src\\main.c\"";
         let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
-        let expected = b"# 1 \"./src/main.c\"";
+        let expected = b"# 1 \".src\\main.c\"";
         assert_eq!(output, expected);
     }
 
     #[cfg(target_os = "windows")]
     #[test]
     fn test_strip_basedir_windows_mixed_slashes() {
+        // The slashes may be mixed in preprocessor output, but the uncut output
+        // should remain untouched.
         // Mixed forward and backslashes in input (common from certain build systems)
         let basedir = b"C:\\Users\\test\\project".to_vec();
         let input = b"# 1 \"C:/Users\\test\\project\\src/main.c\"";
         let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
-        let expected = b"# 1 \"./src/main.c\"";
+        let expected = b"# 1 \".\\src/main.c\"";
         assert_eq!(output, expected, "Failed to strip mixed slash path");
 
         // Also test the reverse case
         let input = b"# 1 \"C:\\Users/test/project/src\\main.c\"";
         let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
-        let expected = b"# 1 \"./src/main.c\"";
+        let expected = b"# 1 \"./src\\main.c\"";
         assert_eq!(output, expected, "Failed to strip reverse mixed slash path");
     }
 }

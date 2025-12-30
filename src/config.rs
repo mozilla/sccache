@@ -1466,7 +1466,7 @@ fn config_basedirs_overrides() {
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
-    assert_eq!(config.basedirs, vec![b"C:\\env\\basedir".to_vec()]);
+    assert_eq!(config.basedirs, vec![b"c:/env/basedir".to_vec()]);
 
     // Test that file config is used when env is empty
     let env_conf = EnvConfig {
@@ -1482,7 +1482,7 @@ fn config_basedirs_overrides() {
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
-    assert_eq!(config.basedirs, vec![b"C:\\file\\basedir".to_vec()]);
+    assert_eq!(config.basedirs, vec![b"c:/file/basedir".to_vec()]);
 
     // Test that both empty results in empty
     let env_conf = EnvConfig {
