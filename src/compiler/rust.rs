@@ -3308,18 +3308,15 @@ proc_macro false
             env_vars.push(("RUSTUP_HOME".into(), rustup_home));
         }
 
-        // Try to find rustc from CARGO_HOME first, then fall back to `which`
-        let rustc_path = if let Ok(cargo_home) = std::env::var("CARGO_HOME") {
-            let mut path = PathBuf::from(cargo_home);
-            path.push("bin");
-            path.push("rustc");
-            if path.exists() {
-                path
-            } else {
-                which::which("rustc").expect("rustc not found in CARGO_HOME or PATH")
-            }
+        // Try to find rustc via which first, then check CARGO_HOME.
+        // This handles both standard development setups (rustc in PATH)
+        // and CI environments (rustc only in CARGO_HOME/bin).
+        let rustc_path = if let Ok(path) = which::which("rustc") {
+            path
+        } else if let Ok(cargo_home) = std::env::var("CARGO_HOME") {
+            PathBuf::from(cargo_home).join("bin").join("rustc")
         } else {
-            which::which("rustc").expect("rustc not found in PATH")
+            panic!("rustc not found in PATH or CARGO_HOME")
         };
 
         let rlib_dep_reader = RlibDepReader::new_with_check(rustc_path, &env_vars);
