@@ -129,6 +129,7 @@ version-compare = { version = "0.1.1", optional = true }
 assert_cmd = "2.0.13"
 cc = "1.0"
 chrono = "0.4.42"
+divan = { package = "codspeed-divan-compat", version = "4" }
 filetime = "0.2"
 predicates = "=3.1.0"
 serial_test = "3.1"
@@ -209,3 +210,8 @@ dist-tests = ["dist-client", "dist-server"]
 [workspace]
 exclude = ["tests/test-crate"]
 members = ["tests/randomize_readdir"]
+
+[[bench]]
+harness = false
+name = "sccache_bench"
+test = false
