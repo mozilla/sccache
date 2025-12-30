@@ -1944,7 +1944,7 @@ impl ServerInfo {
             basedirs = storage
                 .basedirs()
                 .iter()
-                .map(|p| p.to_string_lossy().to_string())
+                .map(|p| String::from_utf8_lossy(p).to_string())
                 .collect();
         } else {
             cache_location = String::new();

@@ -381,7 +381,7 @@ pub fn preprocessor_cache_entry_hash_key(
     input_file: &Path,
     plusplus: bool,
     config: PreprocessorCacheModeConfig,
-    basedirs: &[PathBuf],
+    basedirs: &[Vec<u8>],
 ) -> anyhow::Result<Option<String>> {
     // If you change any of the inputs to the hash, you should change `FORMAT_VERSION`.
     let mut m = Digest::new();
@@ -651,6 +651,10 @@ mod test {
         // Create two different base directories
         let dir1 = TempDir::new().unwrap();
         let dir2 = TempDir::new().unwrap();
+        let dirs = vec![
+            dir1.path().to_string_lossy().into_owned().into_bytes(),
+            dir2.path().to_string_lossy().into_owned().into_bytes(),
+        ];
 
         // Create identical files with the same relative path in each directory
         let file1_path = dir1.path().join("test.c");
@@ -672,7 +676,7 @@ mod test {
             &file1_path,
             false,
             config,
-            &[dir1.path().to_path_buf(), dir2.path().to_path_buf()],
+            &dirs,
         )
         .unwrap()
         .unwrap();
@@ -686,7 +690,7 @@ mod test {
             &file2_path,
             false,
             config,
-            &[dir1.path().to_path_buf(), dir2.path().to_path_buf()],
+            &dirs,
         )
         .unwrap()
         .unwrap();

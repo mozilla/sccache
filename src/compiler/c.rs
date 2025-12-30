@@ -1482,7 +1482,7 @@ pub fn hash_key(
     env_vars: &[(OsString, OsString)],
     preprocessor_output: &[u8],
     plusplus: bool,
-    basedirs: &[PathBuf],
+    basedirs: &[Vec<u8>],
 ) -> String {
     // If you change any of the inputs to the hash, you should change `CACHE_VERSION`.
     let mut m = Digest::new();
@@ -1835,8 +1835,8 @@ mod test {
         let preprocessed2 = b"# 1 \"/home/user2/project/src/main.c\"\nint main() { return 0; }";
 
         let basedirs = [
-            PathBuf::from("/home/user1/project"),
-            PathBuf::from("/home/user2/project"),
+            b"/home/user1/project".to_vec(),
+            b"/home/user2/project".to_vec(),
         ];
 
         let h1 = hash_key(
@@ -1915,8 +1915,8 @@ mod test {
 
         assert_eq!(h_cpp1, h_cpp2);
 
-        // Test 4: Works with trailing slashes
-        let basedir_slash = PathBuf::from("/home/user1/project/");
+        // Test 4: Doesn't work with trailing slash in basedir, they must be normalized in config
+        let basedir_slash = b"/home/user1/project/".to_vec();
         let h_slash = hash_key(
             digest,
             Language::C,
@@ -1928,12 +1928,12 @@ mod test {
             std::slice::from_ref(&basedir_slash),
         );
 
-        assert_eq!(h1, h_slash);
+        assert_neq!(h1, h_slash);
 
         // Test 5: Multiple basedirs - longest match wins
         let basedirs = vec![
-            PathBuf::from("/home/user1"),
-            PathBuf::from("/home/user1/project"), // This should match (longest)
+            b"/home/user1".to_vec(),
+            b"/home/user1/project".to_vec(), // This should match (longest)
         ];
         let h_multi = hash_key(
             digest,
