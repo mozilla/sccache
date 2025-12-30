@@ -983,11 +983,10 @@ fn config_from_env() -> Result<EnvConfig> {
     // ======= Base directory =======
     // Support multiple paths separated by ';' on Windows and ':' on other platforms
     // to match PATH behavior.
-    let split_symbol = if cfg!(target_os = "windows") {
-        ';'
-    } else {
-        ':'
-    };
+    #[cfg(target_os = "windows")]
+    let split_symbol = ';';
+    #[cfg(not(target_os = "windows"))]
+    let split_symbol = ':';
     let basedirs = env::var_os("SCCACHE_BASEDIRS")
         .map(|s| {
             s.to_string_lossy()

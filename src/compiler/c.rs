@@ -26,7 +26,7 @@ use crate::dist::pkg;
 use crate::mock_command::CommandCreatorSync;
 use crate::util::{
     Digest, HashToDigest, MetadataCtimeExt, TimeMacroFinder, Timestamp, decode_path, encode_path,
-    hash_all,
+    hash_all, strip_basedirs,
 };
 use async_trait::async_trait;
 use fs_err as fs;
@@ -1509,7 +1509,6 @@ pub fn hash_key(
 
     // Strip basedirs from preprocessor output if configured
     let preprocessor_output_to_hash = if !basedirs.is_empty() {
-        use crate::util::strip_basedirs;
         Cow::Owned(strip_basedirs(preprocessor_output, basedirs))
     } else {
         Cow::Borrowed(preprocessor_output)
@@ -1828,8 +1827,6 @@ mod test {
 
     #[test]
     fn test_hash_key_basedirs() {
-        use std::path::PathBuf;
-
         let args = ovec!["a", "b", "c"];
         let digest = "abcd";
 

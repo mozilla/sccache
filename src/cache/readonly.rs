@@ -143,16 +143,16 @@ mod test {
         std::fs::create_dir(&cache_dir).unwrap();
 
         let basedirs = vec![
-            std::path::PathBuf::from("/home/user/project"),
-            std::path::PathBuf::from("/home/user/workspace"),
+            PathBuf::from("/home/user/project"),
+            PathBuf::from("/home/user/workspace"),
         ];
 
         let disk_cache = crate::cache::disk::DiskCache::new(
             &cache_dir,
             1024 * 1024,
             runtime.handle(),
-            super::super::PreprocessorCacheModeConfig::default(),
-            super::super::CacheMode::ReadWrite,
+            super::PreprocessorCacheModeConfig::default(),
+            super::CacheMode::ReadWrite,
             basedirs.clone(),
         );
 

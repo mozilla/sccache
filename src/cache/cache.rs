@@ -896,8 +896,6 @@ mod test {
     #[test]
     #[cfg(feature = "s3")]
     fn test_operator_storage_s3_with_basedirs() {
-        use std::path::PathBuf;
-
         // Create S3 operator (doesn't need real credentials for this test)
         let operator = crate::cache::s3::S3Cache::new(
             "test-bucket".to_string(),
@@ -926,8 +924,6 @@ mod test {
     #[test]
     #[cfg(feature = "redis")]
     fn test_operator_storage_redis_with_basedirs() {
-        use std::path::PathBuf;
-
         // Create Redis operator
         let operator = crate::cache::redis::RedisCache::build_single(
             "redis://localhost:6379",
