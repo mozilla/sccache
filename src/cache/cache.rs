@@ -385,7 +385,7 @@ pub trait Storage: Send + Sync {
         PreprocessorCacheModeConfig::default()
     }
     /// Return the base directories for path normalization if configured
-    fn basedirs(&self) -> &[PathBuf] {
+    fn basedirs(&self) -> &[Vec<u8>] {
         &[]
     }
     /// Return the preprocessor cache entry for a given preprocessor key,
@@ -473,7 +473,7 @@ impl PreprocessorCacheModeConfig {
 ))]
 pub struct RemoteStorage {
     operator: opendal::Operator,
-    basedirs: Vec<PathBuf>,
+    basedirs: Vec<Vec<u8>>,
 }
 
 #[cfg(any(
@@ -487,7 +487,7 @@ pub struct RemoteStorage {
     feature = "oss",
 ))]
 impl RemoteStorage {
-    pub fn new(operator: opendal::Operator, basedirs: Vec<PathBuf>) -> Self {
+    pub fn new(operator: opendal::Operator, basedirs: Vec<Vec<u8>>) -> Self {
         Self { operator, basedirs }
     }
 }
@@ -593,7 +593,7 @@ impl Storage for RemoteStorage {
         Ok(None)
     }
 
-    fn basedirs(&self) -> &[PathBuf] {
+    fn basedirs(&self) -> &[Vec<u8>] {
         &self.basedirs
     }
 }
@@ -906,10 +906,7 @@ mod test {
         .build()
         .expect("Failed to create S3 cache operator");
 
-        let basedirs = vec![
-            PathBuf::from("/home/user/project"),
-            PathBuf::from("/opt/build"),
-        ];
+        let basedirs = vec![b"/home/user/project".to_vec(), b"/opt/build".to_vec()];
 
         // Wrap with OperatorStorage
         let storage = RemoteStorage::new(operator, basedirs.clone());
@@ -917,8 +914,8 @@ mod test {
         // Verify basedirs are stored and retrieved correctly
         assert_eq!(storage.basedirs(), basedirs.as_slice());
         assert_eq!(storage.basedirs().len(), 2);
-        assert_eq!(storage.basedirs()[0], PathBuf::from("/home/user/project"));
-        assert_eq!(storage.basedirs()[1], PathBuf::from("/opt/build"));
+        assert_eq!(storage.basedirs()[0], b"/home/user/project".to_vec());
+        assert_eq!(storage.basedirs()[1], b"/opt/build".to_vec());
     }
 
     #[test]
@@ -935,7 +932,7 @@ mod test {
         )
         .expect("Failed to create Redis cache operator");
 
-        let basedirs = vec![PathBuf::from("/workspace")];
+        let basedirs = vec![b"/workspace".to_vec()];
 
         // Wrap with OperatorStorage
         let storage = RemoteStorage::new(operator, basedirs.clone());
