@@ -1074,7 +1074,7 @@ impl Config {
         };
 
         // Validate that all basedirs are absolute paths
-        let mut basedirs = Vec::new();
+        let mut basedirs = Vec::with_capacity(basedirs_raw.len());
         for p in basedirs_raw {
             if !p.is_absolute() {
                 bail!("Basedir path must be absolute: {:?}", p);

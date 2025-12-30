@@ -1078,7 +1078,7 @@ pub fn strip_basedirs(preprocessor_output: &[u8], basedirs: &[PathBuf]) -> Vec<u
     matches.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
 
     // Remove overlapping matches, keeping the longest match at each position
-    let mut filtered_matches: Vec<(usize, usize)> = Vec::new();
+    let mut filtered_matches: Vec<(usize, usize)> = Vec::with_capacity(matches.len());
     let mut last_end = 0;
 
     for (pos, len) in matches {
