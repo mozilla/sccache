@@ -1048,8 +1048,7 @@ pub fn strip_basedirs(preprocessor_output: &[u8], basedirs: &[PathBuf]) -> Vec<u
     for basedir_path in basedirs.iter() {
         let basedir_str = basedir_path.to_string_lossy();
         let basedir = basedir_str
-            .trim_end_matches('/')
-            .trim_end_matches('\\')
+            .trim_end_matches(|c| c == '/' || c == '\\')
             .as_bytes();
         #[cfg(target_os = "windows")]
         // Case insensitive
@@ -1118,7 +1117,7 @@ pub fn strip_basedirs(preprocessor_output: &[u8], basedirs: &[PathBuf]) -> Vec<u
 fn normalize_path(path: &[u8]) -> Vec<u8> {
     path.iter()
         .map(|&b| match b {
-            b'A'..=b'Z' => b + 32,
+            b'A'..=b'Z' => b + 'a' - 'A',
             b'\\' => b'/',
             _ => b,
         })
