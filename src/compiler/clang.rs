@@ -127,7 +127,8 @@ impl CCompilerImpl for Clang {
         };
 
         // Clang 14 and later support -fminimize-whitespace, which normalizes away non-semantic whitespace which in turn increases cache hit rate.
-        if self.is_minversion(14) {
+        // '-fminimize-whitespace' invalid for input of type assembler-with-cpp
+        if self.is_minversion(14) && parsed_args.language != Language::AssemblerToPreprocess {
             ignorable_whitespace_flags.push("-fminimize-whitespace".to_string());
         }
 
