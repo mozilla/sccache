@@ -404,6 +404,8 @@ where
             | Some(Unhashed(_)) => {}
             Some(Language(lang)) => {
                 language = match lang.to_string_lossy().as_ref() {
+                    "assembler" => Some(Language::Assembler),
+                    "assembler-with-cpp" => Some(Language::AssemblerToPreprocess),
                     "c" => Some(Language::C),
                     "c-header" => Some(Language::CHeader),
                     "c++" => Some(Language::Cxx),

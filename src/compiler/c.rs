@@ -1657,6 +1657,10 @@ mod test {
             assert_eq!(actual, Some(expected));
         }
 
+        t("s", Language::Assembler);
+        t("S", Language::AssemblerToPreprocess);
+        t("sx", Language::AssemblerToPreprocess);
+
         t("c", Language::C);
 
         t("i", Language::CPreprocessed);
