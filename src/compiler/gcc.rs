@@ -172,7 +172,7 @@ use self::ArgData::*;
 
 const ARCH_FLAG: &str = "-arch";
 
-// Mostly taken from https://github.com/ccache/ccache/blob/master/src/compopt.cpp#L52-L172
+// Mostly taken from https://github.com/ccache/ccache/blob/master/src/ccache/compopt.cpp#L52-L183
 counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     flag!("-", TooHardFlag),
     flag!("--coverage", Coverage),
@@ -244,6 +244,7 @@ counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     take_arg!("-o", PathBuf, CanBeSeparated, Output),
     flag!("-pedantic", PedanticFlag),
     flag!("-pedantic-errors", PedanticFlag),
+    flag!("-pipe", UnhashedFlag),
     flag!("-remap", PreprocessorArgumentFlag),
     flag!("-save-temps", TooHardFlag),
     flag!("-save-temps=cwd", TooHardFlag),
@@ -1479,6 +1480,25 @@ mod test {
         assert_eq!(ovec!["-nostdinc"], preprocessor_args);
         assert_eq!(ovec!["-fabc"], common_args);
         assert!(!msvc_show_includes);
+    }
+
+    #[test]
+    fn test_parse_arguments_unhashed() {
+        let unhashed_flags = stringvec!["-pipe"];
+
+        for flag in unhashed_flags {
+            let args = stringvec!["-c", "foo.c", "-o", "foo.o", flag];
+
+            let a = match parse_arguments_(args, false) {
+                CompilerArguments::Ok(args) => args,
+                o => panic!("Got unexpected parse result: {:?} for flag: {:?}", o, flag),
+            };
+
+            assert_eq!(Language::C, a.language);
+            assert!(a.preprocessor_args.is_empty());
+            assert!(a.common_args.is_empty());
+            assert_eq!(ovec![flag], a.unhashed_args,);
+        }
     }
 
     #[test]
