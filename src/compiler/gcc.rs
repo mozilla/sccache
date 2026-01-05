@@ -178,6 +178,8 @@ counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     flag!("--coverage", Coverage),
     take_arg!("--param", OsString, Separated, PassThrough),
     flag!("--save-temps", TooHardFlag),
+    flag!("--save-temps=cwd", TooHardFlag),
+    flag!("--save-temps=obj", TooHardFlag),
     take_arg!("--serialize-diagnostics", PathBuf, Separated, SerializeDiagnostics),
     take_arg!("--sysroot", PathBuf, Separated, PassThroughPath),
     take_arg!("-A", OsString, Separated, PassThrough),
@@ -244,6 +246,8 @@ counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     flag!("-pedantic-errors", PedanticFlag),
     flag!("-remap", PreprocessorArgumentFlag),
     flag!("-save-temps", TooHardFlag),
+    flag!("-save-temps=cwd", TooHardFlag),
+    flag!("-save-temps=obj", TooHardFlag),
     take_arg!("-std", OsString, Concatenated(b'='), Standard),
     take_arg!("-stdlib", OsString, Concatenated(b'='), PreprocessorArgument),
     flag!("-trigraphs", PreprocessorArgumentFlag),
@@ -1534,6 +1538,31 @@ mod test {
             CompilerArguments::CannotCache("multiple input files", Some("[\"-fPIC\"]".to_string())),
             parse_arguments_clang(args, false)
         );
+    }
+
+    #[test]
+    fn test_parse_arguments_too_hard() {
+        let too_hard_flags = stringvec![
+            "-save-temps",
+            "-save-temps=cwd",
+            "-save-temps=obj",
+            "--save-temps",
+            "--save-temps=cwd",
+            "--save-temps=obj"
+        ];
+
+        for flag in too_hard_flags {
+            let args = stringvec!["-c", "foo.c", "-o", "foo.o", flag];
+
+            match parse_arguments_(args, false) {
+                CompilerArguments::CannotCache(reason, None) => {
+                    assert_eq!(reason, &flag);
+                }
+                o => {
+                    panic!("Got unexpected parse result: {:?} for flag: {:?}", o, flag);
+                }
+            }
+        }
     }
 
     #[test]
