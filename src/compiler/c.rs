@@ -400,7 +400,7 @@ where
             .is_some();
         if let Some(arg) = &self.parsed_args.too_hard_for_preprocessor_cache_mode {
             debug!(
-                "parse_arguments: Cannot use preprocessor cache because of {:?}",
+                "generate_hash_key: Cannot use preprocessor cache because of {:?}",
                 arg
             );
         }
@@ -429,14 +429,14 @@ where
 
             if can_use_preprocessor_cache_mode && !use_preprocessor_cache_mode {
                 debug!(
-                    "parse_arguments: Disabling preprocessor cache because SCCACHE_DIRECT=false"
+                    "generate_hash_key: Disabling preprocessor cache because SCCACHE_DIRECT=false"
                 );
             }
 
             use_preprocessor_cache_mode
         } else {
             debug!(
-                "parse_arguments: Disabling preprocessor cache because {} language doesn't need C preprocessing",
+                "generate_hash_key: Disabling preprocessor cache because {} language doesn't need C preprocessing",
                 self.parsed_args.language.as_str()
             );
             false
