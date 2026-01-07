@@ -179,27 +179,7 @@ impl CCompilerImpl for Clang {
 }
 
 pub fn language_to_clang_arg(lang: Language) -> Option<&'static str> {
-    match lang {
-        // https://github.com/llvm/llvm-project/blob/main/clang/include/clang/Driver/Types.def
-        Language::C => Some("c"),
-        Language::CHeader => Some("c-header"),
-        Language::CPreprocessed => Some("cpp-output"),
-        Language::Cxx => Some("c++"),
-        Language::CxxHeader => Some("c++-header"),
-        Language::CxxPreprocessed => Some("c++-cpp-output"),
-        Language::ObjectiveC => Some("objective-c"),
-        Language::ObjectiveCPreprocessed => Some("objective-c-cpp-output"),
-        Language::ObjectiveCxx => Some("objective-c++"),
-        Language::ObjectiveCxxHeader => Some("objective-c++-header"),
-        Language::ObjectiveCxxPreprocessed => Some("objective-c++-cpp-output"),
-        Language::Cuda => Some("cuda"),
-        Language::CudaFE => None,
-        Language::Ptx => None,
-        Language::Cubin => None,
-        Language::Rust => None, // Let the compiler decide
-        Language::Hip => Some("hip"),
-        Language::GenericHeader => None, // Let the compiler decide
-    }
+    lang.to_clang_arg()
 }
 
 counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
