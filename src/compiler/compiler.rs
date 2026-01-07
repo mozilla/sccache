@@ -296,6 +296,42 @@ impl Language {
                 | Language::Rust
         )
     }
+
+    /// Common implementation for GCC and Clang language argument mapping
+    fn to_compiler_arg(self, cuda_arg: &'static str) -> Option<&'static str> {
+        match self {
+            Language::C => Some("c"),
+            Language::CHeader => Some("c-header"),
+            Language::CPreprocessed => Some("cpp-output"),
+            Language::Cxx => Some("c++"),
+            Language::CxxHeader => Some("c++-header"),
+            Language::CxxPreprocessed => Some("c++-cpp-output"),
+            Language::ObjectiveC => Some("objective-c"),
+            Language::ObjectiveCPreprocessed => Some("objective-c-cpp-output"),
+            Language::ObjectiveCxx => Some("objective-c++"),
+            Language::ObjectiveCxxHeader => Some("objective-c++-header"),
+            Language::ObjectiveCxxPreprocessed => Some("objective-c++-cpp-output"),
+            Language::Cuda => Some(cuda_arg),
+            Language::CudaFE => None,
+            Language::Ptx => None,
+            Language::Cubin => None,
+            Language::Rust => None, // Let the compiler decide
+            Language::Hip => Some("hip"),
+            Language::GenericHeader => None, // Let the compiler decide
+        }
+    }
+
+    /// Returns the GCC-specific language argument for the `-x` flag
+    /// https://gcc.gnu.org/onlinedocs/gcc/Overall-Options.html
+    pub fn to_gcc_arg(self) -> Option<&'static str> {
+        self.to_compiler_arg("cu")
+    }
+
+    /// Returns the Clang-specific language argument for the `-x` flag
+    /// https://github.com/llvm/llvm-project/blob/main/clang/include/clang/Driver/Types.def
+    pub fn to_clang_arg(self) -> Option<&'static str> {
+        self.to_compiler_arg("cuda")
+    }
 }
 
 impl CompilerKind {
