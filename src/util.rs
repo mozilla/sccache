@@ -20,6 +20,7 @@ use fs_err as fs;
 use object::read::archive::ArchiveFile;
 use object::read::macho::{FatArch, MachOFatFile32, MachOFatFile64};
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::cell::Cell;
 use std::ffi::{OsStr, OsString};
 use std::hash::Hasher;
@@ -1028,9 +1029,9 @@ pub fn num_cpus() -> usize {
 ///
 /// Only paths that start with one of the basedirs are modified. The paths are expected to be
 /// in the format found in preprocessor output (e.g., `# 1 "/path/to/file"`).
-pub fn strip_basedirs(preprocessor_output: &[u8], basedirs: &[Vec<u8>]) -> Vec<u8> {
+pub fn strip_basedirs<'a>(preprocessor_output: &'a [u8], basedirs: &[Vec<u8>]) -> Cow<'a, [u8]> {
     if basedirs.is_empty() || preprocessor_output.is_empty() {
-        return preprocessor_output.to_vec();
+        return Cow::Borrowed(preprocessor_output);
     }
 
     trace!(
@@ -1070,7 +1071,7 @@ pub fn strip_basedirs(preprocessor_output: &[u8], basedirs: &[Vec<u8>]) -> Vec<u
     }
 
     if matches.is_empty() {
-        return preprocessor_output.to_vec();
+        return Cow::Borrowed(preprocessor_output);
     }
 
     // Sort matches by position, then by length descending (longest first for overlaps)
@@ -1108,7 +1109,7 @@ pub fn strip_basedirs(preprocessor_output: &[u8], basedirs: &[Vec<u8>]) -> Vec<u
     // Copy remaining data
     result.extend_from_slice(&preprocessor_output[current_pos..]);
 
-    result
+    Cow::Owned(result)
 }
 
 /// Normalize path for case-insensitive comparison.
@@ -1289,19 +1290,19 @@ mod tests {
         let input = b"# 1 \"/home/user/project/src/main.c\"\nint main() { return 0; }";
         let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
         let expected = b"# 1 \"./src/main.c\"\nint main() { return 0; }";
-        assert_eq!(output, expected);
+        assert_eq!(&*output, expected);
 
         // Multiple occurrences
         let input =
             b"# 1 \"/home/user/project/src/main.c\"\n# 2 \"/home/user/project/include/header.h\"";
         let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
         let expected = b"# 1 \"./src/main.c\"\n# 2 \"./include/header.h\"";
-        assert_eq!(output, expected);
+        assert_eq!(&*output, expected);
 
         // No occurrences
         let input = b"# 1 \"/other/path/main.c\"\nint main() { return 0; }";
         let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
-        assert_eq!(output, input);
+        assert_eq!(&*output, input);
     }
 
     #[test]
@@ -1309,13 +1310,13 @@ mod tests {
         // Empty basedir slice
         let input = b"# 1 \"/home/user/project/src/main.c\"";
         let output = super::strip_basedirs(input, &[]);
-        assert_eq!(output, input);
+        assert_eq!(&*output, input);
 
         // Empty input
         let basedir = b"/home/user/project".to_vec();
         let input = b"";
         let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
-        assert_eq!(output, input);
+        assert_eq!(&*output, input);
     }
 
     #[test]
@@ -1326,7 +1327,7 @@ mod tests {
         let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
         // Should only replace the second occurrence (after quote)
         let expected = b"text/home/user/file.c and \"./other.c\"";
-        assert_eq!(output, expected);
+        assert_eq!(&*output, expected);
     }
 
     #[test]
@@ -1336,14 +1337,14 @@ mod tests {
         let input = b"# 1 \"/home/user/project/src/main.c\"";
         let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
         let expected = b"# 1 \"./src/main.c\"";
-        assert_eq!(output, expected);
+        assert_eq!(&*output, expected);
 
         // Trailing slashes aren't ignored, they must be cleaned in config reader
         let basedir = b"/home/user/project/".to_vec();
         let input = b"# 1 \"/home/user/project/src/main.c\"";
         let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
         let expected = b"# 1 \".src/main.c\""; // Wrong, but expected
-        assert_eq!(output, expected);
+        assert_eq!(&*output, expected);
     }
 
     #[test]
@@ -1357,14 +1358,14 @@ mod tests {
             b"# 1 \"/home/user1/project/src/main.c\"\n# 2 \"/home/user2/workspace/lib/util.c\"";
         let output = super::strip_basedirs(input, &basedirs);
         let expected = b"# 1 \"./src/main.c\"\n# 2 \"./lib/util.c\"";
-        assert_eq!(output, expected);
+        assert_eq!(&*output, expected);
 
         // Longest prefix wins
         let basedirs = vec![b"/home/user".to_vec(), b"/home/user/project".to_vec()];
         let input = b"# 1 \"/home/user/project/src/main.c\"";
         let output = super::strip_basedirs(input, &basedirs);
         let expected = b"# 1 \"./src/main.c\"";
-        assert_eq!(output, expected);
+        assert_eq!(&*output, expected);
     }
 
     #[cfg(target_os = "windows")]
@@ -1376,14 +1377,14 @@ mod tests {
         let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
         // normalized backslash to slash
         let expected = b"# 1 \".\\Src\\Main.c\"";
-        assert_eq!(output, expected);
+        assert_eq!(&*output, expected);
 
         // Trailing slashes aren't ignored, they must be cleaned in config reader
         let basedir = b"C:\\Users\\test\\project\\".to_vec();
         let input = b"# 1 \"C:\\Users\\test\\project\\src\\main.c\"";
         let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
         let expected = b"# 1 \".src\\main.c\"";
-        assert_eq!(output, expected);
+        assert_eq!(&*output, expected);
     }
 
     #[cfg(target_os = "windows")]
@@ -1396,12 +1397,15 @@ mod tests {
         let input = b"# 1 \"C:/Users\\test\\project\\src/main.c\"";
         let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
         let expected = b"# 1 \".\\src/main.c\"";
-        assert_eq!(output, expected, "Failed to strip mixed slash path");
+        assert_eq!(&*output, expected, "Failed to strip mixed slash path");
 
         // Also test the reverse case
         let input = b"# 1 \"C:\\Users/test/project/src\\main.c\"";
         let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
         let expected = b"# 1 \"./src\\main.c\"";
-        assert_eq!(output, expected, "Failed to strip reverse mixed slash path");
+        assert_eq!(
+            &*output, expected,
+            "Failed to strip reverse mixed slash path"
+        );
     }
 }
