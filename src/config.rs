@@ -28,11 +28,12 @@ use serde::{
 use serial_test::serial;
 use std::env;
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf, absolute};
+use std::path::{Path, PathBuf};
 use std::result::Result as StdResult;
 use std::str::FromStr;
 use std::sync::{LazyLock, Mutex};
 use std::{collections::HashMap, fmt};
+use typed_path::Utf8TypedPathBuf;
 
 pub use crate::cache::PreprocessorCacheModeConfig;
 use crate::errors::*;
@@ -603,7 +604,7 @@ pub struct FileConfig {
     pub dist: DistConfig,
     pub server_startup_timeout_ms: Option<u64>,
     /// Base directories to strip from paths for cache key computation.
-    pub basedirs: Vec<PathBuf>,
+    pub basedirs: Vec<String>,
 }
 
 // If the file doesn't exist or we can't read it, log the issue and proceed. If the
@@ -641,7 +642,7 @@ pub fn try_read_config_file<T: DeserializeOwned>(path: &Path) -> Result<Option<T
 #[derive(Debug)]
 pub struct EnvConfig {
     cache: CacheConfigs,
-    basedirs: Option<Vec<PathBuf>>,
+    basedirs: Option<Vec<String>>,
 }
 
 fn key_prefix_from_env_var(env_var_name: &str) -> String {
@@ -992,8 +993,8 @@ fn config_from_env() -> Result<EnvConfig> {
     let basedirs = env::var_os("SCCACHE_BASEDIRS").map(|s| {
         s.to_string_lossy()
             .split(split_symbol)
-            .map(PathBuf::from)
-            .filter(|p| !p.as_os_str().is_empty())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_owned())
             .collect()
     });
 
@@ -1076,19 +1077,16 @@ impl Config {
         // Validate that all basedirs are absolute paths
         // basedirs_raw is Vec<PathBuf>
         let mut basedirs = Vec::with_capacity(basedirs_raw.len());
-        for p in basedirs_raw {
+        for d in basedirs_raw {
+            let p = Utf8TypedPathBuf::from(d);
             if !p.is_absolute() {
                 bail!("Basedir path must be absolute: {:?}", p);
             }
             // Normalize basedir:
-            // remove double separators, cur_dirs
-            let abs = absolute(&p)?;
-            let mut bytes = abs.to_string_lossy().into_owned().into_bytes();
+            // remove double separators, cur_dirs, parent_dirs, trailing slashes
+            let normalized = p.normalize();
+            let bytes = normalized.to_string().into_bytes();
 
-            // remove trailing slashes
-            while matches!(bytes.last(), Some(b'/' | b'\\')) {
-                bytes.pop();
-            }
             // normalize windows paths
             let normalized = {
                 #[cfg(target_os = "windows")]
@@ -1453,14 +1451,14 @@ fn config_basedirs_overrides() {
     // Test that env variable takes precedence over file config
     let env_conf = EnvConfig {
         cache: Default::default(),
-        basedirs: vec![PathBuf::from("C:/env/basedir")].into(),
+        basedirs: vec!["C:/env/basedir".to_string()].into(),
     };
 
     let file_conf = FileConfig {
         cache: Default::default(),
         dist: Default::default(),
         server_startup_timeout_ms: None,
-        basedirs: vec![PathBuf::from("C:/file/basedir")],
+        basedirs: vec!["C:/file/basedir".to_string()],
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
@@ -1476,7 +1474,7 @@ fn config_basedirs_overrides() {
         cache: Default::default(),
         dist: Default::default(),
         server_startup_timeout_ms: None,
-        basedirs: vec![PathBuf::from("C:/file/basedir")],
+        basedirs: vec!["C:/file/basedir".to_string()],
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
@@ -1492,7 +1490,7 @@ fn config_basedirs_overrides() {
         cache: Default::default(),
         dist: Default::default(),
         server_startup_timeout_ms: None,
-        basedirs: vec![PathBuf::from("C:/file/basedir")],
+        basedirs: vec!["C:/file/basedir".to_string()],
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
@@ -1521,14 +1519,14 @@ fn config_basedirs_overrides() {
     // Test that env variable takes precedence over file config
     let env_conf = EnvConfig {
         cache: Default::default(),
-        basedirs: vec![PathBuf::from("/env/basedir")].into(),
+        basedirs: vec!["/env/basedir".to_string()].into(),
     };
 
     let file_conf = FileConfig {
         cache: Default::default(),
         dist: Default::default(),
         server_startup_timeout_ms: None,
-        basedirs: vec![PathBuf::from("/file/basedir")],
+        basedirs: vec!["/file/basedir".to_string()],
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
@@ -1544,7 +1542,7 @@ fn config_basedirs_overrides() {
         cache: Default::default(),
         dist: Default::default(),
         server_startup_timeout_ms: None,
-        basedirs: vec![PathBuf::from("/file/basedir")],
+        basedirs: vec!["/file/basedir".to_string()],
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
@@ -1560,7 +1558,7 @@ fn config_basedirs_overrides() {
         cache: Default::default(),
         dist: Default::default(),
         server_startup_timeout_ms: None,
-        basedirs: vec![PathBuf::from("/file/basedir")],
+        basedirs: vec!["/file/basedir".to_string()],
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
@@ -1615,8 +1613,8 @@ fn test_deserialize_basedirs() {
     assert_eq!(
         config.basedirs,
         vec![
-            PathBuf::from("/home/user/project"),
-            PathBuf::from("/home/user/workspace")
+            "/home/user/project".to_string(),
+            "/home/user/workspace".to_string()
         ]
     );
 }
@@ -1650,7 +1648,7 @@ fn test_env_basedirs_single() {
 
     assert_eq!(
         config.basedirs.expect("SCCACHE_BASEDIRS is set"),
-        vec![PathBuf::from("/home/user/project")]
+        vec!["/home/user/project".to_string()]
     );
 }
 
@@ -1668,7 +1666,7 @@ fn test_env_basedirs_single() {
 
     assert_eq!(
         config.basedirs.expect("SCCACHE_BASEDIRS is set"),
-        vec![PathBuf::from("C:\\home\\user\\project")]
+        vec!["C:/home/user/project".to_string()]
     );
 }
 
@@ -1690,8 +1688,8 @@ fn test_env_basedirs_multiple() {
     assert_eq!(
         config.basedirs.expect("SCCACHE_BASEDIRS is set"),
         vec![
-            PathBuf::from("/home/user/project"),
-            PathBuf::from("/home/user/workspace")
+            "/home/user/project".to_string(),
+            "/home/user/workspace".to_string()
         ]
     );
 }
@@ -1714,8 +1712,8 @@ fn test_env_basedirs_multiple() {
     assert_eq!(
         config.basedirs.expect("SCCACHE_BASEDIRS is set"),
         vec![
-            PathBuf::from("C:\\home\\user\\project"),
-            PathBuf::from("C:\\home\\user\\workspace")
+            "C:/home/user/project".to_string(),
+            "C:/home/user/workspace".to_string()
         ]
     );
 }
@@ -1739,8 +1737,8 @@ fn test_env_basedirs_with_spaces() {
     assert_eq!(
         env_conf.basedirs.clone().expect("SCCACHE_BASEDIRS is set"),
         vec![
-            PathBuf::from(" /home/user/project "),
-            PathBuf::from(" /home/user/workspace ")
+            " /home/user/project ".to_string(),
+            " /home/user/workspace ".to_string()
         ]
     );
     // The lead to trailing spaces are preserved and server fails to start
@@ -1773,8 +1771,8 @@ fn test_env_basedirs_with_spaces() {
     assert_eq!(
         env_conf.basedirs.clone().expect("SCCACHE_BASEDIRS is set"),
         vec![
-            PathBuf::from(" C:\\home\\user\\project "),
-            PathBuf::from(" C:\\home\\user\\workspace ")
+            " C:/home/user/project ".to_string(),
+            " C:/home/user/workspace ".to_string()
         ]
     );
     // The lead to trailing spaces are preserved and server fails to start
@@ -1807,8 +1805,8 @@ fn test_env_basedirs_empty_entries() {
     assert_eq!(
         config.basedirs.expect("SCCACHE_BASEDIRS is set"),
         vec![
-            PathBuf::from("/home/user/project"),
-            PathBuf::from("/home/user/workspace")
+            "/home/user/project".to_string(),
+            "/home/user/workspace".to_string()
         ]
     );
 }
@@ -1832,8 +1830,8 @@ fn test_env_basedirs_empty_entries() {
     assert_eq!(
         config.basedirs.expect("SCCACHE_BASEDIRS is set"),
         vec![
-            PathBuf::from("c:\\home\\user\\project"),
-            PathBuf::from("c:\\home\\user\\workspace")
+            "c:/home/user/project".to_string(),
+            "c:/home/user/workspace".to_string()
         ]
     );
 }
