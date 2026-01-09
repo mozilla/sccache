@@ -1830,7 +1830,6 @@ mod test {
         let args = ovec!["a", "b", "c"];
         let digest = "abcd";
 
-        // Test 1: Same hash with different absolute paths when basedir is used
         let preprocessed1 = b"# 1 \"/home/user1/project/src/main.c\"\nint main() { return 0; }";
         let preprocessed2 = b"# 1 \"/home/user2/project/src/main.c\"\nint main() { return 0; }";
 
@@ -1839,6 +1838,7 @@ mod test {
             b"/home/user2/project".to_vec(),
         ];
 
+        // Test 1: Same hash with different absolute paths when basedir is used
         let h1 = hash_key(
             digest,
             Language::C,
@@ -1862,7 +1862,31 @@ mod test {
 
         assert_eq!(h1, h2);
 
-        // Test 2: Different hashes without basedir
+        // Test 2: Same hash with single basedir that matches each
+        let h1 = hash_key(
+            digest,
+            Language::C,
+            &args,
+            &[],
+            &[],
+            preprocessed1,
+            false,
+            &basedirs[..1],
+        );
+        let h2 = hash_key(
+            digest,
+            Language::C,
+            &args,
+            &[],
+            &[],
+            preprocessed2,
+            false,
+            &basedirs[1..],
+        );
+
+        assert_eq!(h1, h2);
+
+        // Test 3: Different hashes without basedir
         let h1_no_base = hash_key(
             digest,
             Language::C,

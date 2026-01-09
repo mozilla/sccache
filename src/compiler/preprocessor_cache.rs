@@ -700,7 +700,41 @@ mod test {
             "Hashes should be equal when using basedirs with identical files in different directories"
         );
 
-        // Test 2: Without basedirs, hashes should be different
+        // Test 2: With basedir1 for first, and basedir2 for second, hashes should be the same
+        let hash1_with_basedirs = preprocessor_cache_entry_hash_key(
+            "test_digest",
+            Language::C,
+            &[],
+            &[],
+            &[],
+            &file1_path,
+            false,
+            config,
+            &dirs[..1],
+        )
+        .unwrap()
+        .unwrap();
+
+        let hash2_with_basedirs = preprocessor_cache_entry_hash_key(
+            "test_digest",
+            Language::C,
+            &[],
+            &[],
+            &[],
+            &file2_path,
+            false,
+            config,
+            &dirs[1..],
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(
+            hash1_with_basedirs, hash2_with_basedirs,
+            "Hashes should be equal when using basedirs with identical files in different directories"
+        );
+
+        // Test 3: Without basedirs, hashes should be different
         let hash1_no_basedirs = preprocessor_cache_entry_hash_key(
             "test_digest",
             Language::C,
