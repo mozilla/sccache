@@ -417,11 +417,7 @@ pub fn preprocessor_cache_entry_hash_key(
     encode_path(&mut buf, input_file)?;
 
     // Strip basedirs from the input file path if configured
-    let buf_to_hash = if !basedirs.is_empty() {
-        strip_basedirs(&buf, basedirs)
-    } else {
-        buf.clone()
-    };
+    let buf_to_hash = strip_basedirs(&buf, basedirs);
     m.update(&buf_to_hash);
     let reader = std::fs::File::open(input_file)
         .with_context(|| format!("while hashing the input file '{}'", input_file.display()))?;
