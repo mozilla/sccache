@@ -1111,20 +1111,67 @@ pub fn strip_basedirs<'a>(preprocessor_output: &'a [u8], basedirs: &[Vec<u8>]) -
 
 /// Normalize path for case-insensitive comparison.
 /// On Windows: converts all backslashes to forward slashes;
-///             lowercases ASCII characters for consistency.
-/// This function used for two purposes:
-///     - basedir_path: already normalized by std::path::absolute,
-///       but still can mismatch the case of the actual file name
-///     - preprocessor_output: plain text
-#[cfg(target_os = "windows")]
+///             lowercases characters for consistency.
+/// This function is used for:
+///     - basedir_path: already normalized by std::path::absolute
+///     - preprocessor_output: plain text that may contain invalid UTF-8
+/// Leave it for any platform for testing purposes.
 pub fn normalize_win_path(path: &[u8]) -> Vec<u8> {
-    path.iter()
-        .map(|&b| match b {
-            b'A'..=b'Z' => b + (b'a' - b'A'),
-            b'\\' => b'/',
-            _ => b,
-        })
-        .collect()
+    let mut result = Vec::with_capacity(path.len());
+    let mut i = 0;
+
+    while i < path.len() {
+        let b = path[i];
+
+        // Fast path: ASCII characters (most common case)
+        if b < 128 {
+            result.push(match b {
+                b'A'..=b'Z' => b + (b'a' - b'A'),
+                b'\\' => b'/',
+                _ => b,
+            });
+            i += 1;
+            continue;
+        }
+
+        // Non-ASCII: try to decode UTF-8 sequence
+        // Determine expected length from the first byte
+        let char_len = match b {
+            0b1100_0000..=0b1101_1111 => 2, // 110xxxxx
+            0b1110_0000..=0b1110_1111 => 3, // 1110xxxx
+            0b1111_0000..=0b1111_0111 => 4, // 11110xxx
+            _ => {
+                // Invalid UTF-8 start byte, copy as-is
+                result.push(b);
+                i += 1;
+                continue;
+            }
+        };
+
+        // Check if we have enough bytes
+        if i + char_len > path.len() {
+            // Incomplete sequence, copy as-is
+            result.push(b);
+            i += 1;
+            continue;
+        }
+
+        // Validate and decode the UTF-8 sequence
+        match std::str::from_utf8(&path[i..i + char_len]) {
+            Ok(s) => {
+                // Valid UTF-8, lowercase it
+                result.extend_from_slice(s.to_lowercase().as_bytes());
+                i += char_len;
+            }
+            Err(_) => {
+                // Invalid sequence, copy first byte as-is
+                result.push(b);
+                i += 1;
+            }
+        }
+    }
+
+    result
 }
 
 #[cfg(test)]
@@ -1405,5 +1452,86 @@ mod tests {
             &*output, expected,
             "Failed to strip reverse mixed slash path"
         );
+    }
+
+    #[test]
+    fn test_normalize_win_path_ascii() {
+        // Test basic ASCII normalization
+        let input = b"C:\\Users\\Test\\Project";
+        let normalized = super::normalize_win_path(input);
+        assert_eq!(normalized, b"c:/users/test/project");
+
+        // Test mixed case
+        let input = b"C:\\USERS\\test\\PROJECT";
+        let normalized = super::normalize_win_path(input);
+        assert_eq!(normalized, b"c:/users/test/project");
+    }
+
+    #[test]
+    fn test_normalize_win_path_utf8() {
+        // Test with UTF-8 characters (e.g., German umlauts)
+        let input = "C:\\Users\\Müller\\Projekt".as_bytes();
+        let normalized = super::normalize_win_path(input);
+        let expected = "c:/users/müller/projekt".as_bytes();
+        assert_eq!(normalized, expected);
+
+        // Test with Cyrillic characters
+        let input = "C:\\Пользователь\\Проект".as_bytes();
+        let normalized = super::normalize_win_path(input);
+        let expected = "c:/пользователь/проект".as_bytes();
+        assert_eq!(normalized, expected);
+
+        // Test with Turkish İ (special case)
+        let input = "C:\\İstanbul\\DİREKTÖRY".as_bytes();
+        let normalized = super::normalize_win_path(input);
+        // Turkish İ lowercases to i with dot
+        let expected = "c:/i\u{307}stanbul/di\u{307}rektöry".as_bytes();
+        assert_eq!(normalized, expected);
+    }
+
+    #[test]
+    fn test_normalize_win_path_mixed_ascii_utf8() {
+        // Test mixed ASCII and UTF-8
+        let input = "C:\\Users\\Test\\Café\\Проект".as_bytes();
+        let normalized = super::normalize_win_path(input);
+        let expected = "c:/users/test/café/проект".as_bytes();
+        assert_eq!(normalized, expected);
+    }
+
+    #[test]
+    fn test_normalize_win_path_invalid_utf8() {
+        // Test with invalid UTF-8 sequence (should preserve as-is)
+        let mut input = b"C:\\Users\\".to_vec();
+        input.push(0xFF); // Invalid UTF-8
+        input.extend_from_slice(b"\\Test");
+
+        let normalized = super::normalize_win_path(&input);
+
+        // Should lowercase ASCII and convert backslashes, but preserve invalid byte
+        let mut expected = b"c:/users/".to_vec();
+        expected.push(0xFF);
+        expected.extend_from_slice(b"/test");
+        assert_eq!(normalized, expected);
+    }
+
+    #[test]
+    fn test_normalize_win_path_incomplete_utf8() {
+        // Test with incomplete UTF-8 sequence at the end
+        let mut input = b"C:\\Users\\Test".to_vec();
+        input.push(0xC3); // Start of 2-byte UTF-8 but incomplete
+
+        let normalized = super::normalize_win_path(&input);
+
+        // Should preserve incomplete byte as-is
+        let mut expected = b"c:/users/test".to_vec();
+        expected.push(0xC3);
+        assert_eq!(normalized, expected);
+    }
+
+    #[test]
+    fn test_normalize_win_path_empty() {
+        let input = b"";
+        let normalized = super::normalize_win_path(input);
+        assert_eq!(normalized, b"");
     }
 }
