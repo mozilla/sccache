@@ -1084,8 +1084,12 @@ impl Config {
             }
             // Normalize basedir:
             // remove double separators, cur_dirs, parent_dirs, trailing slashes
-            let normalized = p.normalize();
-            let bytes = normalized.to_string().into_bytes();
+            let p_norm = p.normalize();
+            let mut bytes = p_norm.to_string().into_bytes();
+
+            // Always add a trailing `/` to basedirs to ensure we only match complete path
+            // components
+            bytes.push(b'/');
 
             // normalize windows paths
             let normalized = {
@@ -1462,7 +1466,7 @@ fn config_basedirs_overrides() {
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
-    assert_eq!(config.basedirs, vec![b"c:/env/basedir".to_vec()]);
+    assert_eq!(config.basedirs, vec![b"c:/env/basedir/".to_vec()]);
 
     // Test that file config is used when env is None
     let env_conf = EnvConfig {
@@ -1478,7 +1482,7 @@ fn config_basedirs_overrides() {
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
-    assert_eq!(config.basedirs, vec![b"c:/file/basedir".to_vec()]);
+    assert_eq!(config.basedirs, vec![b"c:/file/basedir/".to_vec()]);
 
     // Test that env config is used when env is set but empty
     let env_conf = EnvConfig {
@@ -1530,7 +1534,7 @@ fn config_basedirs_overrides() {
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
-    assert_eq!(config.basedirs, vec![b"/env/basedir".to_vec()]);
+    assert_eq!(config.basedirs, vec![b"/env/basedir/".to_vec()]);
 
     // Test that file config is used when env is None
     let env_conf = EnvConfig {
@@ -1546,7 +1550,7 @@ fn config_basedirs_overrides() {
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
-    assert_eq!(config.basedirs, vec![b"/file/basedir".to_vec()]);
+    assert_eq!(config.basedirs, vec![b"/file/basedir/".to_vec()]);
 
     // Test that env config is used when env is set but empty
     let env_conf = EnvConfig {
@@ -2257,4 +2261,286 @@ size = "7g"
             basedirs: vec![],
         }
     );
+}
+
+// Integration tests: Config normalization + strip_basedirs usage
+
+#[test]
+#[cfg(not(target_os = "windows"))]
+fn test_integration_config_normalizes_and_strips() {
+    // Test that Config normalizes basedirs and strip_basedirs uses them correctly
+    use crate::util::strip_basedirs;
+    use std::borrow::Cow;
+
+    let env_conf = EnvConfig {
+        cache: Default::default(),
+        basedirs: None,
+    };
+
+    let file_conf = FileConfig {
+        cache: Default::default(),
+        dist: Default::default(),
+        server_startup_timeout_ms: None,
+        basedirs: vec!["/home/user/project".to_string()],
+    };
+
+    let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
+
+    // Verify config normalized the basedir with trailing slash
+    assert_eq!(config.basedirs, vec![b"/home/user/project/"]);
+
+    // Test that strip_basedirs uses the normalized basedir
+    let input = b"# 1 \"/home/user/project/src/main.c\"\nint main() { return 0; }";
+    let output = strip_basedirs(input, &config.basedirs);
+
+    // Should strip the basedir
+    let expected = b"# 1 \"src/main.c\"\nint main() { return 0; }";
+    assert_eq!(&*output, expected);
+    assert!(matches!(output, Cow::Owned(_)));
+}
+
+#[test]
+#[cfg(not(target_os = "windows"))]
+fn test_integration_normalized_path_with_double_slashes() {
+    // Test that Config normalizes paths with double slashes
+    use crate::util::strip_basedirs;
+
+    let env_conf = EnvConfig {
+        cache: Default::default(),
+        basedirs: None,
+    };
+
+    let file_conf = FileConfig {
+        cache: Default::default(),
+        dist: Default::default(),
+        server_startup_timeout_ms: None,
+        basedirs: vec!["/home//user///project/".to_string()],
+    };
+
+    let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
+
+    // Config should normalize to single slashes with one trailing slash
+    assert_eq!(config.basedirs, vec![b"/home/user/project/"]);
+
+    // Verify it works with strip_basedirs
+    let input = b"# 1 \"/home/user/project/src/main.c\"";
+    let output = strip_basedirs(input, &config.basedirs);
+    assert_eq!(&*output, b"# 1 \"src/main.c\"");
+}
+
+#[test]
+#[cfg(target_os = "windows")]
+fn test_integration_windows_path_normalization() {
+    // Test that Config normalizes Windows paths correctly
+    use crate::util::strip_basedirs;
+
+    let env_conf = EnvConfig {
+        cache: Default::default(),
+        basedirs: None,
+    };
+
+    let file_conf = FileConfig {
+        cache: Default::default(),
+        dist: Default::default(),
+        server_startup_timeout_ms: None,
+        basedirs: vec!["C:\\Users\\Test\\Project".to_string()],
+    };
+
+    let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
+
+    // Should be normalized to lowercase with forward slashes
+    assert_eq!(config.basedirs, vec![b"c:/users/test/project/"]);
+
+    // Test with mixed case preprocessor output
+    let input = b"# 1 \"C:\\Users\\Test\\Project\\src\\main.c\"";
+    let output = strip_basedirs(input, &config.basedirs);
+    assert_eq!(&*output, b"# 1 \"src\\main.c\"");
+}
+
+#[test]
+#[cfg(not(target_os = "windows"))]
+fn test_integration_cow_borrowed_when_no_match() {
+    // Test that strip_basedirs returns Cow::Borrowed when no stripping occurs
+    use crate::util::strip_basedirs;
+    use std::borrow::Cow;
+
+    let env_conf = EnvConfig {
+        cache: Default::default(),
+        basedirs: None,
+    };
+
+    let file_conf = FileConfig {
+        cache: Default::default(),
+        dist: Default::default(),
+        server_startup_timeout_ms: None,
+        basedirs: vec!["/home/user/project".to_string()],
+    };
+
+    let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
+
+    // Input doesn't contain the basedir
+    let input = b"# 1 \"/other/path/main.c\"\nint main() { return 0; }";
+    let output = strip_basedirs(input, &config.basedirs);
+
+    // Should return borrowed reference (no allocation)
+    assert!(matches!(output, Cow::Borrowed(_)));
+    assert_eq!(&*output, input);
+}
+
+#[test]
+#[cfg(not(target_os = "windows"))]
+fn test_integration_cow_borrowed_when_empty_basedirs() {
+    // Test that strip_basedirs returns Cow::Borrowed when basedirs is empty
+    use crate::util::strip_basedirs;
+    use std::borrow::Cow;
+
+    let env_conf = EnvConfig {
+        cache: Default::default(),
+        basedirs: None,
+    };
+
+    let file_conf = FileConfig {
+        cache: Default::default(),
+        dist: Default::default(),
+        server_startup_timeout_ms: None,
+        basedirs: vec![],
+    };
+
+    let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
+    assert!(config.basedirs.is_empty());
+
+    let input = b"# 1 \"/home/user/project/src/main.c\"";
+    let output = strip_basedirs(input, &config.basedirs);
+
+    // Should return borrowed reference when basedirs is empty
+    assert!(matches!(output, Cow::Borrowed(_)));
+    assert_eq!(&*output, input);
+}
+
+#[test]
+#[cfg(not(target_os = "windows"))]
+fn test_integration_multiple_basedirs_longest_match() {
+    // Test that strip_basedirs prefers longest match with normalized basedirs
+    use crate::util::strip_basedirs;
+
+    let env_conf = EnvConfig {
+        cache: Default::default(),
+        basedirs: None,
+    };
+
+    let file_conf = FileConfig {
+        cache: Default::default(),
+        dist: Default::default(),
+        server_startup_timeout_ms: None,
+        basedirs: vec!["/home/user".to_string(), "/home/user/project".to_string()],
+    };
+
+    let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
+
+    // Both should be normalized with trailing slashes
+    assert_eq!(config.basedirs.len(), 2);
+    assert_eq!(config.basedirs[0], b"/home/user/");
+    assert_eq!(config.basedirs[1], b"/home/user/project/");
+
+    // Input matches both, but longest should win
+    let input = b"# 1 \"/home/user/project/src/main.c\"";
+    let output = strip_basedirs(input, &config.basedirs);
+
+    // Should match the longest basedir (/home/user/project/)
+    let expected = b"# 1 \"src/main.c\"";
+    assert_eq!(&*output, expected);
+}
+
+#[test]
+#[cfg(not(target_os = "windows"))]
+fn test_integration_paths_with_dots_normalized() {
+    // Test that paths with . and .. are normalized correctly
+    use crate::util::strip_basedirs;
+
+    let env_conf = EnvConfig {
+        cache: Default::default(),
+        basedirs: None,
+    };
+
+    let file_conf = FileConfig {
+        cache: Default::default(),
+        dist: Default::default(),
+        server_startup_timeout_ms: None,
+        basedirs: vec!["/home/user/./project/../project".to_string()],
+    };
+
+    let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
+
+    // Should be normalized to remove ./ and ../
+    assert_eq!(config.basedirs[0], b"/home/user/project/");
+
+    // Verify it works with strip_basedirs
+    let input = b"# 1 \"/home/user/project/src/main.c\"";
+    let output = strip_basedirs(input, &config.basedirs);
+    let expected = b"# 1 \"src/main.c\"";
+    assert_eq!(&*output, expected);
+}
+
+#[test]
+#[cfg(target_os = "windows")]
+fn test_integration_windows_mixed_slashes() {
+    // Test Windows path with mixed slashes in preprocessor output
+    use crate::util::strip_basedirs;
+
+    let env_conf = EnvConfig {
+        cache: Default::default(),
+        basedirs: None,
+    };
+
+    let file_conf = FileConfig {
+        cache: Default::default(),
+        dist: Default::default(),
+        server_startup_timeout_ms: None,
+        basedirs: vec!["C:\\Users\\test\\project".to_string()],
+    };
+
+    let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
+    assert_eq!(config.basedirs[0], b"c:/users/test/project/");
+
+    // Preprocessor output with mixed slashes
+    let input = b"# 1 \"C:/Users\\test\\project\\src/main.c\"";
+    let output = strip_basedirs(input, &config.basedirs);
+
+    // Should strip despite mixed slashes
+    let expected = b"# 1 \"src/main.c\"";
+    assert_eq!(&*output, expected);
+}
+
+#[test]
+#[serial(SCCACHE_BASEDIRS)]
+#[cfg(not(target_os = "windows"))]
+fn test_integration_env_variable_to_strip() {
+    // Test full flow: SCCACHE_BASEDIRS env var -> Config -> strip_basedirs
+    use crate::util::strip_basedirs;
+
+    unsafe {
+        env::set_var("SCCACHE_BASEDIRS", "/home/user/project:/tmp/build");
+    }
+
+    let env_conf = config_from_env().unwrap();
+    let file_conf = FileConfig::default();
+    let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
+
+    unsafe {
+        env::remove_var("SCCACHE_BASEDIRS");
+    }
+
+    // Should have two normalized basedirs
+    assert_eq!(config.basedirs.len(), 2);
+    assert_eq!(config.basedirs[0], b"/home/user/project/");
+    assert_eq!(config.basedirs[1], b"/tmp/build/");
+
+    // Test stripping with both
+    let input1 = b"# 1 \"/home/user/project/src/main.c\"";
+    let output1 = strip_basedirs(input1, &config.basedirs);
+    assert_eq!(&*output1, b"# 1 \"src/main.c\"");
+
+    let input2 = b"# 1 \"/tmp/build/obj/file.o\"";
+    let output2 = strip_basedirs(input2, &config.basedirs);
+    assert_eq!(&*output2, b"# 1 \"obj/file.o\"");
 }
