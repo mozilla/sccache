@@ -135,7 +135,7 @@ mod test {
             .unwrap();
 
         let tempdir = tempfile::Builder::new()
-            .prefix("sccache_test_readonly_basedirs")
+            .prefix("readonly_storage_forwards_basedirs")
             .tempdir()
             .expect("Failed to create tempdir");
         let cache_dir = tempdir.path().join("cache");

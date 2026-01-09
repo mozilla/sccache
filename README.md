@@ -330,7 +330,7 @@ By default, sccache requires absolute paths to match for cache hits. To enable c
 export SCCACHE_BASEDIRS=/home/user/project
 ```
 
-You can also specify multiple base directories by separating them by `;` on Windows hosts and by `:` on any other. When multiple directories are provided, the longest matching prefix is used:
+You can also specify multiple base directories by separating them by `;` on Windows hosts and by `:` on any other operating system. When multiple directories are provided, the longest matching prefix is used:
 
 ```bash
 export SCCACHE_BASEDIRS="/home/user/project:/home/user/workspace"

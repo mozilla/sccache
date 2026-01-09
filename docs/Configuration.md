@@ -15,8 +15,8 @@ server_startup_timeout_ms = 10000
 # paths when compiling the same source code, such as between
 # parallel checkouts of the same project, Git worktrees, or different
 # users in a shared environment.
-# When multiple paths are provided, the longest matching prefix
-# is applied.
+# When multiple matching paths are provided, the longest prefix
+# is used.
 #
 # Path matching is case-insensitive on Windows and case-sensitive on other OSes.
 #
@@ -159,7 +159,7 @@ Note that some env variables may need sccache server restart to take effect.
 
 * `SCCACHE_ALLOW_CORE_DUMPS` to enable core dumps by the server
 * `SCCACHE_CONF` configuration file path
-* `SCCACHE_BASEDIRS` base directory (or directories) to strip from paths for cache key computation. This is similar to ccache's `CCACHE_BASEDIR` and enables cache hits across different absolute paths when compiling the same source code. Multiple directories can be separated by `;` on Windows hosts and by `:` on any other. When multiple directories are specified, the longest matching prefix is used. Path matching is **case-insensitive** on Windows and **case-sensitive** on other operating systems. Environment variable takes precedence over file configuration. Only absolute paths are supported; relative paths will cause an error and prevent the server from start.
+* `SCCACHE_BASEDIRS` base directory (or directories) to strip from paths for cache key computation. This is similar to ccache's `CCACHE_BASEDIR` and enables cache hits across different absolute paths when compiling the same source code. Multiple directories can be separated by `;` on Windows hosts and by `:` on any other operating system. When multiple directories are specified, the longest matching prefix is used. Path matching is **case-insensitive** on Windows and **case-sensitive** on other operating systems. Environment variable takes precedence over file configuration. Only absolute paths are supported; relative paths will cause an error and prevent the server from start.
 * `SCCACHE_CACHED_CONF`
 * `SCCACHE_IDLE_TIMEOUT` how long the local daemon process waits for more client requests before exiting, in seconds. Set to `0` to run sccache permanently
 * `SCCACHE_STARTUP_NOTIFY` specify a path to a socket which will be used for server completion notification
