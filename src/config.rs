@@ -992,7 +992,7 @@ fn config_from_env() -> Result<EnvConfig> {
     let basedirs = env::var_os("SCCACHE_BASEDIRS").map(|s| {
         s.to_string_lossy()
             .split(split_symbol)
-            .map(|p| PathBuf::from(p.trim()))
+            .map(PathBuf::from)
             .filter(|p| !p.as_os_str().is_empty())
             .collect()
     });
@@ -1445,8 +1445,6 @@ fn config_overrides() {
             basedirs: vec![],
         }
     );
-
-    // check that
 }
 
 #[test]
@@ -1646,13 +1644,14 @@ fn test_env_basedirs_single() {
         std::env::set_var("SCCACHE_BASEDIRS", "/home/user/project");
     }
     let config = config_from_env().unwrap();
+    unsafe {
+        std::env::remove_var("SCCACHE_BASEDIRS");
+    }
+
     assert_eq!(
         config.basedirs.expect("SCCACHE_BASEDIRS is set"),
         vec![PathBuf::from("/home/user/project")]
     );
-    unsafe {
-        std::env::remove_var("SCCACHE_BASEDIRS");
-    }
 }
 
 #[test]
@@ -1663,13 +1662,14 @@ fn test_env_basedirs_single() {
         std::env::set_var("SCCACHE_BASEDIRS", "C:/home/user/project");
     }
     let config = config_from_env().unwrap();
+    unsafe {
+        std::env::remove_var("SCCACHE_BASEDIRS");
+    }
+
     assert_eq!(
         config.basedirs.expect("SCCACHE_BASEDIRS is set"),
         vec![PathBuf::from("C:\\home\\user\\project")]
     );
-    unsafe {
-        std::env::remove_var("SCCACHE_BASEDIRS");
-    }
 }
 
 #[test]
@@ -1683,6 +1683,10 @@ fn test_env_basedirs_multiple() {
         );
     }
     let config = config_from_env().unwrap();
+    unsafe {
+        std::env::remove_var("SCCACHE_BASEDIRS");
+    }
+
     assert_eq!(
         config.basedirs.expect("SCCACHE_BASEDIRS is set"),
         vec![
@@ -1690,9 +1694,6 @@ fn test_env_basedirs_multiple() {
             PathBuf::from("/home/user/workspace")
         ]
     );
-    unsafe {
-        std::env::remove_var("SCCACHE_BASEDIRS");
-    }
 }
 
 #[test]
@@ -1706,6 +1707,10 @@ fn test_env_basedirs_multiple() {
         );
     }
     let config = config_from_env().unwrap();
+    unsafe {
+        std::env::remove_var("SCCACHE_BASEDIRS");
+    }
+
     assert_eq!(
         config.basedirs.expect("SCCACHE_BASEDIRS is set"),
         vec![
@@ -1713,57 +1718,74 @@ fn test_env_basedirs_multiple() {
             PathBuf::from("C:\\home\\user\\workspace")
         ]
     );
-    unsafe {
-        std::env::remove_var("SCCACHE_BASEDIRS");
-    }
 }
 
 #[test]
 #[serial(SCCACHE_BASEDIRS)]
 #[cfg(not(target_os = "windows"))]
 fn test_env_basedirs_with_spaces() {
-    // Test that spaces around paths are trimmed
+    // Test that spaces around paths are not trimmed
     unsafe {
         std::env::set_var(
             "SCCACHE_BASEDIRS",
             " /home/user/project : /home/user/workspace ",
         );
     }
-    let config = config_from_env().unwrap();
-    assert_eq!(
-        config.basedirs.expect("SCCACHE_BASEDIRS is set"),
-        vec![
-            PathBuf::from("/home/user/project"),
-            PathBuf::from("/home/user/workspace")
-        ]
-    );
+    let env_conf = config_from_env().unwrap();
     unsafe {
         std::env::remove_var("SCCACHE_BASEDIRS");
     }
+
+    assert_eq!(
+        env_conf.basedirs.clone().expect("SCCACHE_BASEDIRS is set"),
+        vec![
+            PathBuf::from(" /home/user/project "),
+            PathBuf::from(" /home/user/workspace ")
+        ]
+    );
+    // The lead to trailing spaces are preserved and server fails to start
+    let file_conf = FileConfig {
+        cache: Default::default(),
+        dist: Default::default(),
+        server_startup_timeout_ms: None,
+        basedirs: vec![],
+    };
+    Config::from_env_and_file_configs(env_conf, file_conf)
+        .expect_err("Should fail due to non-absolute path");
 }
 
 #[test]
 #[serial(SCCACHE_BASEDIRS)]
 #[cfg(target_os = "windows")]
 fn test_env_basedirs_with_spaces() {
-    // Test that spaces around paths are trimmed
+    // Test that spaces around paths are not trimmed
     unsafe {
         std::env::set_var(
             "SCCACHE_BASEDIRS",
             " C:/home/user/project ; C:/home/user/workspace ",
         );
     }
-    let config = config_from_env().unwrap();
-    assert_eq!(
-        config.basedirs.expect("SCCACHE_BASEDIRS is set"),
-        vec![
-            PathBuf::from("C:\\home\\user\\project"),
-            PathBuf::from("C:\\home\\user\\workspace")
-        ]
-    );
+    let env_conf = config_from_env().unwrap();
     unsafe {
         std::env::remove_var("SCCACHE_BASEDIRS");
     }
+
+    assert_eq!(
+        env_conf.basedirs.clone().expect("SCCACHE_BASEDIRS is set"),
+        vec![
+            PathBuf::from(" C:\\home\\user\\project "),
+            PathBuf::from(" C:\\home\\user\\workspace ")
+        ]
+    );
+    // The lead to trailing spaces are preserved and server fails to start
+    let file_conf = FileConfig {
+        cache: Default::default(),
+        dist: Default::default(),
+        server_startup_timeout_ms: None,
+        basedirs: vec![],
+    };
+    Config::from_env_and_file_configs(env_conf, file_conf)
+        .expect_err("Should fail due to non-absolute path");
 }
 
 #[test]
@@ -1778,6 +1800,10 @@ fn test_env_basedirs_empty_entries() {
         );
     }
     let config = config_from_env().unwrap();
+    unsafe {
+        std::env::remove_var("SCCACHE_BASEDIRS");
+    }
+
     assert_eq!(
         config.basedirs.expect("SCCACHE_BASEDIRS is set"),
         vec![
@@ -1785,9 +1811,6 @@ fn test_env_basedirs_empty_entries() {
             PathBuf::from("/home/user/workspace")
         ]
     );
-    unsafe {
-        std::env::remove_var("SCCACHE_BASEDIRS");
-    }
 }
 
 #[test]
@@ -1802,6 +1825,10 @@ fn test_env_basedirs_empty_entries() {
         );
     }
     let config = config_from_env().unwrap();
+    unsafe {
+        std::env::remove_var("SCCACHE_BASEDIRS");
+    }
+
     assert_eq!(
         config.basedirs.expect("SCCACHE_BASEDIRS is set"),
         vec![
@@ -1809,9 +1836,6 @@ fn test_env_basedirs_empty_entries() {
             PathBuf::from("c:\\home\\user\\workspace")
         ]
     );
-    unsafe {
-        std::env::remove_var("SCCACHE_BASEDIRS");
-    }
 }
 
 #[test]
