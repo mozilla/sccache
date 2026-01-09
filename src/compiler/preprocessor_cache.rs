@@ -641,16 +641,24 @@ mod test {
 
     #[test]
     fn test_preprocessor_cache_entry_hash_key_basedirs() {
+        #[cfg(target_os = "windows")]
+        use crate::util::normalize_win_path;
         use std::fs;
         use tempfile::TempDir;
 
         // Create two different base directories
         let dir1 = TempDir::new().unwrap();
         let dir2 = TempDir::new().unwrap();
-        let dirs = vec![
-            dir1.path().to_string_lossy().into_owned().into_bytes(),
-            dir2.path().to_string_lossy().into_owned().into_bytes(),
-        ];
+        let dirs = [&dir1, &dir2]
+            .iter()
+            .map(|dir| {
+                let bytes = dir.path().to_string_lossy().into_owned().into_bytes();
+                #[cfg(target_os = "windows")]
+                return normalize_win_path(&bytes);
+                #[cfg(not(target_os = "windows"))]
+                bytes
+            })
+            .collect::<Vec<_>>();
 
         // Create identical files with the same relative path in each directory
         let file1_path = dir1.path().join("test.c");
