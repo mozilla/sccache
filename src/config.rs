@@ -641,7 +641,7 @@ pub fn try_read_config_file<T: DeserializeOwned>(path: &Path) -> Result<Option<T
 #[derive(Debug)]
 pub struct EnvConfig {
     cache: CacheConfigs,
-    basedirs: Vec<PathBuf>,
+    basedirs: Option<Vec<PathBuf>>,
 }
 
 fn key_prefix_from_env_var(env_var_name: &str) -> String {
@@ -989,15 +989,13 @@ fn config_from_env() -> Result<EnvConfig> {
     let split_symbol = ';';
     #[cfg(not(target_os = "windows"))]
     let split_symbol = ':';
-    let basedirs = env::var_os("SCCACHE_BASEDIRS")
-        .map(|s| {
-            s.to_string_lossy()
-                .split(split_symbol)
-                .map(|p| PathBuf::from(p.trim()))
-                .filter(|p| !p.as_os_str().is_empty())
-                .collect()
-        })
-        .unwrap_or_default();
+    let basedirs = env::var_os("SCCACHE_BASEDIRS").map(|s| {
+        s.to_string_lossy()
+            .split(split_symbol)
+            .map(|p| PathBuf::from(p.trim()))
+            .filter(|p| !p.as_os_str().is_empty())
+            .collect()
+    });
 
     Ok(EnvConfig { cache, basedirs })
 }
@@ -1068,9 +1066,9 @@ impl Config {
         } = env_conf;
         conf_caches.merge(cache);
 
-        // Environment variable takes precedence over file config
-        let basedirs_raw = if !env_basedirs.is_empty() {
-            env_basedirs
+        // Environment variable takes precedence over file config if it is set
+        let basedirs_raw = if let Some(basedirs) = env_basedirs {
+            basedirs
         } else {
             file_basedirs
         };
@@ -1394,7 +1392,7 @@ fn config_overrides() {
             }),
             ..Default::default()
         },
-        basedirs: vec![],
+        basedirs: None,
     };
 
     let file_conf = FileConfig {
@@ -1435,7 +1433,7 @@ fn config_overrides() {
                 username: Some("user".to_owned()),
                 password: Some("secret".to_owned()),
                 ..Default::default()
-            }),),
+            })),
             fallback_cache: DiskCacheConfig {
                 dir: "/env-cache".into(),
                 size: 5,
@@ -1447,6 +1445,8 @@ fn config_overrides() {
             basedirs: vec![],
         }
     );
+
+    // check that
 }
 
 #[test]
@@ -1455,7 +1455,7 @@ fn config_basedirs_overrides() {
     // Test that env variable takes precedence over file config
     let env_conf = EnvConfig {
         cache: Default::default(),
-        basedirs: vec![PathBuf::from("C:/env/basedir")],
+        basedirs: vec![PathBuf::from("C:/env/basedir")].into(),
     };
 
     let file_conf = FileConfig {
@@ -1468,10 +1468,10 @@ fn config_basedirs_overrides() {
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
     assert_eq!(config.basedirs, vec![b"c:/env/basedir".to_vec()]);
 
-    // Test that file config is used when env is empty
+    // Test that file config is used when env is None
     let env_conf = EnvConfig {
         cache: Default::default(),
-        basedirs: vec![],
+        basedirs: None,
     };
 
     let file_conf = FileConfig {
@@ -1484,10 +1484,26 @@ fn config_basedirs_overrides() {
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
     assert_eq!(config.basedirs, vec![b"c:/file/basedir".to_vec()]);
 
+    // Test that env config is used when env is set but empty
+    let env_conf = EnvConfig {
+        cache: Default::default(),
+        basedirs: vec![].into(),
+    };
+
+    let file_conf = FileConfig {
+        cache: Default::default(),
+        dist: Default::default(),
+        server_startup_timeout_ms: None,
+        basedirs: vec![PathBuf::from("C:/file/basedir")],
+    };
+
+    let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
+    assert!(config.basedirs.is_empty());
+
     // Test that both empty results in empty
     let env_conf = EnvConfig {
         cache: Default::default(),
-        basedirs: vec![],
+        basedirs: vec![].into(),
     };
 
     let file_conf = FileConfig {
@@ -1507,7 +1523,7 @@ fn config_basedirs_overrides() {
     // Test that env variable takes precedence over file config
     let env_conf = EnvConfig {
         cache: Default::default(),
-        basedirs: vec![PathBuf::from("/env/basedir")],
+        basedirs: vec![PathBuf::from("/env/basedir")].into(),
     };
 
     let file_conf = FileConfig {
@@ -1520,10 +1536,10 @@ fn config_basedirs_overrides() {
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
     assert_eq!(config.basedirs, vec![b"/env/basedir".to_vec()]);
 
-    // Test that file config is used when env is empty
+    // Test that file config is used when env is None
     let env_conf = EnvConfig {
         cache: Default::default(),
-        basedirs: vec![],
+        basedirs: None,
     };
 
     let file_conf = FileConfig {
@@ -1536,10 +1552,40 @@ fn config_basedirs_overrides() {
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
     assert_eq!(config.basedirs, vec![b"/file/basedir".to_vec()]);
 
+    // Test that env config is used when env is set but empty
+    let env_conf = EnvConfig {
+        cache: Default::default(),
+        basedirs: vec![].into(),
+    };
+
+    let file_conf = FileConfig {
+        cache: Default::default(),
+        dist: Default::default(),
+        server_startup_timeout_ms: None,
+        basedirs: vec![PathBuf::from("/file/basedir")],
+    };
+
+    let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
+    assert!(config.basedirs.is_empty());
+
     // Test that both empty results in empty
     let env_conf = EnvConfig {
         cache: Default::default(),
+        basedirs: vec![].into(),
+    };
+
+    let file_conf = FileConfig {
+        cache: Default::default(),
+        dist: Default::default(),
+        server_startup_timeout_ms: None,
         basedirs: vec![],
+    };
+
+    let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
+    assert!(config.basedirs.is_empty());
+    let env_conf = EnvConfig {
+        cache: Default::default(),
+        basedirs: None,
     };
 
     let file_conf = FileConfig {
@@ -1600,7 +1646,10 @@ fn test_env_basedirs_single() {
         std::env::set_var("SCCACHE_BASEDIRS", "/home/user/project");
     }
     let config = config_from_env().unwrap();
-    assert_eq!(config.basedirs, vec![PathBuf::from("/home/user/project")]);
+    assert_eq!(
+        config.basedirs.expect("SCCACHE_BASEDIRS is set"),
+        vec![PathBuf::from("/home/user/project")]
+    );
     unsafe {
         std::env::remove_var("SCCACHE_BASEDIRS");
     }
@@ -1615,7 +1664,7 @@ fn test_env_basedirs_single() {
     }
     let config = config_from_env().unwrap();
     assert_eq!(
-        config.basedirs,
+        config.basedirs.expect("SCCACHE_BASEDIRS is set"),
         vec![PathBuf::from("C:\\home\\user\\project")]
     );
     unsafe {
@@ -1635,7 +1684,7 @@ fn test_env_basedirs_multiple() {
     }
     let config = config_from_env().unwrap();
     assert_eq!(
-        config.basedirs,
+        config.basedirs.expect("SCCACHE_BASEDIRS is set"),
         vec![
             PathBuf::from("/home/user/project"),
             PathBuf::from("/home/user/workspace")
@@ -1658,7 +1707,7 @@ fn test_env_basedirs_multiple() {
     }
     let config = config_from_env().unwrap();
     assert_eq!(
-        config.basedirs,
+        config.basedirs.expect("SCCACHE_BASEDIRS is set"),
         vec![
             PathBuf::from("C:\\home\\user\\project"),
             PathBuf::from("C:\\home\\user\\workspace")
@@ -1682,7 +1731,7 @@ fn test_env_basedirs_with_spaces() {
     }
     let config = config_from_env().unwrap();
     assert_eq!(
-        config.basedirs,
+        config.basedirs.expect("SCCACHE_BASEDIRS is set"),
         vec![
             PathBuf::from("/home/user/project"),
             PathBuf::from("/home/user/workspace")
@@ -1706,7 +1755,7 @@ fn test_env_basedirs_with_spaces() {
     }
     let config = config_from_env().unwrap();
     assert_eq!(
-        config.basedirs,
+        config.basedirs.expect("SCCACHE_BASEDIRS is set"),
         vec![
             PathBuf::from("C:\\home\\user\\project"),
             PathBuf::from("C:\\home\\user\\workspace")
@@ -1730,7 +1779,7 @@ fn test_env_basedirs_empty_entries() {
     }
     let config = config_from_env().unwrap();
     assert_eq!(
-        config.basedirs,
+        config.basedirs.expect("SCCACHE_BASEDIRS is set"),
         vec![
             PathBuf::from("/home/user/project"),
             PathBuf::from("/home/user/workspace")
@@ -1754,7 +1803,7 @@ fn test_env_basedirs_empty_entries() {
     }
     let config = config_from_env().unwrap();
     assert_eq!(
-        config.basedirs,
+        config.basedirs.expect("SCCACHE_BASEDIRS is set"),
         vec![
             PathBuf::from("c:\\home\\user\\project"),
             PathBuf::from("c:\\home\\user\\workspace")
@@ -1772,7 +1821,7 @@ fn test_env_basedirs_not_set() {
         std::env::remove_var("SCCACHE_BASEDIRS");
     }
     let config = config_from_env().unwrap();
-    assert!(config.basedirs.is_empty());
+    assert!(config.basedirs.is_none());
 }
 
 #[test]
