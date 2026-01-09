@@ -1508,11 +1508,7 @@ pub fn hash_key(
     }
 
     // Strip basedirs from preprocessor output if configured
-    let preprocessor_output_to_hash = if !basedirs.is_empty() {
-        Cow::Owned(strip_basedirs(preprocessor_output, basedirs))
-    } else {
-        Cow::Borrowed(preprocessor_output)
-    };
+    let preprocessor_output_to_hash = strip_basedirs(preprocessor_output, basedirs);
 
     m.update(&preprocessor_output_to_hash);
     m.finish()
