@@ -426,27 +426,22 @@ pub struct CompileCommand {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProcessOutput {
-    code: i32,
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
+    pub code: i32,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
 }
 impl ProcessOutput {
     #[cfg(unix)]
     pub fn try_from(o: process::Output) -> Result<Self> {
-        let process::Output {
-            status,
-            stdout,
-            stderr,
-        } = o;
-        let code = match (status.code(), status.signal()) {
+        let code = match (o.status.code(), o.status.signal()) {
             (Some(c), _) => c,
-            (None, Some(s)) => bail!("Process status {} terminated with signal {}", status, s),
-            (None, None) => bail!("Process status {} has no exit code or signal", status),
+            (None, Some(s)) => bail!("Process status {} terminated with signal {}", o.status, s),
+            (None, None) => bail!("Process status {} has no exit code or signal", o.status),
         };
         Ok(ProcessOutput {
             code,
-            stdout,
-            stderr,
+            stdout: o.stdout,
+            stderr: o.stderr,
         })
     }
     #[cfg(test)]

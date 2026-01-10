@@ -218,9 +218,13 @@ pub enum Language {
     Cxx,
     GenericHeader,
     CHeader,
+    CPreprocessed,
     CxxHeader,
+    CxxPreprocessed,
     ObjectiveC,
+    ObjectiveCPreprocessed,
     ObjectiveCxx,
+    ObjectiveCxxPreprocessed,
     ObjectiveCxxHeader,
     Cuda,
     CudaFE,
@@ -237,16 +241,16 @@ impl Language {
             Some("c") => Some(Language::C),
             // Could be C or C++
             Some("h") => Some(Language::GenericHeader),
-            // TODO i
+            Some("i") => Some(Language::CPreprocessed),
             Some("C") | Some("cc") | Some("cp") | Some("cpp") | Some("CPP") | Some("cxx")
             | Some("c++") => Some(Language::Cxx),
-            // TODO ii
+            Some("ii") => Some(Language::CxxPreprocessed),
             Some("H") | Some("hh") | Some("hp") | Some("hpp") | Some("HPP") | Some("hxx")
             | Some("h++") | Some("tcc") => Some(Language::CxxHeader),
             Some("m") => Some(Language::ObjectiveC),
-            // TODO mi
+            Some("mi") => Some(Language::ObjectiveCPreprocessed),
             Some("M") | Some("mm") => Some(Language::ObjectiveCxx),
-            // TODO mii
+            Some("mii") => Some(Language::ObjectiveCxxPreprocessed),
             Some("cu") => Some(Language::Cuda),
             Some("ptx") => Some(Language::Ptx),
             Some("cubin") => Some(Language::Cubin),
@@ -264,11 +268,15 @@ impl Language {
         match self {
             Language::C => "c",
             Language::CHeader => "cHeader",
+            Language::CPreprocessed => "cPreprocessed",
             Language::Cxx => "c++",
             Language::CxxHeader => "c++Header",
+            Language::CxxPreprocessed => "c++Preprocessed",
             Language::GenericHeader => "c/c++",
             Language::ObjectiveC => "objc",
+            Language::ObjectiveCPreprocessed => "objcPreprocessed",
             Language::ObjectiveCxx | Language::ObjectiveCxxHeader => "objc++",
+            Language::ObjectiveCxxPreprocessed => "objc++Preprocessed",
             Language::Cuda => "cuda",
             Language::CudaFE => "cuda",
             Language::Ptx => "ptx",
@@ -277,6 +285,53 @@ impl Language {
             Language::Hip => "hip",
         }
     }
+
+    pub fn needs_c_preprocessing(self) -> bool {
+        !matches!(
+            self,
+            Language::CPreprocessed
+                | Language::CxxPreprocessed
+                | Language::ObjectiveCPreprocessed
+                | Language::ObjectiveCxxPreprocessed
+                | Language::Rust
+        )
+    }
+
+    /// Common implementation for GCC and Clang language argument mapping
+    fn to_compiler_arg(self, cuda_arg: &'static str) -> Option<&'static str> {
+        match self {
+            Language::C => Some("c"),
+            Language::CHeader => Some("c-header"),
+            Language::CPreprocessed => Some("cpp-output"),
+            Language::Cxx => Some("c++"),
+            Language::CxxHeader => Some("c++-header"),
+            Language::CxxPreprocessed => Some("c++-cpp-output"),
+            Language::ObjectiveC => Some("objective-c"),
+            Language::ObjectiveCPreprocessed => Some("objective-c-cpp-output"),
+            Language::ObjectiveCxx => Some("objective-c++"),
+            Language::ObjectiveCxxHeader => Some("objective-c++-header"),
+            Language::ObjectiveCxxPreprocessed => Some("objective-c++-cpp-output"),
+            Language::Cuda => Some(cuda_arg),
+            Language::CudaFE => None,
+            Language::Ptx => None,
+            Language::Cubin => None,
+            Language::Rust => None, // Let the compiler decide
+            Language::Hip => Some("hip"),
+            Language::GenericHeader => None, // Let the compiler decide
+        }
+    }
+
+    /// Returns the GCC-specific language argument for the `-x` flag
+    /// https://gcc.gnu.org/onlinedocs/gcc/Overall-Options.html
+    pub fn to_gcc_arg(self) -> Option<&'static str> {
+        self.to_compiler_arg("cu")
+    }
+
+    /// Returns the Clang-specific language argument for the `-x` flag
+    /// https://github.com/llvm/llvm-project/blob/main/clang/include/clang/Driver/Types.def
+    pub fn to_clang_arg(self) -> Option<&'static str> {
+        self.to_compiler_arg("cuda")
+    }
 }
 
 impl CompilerKind {
@@ -284,12 +339,16 @@ impl CompilerKind {
         match lang {
             Language::C
             | Language::CHeader
+            | Language::CPreprocessed
             | Language::Cxx
             | Language::CxxHeader
+            | Language::CxxPreprocessed
             | Language::GenericHeader
             | Language::ObjectiveC
+            | Language::ObjectiveCPreprocessed
             | Language::ObjectiveCxx
-            | Language::ObjectiveCxxHeader => "C/C++",
+            | Language::ObjectiveCxxHeader
+            | Language::ObjectiveCxxPreprocessed => "C/C++",
             Language::Cuda => "CUDA",
             Language::CudaFE => "CUDA (Device code)",
             Language::Ptx => "PTX",
@@ -858,7 +917,7 @@ where
                 )
             })?;
 
-        let jc = match jres {
+        let mut jc = match jres {
             dist::RunJobResult::Complete(jc) => jc,
             dist::RunJobResult::JobNotFound => bail!("Job {} not found on server", job_id),
         };
@@ -922,6 +981,16 @@ where
                 .handle_outputs(&path_transformer, &output_paths, &extra_inputs)
                 .with_context(|| "failed to rewrite outputs from compile")
         );
+
+        if jc.output.code != 0 {
+            // Add server info to help diagnose host-specific failures, e.g. due to flaky hardware.
+            // Failed builds are not cached so this tampering should not cause too much trouble.
+            let server_info = format!("sccache: Job failed on server {}:\n", server_id.addr());
+            jc.output
+                .stderr
+                .splice(0..0, server_info.as_bytes().to_vec());
+        }
+
         Ok((DistType::Ok(server_id), jc.output.into()))
     };
 
@@ -2264,6 +2333,69 @@ LLVM version: 6.0",
         assert_ne!(results[0].key, results[1].key);
         assert_ne!(results[1].key, results[2].key);
         assert_ne!(results[0].key, results[2].key);
+    }
+
+    #[test_case(true ; "with preprocessor cache")]
+    #[test_case(false ; "without preprocessor cache")]
+    fn test_preprocessed_file_works_without_preprocessor_call(preprocessor_cache_mode: bool) {
+        let f = TestFixture::new();
+        let clang = f.mk_bin("clang").unwrap();
+        let creator = new_creator();
+        let runtime = single_threaded_runtime();
+        let pool = runtime.handle();
+        let output = "compiler_id=clang\ncompiler_version=\"16.0.0\"";
+        let cwd = f.tempdir.path();
+
+        let results: Vec<_> = ["foo.c", "foo.i"]
+            .iter()
+            .map(|file| {
+                let arguments = ovec!["-c", file, "-o", "foo.o"];
+
+                // Write a dummy input file so the preprocessor cache mode can work
+                std::fs::write(f.tempdir.path().join(file), "int foo(void) { return 0; }").unwrap();
+
+                next_command(&creator, Ok(MockChild::new(exit_status(0), output, "")));
+                let c = detect_compiler(
+                    creator.clone(),
+                    &clang,
+                    f.tempdir.path(),
+                    &[],
+                    &[],
+                    pool,
+                    None,
+                )
+                .wait()
+                .unwrap()
+                .0;
+
+                // Only run the preprocessor on the non-preprocessed file
+                if !file.ends_with("i") {
+                    next_command(
+                        &creator,
+                        Ok(MockChild::new(exit_status(0), "preprocessor output", "")),
+                    );
+                }
+                let mut hasher = match c.parse_arguments(&arguments, ".".as_ref(), &[]) {
+                    CompilerArguments::Ok(h) => h,
+                    o => panic!("Bad result from parse_arguments: {:?}", o),
+                };
+                hasher
+                    .generate_hash_key(
+                        &creator,
+                        cwd.to_path_buf(),
+                        vec![],
+                        false,
+                        pool,
+                        false,
+                        Arc::new(MockStorage::new(None, preprocessor_cache_mode)),
+                        CacheControl::Default,
+                    )
+                    .wait()
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(results.len(), 2);
+        assert_ne!(results[0].key, results[1].key);
     }
 
     #[test]

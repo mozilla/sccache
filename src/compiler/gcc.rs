@@ -172,12 +172,14 @@ use self::ArgData::*;
 
 const ARCH_FLAG: &str = "-arch";
 
-// Mostly taken from https://github.com/ccache/ccache/blob/master/src/compopt.cpp#L52-L172
+// Mostly taken from https://github.com/ccache/ccache/blob/master/src/ccache/compopt.cpp#L52-L183
 counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     flag!("-", TooHardFlag),
     flag!("--coverage", Coverage),
     take_arg!("--param", OsString, Separated, PassThrough),
     flag!("--save-temps", TooHardFlag),
+    flag!("--save-temps=cwd", TooHardFlag),
+    flag!("--save-temps=obj", TooHardFlag),
     take_arg!("--serialize-diagnostics", PathBuf, Separated, SerializeDiagnostics),
     take_arg!("--sysroot", PathBuf, Separated, PassThroughPath),
     take_arg!("-A", OsString, Separated, PassThrough),
@@ -242,8 +244,11 @@ counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     take_arg!("-o", PathBuf, CanBeSeparated, Output),
     flag!("-pedantic", PedanticFlag),
     flag!("-pedantic-errors", PedanticFlag),
+    flag!("-pipe", UnhashedFlag),
     flag!("-remap", PreprocessorArgumentFlag),
     flag!("-save-temps", TooHardFlag),
+    flag!("-save-temps=cwd", TooHardFlag),
+    flag!("-save-temps=obj", TooHardFlag),
     take_arg!("-std", OsString, Concatenated(b'='), Standard),
     take_arg!("-stdlib", OsString, Concatenated(b'='), PreprocessorArgument),
     flag!("-trigraphs", PreprocessorArgumentFlag),
@@ -695,22 +700,7 @@ where
 }
 
 pub fn language_to_gcc_arg(lang: Language) -> Option<&'static str> {
-    match lang {
-        Language::C => Some("c"),
-        Language::CHeader => Some("c-header"),
-        Language::Cxx => Some("c++"),
-        Language::CxxHeader => Some("c++-header"),
-        Language::ObjectiveC => Some("objective-c"),
-        Language::ObjectiveCxx => Some("objective-c++"),
-        Language::ObjectiveCxxHeader => Some("objective-c++-header"),
-        Language::Cuda => Some("cu"),
-        Language::CudaFE => None,
-        Language::Ptx => None,
-        Language::Cubin => None,
-        Language::Rust => None, // Let the compiler decide
-        Language::Hip => Some("hip"),
-        Language::GenericHeader => None, // Let the compiler decide
-    }
+    lang.to_gcc_arg()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1478,6 +1468,25 @@ mod test {
     }
 
     #[test]
+    fn test_parse_arguments_unhashed() {
+        let unhashed_flags = stringvec!["-pipe"];
+
+        for flag in unhashed_flags {
+            let args = stringvec!["-c", "foo.c", "-o", "foo.o", flag];
+
+            let a = match parse_arguments_(args, false) {
+                CompilerArguments::Ok(args) => args,
+                o => panic!("Got unexpected parse result: {:?} for flag: {:?}", o, flag),
+            };
+
+            assert_eq!(Language::C, a.language);
+            assert!(a.preprocessor_args.is_empty());
+            assert!(a.common_args.is_empty());
+            assert_eq!(ovec![flag], a.unhashed_args,);
+        }
+    }
+
+    #[test]
     fn test_parse_arguments_double_dash() {
         let args = stringvec!["-c", "-o", "foo.o", "--", "foo.c"];
         let ParsedArguments {
@@ -1534,6 +1543,31 @@ mod test {
             CompilerArguments::CannotCache("multiple input files", Some("[\"-fPIC\"]".to_string())),
             parse_arguments_clang(args, false)
         );
+    }
+
+    #[test]
+    fn test_parse_arguments_too_hard() {
+        let too_hard_flags = stringvec![
+            "-save-temps",
+            "-save-temps=cwd",
+            "-save-temps=obj",
+            "--save-temps",
+            "--save-temps=cwd",
+            "--save-temps=obj"
+        ];
+
+        for flag in too_hard_flags {
+            let args = stringvec!["-c", "foo.c", "-o", "foo.o", flag];
+
+            match parse_arguments_(args, false) {
+                CompilerArguments::CannotCache(reason, None) => {
+                    assert_eq!(reason, &flag);
+                }
+                o => {
+                    panic!("Got unexpected parse result: {:?} for flag: {:?}", o, flag);
+                }
+            }
+        }
     }
 
     #[test]
