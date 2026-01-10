@@ -86,6 +86,48 @@ If you have a Rust toolchain installed you can install sccache using cargo. **No
 cargo install sccache --locked
 ```
 
+### With Nix
+
+Sccache is available in nixpkgs, so if you don't need the latest version you can use that:
+
+```nix
+buildInputs = [ pkgs.sccache ];
+```
+
+We also provide a flake with an overlay for getting the latest version:
+
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    sccache = {
+      url = "github:mozilla/sccache";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+  };
+
+  outputs = { self, nixpkgs, sccache, ... }:
+    let
+      system = "x86_64-linux";
+      pkgs = import nixpkgs {
+        inherit system;
+        overlays = [ sccache.overlays.default ];
+      };
+    in {
+      devShells.${system}.default = pkgs.mkShell {
+        buildInputs = [ pkgs.sccache ];
+      };
+    };
+}
+```
+
+Or use it directly from the flake without the overlay:
+
+```bash
+nix run github:mozilla/sccache -- --help
+nix shell github:mozilla/sccache
+```
+
 ---
 
 Usage

@@ -466,12 +466,14 @@ impl<T: ArgumentValue> ArgInfo<T> {
         match self {
             &ArgInfo::TakeArg(s, _, ArgDisposition::CanBeSeparated(None))
             | &ArgInfo::TakeArg(s, _, ArgDisposition::Concatenated(None))
+            | &ArgInfo::TakeArg(s, _, ArgDisposition::CanBeConcatenated(None))
                 if arg.starts_with(s) =>
             {
                 Ordering::Equal
             }
             &ArgInfo::TakeArg(s, _, ArgDisposition::CanBeSeparated(Some(d)))
             | &ArgInfo::TakeArg(s, _, ArgDisposition::Concatenated(Some(d)))
+            | &ArgInfo::TakeArg(s, _, ArgDisposition::CanBeConcatenated(Some(d)))
                 if arg.len() > s.len() && arg.starts_with(s) =>
             {
                 arg.as_bytes()[s.len()].cmp(&d)
@@ -760,6 +762,15 @@ mod tests {
         assert_eq!(info.cmp("-foo=bar"), Ordering::Equal);
 
         let info = take_arg!("-foo", OsString, Concatenated(b'='), Foo);
+        assert_eq!(info.cmp("-foo"), Ordering::Equal);
+        assert_eq!(info.cmp("bar"), Ordering::Less);
+        assert_eq!(info.cmp("-bar"), Ordering::Greater);
+        assert_eq!(info.cmp("-qux"), Ordering::Less);
+        assert_eq!(info.cmp("-foobar"), Ordering::Greater);
+        assert_eq!(info.cmp("-foo="), Ordering::Equal);
+        assert_eq!(info.cmp("-foo=bar"), Ordering::Equal);
+
+        let info = take_arg!("-foo", OsString, CanBeConcatenated(b'='), Foo);
         assert_eq!(info.cmp("-foo"), Ordering::Equal);
         assert_eq!(info.cmp("bar"), Ordering::Less);
         assert_eq!(info.cmp("-bar"), Ordering::Greater);
