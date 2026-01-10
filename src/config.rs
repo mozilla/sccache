@@ -1608,7 +1608,7 @@ fn test_deserialize_basedirs_missing() {
 }
 
 #[test]
-#[serial(SCCACHE_BASEDIRS)]
+#[serial(config_from_env)]
 #[cfg(not(target_os = "windows"))]
 fn test_env_basedirs_single() {
     unsafe {
@@ -1626,7 +1626,7 @@ fn test_env_basedirs_single() {
 }
 
 #[test]
-#[serial(SCCACHE_BASEDIRS)]
+#[serial(config_from_env)]
 #[cfg(target_os = "windows")]
 fn test_env_basedirs_single() {
     unsafe {
@@ -1644,7 +1644,7 @@ fn test_env_basedirs_single() {
 }
 
 #[test]
-#[serial(SCCACHE_BASEDIRS)]
+#[serial(config_from_env)]
 #[cfg(not(target_os = "windows"))]
 fn test_env_basedirs_multiple() {
     unsafe {
@@ -1668,7 +1668,7 @@ fn test_env_basedirs_multiple() {
 }
 
 #[test]
-#[serial(SCCACHE_BASEDIRS)]
+#[serial(config_from_env)]
 #[cfg(target_os = "windows")]
 fn test_env_basedirs_multiple() {
     unsafe {
@@ -1692,7 +1692,7 @@ fn test_env_basedirs_multiple() {
 }
 
 #[test]
-#[serial(SCCACHE_BASEDIRS)]
+#[serial(config_from_env)]
 #[cfg(not(target_os = "windows"))]
 fn test_env_basedirs_with_spaces() {
     // Test that spaces around paths are not trimmed
@@ -1726,7 +1726,7 @@ fn test_env_basedirs_with_spaces() {
 }
 
 #[test]
-#[serial(SCCACHE_BASEDIRS)]
+#[serial(config_from_env)]
 #[cfg(target_os = "windows")]
 fn test_env_basedirs_with_spaces() {
     // Test that spaces around paths are not trimmed
@@ -1760,7 +1760,7 @@ fn test_env_basedirs_with_spaces() {
 }
 
 #[test]
-#[serial(SCCACHE_BASEDIRS)]
+#[serial(config_from_env)]
 #[cfg(not(target_os = "windows"))]
 fn test_env_basedirs_empty_entries() {
     // Test that empty entries are filtered out
@@ -1785,7 +1785,7 @@ fn test_env_basedirs_empty_entries() {
 }
 
 #[test]
-#[serial(SCCACHE_BASEDIRS)]
+#[serial(config_from_env)]
 #[cfg(target_os = "windows")]
 fn test_env_basedirs_empty_entries() {
     // Test that empty entries are filtered out
@@ -1810,7 +1810,7 @@ fn test_env_basedirs_empty_entries() {
 }
 
 #[test]
-#[serial(SCCACHE_BASEDIRS)]
+#[serial(config_from_env)]
 fn test_env_basedirs_not_set() {
     unsafe {
         std::env::remove_var("SCCACHE_BASEDIRS");
@@ -1820,7 +1820,7 @@ fn test_env_basedirs_not_set() {
 }
 
 #[test]
-#[serial]
+#[serial(config_from_env)]
 #[cfg(feature = "s3")]
 fn test_s3_no_credentials_conflict() {
     unsafe {
@@ -1847,7 +1847,7 @@ fn test_s3_no_credentials_conflict() {
 }
 
 #[test]
-#[serial]
+#[serial(config_from_env)]
 fn test_s3_no_credentials_invalid() {
     unsafe {
         env::set_var("SCCACHE_S3_NO_CREDENTIALS", "yes");
@@ -1869,7 +1869,7 @@ fn test_s3_no_credentials_invalid() {
 }
 
 #[test]
-#[serial]
+#[serial(config_from_env)]
 fn test_s3_no_credentials_valid_true() {
     unsafe {
         env::set_var("SCCACHE_S3_NO_CREDENTIALS", "true");
@@ -1898,7 +1898,7 @@ fn test_s3_no_credentials_valid_true() {
 }
 
 #[test]
-#[serial]
+#[serial(config_from_env)]
 fn test_s3_no_credentials_valid_false() {
     unsafe {
         env::set_var("SCCACHE_S3_NO_CREDENTIALS", "false");
@@ -1927,7 +1927,7 @@ fn test_s3_no_credentials_valid_false() {
 }
 
 #[test]
-#[serial]
+#[serial(config_from_env)]
 #[cfg(feature = "gcs")]
 fn test_gcs_service_account() {
     unsafe {
@@ -2471,7 +2471,7 @@ fn test_integration_windows_mixed_slashes() {
 }
 
 #[test]
-#[serial(SCCACHE_BASEDIRS)]
+#[serial(config_from_env)]
 #[cfg(not(target_os = "windows"))]
 fn test_integration_env_variable_to_strip() {
     // Test full flow: SCCACHE_BASEDIRS env var -> Config -> strip_basedirs
