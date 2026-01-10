@@ -1091,7 +1091,7 @@ impl Config {
             // components
             bytes.push(b'/');
 
-            // normalize windows paths
+            // normalize windows paths: use slashes and lowercase
             let normalized = {
                 #[cfg(target_os = "windows")]
                 {
@@ -1106,7 +1106,7 @@ impl Config {
             basedirs.push(normalized);
         }
 
-        if !basedirs.is_empty() {
+        if !basedirs.is_empty() && log::log_enabled!(log::Level::Debug) {
             let basedirs_str: Vec<String> = basedirs
                 .iter()
                 .map(|b| String::from_utf8_lossy(b).into_owned())

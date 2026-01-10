@@ -22,7 +22,7 @@ server_startup_timeout_ms = 10000
 #
 # Example:
 #   basedir = ["/home/user/project"] results in the path prefix rewrite:
-#   "/home/user/project/src/main.c" -> "./src/main.c"
+#   "/home/user/project/src/main.c" -> "src/main.c"
 basedirs = ["/home/user/project"]
 # basedirs = ["/home/user/project", "/home/user/workspace"]
 
