@@ -88,7 +88,7 @@ where
         ));
 
         let client = Client::new();
-        let srv = SccacheServer::new(0, runtime, client, dist_client, storage).unwrap();
+        let srv = SccacheServer::new(0, runtime, client, dist_client, storage, None).unwrap();
         let mut srv: SccacheServer<_, Arc<Mutex<MockCommandCreator>>> = srv;
         let addr = srv.local_addr().unwrap();
         assert!(matches!(addr, crate::net::SocketAddr::Net(a) if a.port() > 0));
