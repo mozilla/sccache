@@ -181,7 +181,7 @@ jobs:
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/share/boost /usr/share/swift /var/lib/apt/lists/*
 
       - name: Execute tests
-        run: cargo test --locked --all-targets ${{ matrix.extra_args }}
+        run: cargo test --locked --lib --bins --tests ${{ matrix.extra_args }}
         env:
           CARGO_INCREMENTAL: "0"
           RUSTC_WRAPPER: ""
