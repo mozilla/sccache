@@ -651,6 +651,99 @@ fn build_workflow_incremental(bencher: Bencher) {
     });
 }
 
+// =============================================================================
+// Compression Characteristics Benchmarks
+// =============================================================================
+
+/// Generate highly compressible data (simulates debug builds with padding)
+fn generate_compressible_data(size: usize) -> Vec<u8> {
+    let mut data = Vec::with_capacity(size);
+    let pattern = b"\x00\x00\x00\x00\x90\x90\x90\x90"; // Common in binaries
+    while data.len() < size {
+        data.extend_from_slice(pattern);
+    }
+    data.truncate(size);
+    data
+}
+
+/// Generate incompressible data (simulates optimized builds)
+fn generate_incompressible_data(size: usize) -> Vec<u8> {
+    let mut data = Vec::with_capacity(size);
+    for i in 0..size {
+        // Use a more varied pattern that compresses poorly
+        data.push(((i * 31 + i / 7) % 256) as u8);
+    }
+    data
+}
+
+/// Benchmark cache entry with highly compressible data
+#[divan::bench]
+fn compression_high_compressibility(bencher: Bencher) {
+    let obj_data = generate_compressible_data(500 * 1024); // 500KB
+
+    bencher.bench(|| {
+        let mut entry = CacheWrite::new();
+        let mut cursor = Cursor::new(black_box(&obj_data));
+        entry.put_object("output.o", &mut cursor, Some(0o644)).unwrap();
+        entry.put_stdout(b"success\n").unwrap();
+        black_box(entry.finish().unwrap())
+    });
+}
+
+/// Benchmark cache entry with incompressible data
+#[divan::bench]
+fn compression_low_compressibility(bencher: Bencher) {
+    let obj_data = generate_incompressible_data(500 * 1024); // 500KB
+
+    bencher.bench(|| {
+        let mut entry = CacheWrite::new();
+        let mut cursor = Cursor::new(black_box(&obj_data));
+        entry.put_object("output.o", &mut cursor, Some(0o644)).unwrap();
+        entry.put_stdout(b"success\n").unwrap();
+        black_box(entry.finish().unwrap())
+    });
+}
+
+/// Benchmark decompression of highly compressed data
+#[divan::bench]
+fn decompression_high_ratio(bencher: Bencher) {
+    let obj_data = generate_compressible_data(500 * 1024);
+
+    // Pre-create compressed entry
+    let mut entry = CacheWrite::new();
+    let mut cursor = Cursor::new(&obj_data);
+    entry.put_object("output.o", &mut cursor, Some(0o644)).unwrap();
+    let compressed = entry.finish().unwrap();
+
+    bencher.bench(|| {
+        let cursor = Cursor::new(black_box(compressed.clone()));
+        let mut reader = CacheRead::from(cursor).unwrap();
+        let mut output = Vec::new();
+        reader.get_object("output.o", &mut output).unwrap();
+        black_box(output)
+    });
+}
+
+/// Benchmark decompression of low-ratio compressed data
+#[divan::bench]
+fn decompression_low_ratio(bencher: Bencher) {
+    let obj_data = generate_incompressible_data(500 * 1024);
+
+    // Pre-create compressed entry
+    let mut entry = CacheWrite::new();
+    let mut cursor = Cursor::new(&obj_data);
+    entry.put_object("output.o", &mut cursor, Some(0o644)).unwrap();
+    let compressed = entry.finish().unwrap();
+
+    bencher.bench(|| {
+        let cursor = Cursor::new(black_box(compressed.clone()));
+        let mut reader = CacheRead::from(cursor).unwrap();
+        let mut output = Vec::new();
+        reader.get_object("output.o", &mut output).unwrap();
+        black_box(output)
+    });
+}
+
 fn main() {
     divan::main();
 }
