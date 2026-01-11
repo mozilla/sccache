@@ -729,19 +729,100 @@ fn decompression_high_ratio(bencher: Bencher) {
 fn decompression_low_ratio(bencher: Bencher) {
     let obj_data = generate_incompressible_data(500 * 1024);
 
-    // Pre-create compressed entry
-    let mut entry = CacheWrite::new();
-    let mut cursor = Cursor::new(&obj_data);
-    entry.put_object("output.o", &mut cursor, Some(0o644)).unwrap();
-    let compressed = entry.finish().unwrap();
+        .with_inputs(|| {
+            let mut cache: LruCache<String, u64> = LruCache::new((total_keys * 2) as u64);
+            // Populate cache
+            for i in 0..total_keys {
+                cache.insert(format!("key_{:08x}", i), i as u64);
+            }
+            let keys: Vec<String> = (0..total_keys).map(|i| format!("key_{:08x}", i)).collect();
+            (cache, keys)
+        })
+        .bench_values(|(mut cache, keys)| {
+            // Access pattern: 80% accesses to 20% of keys
+            for i in 0..400 {
+                let key_idx = if i % 5 < 4 {
+                    // 80% of the time, access hot keys
+                    i % hot_keys
+                } else {
+                    // 20% of the time, access cold keys
+                    hot_keys + (i % (total_keys - hot_keys))
+                };
+                black_box(cache.get(&keys[key_idx]));
+            }
+            black_box(cache)
+        });
+}
 
-    bencher.bench(|| {
-        let cursor = Cursor::new(black_box(compressed.clone()));
-        let mut reader = CacheRead::from(cursor).unwrap();
-        let mut output = Vec::new();
-        reader.get_object("output.o", &mut output).unwrap();
-        black_box(output)
-    });
+/// Benchmark LRU cache with working set pattern (repeated access to same subset)
+#[divan::bench]
+fn lru_working_set_pattern(bencher: Bencher) {
+    let total_keys = 2000;
+    let working_set_size = 100;
+
+    bencher
+        .with_inputs(|| {
+            let mut cache: LruCache<String, u64> = LruCache::new((total_keys * 2) as u64);
+            for i in 0..total_keys {
+                cache.insert(format!("key_{:08x}", i), i as u64);
+            }
+            let keys: Vec<String> = (0..total_keys).map(|i| format!("key_{:08x}", i)).collect();
+            (cache, keys)
+        })
+        .bench_values(|(mut cache, keys)| {
+            // Access working set repeatedly
+            for _ in 0..10 {
+                for key in keys.iter().take(working_set_size) {
+                    black_box(cache.get(key));
+                }
+            }
+            black_box(cache)
+        });
+}
+
+/// Benchmark LRU cache with sequential scan pattern
+#[divan::bench]
+fn lru_sequential_scan_pattern(bencher: Bencher) {
+    let num_keys = 1500;
+
+    bencher
+        .with_inputs(|| {
+            let mut cache: LruCache<String, u64> = LruCache::new((num_keys * 2) as u64);
+            for i in 0..num_keys {
+                cache.insert(format!("key_{:08x}", i), i as u64);
+            }
+            let keys: Vec<String> = (0..num_keys).map(|i| format!("key_{:08x}", i)).collect();
+            (cache, keys)
+        })
+        .bench_values(|(mut cache, keys)| {
+            // Sequential access pattern (like iterating through all compilation units)
+            for key in &keys {
+                black_box(cache.get(key));
+            }
+            black_box(cache)
+        });
+}
+
+/// Benchmark LRU cache under pressure with realistic eviction
+#[divan::bench]
+fn lru_realistic_eviction_pressure(bencher: Bencher) {
+    let cache_capacity = 500;
+    let num_operations = 700; // More than capacity
+
+    bencher
+        .with_inputs(|| {
+            let cache: LruCache<String, Vec<u8>> = LruCache::new(cache_capacity as u64);
+            // Simulate realistic cache entry sizes (10KB each)
+            let entry_data = vec![0u8; 10 * 1024];
+            (cache, entry_data)
+        })
+        .bench_values(|(mut cache, entry_data)| {
+            // Insert more than capacity, causing evictions
+            for i in 0..num_operations {
+                cache.insert(format!("key_{:08x}", i), entry_data.clone());
+            }
+            black_box(cache)
+        });
 }
 
 fn main() {
