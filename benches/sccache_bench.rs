@@ -20,6 +20,7 @@
 //! - LRU cache operations
 
 use divan::{Bencher, black_box};
+use sccache::cache::{CacheRead, CacheWrite};
 use sccache::lru_disk_cache::LruCache;
 use sccache::util::{Digest, TimeMacroFinder};
 use std::io::Cursor;
@@ -88,49 +89,6 @@ fn hash_large_data(bencher: Bencher) {
     bencher.bench(|| {
         let cursor = Cursor::new(black_box(&data));
         black_box(Digest::reader_sync(cursor).unwrap())
-    });
-}
-
-/// Benchmark incremental digest updates (simulating hash_key with many args)
-#[divan::bench]
-fn digest_incremental_updates(bencher: Bencher) {
-    let chunks: Vec<Vec<u8>> = (0..100)
-        .map(|i| format!("-I/path/to/include/dir{}", i).into_bytes())
-        .collect();
-
-    bencher.bench(|| {
-        let mut digest = Digest::new();
-        for chunk in &chunks {
-            digest.update(black_box(chunk));
-        }
-        black_box(digest.finish())
-    });
-}
-
-/// Benchmark digest with delimiter (used for structured hashing)
-#[divan::bench]
-fn digest_with_delimiters(bencher: Bencher) {
-    let section_data = b"section_content_data_here_with_more_content";
-    let delimiter_names: Vec<&[u8]> = vec![
-        b"compiler",
-        b"language",
-        b"args",
-        b"env",
-        b"output",
-        b"extra1",
-        b"extra2",
-        b"extra3",
-        b"extra4",
-        b"extra5",
-    ];
-
-    bencher.bench(|| {
-        let mut digest = Digest::new();
-        for name in &delimiter_names {
-            digest.delimiter(name);
-            digest.update(black_box(section_data));
-        }
-        black_box(digest.finish())
     });
 }
 
@@ -352,6 +310,510 @@ fn cache_key_generation(bencher: Bencher) {
             true,
         ))
     });
+}
+
+// =============================================================================
+// Cache Artifact Serialization Benchmarks
+// =============================================================================
+
+/// Generate realistic object file data
+fn generate_object_file(size: usize) -> Vec<u8> {
+    // Simulate binary object file with varied byte patterns
+    let mut data = Vec::with_capacity(size);
+    for i in 0..size {
+        data.push(((i * 7) % 256) as u8);
+    }
+    data
+}
+
+/// Benchmark creating a cache entry with typical compilation artifacts
+#[divan::bench]
+fn cache_entry_create_small(bencher: Bencher) {
+    let obj_data = generate_object_file(50 * 1024); // 50KB object file
+    let stdout_data = b"compilation successful\n";
+    let stderr_data = b"";
+
+    bencher.bench(|| {
+        let mut entry = CacheWrite::new();
+        let mut cursor = Cursor::new(black_box(&obj_data));
+        entry
+            .put_object("output.o", &mut cursor, Some(0o644))
+            .unwrap();
+        entry.put_stdout(black_box(stdout_data)).unwrap();
+        entry.put_stderr(black_box(stderr_data)).unwrap();
+        black_box(entry)
+    });
+}
+
+/// Benchmark creating a cache entry with larger artifacts
+#[divan::bench]
+fn cache_entry_create_large(bencher: Bencher) {
+    let obj_data = generate_object_file(2 * 1024 * 1024); // 2MB object file
+    let stdout_data = b"compilation successful\n";
+    let stderr_data = b"warning: unused variable\n";
+
+    bencher.bench(|| {
+        let mut entry = CacheWrite::new();
+        let mut cursor = Cursor::new(black_box(&obj_data));
+        entry
+            .put_object("output.o", &mut cursor, Some(0o644))
+            .unwrap();
+        entry.put_stdout(black_box(stdout_data)).unwrap();
+        entry.put_stderr(black_box(stderr_data)).unwrap();
+        black_box(entry)
+    });
+}
+
+/// Benchmark cache entry round-trip (write → finish → read)
+#[divan::bench]
+fn cache_entry_roundtrip_small(bencher: Bencher) {
+    let obj_data = generate_object_file(100 * 1024); // 100KB
+
+    bencher.bench(|| {
+        // Create and finish entry
+        let mut entry = CacheWrite::new();
+        let mut cursor = Cursor::new(black_box(&obj_data));
+        entry
+            .put_object("output.o", &mut cursor, Some(0o644))
+            .unwrap();
+        entry.put_stdout(b"success\n").unwrap();
+        let bytes = entry.finish().unwrap();
+
+        // Read it back
+        let cursor = Cursor::new(bytes);
+        let mut reader = CacheRead::from(cursor).unwrap();
+        let mut output = Vec::new();
+        reader.get_object("output.o", &mut output).unwrap();
+        let stdout = reader.get_stdout();
+        black_box((output, stdout))
+    });
+}
+
+/// Benchmark cache entry round-trip with larger data
+#[divan::bench]
+fn cache_entry_roundtrip_large(bencher: Bencher) {
+    let obj_data = generate_object_file(1024 * 1024); // 1MB
+
+    bencher.bench(|| {
+        // Create and finish entry
+        let mut entry = CacheWrite::new();
+        let mut cursor = Cursor::new(black_box(&obj_data));
+        entry
+            .put_object("output.o", &mut cursor, Some(0o644))
+            .unwrap();
+        entry.put_stdout(b"compilation successful\n").unwrap();
+        entry.put_stderr(b"warning: something\n").unwrap();
+        let bytes = entry.finish().unwrap();
+
+        // Read it back
+        let cursor = Cursor::new(bytes);
+        let mut reader = CacheRead::from(cursor).unwrap();
+        let mut output = Vec::new();
+        reader.get_object("output.o", &mut output).unwrap();
+        let stdout = reader.get_stdout();
+        let stderr = reader.get_stderr();
+        black_box((output, stdout, stderr))
+    });
+}
+
+/// Benchmark creating multiple cache entries (simulates multi-file compilation)
+#[divan::bench]
+fn cache_entry_batch_create(bencher: Bencher) {
+    // Simulate compiling 50 small files
+    let num_files = 50;
+    let obj_data = generate_object_file(30 * 1024); // 30KB each
+
+    bencher.bench(|| {
+        for i in 0..num_files {
+            let mut entry = CacheWrite::new();
+            let mut cursor = Cursor::new(black_box(&obj_data));
+            entry
+                .put_object(&format!("output{}.o", i), &mut cursor, Some(0o644))
+                .unwrap();
+            entry.put_stdout(b"success\n").unwrap();
+            let _bytes = entry.finish().unwrap();
+            black_box(_bytes);
+        }
+    });
+}
+
+/// Benchmark full round-trip for multiple cache entries
+#[divan::bench]
+fn cache_entry_batch_roundtrip(bencher: Bencher) {
+    // Simulate cache miss then cache hit for 20 files
+    let num_files = 20;
+    let obj_data = generate_object_file(50 * 1024); // 50KB each
+
+    bencher.bench(|| {
+        let mut entries_data: Vec<Vec<u8>> = Vec::new();
+
+        // Cache miss: create all entries
+        for i in 0..num_files {
+            let mut entry = CacheWrite::new();
+            let mut cursor = Cursor::new(black_box(&obj_data));
+            entry
+                .put_object(&format!("output{}.o", i), &mut cursor, Some(0o644))
+                .unwrap();
+            entry.put_stdout(b"success\n").unwrap();
+            entries_data.push(entry.finish().unwrap());
+        }
+
+        // Cache hit: read all entries back
+        for (i, bytes) in entries_data.into_iter().enumerate() {
+            let cursor = Cursor::new(bytes);
+            let mut reader = CacheRead::from(cursor).unwrap();
+            let mut output = Vec::new();
+            reader
+                .get_object(&format!("output{}.o", i), &mut output)
+                .unwrap();
+            black_box(output);
+        }
+    });
+}
+
+// =============================================================================
+// Hash Computation Scenarios Benchmarks
+// =============================================================================
+
+/// Benchmark hashing typical header file content
+#[divan::bench]
+fn hash_header_file(bencher: Bencher) {
+    // Simulate a typical header file (~50KB)
+    let header_content = generate_preprocessor_output(1000); // ~50KB
+
+    bencher.bench(|| {
+        let cursor = Cursor::new(black_box(&header_content));
+        black_box(Digest::reader_sync(cursor).unwrap())
+    });
+}
+
+/// Benchmark hashing multiple input files (parallel compilation simulation)
+#[divan::bench]
+fn hash_multiple_files(bencher: Bencher) {
+    // Simulate hashing 10 different source files
+    let files: Vec<Vec<u8>> = (0..10)
+        .map(|i| {
+            let mut data = generate_preprocessor_output(200); // ~10KB each
+            data.extend_from_slice(format!("// File {}\n", i).as_bytes());
+            data
+        })
+        .collect();
+
+    bencher.bench(|| {
+        for file_data in &files {
+            let cursor = Cursor::new(black_box(file_data));
+            black_box(Digest::reader_sync(cursor).unwrap());
+        }
+    });
+}
+
+// =============================================================================
+// Build Workflow Simulation Benchmarks
+// =============================================================================
+
+/// Benchmark initial build (all cache misses)
+#[divan::bench]
+fn build_workflow_initial(bencher: Bencher) {
+    // Simulate initial build of 30 files
+    let num_files = 30;
+    let obj_data = generate_object_file(40 * 1024); // 40KB each
+
+    bencher.bench(|| {
+        for i in 0..num_files {
+            // Hash compiler + flags + source
+            let mut digest = Digest::new();
+            digest.update(b"gcc-11.2.0");
+            digest.update(b"-O2");
+            digest.update(format!("source_{}.c", i).as_bytes());
+            let _key = digest.finish();
+
+            // Create cache entry
+            let mut entry = CacheWrite::new();
+            let mut cursor = Cursor::new(black_box(&obj_data));
+            entry
+                .put_object(&format!("output{}.o", i), &mut cursor, Some(0o644))
+                .unwrap();
+            entry.put_stdout(b"success\n").unwrap();
+            let _bytes = entry.finish().unwrap();
+            black_box(_bytes);
+        }
+    });
+}
+
+/// Benchmark full rebuild (all cache hits)
+#[divan::bench]
+fn build_workflow_rebuild(bencher: Bencher) {
+    // Simulate rebuild where all files are cached
+    let num_files = 30;
+    let obj_data = generate_object_file(40 * 1024);
+
+    // Pre-create cache entries
+    let cache_entries: Vec<Vec<u8>> = (0..num_files)
+        .map(|i| {
+            let mut entry = CacheWrite::new();
+            let mut cursor = Cursor::new(&obj_data);
+            entry
+                .put_object(&format!("output{}.o", i), &mut cursor, Some(0o644))
+                .unwrap();
+            entry.put_stdout(b"success\n").unwrap();
+            entry.finish().unwrap()
+        })
+        .collect();
+
+    bencher.bench(|| {
+        for (i, cached_bytes) in cache_entries.iter().enumerate() {
+            // Hash compiler + flags + source (same as before)
+            let mut digest = Digest::new();
+            digest.update(b"gcc-11.2.0");
+            digest.update(b"-O2");
+            digest.update(format!("source_{}.c", i).as_bytes());
+            let _key = digest.finish();
+
+            // Retrieve from cache
+            let cursor = Cursor::new(cached_bytes.clone());
+            let mut reader = CacheRead::from(cursor).unwrap();
+            let mut output = Vec::new();
+            reader
+                .get_object(&format!("output{}.o", i), &mut output)
+                .unwrap();
+            black_box(output);
+        }
+    });
+}
+
+/// Benchmark incremental build (90% hits, 10% misses)
+#[divan::bench]
+fn build_workflow_incremental(bencher: Bencher) {
+    let num_files = 30;
+    let changed_files = 3; // 10% of files changed
+    let obj_data = generate_object_file(40 * 1024);
+
+    // Pre-create cache entries for unchanged files
+    let cache_entries: Vec<Vec<u8>> = (0..num_files)
+        .map(|i| {
+            let mut entry = CacheWrite::new();
+            let mut cursor = Cursor::new(&obj_data);
+            entry
+                .put_object(&format!("output{}.o", i), &mut cursor, Some(0o644))
+                .unwrap();
+            entry.put_stdout(b"success\n").unwrap();
+            entry.finish().unwrap()
+        })
+        .collect();
+
+    bencher.bench(|| {
+        for (i, cache_entry) in cache_entries.iter().enumerate() {
+            // Hash compiler + flags + source
+            let mut digest = Digest::new();
+            digest.update(b"gcc-11.2.0");
+            digest.update(b"-O2");
+            digest.update(format!("source_{}.c", i).as_bytes());
+            let _key = digest.finish();
+
+            if i < changed_files {
+                // Cache miss: recompile
+                let mut entry = CacheWrite::new();
+                let mut cursor = Cursor::new(black_box(&obj_data));
+                entry
+                    .put_object(&format!("output{}.o", i), &mut cursor, Some(0o644))
+                    .unwrap();
+                entry.put_stdout(b"success\n").unwrap();
+                let _bytes = entry.finish().unwrap();
+                black_box(_bytes);
+            } else {
+                // Cache hit: retrieve
+                let cursor = Cursor::new(cache_entry.clone());
+                let mut reader = CacheRead::from(cursor).unwrap();
+                let mut output = Vec::new();
+                reader
+                    .get_object(&format!("output{}.o", i), &mut output)
+                    .unwrap();
+                black_box(output);
+            }
+        }
+    });
+}
+
+// =============================================================================
+// Compression Characteristics Benchmarks
+// =============================================================================
+
+/// Generate highly compressible data (simulates debug builds with padding)
+fn generate_compressible_data(size: usize) -> Vec<u8> {
+    let mut data = Vec::with_capacity(size);
+    let pattern = b"\x00\x00\x00\x00\x90\x90\x90\x90"; // Common in binaries
+    while data.len() < size {
+        data.extend_from_slice(pattern);
+    }
+    data.truncate(size);
+    data
+}
+
+/// Generate incompressible data (simulates optimized builds)
+fn generate_incompressible_data(size: usize) -> Vec<u8> {
+    let mut data = Vec::with_capacity(size);
+    for i in 0..size {
+        // Use a more varied pattern that compresses poorly
+        data.push(((i * 31 + i / 7) % 256) as u8);
+    }
+    data
+}
+
+/// Benchmark cache entry with highly compressible data
+#[divan::bench]
+fn compression_high_compressibility(bencher: Bencher) {
+    let obj_data = generate_compressible_data(500 * 1024); // 500KB
+
+    bencher.bench(|| {
+        let mut entry = CacheWrite::new();
+        let mut cursor = Cursor::new(black_box(&obj_data));
+        entry
+            .put_object("output.o", &mut cursor, Some(0o644))
+            .unwrap();
+        entry.put_stdout(b"success\n").unwrap();
+        black_box(entry.finish().unwrap())
+    });
+}
+
+/// Benchmark cache entry with incompressible data
+#[divan::bench]
+fn compression_low_compressibility(bencher: Bencher) {
+    let obj_data = generate_incompressible_data(500 * 1024); // 500KB
+
+    bencher.bench(|| {
+        let mut entry = CacheWrite::new();
+        let mut cursor = Cursor::new(black_box(&obj_data));
+        entry
+            .put_object("output.o", &mut cursor, Some(0o644))
+            .unwrap();
+        entry.put_stdout(b"success\n").unwrap();
+        black_box(entry.finish().unwrap())
+    });
+}
+
+/// Benchmark decompression of highly compressed data
+#[divan::bench]
+fn decompression_high_ratio(bencher: Bencher) {
+    let obj_data = generate_compressible_data(500 * 1024);
+
+    // Pre-create compressed entry
+    let mut entry = CacheWrite::new();
+    let mut cursor = Cursor::new(&obj_data);
+    entry
+        .put_object("output.o", &mut cursor, Some(0o644))
+        .unwrap();
+    let compressed = entry.finish().unwrap();
+
+    bencher.bench(|| {
+        let cursor = Cursor::new(black_box(compressed.clone()));
+        let mut reader = CacheRead::from(cursor).unwrap();
+        let mut output = Vec::new();
+        reader.get_object("output.o", &mut output).unwrap();
+        black_box(output)
+    });
+}
+
+/// Benchmark decompression of low-ratio compressed data
+#[divan::bench]
+fn decompression_low_ratio(bencher: Bencher) {
+    let obj_data = generate_incompressible_data(500 * 1024);
+
+    // Pre-create compressed entry
+    let mut entry = CacheWrite::new();
+    let mut cursor = Cursor::new(&obj_data);
+    entry
+        .put_object("output.o", &mut cursor, Some(0o644))
+        .unwrap();
+    let compressed = entry.finish().unwrap();
+
+    bencher.bench(|| {
+        let cursor = Cursor::new(black_box(compressed.clone()));
+        let mut reader = CacheRead::from(cursor).unwrap();
+        let mut output = Vec::new();
+        reader.get_object("output.o", &mut output).unwrap();
+        black_box(output)
+    });
+}
+
+// =============================================================================
+// Realistic LRU Cache Access Pattern Benchmarks
+// =============================================================================
+
+/// Benchmark LRU cache with hot/cold access pattern (80/20 rule)
+#[divan::bench]
+fn lru_hotcold_access_pattern(bencher: Bencher) {
+    let total_keys = 1000;
+    let hot_keys = 200; // 20% of keys get 80% of accesses
+
+    bencher
+        .with_inputs(|| {
+            let mut cache: LruCache<String, u64> = LruCache::new((total_keys * 2) as u64);
+            // Populate cache
+            for i in 0..total_keys {
+                cache.insert(format!("key_{:08x}", i), i as u64);
+            }
+            let keys: Vec<String> = (0..total_keys).map(|i| format!("key_{:08x}", i)).collect();
+            (cache, keys)
+        })
+        .bench_values(|(mut cache, keys)| {
+            // Access pattern: 80% accesses to 20% of keys
+            for i in 0..400 {
+                let key_idx = if i % 5 < 4 {
+                    // 80% of the time, access hot keys
+                    i % hot_keys
+                } else {
+                    // 20% of the time, access cold keys
+                    hot_keys + (i % (total_keys - hot_keys))
+                };
+                black_box(cache.get(&keys[key_idx]));
+            }
+            black_box(cache)
+        });
+}
+
+/// Benchmark LRU cache with sequential scan pattern
+#[divan::bench]
+fn lru_sequential_scan_pattern(bencher: Bencher) {
+    let num_keys = 1500;
+
+    bencher
+        .with_inputs(|| {
+            let mut cache: LruCache<String, u64> = LruCache::new((num_keys * 2) as u64);
+            for i in 0..num_keys {
+                cache.insert(format!("key_{:08x}", i), i as u64);
+            }
+            let keys: Vec<String> = (0..num_keys).map(|i| format!("key_{:08x}", i)).collect();
+            (cache, keys)
+        })
+        .bench_values(|(mut cache, keys)| {
+            // Sequential access pattern (like iterating through all compilation units)
+            for key in &keys {
+                black_box(cache.get(key));
+            }
+            black_box(cache)
+        });
+}
+
+/// Benchmark LRU cache under pressure with realistic eviction
+#[divan::bench]
+fn lru_realistic_eviction_pressure(bencher: Bencher) {
+    let cache_capacity = 500;
+    let num_operations = 700; // More than capacity
+
+    bencher
+        .with_inputs(|| {
+            let cache: LruCache<String, Vec<u8>> = LruCache::new(cache_capacity as u64);
+            // Simulate realistic cache entry sizes (10KB each)
+            let entry_data = vec![0u8; 10 * 1024];
+            (cache, entry_data)
+        })
+        .bench_values(|(mut cache, entry_data)| {
+            // Insert more than capacity, causing evictions
+            for i in 0..num_operations {
+                cache.insert(format!("key_{:08x}", i), entry_data.clone());
+            }
+            black_box(cache)
+        });
 }
 
 fn main() {
