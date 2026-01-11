@@ -486,17 +486,86 @@ fn cache_entry_batch_roundtrip(bencher: Bencher) {
             let mut cursor = Cursor::new(black_box(&obj_data));
             entry.put_object(&format!("output{}.o", i), &mut cursor, Some(0o644)).unwrap();
             entry.put_stdout(b"success\n").unwrap();
-            entries_data.push(entry.finish().unwrap());
+        b"-fPIC".to_vec(),
+        b"-fstack-protector-strong".to_vec(),
+        b"-march=native".to_vec(),
+        b"-mtune=native".to_vec(),
+        b"-fno-exceptions".to_vec(),
+        b"-fno-rtti".to_vec(),
+        b"-fvisibility=hidden".to_vec(),
+    ];
+
+    bencher.bench(|| {
+        let mut digest = Digest::new();
+        for flag in &flags {
+            digest.update(black_box(flag));
+        }
+        black_box(digest.finish())
+    });
+}
+
+/// Benchmark hashing typical header file content
+#[divan::bench]
+fn hash_header_file(bencher: Bencher) {
+    // Simulate a typical header file (~50KB)
+    let header_content = generate_preprocessor_output(1000); // ~50KB
+
+    bencher.bench(|| {
+        let cursor = Cursor::new(black_box(&header_content));
+        black_box(Digest::reader_sync(cursor).unwrap())
+    });
+}
+
+/// Benchmark hashing multiple input files (parallel compilation simulation)
+#[divan::bench]
+fn hash_multiple_files(bencher: Bencher) {
+    // Simulate hashing 10 different source files
+    let files: Vec<Vec<u8>> = (0..10)
+        .map(|i| {
+            let mut data = generate_preprocessor_output(200); // ~10KB each
+            data.extend_from_slice(format!("// File {}\n", i).as_bytes());
+            data
+        })
+        .collect();
+
+    bencher.bench(|| {
+        for file_data in &files {
+            let cursor = Cursor::new(black_box(file_data));
+            black_box(Digest::reader_sync(cursor).unwrap());
+        }
+    });
+}
+
+/// Benchmark full cache key computation with realistic data
+#[divan::bench]
+fn hash_full_cache_key_realistic(bencher: Bencher) {
+    let compiler_hash = b"abc123def456";
+    let source_hash = b"source_file_hash_xyz";
+    let flags: Vec<&[u8]> = vec![
+        b"-O2", b"-std=c++17", b"-Wall", b"-I/usr/include",
+        b"-I/usr/local/include", b"-DNDEBUG", b"-fPIC",
+    ];
+    let env_vars: Vec<(&[u8], &[u8])> = vec![
+        (b"LANG", b"en_US.UTF-8"),
+        (b"PATH", b"/usr/bin:/bin:/usr/local/bin"),
+    ];
+
+    bencher.bench(|| {
+        let mut digest = Digest::new();
+        digest.update(black_box(compiler_hash));
+        digest.update(black_box(source_hash));
+
+        for flag in &flags {
+            digest.update(black_box(flag));
         }
 
-        // Cache hit: read all entries back
-        for (i, bytes) in entries_data.into_iter().enumerate() {
-            let cursor = Cursor::new(bytes);
-            let mut reader = CacheRead::from(cursor).unwrap();
-            let mut output = Vec::new();
-            reader.get_object(&format!("output{}.o", i), &mut output).unwrap();
-            black_box(output);
+        for (key, val) in &env_vars {
+            digest.update(black_box(key));
+            digest.update(b"=");
+            digest.update(black_box(val));
         }
+
+        black_box(digest.finish())
     });
 }
 
