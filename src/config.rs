@@ -1054,7 +1054,7 @@ impl CachedConfig {
             let path = path.clone();
             move |res: std::result::Result<Event, _>| match res {
                 Ok(ref event) => match &event.kind {
-                    EventKind::Modify(ref _mk) => {
+                    EventKind::Modify(_) => {
                         info!("Reloading {} due to modification", path.display());
                         let _res = Self::reload();
                     }
@@ -1354,7 +1354,7 @@ fn config_overrides() {
     };
 
     assert_eq!(
-        Config::from_env_and_file_configs(env_conf, file_conf),
+        Config::from_env_and_file_configs(env_conf, file_conf, PathBuf::new()),
         Config {
             cache: Some(CacheType::Redis(RedisCacheConfig {
                 endpoint: Some("myotherredisurl".to_owned()),
@@ -1373,6 +1373,7 @@ fn config_overrides() {
             },
             dist: Default::default(),
             server_startup_timeout: None,
+            file_conf_path: PathBuf::new(), // Not testing config reloading here
         }
     );
 }
