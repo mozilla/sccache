@@ -214,6 +214,8 @@ pub enum CompilerKind {
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Language {
+    AssemblerToPreprocess,
+    Assembler,
     C,
     Cxx,
     GenericHeader,
@@ -238,6 +240,8 @@ impl Language {
     pub fn from_file_name(file: &Path) -> Option<Self> {
         match file.extension().and_then(|e| e.to_str()) {
             // gcc: https://gcc.gnu.org/onlinedocs/gcc/Overall-Options.html
+            Some("s") => Some(Language::Assembler),
+            Some("S") | Some("sx") => Some(Language::AssemblerToPreprocess),
             Some("c") => Some(Language::C),
             // Could be C or C++
             Some("h") => Some(Language::GenericHeader),
@@ -266,6 +270,8 @@ impl Language {
 
     pub fn as_str(self) -> &'static str {
         match self {
+            Language::AssemblerToPreprocess => "assemblerToPreprocess",
+            Language::Assembler => "assembler",
             Language::C => "c",
             Language::CHeader => "cHeader",
             Language::CPreprocessed => "cPreprocessed",
@@ -289,7 +295,8 @@ impl Language {
     pub fn needs_c_preprocessing(self) -> bool {
         !matches!(
             self,
-            Language::CPreprocessed
+            Language::Assembler
+                | Language::CPreprocessed
                 | Language::CxxPreprocessed
                 | Language::ObjectiveCPreprocessed
                 | Language::ObjectiveCxxPreprocessed
@@ -300,6 +307,8 @@ impl Language {
     /// Common implementation for GCC and Clang language argument mapping
     fn to_compiler_arg(self, cuda_arg: &'static str) -> Option<&'static str> {
         match self {
+            Language::AssemblerToPreprocess => Some("assembler-with-cpp"),
+            Language::Assembler => Some("assembler"),
             Language::C => Some("c"),
             Language::CHeader => Some("c-header"),
             Language::CPreprocessed => Some("cpp-output"),
@@ -337,6 +346,7 @@ impl Language {
 impl CompilerKind {
     pub fn lang_kind(&self, lang: &Language) -> String {
         match lang {
+            Language::AssemblerToPreprocess | Language::Assembler => "Assembler",
             Language::C
             | Language::CHeader
             | Language::CPreprocessed
