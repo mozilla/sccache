@@ -20,6 +20,7 @@
 //! - LRU cache operations
 
 use divan::{Bencher, black_box};
+use sccache::cache::{CacheRead, CacheWrite};
 use sccache::lru_disk_cache::LruCache;
 use sccache::util::{Digest, TimeMacroFinder};
 use std::io::Cursor;
@@ -351,6 +352,102 @@ fn cache_key_generation(bencher: Bencher) {
             &preprocessor_output,
             true,
         ))
+    });
+}
+
+// =============================================================================
+// Cache Artifact Serialization Benchmarks
+// =============================================================================
+
+/// Generate realistic object file data
+fn generate_object_file(size: usize) -> Vec<u8> {
+    // Simulate binary object file with varied byte patterns
+    let mut data = Vec::with_capacity(size);
+    for i in 0..size {
+        data.push(((i * 7) % 256) as u8);
+    }
+    data
+}
+
+/// Benchmark creating a cache entry with typical compilation artifacts
+#[divan::bench]
+fn cache_entry_create_small(bencher: Bencher) {
+    let obj_data = generate_object_file(50 * 1024); // 50KB object file
+    let stdout_data = b"compilation successful\n";
+    let stderr_data = b"";
+
+    bencher.bench(|| {
+        let mut entry = CacheWrite::new();
+        let mut cursor = Cursor::new(black_box(&obj_data));
+        entry.put_object("output.o", &mut cursor, Some(0o644)).unwrap();
+        entry.put_stdout(black_box(stdout_data)).unwrap();
+        entry.put_stderr(black_box(stderr_data)).unwrap();
+        black_box(entry)
+    });
+}
+
+/// Benchmark creating a cache entry with larger artifacts
+#[divan::bench]
+fn cache_entry_create_large(bencher: Bencher) {
+    let obj_data = generate_object_file(2 * 1024 * 1024); // 2MB object file
+    let stdout_data = b"compilation successful\n";
+    let stderr_data = b"warning: unused variable\n";
+
+    bencher.bench(|| {
+        let mut entry = CacheWrite::new();
+        let mut cursor = Cursor::new(black_box(&obj_data));
+        entry.put_object("output.o", &mut cursor, Some(0o644)).unwrap();
+        entry.put_stdout(black_box(stdout_data)).unwrap();
+        entry.put_stderr(black_box(stderr_data)).unwrap();
+        black_box(entry)
+    });
+}
+
+/// Benchmark cache entry round-trip (write → finish → read)
+#[divan::bench]
+fn cache_entry_roundtrip_small(bencher: Bencher) {
+    let obj_data = generate_object_file(100 * 1024); // 100KB
+
+    bencher.bench(|| {
+        // Create and finish entry
+        let mut entry = CacheWrite::new();
+        let mut cursor = Cursor::new(black_box(&obj_data));
+        entry.put_object("output.o", &mut cursor, Some(0o644)).unwrap();
+        entry.put_stdout(b"success\n").unwrap();
+        let bytes = entry.finish().unwrap();
+
+        // Read it back
+        let cursor = Cursor::new(bytes);
+        let mut reader = CacheRead::from(cursor).unwrap();
+        let mut output = Vec::new();
+        reader.get_object("output.o", &mut output).unwrap();
+        let stdout = reader.get_stdout();
+        black_box((output, stdout))
+    });
+}
+
+/// Benchmark cache entry round-trip with larger data
+#[divan::bench]
+fn cache_entry_roundtrip_large(bencher: Bencher) {
+    let obj_data = generate_object_file(1024 * 1024); // 1MB
+
+    bencher.bench(|| {
+        // Create and finish entry
+        let mut entry = CacheWrite::new();
+        let mut cursor = Cursor::new(black_box(&obj_data));
+        entry.put_object("output.o", &mut cursor, Some(0o644)).unwrap();
+        entry.put_stdout(b"compilation successful\n").unwrap();
+        entry.put_stderr(b"warning: something\n").unwrap();
+        let bytes = entry.finish().unwrap();
+
+        // Read it back
+        let cursor = Cursor::new(bytes);
+        let mut reader = CacheRead::from(cursor).unwrap();
+        let mut output = Vec::new();
+        reader.get_object("output.o", &mut output).unwrap();
+        let stdout = reader.get_stdout();
+        let stderr = reader.get_stderr();
+        black_box((output, stdout, stderr))
     });
 }
 
