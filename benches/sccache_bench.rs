@@ -536,36 +536,118 @@ fn hash_multiple_files(bencher: Bencher) {
     });
 }
 
-/// Benchmark full cache key computation with realistic data
+// =============================================================================
+// Build Workflow Simulation Benchmarks
+// =============================================================================
+
+/// Benchmark initial build (all cache misses)
 #[divan::bench]
-fn hash_full_cache_key_realistic(bencher: Bencher) {
-    let compiler_hash = b"abc123def456";
-    let source_hash = b"source_file_hash_xyz";
-    let flags: Vec<&[u8]> = vec![
-        b"-O2", b"-std=c++17", b"-Wall", b"-I/usr/include",
-        b"-I/usr/local/include", b"-DNDEBUG", b"-fPIC",
-    ];
-    let env_vars: Vec<(&[u8], &[u8])> = vec![
-        (b"LANG", b"en_US.UTF-8"),
-        (b"PATH", b"/usr/bin:/bin:/usr/local/bin"),
-    ];
+fn build_workflow_initial(bencher: Bencher) {
+    // Simulate initial build of 30 files
+    let num_files = 30;
+    let obj_data = generate_object_file(40 * 1024); // 40KB each
 
     bencher.bench(|| {
-        let mut digest = Digest::new();
-        digest.update(black_box(compiler_hash));
-        digest.update(black_box(source_hash));
+        for i in 0..num_files {
+            // Hash compiler + flags + source
+            let mut digest = Digest::new();
+            digest.update(b"gcc-11.2.0");
+            digest.update(b"-O2");
+            digest.update(format!("source_{}.c", i).as_bytes());
+            let _key = digest.finish();
 
-        for flag in &flags {
-            digest.update(black_box(flag));
+            // Create cache entry
+            let mut entry = CacheWrite::new();
+            let mut cursor = Cursor::new(black_box(&obj_data));
+            entry.put_object(&format!("output{}.o", i), &mut cursor, Some(0o644)).unwrap();
+            entry.put_stdout(b"success\n").unwrap();
+            let _bytes = entry.finish().unwrap();
+            black_box(_bytes);
         }
+    });
+}
 
-        for (key, val) in &env_vars {
-            digest.update(black_box(key));
-            digest.update(b"=");
-            digest.update(black_box(val));
+/// Benchmark full rebuild (all cache hits)
+#[divan::bench]
+fn build_workflow_rebuild(bencher: Bencher) {
+    // Simulate rebuild where all files are cached
+    let num_files = 30;
+    let obj_data = generate_object_file(40 * 1024);
+
+    // Pre-create cache entries
+    let cache_entries: Vec<Vec<u8>> = (0..num_files)
+        .map(|i| {
+            let mut entry = CacheWrite::new();
+            let mut cursor = Cursor::new(&obj_data);
+            entry.put_object(&format!("output{}.o", i), &mut cursor, Some(0o644)).unwrap();
+            entry.put_stdout(b"success\n").unwrap();
+            entry.finish().unwrap()
+        })
+        .collect();
+
+    bencher.bench(|| {
+        for (i, cached_bytes) in cache_entries.iter().enumerate() {
+            // Hash compiler + flags + source (same as before)
+            let mut digest = Digest::new();
+            digest.update(b"gcc-11.2.0");
+            digest.update(b"-O2");
+            digest.update(format!("source_{}.c", i).as_bytes());
+            let _key = digest.finish();
+
+            // Retrieve from cache
+            let cursor = Cursor::new(cached_bytes.clone());
+            let mut reader = CacheRead::from(cursor).unwrap();
+            let mut output = Vec::new();
+            reader.get_object(&format!("output{}.o", i), &mut output).unwrap();
+            black_box(output);
         }
+    });
+}
 
-        black_box(digest.finish())
+/// Benchmark incremental build (90% hits, 10% misses)
+#[divan::bench]
+fn build_workflow_incremental(bencher: Bencher) {
+    let num_files = 30;
+    let changed_files = 3; // 10% of files changed
+    let obj_data = generate_object_file(40 * 1024);
+
+    // Pre-create cache entries for unchanged files
+    let cache_entries: Vec<Vec<u8>> = (0..num_files)
+        .map(|i| {
+            let mut entry = CacheWrite::new();
+            let mut cursor = Cursor::new(&obj_data);
+            entry.put_object(&format!("output{}.o", i), &mut cursor, Some(0o644)).unwrap();
+            entry.put_stdout(b"success\n").unwrap();
+            entry.finish().unwrap()
+        })
+        .collect();
+
+    bencher.bench(|| {
+        for (i, cache_entry) in cache_entries.iter().enumerate() {
+            // Hash compiler + flags + source
+            let mut digest = Digest::new();
+            digest.update(b"gcc-11.2.0");
+            digest.update(b"-O2");
+            digest.update(format!("source_{}.c", i).as_bytes());
+            let _key = digest.finish();
+
+            if i < changed_files {
+                // Cache miss: recompile
+                let mut entry = CacheWrite::new();
+                let mut cursor = Cursor::new(black_box(&obj_data));
+                entry.put_object(&format!("output{}.o", i), &mut cursor, Some(0o644)).unwrap();
+                entry.put_stdout(b"success\n").unwrap();
+                let _bytes = entry.finish().unwrap();
+                black_box(_bytes);
+            } else {
+                // Cache hit: retrieve
+                let cursor = Cursor::new(cache_entry.clone());
+                let mut reader = CacheRead::from(cursor).unwrap();
+                let mut output = Vec::new();
+                reader.get_object(&format!("output{}.o", i), &mut output).unwrap();
+                black_box(output);
+            }
+        }
     });
 }
 
