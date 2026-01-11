@@ -451,6 +451,55 @@ fn cache_entry_roundtrip_large(bencher: Bencher) {
     });
 }
 
+/// Benchmark creating multiple cache entries (simulates multi-file compilation)
+#[divan::bench]
+fn cache_entry_batch_create(bencher: Bencher) {
+    // Simulate compiling 50 small files
+    let num_files = 50;
+    let obj_data = generate_object_file(30 * 1024); // 30KB each
+
+    bencher.bench(|| {
+        for i in 0..num_files {
+            let mut entry = CacheWrite::new();
+            let mut cursor = Cursor::new(black_box(&obj_data));
+            entry.put_object(&format!("output{}.o", i), &mut cursor, Some(0o644)).unwrap();
+            entry.put_stdout(b"success\n").unwrap();
+            let _bytes = entry.finish().unwrap();
+            black_box(_bytes);
+        }
+    });
+}
+
+/// Benchmark full round-trip for multiple cache entries
+#[divan::bench]
+fn cache_entry_batch_roundtrip(bencher: Bencher) {
+    // Simulate cache miss then cache hit for 20 files
+    let num_files = 20;
+    let obj_data = generate_object_file(50 * 1024); // 50KB each
+
+    bencher.bench(|| {
+        let mut entries_data: Vec<Vec<u8>> = Vec::new();
+
+        // Cache miss: create all entries
+        for i in 0..num_files {
+            let mut entry = CacheWrite::new();
+            let mut cursor = Cursor::new(black_box(&obj_data));
+            entry.put_object(&format!("output{}.o", i), &mut cursor, Some(0o644)).unwrap();
+            entry.put_stdout(b"success\n").unwrap();
+            entries_data.push(entry.finish().unwrap());
+        }
+
+        // Cache hit: read all entries back
+        for (i, bytes) in entries_data.into_iter().enumerate() {
+            let cursor = Cursor::new(bytes);
+            let mut reader = CacheRead::from(cursor).unwrap();
+            let mut output = Vec::new();
+            reader.get_object(&format!("output{}.o", i), &mut output).unwrap();
+            black_box(output);
+        }
+    });
+}
+
 fn main() {
     divan::main();
 }
