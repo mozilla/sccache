@@ -92,49 +92,6 @@ fn hash_large_data(bencher: Bencher) {
     });
 }
 
-/// Benchmark incremental digest updates (simulating hash_key with many args)
-#[divan::bench]
-fn digest_incremental_updates(bencher: Bencher) {
-    let chunks: Vec<Vec<u8>> = (0..100)
-        .map(|i| format!("-I/path/to/include/dir{}", i).into_bytes())
-        .collect();
-
-    bencher.bench(|| {
-        let mut digest = Digest::new();
-        for chunk in &chunks {
-            digest.update(black_box(chunk));
-        }
-        black_box(digest.finish())
-    });
-}
-
-/// Benchmark digest with delimiter (used for structured hashing)
-#[divan::bench]
-fn digest_with_delimiters(bencher: Bencher) {
-    let section_data = b"section_content_data_here_with_more_content";
-    let delimiter_names: Vec<&[u8]> = vec![
-        b"compiler",
-        b"language",
-        b"args",
-        b"env",
-        b"output",
-        b"extra1",
-        b"extra2",
-        b"extra3",
-        b"extra4",
-        b"extra5",
-    ];
-
-    bencher.bench(|| {
-        let mut digest = Digest::new();
-        for name in &delimiter_names {
-            digest.delimiter(name);
-            digest.update(black_box(section_data));
-        }
-        black_box(digest.finish())
-    });
-}
-
 // =============================================================================
 // Time Macro Finder Benchmarks
 // =============================================================================
@@ -379,7 +336,9 @@ fn cache_entry_create_small(bencher: Bencher) {
     bencher.bench(|| {
         let mut entry = CacheWrite::new();
         let mut cursor = Cursor::new(black_box(&obj_data));
-        entry.put_object("output.o", &mut cursor, Some(0o644)).unwrap();
+        entry
+            .put_object("output.o", &mut cursor, Some(0o644))
+            .unwrap();
         entry.put_stdout(black_box(stdout_data)).unwrap();
         entry.put_stderr(black_box(stderr_data)).unwrap();
         black_box(entry)
@@ -396,7 +355,9 @@ fn cache_entry_create_large(bencher: Bencher) {
     bencher.bench(|| {
         let mut entry = CacheWrite::new();
         let mut cursor = Cursor::new(black_box(&obj_data));
-        entry.put_object("output.o", &mut cursor, Some(0o644)).unwrap();
+        entry
+            .put_object("output.o", &mut cursor, Some(0o644))
+            .unwrap();
         entry.put_stdout(black_box(stdout_data)).unwrap();
         entry.put_stderr(black_box(stderr_data)).unwrap();
         black_box(entry)
@@ -412,7 +373,9 @@ fn cache_entry_roundtrip_small(bencher: Bencher) {
         // Create and finish entry
         let mut entry = CacheWrite::new();
         let mut cursor = Cursor::new(black_box(&obj_data));
-        entry.put_object("output.o", &mut cursor, Some(0o644)).unwrap();
+        entry
+            .put_object("output.o", &mut cursor, Some(0o644))
+            .unwrap();
         entry.put_stdout(b"success\n").unwrap();
         let bytes = entry.finish().unwrap();
 
@@ -435,7 +398,9 @@ fn cache_entry_roundtrip_large(bencher: Bencher) {
         // Create and finish entry
         let mut entry = CacheWrite::new();
         let mut cursor = Cursor::new(black_box(&obj_data));
-        entry.put_object("output.o", &mut cursor, Some(0o644)).unwrap();
+        entry
+            .put_object("output.o", &mut cursor, Some(0o644))
+            .unwrap();
         entry.put_stdout(b"compilation successful\n").unwrap();
         entry.put_stderr(b"warning: something\n").unwrap();
         let bytes = entry.finish().unwrap();
@@ -462,7 +427,9 @@ fn cache_entry_batch_create(bencher: Bencher) {
         for i in 0..num_files {
             let mut entry = CacheWrite::new();
             let mut cursor = Cursor::new(black_box(&obj_data));
-            entry.put_object(&format!("output{}.o", i), &mut cursor, Some(0o644)).unwrap();
+            entry
+                .put_object(&format!("output{}.o", i), &mut cursor, Some(0o644))
+                .unwrap();
             entry.put_stdout(b"success\n").unwrap();
             let _bytes = entry.finish().unwrap();
             black_box(_bytes);
@@ -484,25 +451,29 @@ fn cache_entry_batch_roundtrip(bencher: Bencher) {
         for i in 0..num_files {
             let mut entry = CacheWrite::new();
             let mut cursor = Cursor::new(black_box(&obj_data));
-            entry.put_object(&format!("output{}.o", i), &mut cursor, Some(0o644)).unwrap();
+            entry
+                .put_object(&format!("output{}.o", i), &mut cursor, Some(0o644))
+                .unwrap();
             entry.put_stdout(b"success\n").unwrap();
-        b"-fPIC".to_vec(),
-        b"-fstack-protector-strong".to_vec(),
-        b"-march=native".to_vec(),
-        b"-mtune=native".to_vec(),
-        b"-fno-exceptions".to_vec(),
-        b"-fno-rtti".to_vec(),
-        b"-fvisibility=hidden".to_vec(),
-    ];
-
-    bencher.bench(|| {
-        let mut digest = Digest::new();
-        for flag in &flags {
-            digest.update(black_box(flag));
+            entries_data.push(entry.finish().unwrap());
         }
-        black_box(digest.finish())
+
+        // Cache hit: read all entries back
+        for (i, bytes) in entries_data.into_iter().enumerate() {
+            let cursor = Cursor::new(bytes);
+            let mut reader = CacheRead::from(cursor).unwrap();
+            let mut output = Vec::new();
+            reader
+                .get_object(&format!("output{}.o", i), &mut output)
+                .unwrap();
+            black_box(output);
+        }
     });
 }
+
+// =============================================================================
+// Hash Computation Scenarios Benchmarks
+// =============================================================================
 
 /// Benchmark hashing typical header file content
 #[divan::bench]
@@ -559,7 +530,9 @@ fn build_workflow_initial(bencher: Bencher) {
             // Create cache entry
             let mut entry = CacheWrite::new();
             let mut cursor = Cursor::new(black_box(&obj_data));
-            entry.put_object(&format!("output{}.o", i), &mut cursor, Some(0o644)).unwrap();
+            entry
+                .put_object(&format!("output{}.o", i), &mut cursor, Some(0o644))
+                .unwrap();
             entry.put_stdout(b"success\n").unwrap();
             let _bytes = entry.finish().unwrap();
             black_box(_bytes);
@@ -579,7 +552,9 @@ fn build_workflow_rebuild(bencher: Bencher) {
         .map(|i| {
             let mut entry = CacheWrite::new();
             let mut cursor = Cursor::new(&obj_data);
-            entry.put_object(&format!("output{}.o", i), &mut cursor, Some(0o644)).unwrap();
+            entry
+                .put_object(&format!("output{}.o", i), &mut cursor, Some(0o644))
+                .unwrap();
             entry.put_stdout(b"success\n").unwrap();
             entry.finish().unwrap()
         })
@@ -598,7 +573,9 @@ fn build_workflow_rebuild(bencher: Bencher) {
             let cursor = Cursor::new(cached_bytes.clone());
             let mut reader = CacheRead::from(cursor).unwrap();
             let mut output = Vec::new();
-            reader.get_object(&format!("output{}.o", i), &mut output).unwrap();
+            reader
+                .get_object(&format!("output{}.o", i), &mut output)
+                .unwrap();
             black_box(output);
         }
     });
@@ -616,7 +593,9 @@ fn build_workflow_incremental(bencher: Bencher) {
         .map(|i| {
             let mut entry = CacheWrite::new();
             let mut cursor = Cursor::new(&obj_data);
-            entry.put_object(&format!("output{}.o", i), &mut cursor, Some(0o644)).unwrap();
+            entry
+                .put_object(&format!("output{}.o", i), &mut cursor, Some(0o644))
+                .unwrap();
             entry.put_stdout(b"success\n").unwrap();
             entry.finish().unwrap()
         })
@@ -635,7 +614,9 @@ fn build_workflow_incremental(bencher: Bencher) {
                 // Cache miss: recompile
                 let mut entry = CacheWrite::new();
                 let mut cursor = Cursor::new(black_box(&obj_data));
-                entry.put_object(&format!("output{}.o", i), &mut cursor, Some(0o644)).unwrap();
+                entry
+                    .put_object(&format!("output{}.o", i), &mut cursor, Some(0o644))
+                    .unwrap();
                 entry.put_stdout(b"success\n").unwrap();
                 let _bytes = entry.finish().unwrap();
                 black_box(_bytes);
@@ -644,7 +625,9 @@ fn build_workflow_incremental(bencher: Bencher) {
                 let cursor = Cursor::new(cache_entry.clone());
                 let mut reader = CacheRead::from(cursor).unwrap();
                 let mut output = Vec::new();
-                reader.get_object(&format!("output{}.o", i), &mut output).unwrap();
+                reader
+                    .get_object(&format!("output{}.o", i), &mut output)
+                    .unwrap();
                 black_box(output);
             }
         }
@@ -684,7 +667,9 @@ fn compression_high_compressibility(bencher: Bencher) {
     bencher.bench(|| {
         let mut entry = CacheWrite::new();
         let mut cursor = Cursor::new(black_box(&obj_data));
-        entry.put_object("output.o", &mut cursor, Some(0o644)).unwrap();
+        entry
+            .put_object("output.o", &mut cursor, Some(0o644))
+            .unwrap();
         entry.put_stdout(b"success\n").unwrap();
         black_box(entry.finish().unwrap())
     });
@@ -698,7 +683,9 @@ fn compression_low_compressibility(bencher: Bencher) {
     bencher.bench(|| {
         let mut entry = CacheWrite::new();
         let mut cursor = Cursor::new(black_box(&obj_data));
-        entry.put_object("output.o", &mut cursor, Some(0o644)).unwrap();
+        entry
+            .put_object("output.o", &mut cursor, Some(0o644))
+            .unwrap();
         entry.put_stdout(b"success\n").unwrap();
         black_box(entry.finish().unwrap())
     });
@@ -712,7 +699,9 @@ fn decompression_high_ratio(bencher: Bencher) {
     // Pre-create compressed entry
     let mut entry = CacheWrite::new();
     let mut cursor = Cursor::new(&obj_data);
-    entry.put_object("output.o", &mut cursor, Some(0o644)).unwrap();
+    entry
+        .put_object("output.o", &mut cursor, Some(0o644))
+        .unwrap();
     let compressed = entry.finish().unwrap();
 
     bencher.bench(|| {
@@ -729,6 +718,34 @@ fn decompression_high_ratio(bencher: Bencher) {
 fn decompression_low_ratio(bencher: Bencher) {
     let obj_data = generate_incompressible_data(500 * 1024);
 
+    // Pre-create compressed entry
+    let mut entry = CacheWrite::new();
+    let mut cursor = Cursor::new(&obj_data);
+    entry
+        .put_object("output.o", &mut cursor, Some(0o644))
+        .unwrap();
+    let compressed = entry.finish().unwrap();
+
+    bencher.bench(|| {
+        let cursor = Cursor::new(black_box(compressed.clone()));
+        let mut reader = CacheRead::from(cursor).unwrap();
+        let mut output = Vec::new();
+        reader.get_object("output.o", &mut output).unwrap();
+        black_box(output)
+    });
+}
+
+// =============================================================================
+// Realistic LRU Cache Access Pattern Benchmarks
+// =============================================================================
+
+/// Benchmark LRU cache with hot/cold access pattern (80/20 rule)
+#[divan::bench]
+fn lru_hotcold_access_pattern(bencher: Bencher) {
+    let total_keys = 1000;
+    let hot_keys = 200; // 20% of keys get 80% of accesses
+
+    bencher
         .with_inputs(|| {
             let mut cache: LruCache<String, u64> = LruCache::new((total_keys * 2) as u64);
             // Populate cache
@@ -749,32 +766,6 @@ fn decompression_low_ratio(bencher: Bencher) {
                     hot_keys + (i % (total_keys - hot_keys))
                 };
                 black_box(cache.get(&keys[key_idx]));
-            }
-            black_box(cache)
-        });
-}
-
-/// Benchmark LRU cache with working set pattern (repeated access to same subset)
-#[divan::bench]
-fn lru_working_set_pattern(bencher: Bencher) {
-    let total_keys = 2000;
-    let working_set_size = 100;
-
-    bencher
-        .with_inputs(|| {
-            let mut cache: LruCache<String, u64> = LruCache::new((total_keys * 2) as u64);
-            for i in 0..total_keys {
-                cache.insert(format!("key_{:08x}", i), i as u64);
-            }
-            let keys: Vec<String> = (0..total_keys).map(|i| format!("key_{:08x}", i)).collect();
-            (cache, keys)
-        })
-        .bench_values(|(mut cache, keys)| {
-            // Access working set repeatedly
-            for _ in 0..10 {
-                for key in keys.iter().take(working_set_size) {
-                    black_box(cache.get(key));
-                }
             }
             black_box(cache)
         });
