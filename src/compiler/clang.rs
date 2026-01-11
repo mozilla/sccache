@@ -127,7 +127,8 @@ impl CCompilerImpl for Clang {
         };
 
         // Clang 14 and later support -fminimize-whitespace, which normalizes away non-semantic whitespace which in turn increases cache hit rate.
-        if self.is_minversion(14) {
+        // '-fminimize-whitespace' invalid for input of type assembler-with-cpp
+        if self.is_minversion(14) && parsed_args.language != Language::AssemblerToPreprocess {
             ignorable_whitespace_flags.push("-fminimize-whitespace".to_string());
         }
 
@@ -179,22 +180,7 @@ impl CCompilerImpl for Clang {
 }
 
 pub fn language_to_clang_arg(lang: Language) -> Option<&'static str> {
-    match lang {
-        Language::C => Some("c"),
-        Language::CHeader => Some("c-header"),
-        Language::Cxx => Some("c++"),
-        Language::CxxHeader => Some("c++-header"),
-        Language::ObjectiveC => Some("objective-c"),
-        Language::ObjectiveCxx => Some("objective-c++"),
-        Language::ObjectiveCxxHeader => Some("objective-c++-header"),
-        Language::Cuda => Some("cuda"),
-        Language::CudaFE => None,
-        Language::Ptx => None,
-        Language::Cubin => None,
-        Language::Rust => None, // Let the compiler decide
-        Language::Hip => Some("hip"),
-        Language::GenericHeader => None, // Let the compiler decide
-    }
+    lang.to_clang_arg()
 }
 
 counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
@@ -220,6 +206,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     flag!("-fcxx-modules", TooHardFlag),
     take_arg!("-fdebug-compilation-dir", OsString, Separated, PassThrough),
     take_arg!("-fembed-offload-object", PathBuf, Concatenated(b'='), ExtraHashFile),
+    take_arg!("-fexperimental-assignment-tracking", OsString, Concatenated(b'='), PassThrough),
     flag!("-fmodules", TooHardFlag),
     flag!("-fno-color-diagnostics", NoDiagnosticsColorFlag),
     flag!("-fno-pch-timestamp", PassThroughFlag),
@@ -242,6 +229,8 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("-mllvm", OsString, Separated, PassThrough),
     flag!("-mrelax-all", PassThroughFlag),
     flag!("-no-opaque-pointers", PreprocessorArgumentFlag),
+    // Note: this is ROCm clang specific. Parallelism level shouldn't affect output.
+    take_arg!("-parallel-jobs", OsString, Concatenated(b'='), Unhashed),
     take_arg!("-plugin-arg", OsString, Concatenated(b'-'), PassThrough),
     take_arg!("-target", OsString, Separated, PassThrough),
     flag!("-verify", PreprocessorArgumentFlag),
@@ -596,6 +585,28 @@ mod test {
     }
 
     #[test]
+    fn test_parse_arguments_hip_unhash_parallel_jobs() {
+        let a = parses!(
+            "-c",
+            "foo.cpp",
+            "-x",
+            "hip",
+            "--offload-arch=gfx900",
+            "-parallel-jobs=5",
+            "-o",
+            "foo.o",
+            "--hip-path=/usr"
+        );
+        assert_eq!(Language::Hip, a.language);
+        assert!(a.preprocessor_args.is_empty());
+        assert_eq!(
+            ovec!["--offload-arch=gfx900", "--hip-path=/usr"],
+            a.common_args
+        );
+        assert_eq!(ovec!["-parallel-jobs=5"], a.unhashed_args,);
+    }
+
+    #[test]
     fn test_dependent_lib() {
         let a = parses!(
             "-c",
@@ -805,6 +816,36 @@ mod test {
     }
 
     #[test]
+    fn test_parse_xclang_fexperimental_assignment_tracking() {
+        // Test via -Xclang (internal clang flag)
+        let a = parses!(
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "-Xclang",
+            "-fexperimental-assignment-tracking=disabled"
+        );
+        assert_eq!(
+            ovec!["-Xclang", "-fexperimental-assignment-tracking=disabled"],
+            a.common_args
+        );
+
+        // Also works as a direct flag
+        let b = parses!(
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "-fexperimental-assignment-tracking=disabled"
+        );
+        assert_eq!(
+            ovec!["-fexperimental-assignment-tracking=disabled"],
+            b.common_args
+        );
+    }
+
+    #[test]
     fn test_parse_xclang_plugin_arg_blink_gc_plugin() {
         let a = parses!(
             "-c",
@@ -926,6 +967,17 @@ mod test {
     #[test]
     fn test_parse_fplugin() {
         let a = parses!("-c", "foo.c", "-o", "foo.o", "-fplugin", "plugin.so");
+        println!("A {:#?}", a);
+        assert_eq!(ovec!["-fplugin", "plugin.so"], a.common_args);
+        assert_eq!(
+            ovec![std::env::current_dir().unwrap().join("plugin.so")],
+            a.extra_hash_files
+        );
+    }
+
+    #[test]
+    fn test_parse_fplugin_concatenated() {
+        let a = parses!("-c", "foo.c", "-o", "foo.o", "-fplugin=plugin.so");
         println!("A {:#?}", a);
         assert_eq!(ovec!["-fplugin", "plugin.so"], a.common_args);
         assert_eq!(

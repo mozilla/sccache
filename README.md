@@ -12,7 +12,7 @@ sccache - Shared Compilation Cache
 
 sccache is a [ccache](https://ccache.dev/)-like compiler caching tool. It is used as a compiler wrapper and avoids compilation when possible, storing cached results either on [local disk](docs/Local.md) or in one of [several cloud storage backends](#storage-options).
 
-sccache includes support for caching the compilation of C/C++ code, [Rust](docs/Rust.md), as well as NVIDIA's CUDA using [nvcc](https://docs.nvidia.com/cuda/cuda-compiler-driver-nvcc/index.html), and [clang](https://llvm.org/docs/CompileCudaWithLLVM.html).
+sccache includes support for caching the compilation of Assembler, C/C++ code, [Rust](docs/Rust.md), as well as NVIDIA's CUDA using [nvcc](https://docs.nvidia.com/cuda/cuda-compiler-driver-nvcc/index.html), and [clang](https://llvm.org/docs/CompileCudaWithLLVM.html), [AMD's ROCm HIP](https://rocm.docs.amd.com/projects/HIP/en/latest/index.html).
 
 sccache also provides [icecream](https://github.com/icecc/icecream)-style distributed compilation (automatic packaging of local toolchains) for all supported compilers (including Rust). The distributed compilation system includes several security features that icecream lacks such as authentication, transport layer encryption, and sandboxed compiler execution on build servers. See [the distributed quickstart](docs/DistributedQuickstart.md) guide for more information.
 
@@ -86,6 +86,48 @@ If you have a Rust toolchain installed you can install sccache using cargo. **No
 cargo install sccache --locked
 ```
 
+### With Nix
+
+Sccache is available in nixpkgs, so if you don't need the latest version you can use that:
+
+```nix
+buildInputs = [ pkgs.sccache ];
+```
+
+We also provide a flake with an overlay for getting the latest version:
+
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    sccache = {
+      url = "github:mozilla/sccache";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+  };
+
+  outputs = { self, nixpkgs, sccache, ... }:
+    let
+      system = "x86_64-linux";
+      pkgs = import nixpkgs {
+        inherit system;
+        overlays = [ sccache.overlays.default ];
+      };
+    in {
+      devShells.${system}.default = pkgs.mkShell {
+        buildInputs = [ pkgs.sccache ];
+      };
+    };
+}
+```
+
+Or use it directly from the flake without the overlay:
+
+```bash
+nix run github:mozilla/sccache -- --help
+nix shell github:mozilla/sccache
+```
+
 ---
 
 Usage
@@ -115,7 +157,7 @@ export RUSTC_WRAPPER=/path/to/sccache
 cargo build
 ```
 
-sccache supports gcc, clang, MSVC, rustc, [NVCC](https://docs.nvidia.com/cuda/cuda-compiler-driver-nvcc/index.html), [NVC++](https://docs.nvidia.com/hpc-sdk//compilers/hpc-compilers-user-guide/index.html), and [Wind River's diab compiler](https://www.windriver.com/products/development-tools/#diab_compiler). Both gcc and msvc support Response Files, read more about their implementation [here](docs/ResponseFiles.md).
+sccache supports gcc, clang, MSVC, rustc, [NVCC](https://docs.nvidia.com/cuda/cuda-compiler-driver-nvcc/index.html), [NVC++](https://docs.nvidia.com/hpc-sdk//compilers/hpc-compilers-user-guide/index.html), [hipcc](https://rocm.docs.amd.com/projects/HIP/en/latest/index.html), and [Wind River's diab compiler](https://www.windriver.com/products/development-tools/#diab_compiler). Both gcc and msvc support Response Files, read more about their implementation [here](docs/ResponseFiles.md).
 
 If you don't [specify otherwise](#storage-options), sccache will use a local disk cache.
 

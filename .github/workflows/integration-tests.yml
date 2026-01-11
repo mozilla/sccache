@@ -556,7 +556,7 @@ jobs:
       - name: Chmod for binary
         run: chmod +x ${SCCACHE_PATH}
 
-      - name: Test
+      - name: Test C/C++
         run: |
           export CXX="${SCCACHE_PATH} clang++"
           $CXX -c `pwd`/tests/test_clang_multicall.c
@@ -575,6 +575,16 @@ jobs:
           ${SCCACHE_PATH} --show-stats
 
           ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"
+
+      - name: Test ASM
+        run: |
+          export ASM="${SCCACHE_PATH} clang"
+          $ASM -c `pwd`/tests/test_intel_asm.s
+
+      - name: Test ASM with preprocessor
+        run: |
+          export ASM="${SCCACHE_PATH} clang"
+          $ASM -c `pwd`/tests/test_intel_asm_to_preproc.S
 
   hip:
     # Probably wouldn't matter anyway since we run in a container, but staying
@@ -699,7 +709,7 @@ jobs:
       - name: Chmod for binary
         run: chmod +x ${SCCACHE_PATH}
 
-      - name: Test
+      - name: Test C/C++
         run: |
           export CXX="${SCCACHE_PATH} g++"
           $CXX -c `pwd`/tests/test_clang_multicall.c
@@ -718,6 +728,16 @@ jobs:
           ${SCCACHE_PATH} --show-stats
 
           ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"
+
+      - name: Test ASM
+        run: |
+          export ASM="${SCCACHE_PATH} gcc"
+          $ASM -c `pwd`/tests/test_intel_asm.s
+
+      - name: Test ASM with preprocessor
+        run: |
+          export ASM="${SCCACHE_PATH} gcc"
+          $ASM -c `pwd`/tests/test_intel_asm_to_preproc.S
 
   autotools:
     runs-on: ubuntu-24.04
