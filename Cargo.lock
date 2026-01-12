@@ -1874,9 +1874,9 @@ dependencies = [
 
 [[package]]
 name = "object"
-version = "0.37.1"
+version = "0.38.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03fd943161069e1768b4b3d050890ba48730e590f57e56d4aa04e7e090e61b4a"
+checksum = "b8b28f24bd43920cd8e0bc4f9c6553e8b93221c512cb9a1014987fc89d36f830"
 dependencies = [
  "flate2",
  "memchr",
@@ -2927,7 +2927,7 @@ dependencies = [
  "mime",
  "nix 0.28.0",
  "number_prefix",
- "object 0.37.1",
+ "object 0.38.0",
  "opendal",
  "openssl",
  "predicates",
