@@ -514,6 +514,19 @@ jobs:
           $SCCACHE_EXE "$(where cl.exe)" -c "@args.rsp"
           $SCCACHE_EXE --show-stats
 
+      - name: Prepare - MSBuild support
+        shell: bash
+        working-directory: ./tests/msvc-msbuild
+        # Force stop server to drop compiler cache - need to test showInclude prefix detection
+        run: |
+          $SCCACHE_EXE --stop-server
+          mkdir -p compiler
+          cp $SCCACHE_EXE compiler/cl.exe
+
+      - name: Compile - MSBuild support
+        working-directory: ./tests/msvc-msbuild
+        run: msbuild MsbuildCpp.vcxproj -property:Configuration=Release -property:Platform=x64 "-property:SolutionDir=${{ github.workspace }}/tests/msvc-msbuild/"
+
       - name: Stop Server
         if: success() || failure()
         shell: bash
