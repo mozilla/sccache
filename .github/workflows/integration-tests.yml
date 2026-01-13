@@ -23,7 +23,7 @@ jobs:
         run: |
           cargo build --all-features
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: integration-tests
           path: ./target/debug/sccache
