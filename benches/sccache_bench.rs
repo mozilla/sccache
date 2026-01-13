@@ -816,6 +816,62 @@ fn lru_realistic_eviction_pressure(bencher: Bencher) {
         });
 }
 
+// =============================================================================
+// End-to-end Compilation Benchmark
+// =============================================================================
+
+/// Benchmark end-to-end compilation with clang++ through sccache (cache hit).
+/// Uses the same test file as the integration tests.
+#[divan::bench]
+fn sccache_clang_cache_hit(bencher: Bencher) {
+    let sccache_bin = env!("CARGO_BIN_EXE_sccache");
+    let tempdir = tempfile::tempdir().unwrap();
+    let cache_dir = tempdir.path().join("cache");
+    std::fs::create_dir_all(&cache_dir).unwrap();
+
+    // Use the same test file as integration tests
+    let src_file =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/test_clang_multicall.c");
+    let obj_file = tempdir.path().join("test_clang_multicall.o");
+
+    // Stop any existing server, start fresh
+    let _ = std::process::Command::new(sccache_bin)
+        .arg("--stop-server")
+        .output();
+
+    std::process::Command::new(sccache_bin)
+        .arg("--start-server")
+        .env("SCCACHE_DIR", &cache_dir)
+        .output()
+        .unwrap();
+
+    // Prime the cache (first compilation - cache miss)
+    std::process::Command::new(sccache_bin)
+        .args(["clang++", "-c"])
+        .arg(&src_file)
+        .arg("-o")
+        .arg(&obj_file)
+        .output()
+        .unwrap();
+
+    bencher.bench(|| {
+        let _ = std::fs::remove_file(&obj_file);
+        let output = std::process::Command::new(sccache_bin)
+            .args(["clang++", "-c"])
+            .arg(&src_file)
+            .arg("-o")
+            .arg(&obj_file)
+            .output()
+            .unwrap();
+        black_box(output)
+    });
+
+    // Stop server
+    let _ = std::process::Command::new(sccache_bin)
+        .arg("--stop-server")
+        .output();
+}
+
 fn main() {
     divan::main();
 }
