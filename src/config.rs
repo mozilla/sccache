@@ -1103,7 +1103,10 @@ impl Config {
                     bytes
                 }
             };
-            basedirs.push(normalized);
+            // push only if not already present
+            if !basedirs.contains(&normalized) {
+                basedirs.push(normalized);
+            }
         }
 
         if !basedirs.is_empty() && log::log_enabled!(log::Level::Debug) {
