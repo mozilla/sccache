@@ -344,7 +344,7 @@ This is similar to ccache's `CCACHE_BASEDIR` and helps when:
 * Multiple developers working with different username paths
 * Working with multiple project checkouts simultaneously
 
-**Note:** Only absolute paths are supported. Relative paths will prevent server from start.
+**Note:** Only absolute paths are supported. Relative paths will prevent server from starting.
 
 You can also configure this in the sccache config file:
 
