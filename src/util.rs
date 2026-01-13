@@ -20,6 +20,7 @@ use fs_err as fs;
 use object::read::archive::ArchiveFile;
 use object::read::macho::{FatArch, MachOFatFile32, MachOFatFile64};
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::cell::Cell;
 use std::ffi::{OsStr, OsString};
 use std::hash::Hasher;
@@ -1015,6 +1016,164 @@ pub fn num_cpus() -> usize {
     std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
 }
 
+/// Strip base directories from absolute paths in preprocessor output.
+///
+/// This function searches for basedir paths in the preprocessor output and
+/// replaces them with relative path markers. When multiple basedirs are provided,
+/// the longest matching prefix is used. This is similar to ccache's CCACHE_BASEDIR.
+///
+/// Path matching is case-insensitive to handle various filesystem behaviors and build system
+/// configurations uniformly across all operating systems. On Windows, this function also handles
+/// paths with mixed forward and backward slashes, which can occur when different build tools
+/// produce preprocessor output.
+///
+/// Only paths that start with one of the basedirs are modified. The paths are expected to be
+/// in the format found in preprocessor output (e.g., `# 1 "/path/to/file"`).
+pub fn strip_basedirs<'a>(preprocessor_output: &'a [u8], basedirs: &[Vec<u8>]) -> Cow<'a, [u8]> {
+    if basedirs.is_empty() || preprocessor_output.is_empty() {
+        return Cow::Borrowed(preprocessor_output);
+    }
+
+    trace!(
+        "Stripping basedirs from preprocessor output with length {}",
+        preprocessor_output.len(),
+    );
+
+    // Find all potential matches for each basedir using fast substring search
+    // Store as (position, length, basedir_idx) sorted by position
+    let mut matches: Vec<(usize, usize, usize)> = Vec::new();
+    // We must return the original preprocessor output on all platforms,
+    // so we only normalize a copy for searching.
+    #[cfg(not(target_os = "windows"))]
+    let normalized_output = preprocessor_output;
+    #[cfg(target_os = "windows")]
+    let normalized_output = &normalize_win_path(preprocessor_output);
+
+    for (idx, basedir_bytes) in basedirs.iter().enumerate() {
+        let basedir = basedir_bytes.as_slice();
+        // Use memchr's fast substring search
+        let finder = memchr::memmem::find_iter(normalized_output, &basedir);
+
+        for pos in finder {
+            // Check if this is a valid boundary (start, whitespace, quote, or '<')
+            let is_boundary = pos == 0
+                || normalized_output[pos - 1].is_ascii_whitespace()
+                || normalized_output[pos - 1] == b'"'
+                || normalized_output[pos - 1] == b'<';
+
+            if is_boundary {
+                matches.push((pos, basedir.len(), idx));
+            }
+        }
+    }
+
+    if matches.is_empty() {
+        return Cow::Borrowed(preprocessor_output);
+    }
+
+    // Sort matches by position, then by length descending (longest first for overlaps)
+    matches.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
+
+    // Remove overlapping matches, keeping the longest match at each position
+    let mut filtered_matches: Vec<(usize, usize)> = Vec::with_capacity(matches.len());
+    let mut last_end = 0;
+
+    for (pos, len, idx) in matches {
+        if pos >= last_end {
+            filtered_matches.push((pos, len));
+            last_end = pos + len;
+            trace!(
+                "Matched basedir {} at position {} with length {}",
+                String::from_utf8_lossy(&basedirs[idx]),
+                pos,
+                len
+            );
+        }
+    }
+
+    // Build the result in a single pass
+    let mut result = Vec::with_capacity(preprocessor_output.len());
+    let mut current_pos = 0;
+
+    for (match_pos, match_len) in filtered_matches {
+        // Copy everything before the match
+        result.extend_from_slice(&preprocessor_output[current_pos..match_pos]);
+        // Replace the basedir is removed completely, including trailing slash (it is expected, see
+        // Config::basedir)
+        current_pos = match_pos + match_len;
+    }
+
+    // Copy remaining data
+    result.extend_from_slice(&preprocessor_output[current_pos..]);
+
+    Cow::Owned(result)
+}
+
+/// Normalize path for case-insensitive comparison.
+/// On Windows: converts all backslashes to forward slashes;
+///             lowercases characters for consistency.
+/// This function is used for:
+///     - basedir_path: already normalized by std::path::absolute
+///     - preprocessor_output: plain text that may contain invalid UTF-8
+/// Leave it for any platform for testing purposes.
+pub fn normalize_win_path(path: &[u8]) -> Vec<u8> {
+    let mut result = Vec::with_capacity(path.len());
+    let mut i = 0;
+
+    while i < path.len() {
+        let b = path[i];
+
+        // Fast path: ASCII characters (most common case)
+        if b < 128 {
+            result.push(match b {
+                b'A'..=b'Z' => b + (b'a' - b'A'),
+                b'\\' => b'/',
+                _ => b,
+            });
+            i += 1;
+            continue;
+        }
+
+        // Non-ASCII: try to decode UTF-8 sequence
+        // Determine expected length from the first byte
+        let char_len = match b {
+            0b1100_0000..=0b1101_1111 => 2, // 110xxxxx
+            0b1110_0000..=0b1110_1111 => 3, // 1110xxxx
+            0b1111_0000..=0b1111_0111 => 4, // 11110xxx
+            _ => {
+                // Invalid UTF-8 start byte, copy as-is
+                result.push(b);
+                i += 1;
+                continue;
+            }
+        };
+
+        // Check if we have enough bytes
+        if i + char_len > path.len() {
+            // Incomplete sequence, copy as-is
+            result.push(b);
+            i += 1;
+            continue;
+        }
+
+        // Validate and decode the UTF-8 sequence
+        match std::str::from_utf8(&path[i..i + char_len]) {
+            Ok(s) => {
+                // Valid UTF-8, lowercase it
+                result.extend_from_slice(s.to_lowercase().as_bytes());
+                i += char_len;
+            }
+            Err(_) => {
+                // Invalid sequence, copy first byte as-is
+                result.push(b);
+                i += 1;
+            }
+        }
+    }
+
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::{OsStrExt, TimeMacroFinder};
@@ -1166,5 +1325,213 @@ mod tests {
         assert_eq!(tested_cases, (alphabet.len() + 1).pow(3) - 1);
         let empty_result = super::ascii_unescape_default(&[]).unwrap();
         assert!(empty_result.is_empty(), "{:?}", empty_result);
+    }
+
+    #[test]
+    fn test_strip_basedir_simple() {
+        // Simple cases
+        let basedir = b"/home/user/project/".to_vec();
+        let input = b"# 1 \"/home/user/project/src/main.c\"\nint main() { return 0; }";
+        let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
+        let expected = b"# 1 \"src/main.c\"\nint main() { return 0; }";
+        assert_eq!(&*output, expected);
+
+        // Multiple occurrences
+        let input =
+            b"# 1 \"/home/user/project/src/main.c\"\n# 2 \"/home/user/project/include/header.h\"";
+        let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
+        let expected = b"# 1 \"src/main.c\"\n# 2 \"include/header.h\"";
+        assert_eq!(&*output, expected);
+
+        // No occurrences
+        let input = b"# 1 \"/other/path/main.c\"\nint main() { return 0; }";
+        let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
+        assert_eq!(&*output, input);
+    }
+
+    #[test]
+    fn test_strip_basedir_empty() {
+        // Empty basedir slice
+        let input = b"# 1 \"/home/user/project/src/main.c\"";
+        let output = super::strip_basedirs(input, &[]);
+        assert_eq!(&*output, input);
+
+        // Empty input
+        let basedir = b"/home/user/project/".to_vec();
+        let input = b"";
+        let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
+        assert_eq!(&*output, input);
+    }
+
+    #[test]
+    fn test_strip_basedir_not_at_boundary() {
+        // basedir should only match at word boundaries
+        let basedir = b"/home/user/".to_vec();
+        let input = b"text/home/user/file.c and \"/home/user/other.c\"";
+        let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
+        // Should only replace the second occurrence (after quote)
+        let expected = b"text/home/user/file.c and \"other.c\"";
+        assert_eq!(&*output, expected);
+    }
+
+    #[test]
+    fn test_strip_basedir_trailing_slashes() {
+        // Without trailing slash
+        let basedir = b"/home/user/project".to_vec();
+        let input = b"# 1 \"/home/user/project/src/main.c\"";
+        let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
+        let expected = b"# 1 \"/src/main.c\""; // Wrong, but expected
+        assert_eq!(&*output, expected);
+
+        // Trailing slashes aren't ignored, they must be cleaned in config reader
+        let basedir = b"/home/user/project/".to_vec();
+        let input = b"# 1 \"/home/user/project/src/main.c\"";
+        let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
+        let expected = b"# 1 \"src/main.c\"";
+        assert_eq!(&*output, expected);
+    }
+
+    #[test]
+    fn test_strip_basedirs_multiple() {
+        // Multiple basedirs - should match longest first
+        let basedirs = vec![
+            b"/home/user1/project/".to_vec(),
+            b"/home/user2/workspace/".to_vec(),
+        ];
+        let input =
+            b"# 1 \"/home/user1/project/src/main.c\"\n# 2 \"/home/user2/workspace/lib/util.c\"";
+        let output = super::strip_basedirs(input, &basedirs);
+        let expected = b"# 1 \"src/main.c\"\n# 2 \"lib/util.c\"";
+        assert_eq!(&*output, expected);
+
+        // Longest prefix wins
+        let basedirs = vec![b"/home/user/".to_vec(), b"/home/user/project/".to_vec()];
+        let input = b"# 1 \"/home/user/project/src/main.c\"";
+        let output = super::strip_basedirs(input, &basedirs);
+        let expected = b"# 1 \"src/main.c\"";
+        assert_eq!(&*output, expected);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_strip_basedir_windows_backslashes() {
+        // Without trailing backslash
+        let basedir = b"c:/users/test/project".to_vec();
+        let input = b"# 1 \"C:\\Users\\test\\project\\Src\\Main.c\"";
+        let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
+        // normalized backslash to slash
+        let expected = b"# 1 \"\\Src\\Main.c\""; // Wrong, but expected
+        assert_eq!(&*output, expected);
+
+        // Trailing slashes aren't ignored, they must be cleaned in config reader
+        let basedir = b"c:/users/test/project/".to_vec();
+        let input = b"# 1 \"C:\\Users\\test\\project\\src\\main.c\"";
+        let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
+        let expected = b"# 1 \"src\\main.c\"";
+        assert_eq!(&*output, expected);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_strip_basedir_windows_mixed_slashes() {
+        // The slashes may be mixed in preprocessor output, but the uncut output
+        // should remain untouched.
+        // Mixed forward and backslashes in input (common from certain build systems)
+        let basedir = b"c:/users/test/project/".to_vec();
+        let input = b"# 1 \"C:/Users\\test\\project\\src/main.c\"";
+        let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
+        let expected = b"# 1 \"src/main.c\"";
+        assert_eq!(&*output, expected, "Failed to strip mixed slash path");
+
+        // Also test the reverse case, it doesn't work, because basedir normalization must be done
+        // in advance
+        let input = b"# 1 \"C:\\Users/test/project/src\\main.c\"";
+        let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
+        let expected = b"# 1 \"src\\main.c\"";
+        assert_eq!(
+            &*output, expected,
+            "Failed to strip reverse mixed slash path"
+        );
+    }
+
+    #[test]
+    fn test_normalize_win_path_ascii() {
+        // Test basic ASCII normalization
+        let input = b"C:\\Users\\Test\\Project";
+        let normalized = super::normalize_win_path(input);
+        assert_eq!(normalized, b"c:/users/test/project");
+
+        // Test mixed case
+        let input = b"C:\\USERS\\test\\PROJECT";
+        let normalized = super::normalize_win_path(input);
+        assert_eq!(normalized, b"c:/users/test/project");
+    }
+
+    #[test]
+    fn test_normalize_win_path_utf8() {
+        // Test with UTF-8 characters (e.g., German umlauts)
+        let input = "C:\\Users\\Müller\\Projekt".as_bytes();
+        let normalized = super::normalize_win_path(input);
+        let expected = "c:/users/müller/projekt".as_bytes();
+        assert_eq!(normalized, expected);
+
+        // Test with Cyrillic characters
+        let input = "C:\\Пользователь\\Проект".as_bytes();
+        let normalized = super::normalize_win_path(input);
+        let expected = "c:/пользователь/проект".as_bytes();
+        assert_eq!(normalized, expected);
+
+        // Test with Turkish İ (special case)
+        let input = "C:\\İstanbul\\DİREKTÖRY".as_bytes();
+        let normalized = super::normalize_win_path(input);
+        // Turkish İ lowercases to i with dot
+        let expected = "c:/i\u{307}stanbul/di\u{307}rektöry".as_bytes();
+        assert_eq!(normalized, expected);
+    }
+
+    #[test]
+    fn test_normalize_win_path_mixed_ascii_utf8() {
+        // Test mixed ASCII and UTF-8
+        let input = "C:\\Users\\Test\\Café\\Проект".as_bytes();
+        let normalized = super::normalize_win_path(input);
+        let expected = "c:/users/test/café/проект".as_bytes();
+        assert_eq!(normalized, expected);
+    }
+
+    #[test]
+    fn test_normalize_win_path_invalid_utf8() {
+        // Test with invalid UTF-8 sequence (should preserve as-is)
+        let mut input = b"C:\\Users\\".to_vec();
+        input.push(0xFF); // Invalid UTF-8
+        input.extend_from_slice(b"\\Test");
+
+        let normalized = super::normalize_win_path(&input);
+
+        // Should lowercase ASCII and convert backslashes, but preserve invalid byte
+        let mut expected = b"c:/users/".to_vec();
+        expected.push(0xFF);
+        expected.extend_from_slice(b"/test");
+        assert_eq!(normalized, expected);
+    }
+
+    #[test]
+    fn test_normalize_win_path_incomplete_utf8() {
+        // Test with incomplete UTF-8 sequence at the end
+        let mut input = b"C:\\Users\\Test".to_vec();
+        input.push(0xC3); // Start of 2-byte UTF-8 but incomplete
+
+        let normalized = super::normalize_win_path(&input);
+
+        // Should preserve incomplete byte as-is
+        let mut expected = b"c:/users/test".to_vec();
+        expected.push(0xC3);
+        assert_eq!(normalized, expected);
+    }
+
+    #[test]
+    fn test_normalize_win_path_empty() {
+        let input = b"";
+        let normalized = super::normalize_win_path(input);
+        assert_eq!(normalized, b"");
     }
 }

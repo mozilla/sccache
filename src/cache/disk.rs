@@ -74,6 +74,7 @@ pub struct DiskCache {
     preprocessor_cache_mode_config: PreprocessorCacheModeConfig,
     preprocessor_cache: Arc<Mutex<LazyDiskCache>>,
     rw_mode: CacheMode,
+    basedirs: Vec<Vec<u8>>,
 }
 
 impl DiskCache {
@@ -84,6 +85,7 @@ impl DiskCache {
         pool: &tokio::runtime::Handle,
         preprocessor_cache_mode_config: PreprocessorCacheModeConfig,
         rw_mode: CacheMode,
+        basedirs: Vec<Vec<u8>>,
     ) -> DiskCache {
         DiskCache {
             lru: Arc::new(Mutex::new(LazyDiskCache::Uninit {
@@ -99,6 +101,7 @@ impl DiskCache {
                 max_size,
             })),
             rw_mode,
+            basedirs,
         }
     }
 }
@@ -180,6 +183,9 @@ impl Storage for DiskCache {
     }
     fn preprocessor_cache_mode_config(&self) -> PreprocessorCacheModeConfig {
         self.preprocessor_cache_mode_config
+    }
+    fn basedirs(&self) -> &[Vec<u8>] {
+        &self.basedirs
     }
     async fn get_preprocessor_cache_entry(&self, key: &str) -> Result<Option<Box<dyn ReadSeek>>> {
         let key = normalize_key(key);
