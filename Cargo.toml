@@ -2,7 +2,7 @@
 edition = "2024"
 name = "sccache"
 rust-version = "1.85.0"
-version = "0.12.0"
+version = "0.13.0"
 
 categories = ["command-line-utilities", "development-tools::build-utils"]
 description = "Sccache is a ccache-like tool. It is used as a compiler wrapper and avoids compilation when possible. Sccache has the capability to utilize caching in remote storage environments, including various cloud storage options, or alternatively, in local storage."
