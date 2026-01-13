@@ -35,7 +35,7 @@ use crate::dist::pkg;
 use crate::lru_disk_cache;
 use crate::mock_command::{CommandChild, CommandCreatorSync, RunCommand, exit_status};
 use crate::server;
-use crate::util::{fmt_duration_as_secs, run_input_output};
+use crate::util::{filter_ccache_from_path, fmt_duration_as_secs, run_input_output};
 use crate::{counted_array, dist};
 use async_trait::async_trait;
 use filetime::FileTime;
@@ -194,10 +194,13 @@ impl CompileCommandImpl for SingleCompileCommand {
             env_vars,
             cwd,
         } = self;
+        // Filter out ccache directories from PATH to avoid double-caching
+        // when ccache is also installed on the system.
+        let env_vars = filter_ccache_from_path(env_vars.to_vec());
         let mut cmd = creator.clone().new_command_sync(executable);
         cmd.args(arguments)
             .env_clear()
-            .envs(env_vars.to_vec())
+            .envs(env_vars)
             .current_dir(cwd);
         run_input_output(cmd, None).await
     }
