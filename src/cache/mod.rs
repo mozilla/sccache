@@ -23,6 +23,8 @@ pub mod disk;
 pub mod gcs;
 #[cfg(feature = "gha")]
 pub mod gha;
+#[allow(clippy::module_inception)]
+pub mod lazy_disk_cache;
 #[cfg(feature = "memcached")]
 pub mod memcached;
 #[cfg(feature = "oss")]
@@ -46,4 +48,5 @@ pub mod webdav;
 ))]
 pub(crate) mod http_client;
 
+pub use crate::cache::lazy_disk_cache::*;
 pub use crate::cache::cache::*;
