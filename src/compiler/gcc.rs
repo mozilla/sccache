@@ -911,12 +911,11 @@ where
             // https://gcc.gnu.org/onlinedocs/gcc-4.9.0/gcc/Overall-Options.html
             let mut language: Option<String> =
                 language_to_arg(parsed_args.language).map(|lang| lang.into());
-            if !rewrite_includes_only {
-                match parsed_args.language {
-                    Language::C => language = Some("cpp-output".into()),
-                    Language::GenericHeader | Language::CHeader | Language::CxxHeader => {}
-                    _ => language.as_mut()?.push_str("-cpp-output"),
-                }
+            if rewrite_includes_only || parsed_args.language.is_c_like_header() {
+            } else if let Some(processed_lang) = parsed_args.language.to_c_preprocessed_language() {
+                language = Some(language_to_arg(processed_lang)?.into());
+            } else if parsed_args.language.needs_c_preprocessing() {
+                language.as_mut()?.push_str("-cpp-output");
             }
 
             let mut arguments: Vec<String> = vec![];
