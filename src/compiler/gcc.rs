@@ -404,6 +404,8 @@ where
             | Some(Unhashed(_)) => {}
             Some(Language(lang)) => {
                 language = match lang.to_string_lossy().as_ref() {
+                    // From https://gcc.gnu.org/onlinedocs/gcc/Overall-Options.html
+                    // and https://github.com/llvm/llvm-project/blob/main/clang/include/clang/Driver/Types.def
                     "assembler" => Some(Language::Assembler),
                     "assembler-with-cpp" => Some(Language::AssemblerToPreprocess),
                     "c" => Some(Language::C),
@@ -411,6 +413,7 @@ where
                     "c++" => Some(Language::Cxx),
                     "c++-header" => Some(Language::CxxHeader),
                     "objective-c" => Some(Language::ObjectiveC),
+                    "objective-c-header" => Some(Language::ObjectiveCHeader),
                     "objective-c++" => Some(Language::ObjectiveCxx),
                     "objective-c++-header" => Some(Language::ObjectiveCxxHeader),
                     "cu" => Some(Language::Cuda),
@@ -1144,6 +1147,40 @@ mod test {
                 }
             )
         );
+    }
+
+    #[test]
+    fn test_parse_arguments_objc_header_language() {
+        let args = stringvec!["-x", "objective-c-header", "-c", "foo.h", "-o", "foo.o"];
+        let ParsedArguments {
+            input,
+            language,
+            compilation_flag,
+            outputs,
+            preprocessor_args,
+            msvc_show_includes,
+            common_args,
+            ..
+        } = match parse_arguments_(args, false) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(Some("foo.h"), input.to_str());
+        assert_eq!(Language::ObjectiveCHeader, language);
+        assert_eq!(Some("-c"), compilation_flag.to_str());
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
+        assert!(preprocessor_args.is_empty());
+        assert!(common_args.is_empty());
+        assert!(!msvc_show_includes);
     }
 
     #[test]
