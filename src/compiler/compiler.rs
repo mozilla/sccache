@@ -38,6 +38,7 @@ use crate::server;
 use crate::util::{fmt_duration_as_secs, run_input_output};
 use crate::{counted_array, dist};
 use async_trait::async_trait;
+use enum_iterator::Sequence;
 use filetime::FileTime;
 use fs::File;
 use fs_err as fs;
@@ -212,7 +213,7 @@ pub enum CompilerKind {
     Rust,
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Sequence)]
 pub enum Language {
     AssemblerToPreprocess,
     Assembler,
@@ -302,6 +303,17 @@ impl Language {
                 | Language::ObjectiveCxxPreprocessed
                 | Language::Rust
         )
+    }
+
+    pub fn to_c_preprocessed_language(self) -> Option<Language> {
+        match self {
+            Language::AssemblerToPreprocess => Some(Language::Assembler),
+            Language::C => Some(Language::CPreprocessed),
+            Language::Cxx => Some(Language::CxxPreprocessed),
+            Language::ObjectiveC => Some(Language::ObjectiveCPreprocessed),
+            Language::ObjectiveCxx => Some(Language::ObjectiveCxxPreprocessed),
+            _ => None,
+        }
     }
 
     /// Common implementation for GCC and Clang language argument mapping
@@ -1856,12 +1868,38 @@ mod test {
     use crate::mock_command::*;
     use crate::test::mock_storage::MockStorage;
     use crate::test::utils::*;
+    use enum_iterator::all;
     use fs::File;
     use std::io::{Cursor, Write};
     use std::sync::Arc;
     use std::time::Duration;
     use test_case::test_case;
     use tokio::runtime::Runtime;
+
+    #[test]
+    fn test_c_preprocessing_consistent() {
+        for lang in all::<Language>() {
+            let maybe_processed = lang.to_c_preprocessed_language();
+
+            if let Some(processed) = maybe_processed {
+                assert!(
+                    !processed.needs_c_preprocessing(),
+                    "{:?} should not need preprocessing - it is a reasult of {:?} processing",
+                    processed,
+                    lang
+                );
+            }
+
+            if !lang.needs_c_preprocessing() {
+                assert!(
+                    maybe_processed.is_none(),
+                    "{:?} should not be processed, but it is produce the {:?} as a C preprocessing result",
+                    lang,
+                    maybe_processed.unwrap()
+                );
+            }
+        }
+    }
 
     #[test]
     fn test_detect_compiler_kind_gcc() {
