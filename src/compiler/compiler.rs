@@ -224,6 +224,7 @@ pub enum Language {
     CxxHeader,
     CxxPreprocessed,
     ObjectiveC,
+    ObjectiveCHeader,
     ObjectiveCPreprocessed,
     ObjectiveCxx,
     ObjectiveCxxPreprocessed,
@@ -279,7 +280,7 @@ impl Language {
             Language::CxxHeader => "c++Header",
             Language::CxxPreprocessed => "c++Preprocessed",
             Language::GenericHeader => "c/c++",
-            Language::ObjectiveC => "objc",
+            Language::ObjectiveC | Language::ObjectiveCHeader => "objc",
             Language::ObjectiveCPreprocessed => "objcPreprocessed",
             Language::ObjectiveCxx | Language::ObjectiveCxxHeader => "objc++",
             Language::ObjectiveCxxPreprocessed => "objc++Preprocessed",
@@ -316,6 +317,7 @@ impl Language {
             Language::CxxHeader => Some("c++-header"),
             Language::CxxPreprocessed => Some("c++-cpp-output"),
             Language::ObjectiveC => Some("objective-c"),
+            Language::ObjectiveCHeader => Some("objective-c-header"),
             Language::ObjectiveCPreprocessed => Some("objective-c-cpp-output"),
             Language::ObjectiveCxx => Some("objective-c++"),
             Language::ObjectiveCxxHeader => Some("objective-c++-header"),
@@ -355,6 +357,7 @@ impl CompilerKind {
             | Language::CxxPreprocessed
             | Language::GenericHeader
             | Language::ObjectiveC
+            | Language::ObjectiveCHeader
             | Language::ObjectiveCPreprocessed
             | Language::ObjectiveCxx
             | Language::ObjectiveCxxHeader
