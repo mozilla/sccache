@@ -361,6 +361,15 @@ pub struct OSSCacheConfig {
     pub no_credentials: bool,
 }
 
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct COSCacheConfig {
+    pub bucket: String,
+    #[serde(default)]
+    pub key_prefix: String,
+    pub endpoint: Option<String>,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum CacheType {
     Azure(AzureCacheConfig),
@@ -371,6 +380,7 @@ pub enum CacheType {
     S3(S3CacheConfig),
     Webdav(WebdavCacheConfig),
     OSS(OSSCacheConfig),
+    COS(COSCacheConfig),
 }
 
 #[derive(Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -385,6 +395,7 @@ pub struct CacheConfigs {
     pub s3: Option<S3CacheConfig>,
     pub webdav: Option<WebdavCacheConfig>,
     pub oss: Option<OSSCacheConfig>,
+    pub cos: Option<COSCacheConfig>,
 }
 
 impl CacheConfigs {
@@ -401,6 +412,7 @@ impl CacheConfigs {
             s3,
             webdav,
             oss,
+            cos,
         } = self;
 
         let cache_type = s3
@@ -411,7 +423,8 @@ impl CacheConfigs {
             .or_else(|| gha.map(CacheType::GHA))
             .or_else(|| azure.map(CacheType::Azure))
             .or_else(|| webdav.map(CacheType::Webdav))
-            .or_else(|| oss.map(CacheType::OSS));
+            .or_else(|| oss.map(CacheType::OSS))
+            .or_else(|| cos.map(CacheType::COS));
 
         let fallback = disk.unwrap_or_default();
 
@@ -430,6 +443,7 @@ impl CacheConfigs {
             s3,
             webdav,
             oss,
+            cos,
         } = other;
 
         if azure.is_some() {
@@ -456,9 +470,11 @@ impl CacheConfigs {
         if webdav.is_some() {
             self.webdav = webdav;
         }
-
         if oss.is_some() {
             self.oss = oss;
+        }
+        if cos.is_some() {
+            self.cos = cos;
         }
     }
 }
@@ -892,6 +908,20 @@ fn config_from_env() -> Result<EnvConfig> {
         bail!("If setting OSS credentials, SCCACHE_OSS_NO_CREDENTIALS must not be set.");
     }
 
+    // ======= COS =======
+    let cos = if let Ok(bucket) = env::var("SCCACHE_COS_BUCKET") {
+        let endpoint = env::var("SCCACHE_COS_ENDPOINT").ok();
+        let key_prefix = key_prefix_from_env_var("SCCACHE_COS_KEY_PREFIX");
+
+        Some(COSCacheConfig {
+            bucket,
+            endpoint,
+            key_prefix,
+        })
+    } else {
+        None
+    };
+
     // ======= Local =======
     let disk_dir = env::var_os("SCCACHE_DIR").map(PathBuf::from);
     let disk_sz = env::var("SCCACHE_CACHE_SIZE")
@@ -944,6 +974,7 @@ fn config_from_env() -> Result<EnvConfig> {
         s3,
         webdav,
         oss,
+        cos,
     };
 
     Ok(EnvConfig { cache })
@@ -1559,6 +1590,11 @@ bucket = "name"
 endpoint = "oss-us-east-1.aliyuncs.com"
 key_prefix = "ossprefix"
 no_credentials = true
+
+[cache.cos]
+bucket = "name"
+endpoint = "cos.na-siliconvalley.myqcloud.com"
+key_prefix = "cosprefix"
 "#;
 
     let file_config: FileConfig = toml::from_str(CONFIG_STR).expect("Is valid toml.");
@@ -1624,6 +1660,11 @@ no_credentials = true
                     endpoint: Some("oss-us-east-1.aliyuncs.com".to_owned()),
                     key_prefix: "ossprefix".into(),
                     no_credentials: true,
+                }),
+                cos: Some(COSCacheConfig {
+                    bucket: "name".to_owned(),
+                    endpoint: Some("cos.na-siliconvalley.myqcloud.com".to_owned()),
+                    key_prefix: "cosprefix".into(),
                 }),
             },
             dist: DistConfig {

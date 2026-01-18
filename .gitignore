@@ -18,5 +18,8 @@ tests/**/Cargo.lock
 # VSCode Workspace files
 **.code-workspace
 
+# VSCode configuration files
+.vscode
+
 .direnv/
 result

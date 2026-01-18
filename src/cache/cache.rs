@@ -14,6 +14,8 @@
 
 #[cfg(feature = "azure")]
 use crate::cache::azure::AzureBlobCache;
+#[cfg(feature = "cos")]
+use crate::cache::cos::COSCache;
 use crate::cache::disk::DiskCache;
 #[cfg(feature = "gcs")]
 use crate::cache::gcs::GCSCache;
@@ -39,7 +41,8 @@ use crate::config::Config;
     feature = "redis",
     feature = "s3",
     feature = "webdav",
-    feature = "oss"
+    feature = "oss",
+    feature = "cos"
 ))]
 use crate::config::{self, CacheType};
 use async_trait::async_trait;
@@ -722,6 +725,18 @@ pub fn storage_from_config(
                     c.no_credentials,
                 )
                 .map_err(|err| anyhow!("create oss cache failed: {err:?}"))?;
+
+                return Ok(Arc::new(storage));
+            }
+            #[cfg(feature = "cos")]
+            CacheType::COS(c) => {
+                debug!(
+                    "Init cos cache with bucket {}, endpoint {:?}",
+                    c.bucket, c.endpoint
+                );
+
+                let storage = COSCache::build(&c.bucket, &c.key_prefix, c.endpoint.as_deref())
+                    .map_err(|err| anyhow!("create cos cache failed: {err:?}"))?;
 
                 return Ok(Arc::new(storage));
             }

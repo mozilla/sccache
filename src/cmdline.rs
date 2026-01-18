@@ -120,6 +120,9 @@ fn get_clap_command() -> clap::Command {
             "\n",
             "    OSS:       ",
             cfg!(feature = "oss"),
+            "\n",
+            "    COS:       ",
+            cfg!(feature = "cos"),
             "\n"
         ))
         .args(&[
