@@ -207,7 +207,7 @@ dist-tests = ["dist-client", "dist-server"]
 
 [workspace]
 exclude = ["tests/test-crate"]
-members = ["tests/randomize_readdir"]
+members = ["tests/integration/randomize_readdir"]
 
 [[bench]]
 harness = false
