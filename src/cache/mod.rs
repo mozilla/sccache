@@ -16,6 +16,8 @@
 pub mod azure;
 #[allow(clippy::module_inception)]
 pub mod cache;
+#[cfg(feature = "cos")]
+pub mod cos;
 pub mod disk;
 #[cfg(feature = "gcs")]
 pub mod gcs;
@@ -39,7 +41,8 @@ pub mod webdav;
     feature = "gha",
     feature = "s3",
     feature = "webdav",
-    feature = "oss"
+    feature = "oss",
+    feature = "cos"
 ))]
 pub(crate) mod http_client;
 

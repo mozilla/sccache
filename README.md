@@ -43,6 +43,7 @@ Table of Contents (ToC)
   * [GitHub Actions](docs/GHA.md)
   * [WebDAV (Ccache/Bazel/Gradle compatible)](docs/Webdav.md)
   * [Alibaba OSS](docs/OSS.md)
+  * [Tencent Cloud Object Storage](docs/COS.md)
 
 ---
 
@@ -238,7 +239,7 @@ Build
 If you are building sccache for non-development purposes make sure you use `cargo build --release` to get optimized binaries:
 
 ```bash
-cargo build --release [--no-default-features --features=s3|redis|gcs|memcached|azure|gha|webdav|oss]
+cargo build --release [--no-default-features --features=s3|redis|gcs|memcached|azure|gha|webdav|oss|cos]
 ```
 
 The list of features can be found in the `Cargo.toml` file, `[features]` section.
@@ -351,3 +352,4 @@ Storage Options
 * [GitHub Actions](docs/GHA.md)
 * [WebDAV (Ccache/Bazel/Gradle compatible)](docs/Webdav.md)
 * [Alibaba OSS](docs/OSS.md)
+* [Tencent Cloud Object Storage](docs/COS.md)

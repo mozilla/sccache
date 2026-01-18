@@ -112,6 +112,11 @@ bucket = "name"
 endpoint = "oss-us-east-1.aliyuncs.com"
 key_prefix = "ossprefix"
 no_credentials = true
+
+[cache.cos]
+bucket = "name"
+endpoint = "cos.na-siliconvalley.myqcloud.com"
+key_prefix = "cosprefix"
 ```
 
 sccache looks for its configuration file at the path indicated by env variable `SCCACHE_CONF`.
@@ -234,3 +239,11 @@ The full url appears then as `redis://user:passwd@1.2.3.4:6379/?db=1`.
 * `ALIBABA_CLOUD_ACCESS_KEY_ID`
 * `ALIBABA_CLOUD_ACCESS_KEY_SECRET`
 * `SCCACHE_OSS_NO_CREDENTIALS`
+
+#### cos
+
+* `SCCACHE_COS_BUCKET`
+* `SCCACHE_COS_ENDPOINT`
+* `SCCACHE_COS_KEY_PREFIX`
+* `TENCENTCLOUD_SECRET_ID`
+* `TENCENTCLOUD_SECRET_KEY`

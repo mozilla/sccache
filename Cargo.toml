@@ -163,8 +163,10 @@ all = [
   "gha",
   "webdav",
   "oss",
+  "cos",
 ]
 azure = ["opendal/services-azblob", "reqsign", "reqwest"]
+cos = ["opendal/services-cos", "reqsign", "reqwest"]
 default = ["all"]
 gcs = ["opendal/services-gcs", "reqsign", "url", "reqwest"]
 gha = ["opendal/services-ghac", "reqwest"]
