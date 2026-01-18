@@ -418,8 +418,8 @@ jobs:
           sudo apt install -y nginx-full
 
           mkdir /tmp/static
-          cp `pwd`/tests/htpasswd /tmp/htpasswd
-          nginx -c `pwd`/tests/nginx_http_cache.conf
+          cp `pwd`/tests/integration/htpasswd /tmp/htpasswd
+          nginx -c `pwd`/tests/integration/nginx_http_cache.conf
 
       - name: Install rust
         uses: ./.github/actions/rust-toolchain
@@ -476,7 +476,7 @@ jobs:
 
       - name: Compile MSVC (no cache)
         shell: bash
-        working-directory: ./tests/msvc
+        working-directory: ./tests/integration/msvc
         run: |
           cl "@args.rsp"
           test -e ./foo.o || { echo "No compiler output found"; exit -1; }
@@ -487,7 +487,7 @@ jobs:
 
       - name: Compile - Cache Miss
         shell: bash
-        working-directory: ./tests/msvc
+        working-directory: ./tests/integration/msvc
         run: |
           rm ./foo.o || true
           $SCCACHE_EXE "$(where cl.exe)" -c "@args.rsp"
@@ -498,7 +498,7 @@ jobs:
 
       - name: Compile - Cache Hit
         shell: bash
-        working-directory: ./tests/msvc
+        working-directory: ./tests/integration/msvc
         run: |
           rm ./foo.o || true
           $SCCACHE_EXE "$(where cl.exe)" -c "@args.rsp"
@@ -509,7 +509,7 @@ jobs:
 
       - name: Compile - Preprocessing Compiler Bug
         shell: bash
-        working-directory: ./tests/msvc-preprocessing
+        working-directory: ./tests/integration/msvc-preprocessing
         run: |
           $SCCACHE_EXE "$(where cl.exe)" -c "@args.rsp"
           $SCCACHE_EXE --show-stats
@@ -592,12 +592,12 @@ jobs:
       - name: Test ASM
         run: |
           export ASM="${SCCACHE_PATH} clang"
-          $ASM -c `pwd`/tests/test_intel_asm.s
+          $ASM -c `pwd`/tests/integration/test_intel_asm.s
 
       - name: Test ASM with preprocessor
         run: |
           export ASM="${SCCACHE_PATH} clang"
-          $ASM -c `pwd`/tests/test_intel_asm_to_preproc.S
+          $ASM -c `pwd`/tests/integration/test_intel_asm_to_preproc.S
 
   hip:
     # Probably wouldn't matter anyway since we run in a container, but staying
@@ -661,13 +661,13 @@ jobs:
       - name: Sanity Check
         run: |
           export LD_PRELOAD=$PWD/target/debug/librandomize_readdir.so
-          hipcc -o vectoradd_hip --offload-arch=gfx900 tests/cmake-hip/vectoradd_hip.cpp
+          hipcc -o vectoradd_hip --offload-arch=gfx900 tests/integration/cmake-hip/vectoradd_hip.cpp
 
       - name: Test
         run: |
           export LD_PRELOAD=$PWD/target/debug/librandomize_readdir.so
           rm "$RANDOMIZE_READDIR_LOG".*
-          cmake -B build -S tests/cmake-hip -DCMAKE_HIP_COMPILER_LAUNCHER=${SCCACHE_PATH} -DCMAKE_HIP_ARCHITECTURES=gfx900
+          cmake -B build -S tests/integration/cmake-hip -DCMAKE_HIP_COMPILER_LAUNCHER=${SCCACHE_PATH} -DCMAKE_HIP_ARCHITECTURES=gfx900
           cmake --build build
           if ! grep -q bitcode "$RANDOMIZE_READDIR_LOG".*; then
             echo "amdgcn bitcode not accessed, is librandomize_readdir properly set up?"
@@ -684,7 +684,7 @@ jobs:
           export LD_PRELOAD=$PWD/target/debug/librandomize_readdir.so
           rm "$RANDOMIZE_READDIR_LOG".*
           rm -rf build
-          cmake -B build -S tests/cmake-hip -DCMAKE_HIP_COMPILER_LAUNCHER=${SCCACHE_PATH} -DCMAKE_HIP_ARCHITECTURES=gfx900
+          cmake -B build -S tests/integration/cmake-hip -DCMAKE_HIP_COMPILER_LAUNCHER=${SCCACHE_PATH} -DCMAKE_HIP_ARCHITECTURES=gfx900
           cmake --build build
           if ! grep -q bitcode "$RANDOMIZE_READDIR_LOG".*; then
             echo "amdgcn bitcode not accessed, is librandomize_readdir properly set up?"
@@ -745,12 +745,12 @@ jobs:
       - name: Test ASM
         run: |
           export ASM="${SCCACHE_PATH} gcc"
-          $ASM -c `pwd`/tests/test_intel_asm.s
+          $ASM -c `pwd`/tests/integration/test_intel_asm.s
 
       - name: Test ASM with preprocessor
         run: |
           export ASM="${SCCACHE_PATH} gcc"
-          $ASM -c `pwd`/tests/test_intel_asm_to_preproc.S
+          $ASM -c `pwd`/tests/integration/test_intel_asm_to_preproc.S
 
   autotools:
     runs-on: ubuntu-24.04
@@ -785,7 +785,7 @@ jobs:
 
       - name: Test
         run: |
-          cd `pwd`/tests/autotools/
+          cd `pwd`/tests/integration/autotools/
           autoreconf||true
           automake --add-missing
           ./configure CXX="${SCCACHE_PATH} g++"
@@ -797,7 +797,7 @@ jobs:
 
       - name: Test Twice for Cache Read
         run: |
-          cd `pwd`/tests/autotools/
+          cd `pwd`/tests/integration/autotools/
           make distclean
           ./configure CXX="${SCCACHE_PATH} g++"
           make
@@ -841,7 +841,7 @@ jobs:
 
       - name: Test
         run: |
-          cd `pwd`/tests/cmake/
+          cd `pwd`/tests/integration/cmake/
           mkdir build
           cd build
           cmake -DCMAKE_C_COMPILER_LAUNCHER=${SCCACHE_PATH} -DCMAKE_CXX_COMPILER_LAUNCHER=${SCCACHE_PATH} ..
@@ -853,7 +853,7 @@ jobs:
 
       - name: Test Twice for Cache Read
         run: |
-          cd `pwd`/tests/cmake/
+          cd `pwd`/tests/integration/cmake/
           rm -rf build
           mkdir build
           cd build
@@ -981,7 +981,7 @@ jobs:
         run: ${SCCACHE_PATH} --start-server
 
       - name: Test compile xcode
-        working-directory: tests/xcode
+        working-directory: tests/integration/xcode
         run: |
           xcodebuild -version
           xcodebuild -xcconfig sccache.xcconfig
@@ -991,7 +991,7 @@ jobs:
           ${SCCACHE_PATH} --show-stats
 
       - name: Test compile xcode cached
-        working-directory: tests/xcode
+        working-directory: tests/integration/xcode
         run: |
           xcodebuild clean
           xcodebuild -xcconfig sccache.xcconfig
