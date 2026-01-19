@@ -240,7 +240,7 @@ The full url appears then as `redis://user:passwd@1.2.3.4:6379/?db=1`.
 * `ALIBABA_CLOUD_ACCESS_KEY_SECRET`
 * `SCCACHE_OSS_NO_CREDENTIALS`
 
-#### cos
+#### Tencent Cloud Object Storage (COS)
 
 * `SCCACHE_COS_BUCKET`
 * `SCCACHE_COS_ENDPOINT`
