@@ -402,7 +402,7 @@ jobs:
             cp README.md LICENSE "$d/"
             tar -zcvf "$d.tar.gz" "$d"
             echo -n "$(shasum -ba 256 "$d.tar.gz" | cut -d " " -f 1)" > "$d.tar.gz.sha256"
-            if [[ $d =~ (sccache-)(.*)?pc-windows)(.*)? ]]; then
+            if [[ $d =~ sccache-.*-pc-windows-.* ]]; then
               zip -r "$d.zip" "$d"
               echo -n "$(shasum -ba 256 "$d.zip" | cut -d " " -f 1)" > "$d.zip.sha256"
             fi
