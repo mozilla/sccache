@@ -97,8 +97,8 @@ clean-%:
 # Pattern rule for testing backends
 test-%: build clean-%
 	@echo "Testing $* backend..."
-	@docker compose --profile $(PROFILE_$*) up -d $(SERVICES_$*)
-	@docker compose --profile $(PROFILE_$*) run --rm test-$*
+	@docker compose --profile $(PROFILE_$*) up --quiet-pull -d $(SERVICES_$*)
+	@docker compose --profile $(PROFILE_$*) run --quiet-pull --rm test-$*
 	@docker compose --profile $(PROFILE_$*) down
 	@echo "$* test completed"
 
