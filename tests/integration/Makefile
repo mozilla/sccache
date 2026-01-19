@@ -86,7 +86,7 @@ $(SCCACHE_BIN): $(PROJECT_ROOT)/Cargo.toml $(PROJECT_ROOT)/Cargo.lock
 		rust:latest \
 		bash -c "apt-get update -qq && apt-get install -y -qq libssl-dev pkg-config && \
 		         cargo build --all-features && \
-		         chown -R $$(id -u):$$(id -g) target"
+		         chown -R $(UID):$(GID) target"
 	@echo "Binary built: $(SCCACHE_BIN)"
 	@ls -lh $(SCCACHE_BIN)
 
