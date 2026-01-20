@@ -9,7 +9,7 @@ echo "=========================================="
 
 # Copy cmake project to writable location
 echo "Copying CMake project..."
-cp -r /workspace/tests/integration/cmake /build/
+cp -r /sccache/tests/integration/cmake /build/
 
 # Start sccache server
 "$SCCACHE" --start-server || true

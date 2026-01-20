@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCCACHE="${SCCACHE_PATH:-/sccache/target/debug/sccache}"
-TEST_FILE="/workspace/tests/test_clang_multicall.c"
+TEST_FILE="/sccache/tests/test_clang_multicall.c"
 
 echo "=========================================="
 echo "Testing: Clang Compiler"
@@ -42,7 +42,7 @@ fi
 
 echo "Test 3: Test ASM"
 ASM="$SCCACHE clang++"
-$ASM -c /workspace/tests/integration/test_intel_asm.s
+$ASM -c /sccache/tests/integration/test_intel_asm.s
 
 echo "Test 4: Test ASM with preprocessor"
-$ASM -c /workspace/tests/integration/test_intel_asm_to_preproc.S
+$ASM -c /sccache/tests/integration/test_intel_asm_to_preproc.S

@@ -9,7 +9,7 @@ echo "=========================================="
 
 # Copy autotools project to writable location
 echo "Copying Autotools project..."
-cp -r /workspace/tests/integration/autotools /build/
+cp -r /sccache/tests/integration/autotools /build/
 
 # Start sccache server
 "$SCCACHE" --start-server || true

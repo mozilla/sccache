@@ -79,9 +79,9 @@ $(PROJECT_ROOT)/target/integration-cargo-cache:
 $(SCCACHE_BIN): $(PROJECT_ROOT)/Cargo.toml $(PROJECT_ROOT)/Cargo.lock
 	@echo "Building sccache in Docker..."
 	@docker run --rm \
-		-v $(PROJECT_ROOT):/workspace \
+		-v $(PROJECT_ROOT):/sccache \
 		-v integration-cargo-cache:/usr/local/cargo/registry \
-		-w /workspace \
+		-w /sccache \
 		-e OPENSSL_NO_VENDOR=1 \
 		rust:latest \
 		bash -c "apt-get update -qq && apt-get install -y -qq libssl-dev pkg-config && \

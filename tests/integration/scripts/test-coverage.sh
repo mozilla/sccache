@@ -11,7 +11,7 @@ echo "Testing: Rust Coverage Instrumentation"
 echo "=========================================="
 
 echo "Copying test crate to writable location..."
-cp -r /workspace/tests/test-crate /build/
+cp -r /sccache/tests/test-crate /build/
 
 cd /build/test-crate
 

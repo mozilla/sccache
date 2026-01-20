@@ -6,10 +6,8 @@ x-common-env: &common-env
 x-test-runner: &test-runner
   user: "${UID:-1000}:${GID:-1000}"
   volumes:
-    - ../../target:/sccache/target:ro
+    - ../../:/sccache:ro
     - ../../target/integration-cargo-cache:/usr/local/cargo/registry:rw
-    - ../../:/workspace:ro
-    - ./scripts:/scripts:ro
   tmpfs:
     - /build:exec,uid=${UID:-1000},gid=${GID:-1000},mode=1777
   working_dir: /build
@@ -119,7 +117,7 @@ services:
   test-redis-deprecated:
     <<: *test-runner
     image: rust:latest
-    entrypoint: /scripts/test-backend.sh
+    entrypoint: /sccache/tests/integration/scripts/test-backend.sh
     depends_on:
       redis:
         condition: service_healthy
@@ -135,7 +133,7 @@ services:
   test-redis:
     <<: *test-runner
     image: rust:latest
-    entrypoint: /scripts/test-backend.sh
+    entrypoint: /sccache/tests/integration/scripts/test-backend.sh
     depends_on:
       redis:
         condition: service_healthy
@@ -151,7 +149,7 @@ services:
   test-memcached-deprecated:
     <<: *test-runner
     image: rust:latest
-    entrypoint: /scripts/test-backend.sh
+    entrypoint: /sccache/tests/integration/scripts/test-backend.sh
     depends_on:
       memcached:
         condition: service_healthy
@@ -167,7 +165,7 @@ services:
   test-memcached:
     <<: *test-runner
     image: rust:latest
-    entrypoint: /scripts/test-backend.sh
+    entrypoint: /sccache/tests/integration/scripts/test-backend.sh
     depends_on:
       memcached:
         condition: service_healthy
@@ -183,7 +181,7 @@ services:
   test-s3:
     <<: *test-runner
     image: rust:latest
-    entrypoint: /scripts/test-backend.sh
+    entrypoint: /sccache/tests/integration/scripts/test-backend.sh
     depends_on:
       minio:
         condition: service_healthy
@@ -206,7 +204,7 @@ services:
   test-azblob:
     <<: *test-runner
     image: rust:latest
-    entrypoint: /scripts/test-backend.sh
+    entrypoint: /sccache/tests/integration/scripts/test-backend.sh
     depends_on:
       azurite:
         condition: service_healthy
@@ -225,7 +223,7 @@ services:
   test-webdav:
     <<: *test-runner
     image: rust:latest
-    entrypoint: /scripts/test-backend.sh
+    entrypoint: /sccache/tests/integration/scripts/test-backend.sh
     depends_on:
       - webdav
     environment:
@@ -242,7 +240,7 @@ services:
   test-gcc:
     <<: *test-runner
     image: gcc:latest
-    entrypoint: /scripts/test-gcc.sh
+    entrypoint: /sccache/tests/integration/scripts/test-gcc.sh
     environment:
       <<: *common-env
       SCCACHE_DIR: /tmp/sccache
@@ -253,7 +251,7 @@ services:
   test-clang:
     <<: *test-runner
     image: silkeh/clang:21-trixie
-    entrypoint: /scripts/test-clang.sh
+    entrypoint: /sccache/tests/integration/scripts/test-clang.sh
     environment:
       <<: *common-env
       SCCACHE_DIR: /tmp/sccache
@@ -264,7 +262,7 @@ services:
   test-cmake:
     <<: *test-runner
     image: silkeh/clang:21-trixie
-    entrypoint: /scripts/test-cmake.sh
+    entrypoint: /sccache/tests/integration/scripts/test-cmake.sh
     environment:
       SCCACHE_DIR: /build/sccache
     profiles:
@@ -274,7 +272,7 @@ services:
   test-autotools:
     <<: *test-runner
     image: gcc:latest
-    entrypoint: /scripts/test-autotools.sh
+    entrypoint: /sccache/tests/integration/scripts/test-autotools.sh
     environment:
       <<: *common-env
       SCCACHE_DIR: /build/sccache
@@ -285,7 +283,7 @@ services:
   test-coverage:
     <<: *test-runner
     image: rust:latest
-    entrypoint: /scripts/test-coverage.sh
+    entrypoint: /sccache/tests/integration/scripts/test-coverage.sh
     environment:
       <<: *common-env
       SCCACHE_DIR: /build/sccache
@@ -296,7 +294,7 @@ services:
   test-zstd:
     <<: *test-runner
     image: rust:latest
-    entrypoint: /scripts/test-zstd.sh
+    entrypoint: /sccache/tests/integration/scripts/test-zstd.sh
     environment:
       <<: *common-env
       SCCACHE_PATH: /sccache/target/debug/sccache
