@@ -33,7 +33,7 @@ services:
       - redis
 
   memcached:
-    image: bitnami/memcached:latest
+    image: memcached:latest
     ports:
       - "11211:11211"
     environment:
