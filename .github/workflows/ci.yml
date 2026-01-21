@@ -294,7 +294,12 @@ jobs:
       - name: Install rust-src for s390x-musl
         if: ${{ matrix.target == 's390x-unknown-linux-musl' }}
         run: |
-          rustup toolchain install nightly --profile minimal --force
+          # Remove corrupted nightly toolchain if it exists
+          rustup toolchain uninstall nightly || true
+          # Clean up any leftover files
+          rm -rf ~/.rustup/toolchains/nightly-* || true
+          # Install fresh nightly with minimal profile
+          rustup toolchain install nightly --profile minimal
           rustup component add rust-src --toolchain nightly
 
       - name: fix build openssl error on s390x
