@@ -292,7 +292,7 @@ jobs:
           MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macosx_deployment_target }}
           DEVELOPER_DIR: ${{ matrix.developer_dir }}
           SDKROOT: ${{ matrix.sdkroot }}
-          RUSTFLAGS: ${{ matrix.rustflags }}
+          RUSTFLAGS: ${{ env.RUSTFLAGS || matrix.rustflags }}
           CARGO_PROFILE_RELEASE_LTO: ${{ matrix.lto || 'true' }}
 
       # Workaround for the lack of substring() function in github actions expressions.
