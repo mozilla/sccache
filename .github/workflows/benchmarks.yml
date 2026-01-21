@@ -18,8 +18,13 @@ concurrency:
 
 jobs:
   benchmarks:
-    name: Run performance benchmarks (CodSpeed)
+    name: Run ${{ matrix.mode }} benchmarks (CodSpeed)
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        mode:
+          - simulation
+          - memory
     steps:
       - uses: actions/checkout@v6
         with:
@@ -37,40 +42,11 @@ jobs:
         shell: bash
         run: cargo codspeed build
 
-      - name: Run performance benchmarks
+      - name: Run benchmarks
         uses: CodSpeedHQ/action@v4
         env:
           CODSPEED_LOG: debug
         with:
-          mode: simulation
-          run: cargo codspeed run > /dev/null
-          token: ${{ secrets.CODSPEED_TOKEN }}
-
-  memory-benchmarks:
-    name: Run memory benchmarks (CodSpeed)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Install cargo-codspeed
-        shell: bash
-        run: cargo install cargo-codspeed --locked
-
-      - name: Build benchmarks for memory
-        shell: bash
-        run: cargo codspeed build
-
-      - name: Run memory benchmarks
-        uses: CodSpeedHQ/action@v4
-        env:
-          CODSPEED_LOG: debug
-        with:
-          mode: memory
+          mode: ${{ matrix.mode }}
           run: cargo codspeed run > /dev/null
           token: ${{ secrets.CODSPEED_TOKEN }}
