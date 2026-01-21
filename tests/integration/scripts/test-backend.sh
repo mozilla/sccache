@@ -19,7 +19,7 @@ TEST_ENV_VAR="test_value_$(date +%s)" && export TEST_ENV_VAR
 cargo clean
 cargo build
 
-# Use pythong to parse JSON output, installing jq each time is slow and unreliable
+# Use python to parse JSON output, installing jq each time is slow and unreliable
 # The difference python vs jq is 55 seconds vs 90 seconds
 echo "Checking stats after first build..."
 STATS_JSON=$("$SCCACHE" --show-stats --stats-format=json)
