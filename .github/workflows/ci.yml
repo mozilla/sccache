@@ -285,6 +285,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-s390x-linux-gnu g++-s390x-linux-gnu
+          mkdir -p .cargo
+          cat >> .cargo/config.toml <<EOF
+          [target.s390x-unknown-linux-gnu]
+          linker = "s390x-linux-gnu-gcc"
+          EOF
 
       - name: Install rust-src for s390x-musl
         if: ${{ matrix.target == 's390x-unknown-linux-musl' }}
