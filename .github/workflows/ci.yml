@@ -280,6 +280,12 @@ jobs:
           target: ${{ matrix.target }}
         if: ${{ !matrix.container }}
 
+      - name: Install s390x cross-compilation toolchain
+        if: ${{ matrix.target == 's390x-unknown-linux-gnu' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-s390x-linux-gnu g++-s390x-linux-gnu
+
       - name: Install rust-src for s390x-musl
         if: ${{ matrix.target == 's390x-unknown-linux-musl' }}
         run: |
