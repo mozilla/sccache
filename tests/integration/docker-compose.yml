@@ -1,0 +1,312 @@
+x-common-env: &common-env
+  RUST_BACKTRACE: full
+  RUSTC_WRAPPER: /sccache/target/debug/sccache
+  RUST_LOG: debug
+
+x-test-runner: &test-runner
+  user: "${UID:-1000}:${GID:-1000}"
+  volumes:
+    - ../../:/sccache:ro
+    - ../../target/integration-cargo-cache:/usr/local/cargo/registry:rw
+  tmpfs:
+    - /build:exec,uid=${UID:-1000},gid=${GID:-1000},mode=1777
+  working_dir: /build
+  environment:
+    <<: *common-env
+    SCCACHE_PATH: /sccache/target/debug/sccache
+
+x-health-check: &healthcheck
+  interval: 2s
+  timeout: 3s
+  retries: 10
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD", "redis-cli", "ping"]
+    profiles:
+      - test
+      - redis
+
+  memcached:
+    image: memcached:latest
+    ports:
+      - "11211:11211"
+    environment:
+      MEMCACHED_MAX_ITEM_SIZE: 16777216
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD", "timeout", "5", "bash", "-c", "cat < /dev/null > /dev/tcp/127.0.0.1/11211"]
+    profiles:
+      - test
+      - memcached
+
+  minio:
+    image: minio/minio:latest
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+    profiles:
+      - test
+      - s3
+
+  minio-setup:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set myminio http://minio:9000 minioadmin minioadmin;
+      mc mb myminio/test || true;
+      exit 0;
+      "
+    profiles:
+      - test
+      - s3
+
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite:latest
+    ports:
+      - "10000:10000"
+    command: azurite-blob --blobHost 0.0.0.0 --skipApiVersionCheck
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD", "sh", "-c", "nc 127.0.0.1 10000 -z || exit 1"]
+    profiles:
+      - test
+      - azblob
+
+  azurite-setup:
+    image: mcr.microsoft.com/azure-cli:latest
+    depends_on:
+      azurite:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      az storage container create --name test --connection-string 'DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1;';
+      exit 0;
+      "
+    profiles:
+      - test
+      - azblob
+
+  webdav:
+    image: hacdias/webdav:latest
+    ports:
+      - "8080:8080"
+    volumes:
+      - webdav-data:/srv
+      - ./webdav-config.yaml:/config.yaml:ro
+    command: --config /config.yaml
+    profiles:
+      - test
+      - webdav
+
+  test-redis-deprecated:
+    <<: *test-runner
+    image: rust:latest
+    entrypoint: /sccache/tests/integration/scripts/test-backend.sh
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      <<: *common-env
+      SCCACHE_REDIS: redis://redis:6379
+      TEST_NAME: redis-deprecated
+      BACKEND_CHECK: redis
+    profiles:
+      - test
+      - redis
+
+  test-redis:
+    <<: *test-runner
+    image: rust:latest
+    entrypoint: /sccache/tests/integration/scripts/test-backend.sh
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      <<: *common-env
+      SCCACHE_REDIS_ENDPOINT: tcp://redis:6379
+      TEST_NAME: redis
+      BACKEND_CHECK: redis
+    profiles:
+      - test
+      - redis
+
+  test-memcached-deprecated:
+    <<: *test-runner
+    image: rust:latest
+    entrypoint: /sccache/tests/integration/scripts/test-backend.sh
+    depends_on:
+      memcached:
+        condition: service_healthy
+    environment:
+      <<: *common-env
+      SCCACHE_MEMCACHED: tcp://memcached:11211
+      TEST_NAME: memcached-deprecated
+      BACKEND_CHECK: memcached
+    profiles:
+      - test
+      - memcached
+
+  test-memcached:
+    <<: *test-runner
+    image: rust:latest
+    entrypoint: /sccache/tests/integration/scripts/test-backend.sh
+    depends_on:
+      memcached:
+        condition: service_healthy
+    environment:
+      <<: *common-env
+      SCCACHE_MEMCACHED_ENDPOINT: tcp://memcached:11211
+      TEST_NAME: memcached
+      BACKEND_CHECK: memcached
+    profiles:
+      - test
+      - memcached
+
+  test-s3:
+    <<: *test-runner
+    image: rust:latest
+    entrypoint: /sccache/tests/integration/scripts/test-backend.sh
+    depends_on:
+      minio:
+        condition: service_healthy
+      minio-setup:
+        condition: service_completed_successfully
+    environment:
+      <<: *common-env
+      SCCACHE_BUCKET: test
+      SCCACHE_ENDPOINT: http://minio:9000/
+      SCCACHE_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_EC2_METADATA_DISABLED: "true"
+      TEST_NAME: s3
+      BACKEND_CHECK: s3
+    profiles:
+      - test
+      - s3
+
+  test-azblob:
+    <<: *test-runner
+    image: rust:latest
+    entrypoint: /sccache/tests/integration/scripts/test-backend.sh
+    depends_on:
+      azurite:
+        condition: service_healthy
+      azurite-setup:
+        condition: service_completed_successfully
+    environment:
+      <<: *common-env
+      SCCACHE_AZURE_BLOB_CONTAINER: test
+      SCCACHE_AZURE_CONNECTION_STRING: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1;"
+      TEST_NAME: azblob
+      BACKEND_CHECK: azblob
+    profiles:
+      - test
+      - azblob
+
+  test-webdav:
+    <<: *test-runner
+    image: rust:latest
+    entrypoint: /sccache/tests/integration/scripts/test-backend.sh
+    depends_on:
+      - webdav
+    environment:
+      <<: *common-env
+      SCCACHE_WEBDAV_ENDPOINT: "http://webdav:8080"
+      SCCACHE_WEBDAV_USERNAME: "bar"
+      SCCACHE_WEBDAV_PASSWORD: "baz"
+      TEST_NAME: webdav
+      BACKEND_CHECK: webdav
+    profiles:
+      - test
+      - webdav
+
+  test-gcc:
+    <<: *test-runner
+    image: gcc:latest
+    entrypoint: /sccache/tests/integration/scripts/test-gcc.sh
+    environment:
+      <<: *common-env
+      SCCACHE_DIR: /tmp/sccache
+    profiles:
+      - test
+      - gcc
+
+  test-clang:
+    <<: *test-runner
+    image: silkeh/clang:21-trixie
+    entrypoint: /sccache/tests/integration/scripts/test-clang.sh
+    environment:
+      <<: *common-env
+      SCCACHE_DIR: /tmp/sccache
+    profiles:
+      - test
+      - clang
+
+  test-cmake:
+    <<: *test-runner
+    image: silkeh/clang:21-trixie
+    entrypoint: /sccache/tests/integration/scripts/test-cmake.sh
+    environment:
+      SCCACHE_DIR: /build/sccache
+    profiles:
+      - test
+      - cmake
+
+  test-autotools:
+    <<: *test-runner
+    image: gcc:latest
+    entrypoint: /sccache/tests/integration/scripts/test-autotools.sh
+    environment:
+      <<: *common-env
+      SCCACHE_DIR: /build/sccache
+    profiles:
+      - test
+      - autotools
+
+  test-coverage:
+    <<: *test-runner
+    image: rust:latest
+    entrypoint: /sccache/tests/integration/scripts/test-coverage.sh
+    environment:
+      <<: *common-env
+      SCCACHE_DIR: /build/sccache
+    profiles:
+      - test
+      - coverage
+
+  test-zstd:
+    <<: *test-runner
+    image: rust:latest
+    entrypoint: /sccache/tests/integration/scripts/test-zstd.sh
+    environment:
+      <<: *common-env
+      SCCACHE_PATH: /sccache/target/debug/sccache
+      CARGO_INCREMENTAL: "0"
+    profiles:
+      - test
+      - zstd
+
+volumes:
+  cargo-cache:
+  webdav-data:
+
+networks:
+  default:
+    name: sccache-integration-tests
