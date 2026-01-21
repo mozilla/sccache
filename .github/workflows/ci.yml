@@ -242,6 +242,8 @@ jobs:
             container: '{"image": "messense/rust-musl-cross:s390x-musl"}'
             lto: "false"
           - os: ubuntu-22.04
+            target: s390x-unknown-linux-gnu
+          - os: ubuntu-22.04
             target: riscv64gc-unknown-linux-musl
             container: '{"image": "messense/rust-musl-cross:riscv64gc-musl"}'
             lto: "false"
@@ -281,7 +283,29 @@ jobs:
           toolchain: ${{ matrix.target == 'aarch64-apple-darwin' && 'beta' || 'stable' }}
           target: ${{ matrix.target }}
         if: ${{ !matrix.container }}
-      
+
+      - name: Install s390x cross-compilation toolchain
+        if: ${{ matrix.target == 's390x-unknown-linux-gnu' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-s390x-linux-gnu g++-s390x-linux-gnu
+          mkdir -p .cargo
+          cat >> .cargo/config.toml <<EOF
+          [target.s390x-unknown-linux-gnu]
+          linker = "s390x-linux-gnu-gcc"
+          EOF
+
+      - name: Install rust-src for s390x-musl
+        if: ${{ matrix.target == 's390x-unknown-linux-musl' }}
+        run: |
+          # Remove corrupted nightly toolchain if it exists
+          rustup toolchain uninstall nightly || true
+          # Clean up any leftover files
+          rm -rf ~/.rustup/toolchains/nightly-* || true
+          # Install fresh nightly with minimal profile
+          rustup toolchain install nightly --profile minimal
+          rustup component add rust-src --toolchain nightly
+
       - name: fix build openssl error on s390x
         if: ${{  matrix.target  == 's390x-unknown-linux-musl' }}
         run: |
@@ -290,13 +314,24 @@ jobs:
           echo CXXFLAGS="$CFLAGS" >> $GITHUB_ENV
           echo RUSTFLAGS="-C target-cpu=z10" >> $GITHUB_ENV
 
+      - name: Build (s390x-musl with build-std)
+        if: ${{ matrix.target == 's390x-unknown-linux-musl' }}
+        run: cargo +nightly build --locked --release --bin ${{ matrix.binary || 'sccache' }} --target ${{ matrix.target }} --features=openssl/vendored ${{ matrix.extra_args }} -Zbuild-std
+        env:
+          MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macosx_deployment_target }}
+          DEVELOPER_DIR: ${{ matrix.developer_dir }}
+          SDKROOT: ${{ matrix.sdkroot }}
+          RUSTFLAGS: ${{ env.RUSTFLAGS || matrix.rustflags }}
+          CARGO_PROFILE_RELEASE_LTO: ${{ matrix.lto || 'true' }}
+
       - name: Build
+        if: ${{ matrix.target != 's390x-unknown-linux-musl' }}
         run: cargo build --locked --release --bin ${{ matrix.binary || 'sccache' }} --target ${{ matrix.target }} --features=openssl/vendored ${{ matrix.extra_args }}
         env:
           MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macosx_deployment_target }}
           DEVELOPER_DIR: ${{ matrix.developer_dir }}
           SDKROOT: ${{ matrix.sdkroot }}
-          RUSTFLAGS: ${{ matrix.rustflags }}
+          RUSTFLAGS: ${{ env.RUSTFLAGS || matrix.rustflags }}
           CARGO_PROFILE_RELEASE_LTO: ${{ matrix.lto || 'true' }}
 
       # Workaround for the lack of substring() function in github actions expressions.
