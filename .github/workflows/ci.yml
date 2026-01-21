@@ -98,6 +98,7 @@ jobs:
             extra_desc: cuda12.8
           # # M1 CPU
           - os: macos-14
+          - os: macos-15-intel
           - os: windows-2022
             cuda: "12.8"
             # Oldest supported version, keep in sync with README.md
@@ -260,6 +261,9 @@ jobs:
             container: '{"image": "messense/rust-musl-cross:i686-musl"}'
           - os: macos-14
             target: aarch64-apple-darwin
+            macosx_deployment_target: 11.0
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
             macosx_deployment_target: 11.0
           - os: windows-2022
             target: x86_64-pc-windows-msvc
