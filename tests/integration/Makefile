@@ -6,7 +6,7 @@ export GID := $(shell id -g)
 PROJECT_ROOT := $(shell git rev-parse --show-toplevel)
 SCCACHE_BIN := $(PROJECT_ROOT)/target/debug/sccache
 
-BACKENDS := redis redis-deprecated memcached memcached-deprecated s3 azblob webdav
+BACKENDS := redis redis-deprecated memcached memcached-deprecated s3 azblob webdav basedirs
 TOOLS := gcc clang cmake autotools coverage zstd
 
 # Map backends to their compose profiles
@@ -23,6 +23,7 @@ PROFILE_cmake := cmake
 PROFILE_autotools := autotools
 PROFILE_coverage := coverage
 PROFILE_zstd := zstd
+PROFILE_basedirs := basedirs
 
 # Map backends to their services
 SERVICES_redis := redis
@@ -38,6 +39,7 @@ SERVICES_cmake :=
 SERVICES_autotools :=
 SERVICES_coverage :=
 SERVICES_zstd :=
+SERVICES_basedirs := redis memcached minio minio-setup azurite azurite-setup webdav
 
 help:
 	@echo "sccache Integration Tests"
@@ -65,6 +67,7 @@ help:
 	@echo "Advanced Tests:"
 	@echo "  make test-coverage           Run Rust coverage instrumentation test"
 	@echo "  make test-zstd               Run ZSTD compression levels test"
+	@echo "  make test-basedirs           Run basedirs test across all backends"
 	@echo ""
 	@echo "  make test-backends           Run all backend tests"
 	@echo "  make clean                   Stop all services and clean up"
