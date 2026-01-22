@@ -18,6 +18,7 @@ pub mod azure;
 pub mod cache;
 #[cfg(feature = "cos")]
 pub mod cos;
+pub mod cache_io;
 pub mod disk;
 #[cfg(feature = "gcs")]
 pub mod gcs;
@@ -34,6 +35,7 @@ pub mod readonly;
 pub mod redis;
 #[cfg(feature = "s3")]
 pub mod s3;
+pub(crate) mod utils;
 #[cfg(feature = "webdav")]
 pub mod webdav;
 
@@ -50,3 +52,4 @@ pub(crate) mod http_client;
 
 pub use crate::cache::lazy_disk_cache::*;
 pub use crate::cache::cache::*;
+pub use crate::cache::cache_io::*;
