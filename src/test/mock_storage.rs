@@ -12,8 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cache::{Cache, CacheWrite, Storage};
-use crate::config::PreprocessorCacheModeConfig;
+use crate::cache::{Cache, CacheWrite,  Storage};
 use crate::errors::*;
 use async_trait::async_trait;
 use futures::channel::mpsc;
@@ -27,18 +26,16 @@ pub struct MockStorage {
     rx: Arc<Mutex<mpsc::UnboundedReceiver<Result<Cache>>>>,
     tx: mpsc::UnboundedSender<Result<Cache>>,
     delay: Option<Duration>,
-    preprocessor_cache_mode: bool,
 }
 
 impl MockStorage {
     /// Create a new `MockStorage`. if `delay` is `Some`, wait for that amount of time before returning from operations.
-    pub(crate) fn new(delay: Option<Duration>, preprocessor_cache_mode: bool) -> MockStorage {
+    pub(crate) fn new(delay: Option<Duration>) -> MockStorage {
         let (tx, rx) = mpsc::unbounded();
         Self {
             tx,
             rx: Arc::new(Mutex::new(rx)),
             delay,
-            preprocessor_cache_mode,
         }
     }
 
@@ -74,11 +71,5 @@ impl Storage for MockStorage {
     }
     async fn max_size(&self) -> Result<Option<u64>> {
         Ok(None)
-    }
-    fn preprocessor_cache_mode_config(&self) -> PreprocessorCacheModeConfig {
-        PreprocessorCacheModeConfig {
-            use_preprocessor_cache_mode: self.preprocessor_cache_mode,
-            ..Default::default()
-        }
     }
 }

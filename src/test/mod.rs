@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+pub mod mock_preprocessor_cache;
 pub mod mock_storage;
 #[macro_use]
 pub mod utils;

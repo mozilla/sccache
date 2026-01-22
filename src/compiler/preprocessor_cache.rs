@@ -176,7 +176,7 @@ impl PreprocessorCacheEntry {
     /// are already on disk and have not changed.
     pub fn lookup_result_digest(
         &mut self,
-        config: PreprocessorCacheModeConfig,
+        config: &PreprocessorCacheModeConfig,
         updated: &mut bool,
     ) -> Option<String> {
         // Check newest result first since it's more likely to match.
@@ -193,7 +193,7 @@ impl PreprocessorCacheEntry {
     fn result_matches(
         digest: &str,
         includes: &mut [IncludeEntry],
-        config: PreprocessorCacheModeConfig,
+        config: &PreprocessorCacheModeConfig,
         updated: &mut bool,
     ) -> bool {
         for include in includes {
@@ -380,7 +380,7 @@ pub fn preprocessor_cache_entry_hash_key(
     env_vars: &[(OsString, OsString)],
     input_file: &Path,
     plusplus: bool,
-    config: PreprocessorCacheModeConfig,
+    config: &PreprocessorCacheModeConfig,
 ) -> anyhow::Result<Option<String>> {
     // If you change any of the inputs to the hash, you should change `FORMAT_VERSION`.
     let mut m = Digest::new();

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cache::{FileObjectSource, Storage};
+use crate::cache::{FileObjectSource, PreprocessorCacheStorage, Storage};
 use crate::compiler::args::*;
 use crate::compiler::{
     CCompileCommand, Cacheable, ColorMode, Compilation, CompileCommand, Compiler,
@@ -1334,6 +1334,7 @@ where
         pool: &tokio::runtime::Handle,
         _rewrite_includes_only: bool,
         _storage: Arc<dyn Storage>,
+        _preprocessor_cache_storage: Arc<dyn PreprocessorCacheStorage>,
         _cache_control: CacheControl,
     ) -> Result<HashResult<T>> {
         trace!("[{}]: generate_hash_key", self.parsed_args.crate_name);
@@ -2658,6 +2659,7 @@ mod test {
 
     use crate::compiler::*;
     use crate::mock_command::*;
+    use crate::test::mock_preprocessor_cache::MockPreprocessorCacheStorage;
     use crate::test::mock_storage::MockStorage;
     use crate::test::utils::*;
     use fs::File;
@@ -3511,7 +3513,8 @@ proc_macro false
                 false,
                 &pool,
                 false,
-                Arc::new(MockStorage::new(None, preprocessor_cache_mode)),
+                Arc::new(MockStorage::new(None)),
+                Arc::new(MockPreprocessorCacheStorage::new(preprocessor_cache_mode)),
                 CacheControl::Default,
             )
             .wait()
@@ -3603,7 +3606,8 @@ proc_macro false
                 false,
                 &pool,
                 false,
-                Arc::new(MockStorage::new(None, preprocessor_cache_mode)),
+                Arc::new(MockStorage::new(None)),
+                Arc::new(MockPreprocessorCacheStorage::new(preprocessor_cache_mode)),
                 CacheControl::Default,
             )
             .wait()

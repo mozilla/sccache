@@ -84,12 +84,28 @@ where
             &cache_dir,
             cache_size,
             runtime.handle(),
-            PreprocessorCacheModeConfig::default(),
             CacheMode::ReadWrite,
         ));
+        let preprocessor_cache_storage =
+            Arc::new(crate::cache::preprocessor_cache::PreprocessorCache::new(
+                &PreprocessorCacheModeConfig {
+                    dir: cache_dir.join("preprocessor_cache"),
+                    max_size: cache_size / 10,
+                    use_preprocessor_cache_mode: true,
+                    ..Default::default()
+                },
+            ));
 
         let client = Client::new();
-        let srv = SccacheServer::new(0, runtime, client, dist_client, storage).unwrap();
+        let srv = SccacheServer::new(
+            0,
+            runtime,
+            client,
+            dist_client,
+            storage,
+            preprocessor_cache_storage,
+        )
+        .unwrap();
         let mut srv: SccacheServer<_, Arc<Mutex<MockCommandCreator>>> = srv;
         let addr = srv.local_addr().unwrap();
         assert!(matches!(addr, crate::net::SocketAddr::Net(a) if a.port() > 0));

@@ -13,7 +13,7 @@
 // limitations under the License.SCCACHE_MAX_FRAME_LENGTH
 
 use crate::cache::readonly::ReadOnlyStorage;
-use crate::cache::{CacheMode, Storage, storage_from_config};
+use crate::cache::{CacheMode, PreprocessorCacheStorage, Storage, get_storage_from_config};
 use crate::compiler::{
     CacheControl, CompileResult, Compiler, CompilerArguments, CompilerHasher, CompilerKind,
     CompilerProxy, DistType, Language, MissType, get_compiler_info,
@@ -449,7 +449,8 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
 
     let notify = env::var_os("SCCACHE_STARTUP_NOTIFY");
 
-    let raw_storage = match storage_from_config(config, &pool) {
+    let (raw_storage, raw_preprocessor_cache_storage) = match get_storage_from_config(config, &pool)
+    {
         Ok(storage) => storage,
         Err(err) => {
             error!("storage init failed for: {err:?}");
@@ -494,8 +495,14 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
             crate::net::SocketAddr::Net(addr) => {
                 trace!("binding TCP {addr}");
                 let l = runtime.block_on(tokio::net::TcpListener::bind(addr))?;
-                let srv =
-                    SccacheServer::<_>::with_listener(l, runtime, client, dist_client, storage);
+                let srv = SccacheServer::<_>::with_listener(
+                    l,
+                    runtime,
+                    client,
+                    dist_client,
+                    storage,
+                    raw_preprocessor_cache_storage,
+                );
                 Ok((
                     srv.local_addr().unwrap(),
                     Box::new(move |f| srv.run(f)) as Box<dyn FnOnce(_) -> _>,
@@ -510,8 +517,14 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
                     let _guard = runtime.enter();
                     tokio::net::UnixListener::bind(path)?
                 };
-                let srv =
-                    SccacheServer::<_>::with_listener(l, runtime, client, dist_client, storage);
+                let srv = SccacheServer::<_>::with_listener(
+                    l,
+                    runtime,
+                    client,
+                    dist_client,
+                    storage,
+                    raw_preprocessor_cache_storage,
+                );
                 Ok((
                     srv.local_addr().unwrap(),
                     Box::new(move |f| srv.run(f)) as Box<dyn FnOnce(_) -> _>,
@@ -584,6 +597,7 @@ impl<C: CommandCreatorSync> SccacheServer<tokio::net::TcpListener, C> {
         client: Client,
         dist_client: DistClientContainer,
         storage: Arc<dyn Storage>,
+        preprocessor_cache_storage: Arc<dyn PreprocessorCacheStorage>,
     ) -> Result<Self> {
         let addr = crate::net::SocketAddr::with_port(port);
         let listener = runtime.block_on(tokio::net::TcpListener::bind(addr.as_net().unwrap()))?;
@@ -594,6 +608,7 @@ impl<C: CommandCreatorSync> SccacheServer<tokio::net::TcpListener, C> {
             client,
             dist_client,
             storage,
+            preprocessor_cache_storage,
         ))
     }
 }
@@ -605,13 +620,22 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
         client: Client,
         dist_client: DistClientContainer,
         storage: Arc<dyn Storage>,
+        preprocessor_cache_storage: Arc<dyn PreprocessorCacheStorage>,
     ) -> Self {
         // Prepare the service which we'll use to service all incoming TCP
         // connections.
         let (tx, rx) = mpsc::channel(1);
         let (wait, info) = WaitUntilZero::new();
         let pool = runtime.handle().clone();
-        let service = SccacheService::new(dist_client, storage, &client, pool, tx, info);
+        let service = SccacheService::new(
+            dist_client,
+            storage,
+            preprocessor_cache_storage,
+            &client,
+            pool,
+            tx,
+            info,
+        );
 
         SccacheServer {
             runtime,
@@ -631,8 +655,13 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
 
     /// Set the storage this server will use.
     #[allow(dead_code)]
-    pub fn set_storage(&mut self, storage: Arc<dyn Storage>) {
+    pub fn set_storage(
+        &mut self,
+        storage: Arc<dyn Storage>,
+        preprocessor_cache_storage: Arc<dyn PreprocessorCacheStorage>,
+    ) {
         self.service.storage = storage;
+        self.service.preprocessor_cache_storage = preprocessor_cache_storage;
     }
 
     /// Returns a reference to a thread pool to run work on
@@ -792,6 +821,9 @@ where
     /// Cache storage.
     storage: Arc<dyn Storage>,
 
+    /// Preprocessor cache storage.
+    preprocessor_cache_storage: Arc<dyn PreprocessorCacheStorage>,
+
     /// A cache of known compiler info.
     compilers: Arc<RwLock<CompilerMap<C>>>,
 
@@ -917,6 +949,7 @@ where
     pub fn new(
         dist_client: DistClientContainer,
         storage: Arc<dyn Storage>,
+        preprocessor_cache_storage: Arc<dyn PreprocessorCacheStorage>,
         client: &Client,
         rt: tokio::runtime::Handle,
         tx: mpsc::Sender<ServerMessage>,
@@ -926,6 +959,7 @@ where
             stats: Arc::default(),
             dist_client: Arc::new(dist_client),
             storage,
+            preprocessor_cache_storage,
             compilers: Arc::default(),
             compiler_proxies: Arc::default(),
             rt,
@@ -937,6 +971,7 @@ where
 
     pub fn mock_with_storage(
         storage: Arc<dyn Storage>,
+        preprocessor_cache_storage: Arc<dyn PreprocessorCacheStorage>,
         rt: tokio::runtime::Handle,
     ) -> SccacheService<C> {
         let (tx, _) = mpsc::channel(1);
@@ -947,6 +982,7 @@ where
             stats: Arc::default(),
             dist_client: Arc::new(dist_client),
             storage,
+            preprocessor_cache_storage,
             compilers: Arc::default(),
             compiler_proxies: Arc::default(),
             rt,
@@ -960,6 +996,7 @@ where
     pub fn mock_with_dist_client(
         dist_client: Arc<dyn dist::Client>,
         storage: Arc<dyn Storage>,
+        preprocessor_cache_storage: Arc<dyn PreprocessorCacheStorage>,
         rt: tokio::runtime::Handle,
     ) -> SccacheService<C> {
         let (tx, _) = mpsc::channel(1);
@@ -980,6 +1017,7 @@ where
                 dist_client,
             ))),
             storage,
+            preprocessor_cache_storage,
             compilers: Arc::default(),
             compiler_proxies: Arc::default(),
             rt: rt.clone(),
@@ -1043,7 +1081,12 @@ where
     /// Get info and stats about the cache.
     async fn get_info(&self) -> Result<ServerInfo> {
         let stats = self.stats.lock().await.clone();
-        ServerInfo::new(stats, Some(&*self.storage)).await
+        ServerInfo::new(
+            stats,
+            Some(&*self.storage),
+            Some(&*self.preprocessor_cache_storage),
+        )
+        .await
     }
 
     /// Zero stats about the cache.
@@ -1339,6 +1382,7 @@ where
                         client,
                         me.creator.clone(),
                         me.storage.clone(),
+                        me.preprocessor_cache_storage.clone(),
                         arguments,
                         cwd,
                         env_vars,
@@ -1927,24 +1971,27 @@ fn set_percentage_stat(
 }
 
 impl ServerInfo {
-    pub async fn new(stats: ServerStats, storage: Option<&dyn Storage>) -> Result<Self> {
-        let cache_location;
-        let use_preprocessor_cache_mode;
-        let cache_size;
-        let max_cache_size;
+    pub async fn new(
+        stats: ServerStats,
+        storage: Option<&dyn Storage>,
+        preprocessor_cache_storage: Option<&dyn PreprocessorCacheStorage>,
+    ) -> Result<Self> {
+        let mut cache_location = String::new();
+        let mut cache_size = None;
+        let mut max_cache_size = None;
         if let Some(storage) = storage {
             cache_location = storage.location();
-            use_preprocessor_cache_mode = storage
-                .preprocessor_cache_mode_config()
-                .use_preprocessor_cache_mode;
             (cache_size, max_cache_size) =
                 futures::try_join!(storage.current_size(), storage.max_size())?;
-        } else {
-            cache_location = String::new();
-            use_preprocessor_cache_mode = false;
-            cache_size = None;
-            max_cache_size = None;
         }
+
+        let mut use_preprocessor_cache_mode = false;
+        if let Some(preprocessor_storage) = preprocessor_cache_storage {
+            let config = preprocessor_storage.get_config();
+
+            use_preprocessor_cache_mode = config.use_preprocessor_cache_mode;
+        }
+
         let version = env!("CARGO_PKG_VERSION").to_string();
         Ok(ServerInfo {
             stats,
@@ -1965,18 +2012,16 @@ impl ServerInfo {
             self.cache_location,
             name_width = name_width
         );
-        if self.cache_location.starts_with("Local disk") {
-            println!(
-                "{:<name_width$} {}",
-                "Use direct/preprocessor mode?",
-                if self.use_preprocessor_cache_mode {
-                    "yes"
-                } else {
-                    "no"
-                },
-                name_width = name_width
-            );
-        }
+        println!(
+            "{:<name_width$} {}",
+            "Use direct/preprocessor mode?",
+            if self.use_preprocessor_cache_mode {
+                "yes"
+            } else {
+                "no"
+            },
+            name_width = name_width
+        );
         println!(
             "{:<name_width$} {}",
             "Version (client)",

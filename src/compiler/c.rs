@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cache::{FileObjectSource, Storage};
+use crate::cache::{FileObjectSource, PreprocessorCacheStorage, Storage};
 use crate::compiler::preprocessor_cache::preprocessor_cache_entry_hash_key;
 use crate::compiler::{
     Cacheable, ColorMode, Compilation, CompileCommand, Compiler, CompilerArguments, CompilerHasher,
@@ -373,7 +373,8 @@ where
         may_dist: bool,
         pool: &tokio::runtime::Handle,
         rewrite_includes_only: bool,
-        storage: Arc<dyn Storage>,
+        _storage: Arc<dyn Storage>,
+        preprocessor_cache_storage: Arc<dyn PreprocessorCacheStorage>,
         cache_control: CacheControl,
     ) -> Result<HashResult<T>> {
         let start_of_compilation = std::time::SystemTime::now();
@@ -394,7 +395,7 @@ where
 
         // Try to look for a cached preprocessing step for this compilation
         // request.
-        let preprocessor_cache_mode_config = storage.preprocessor_cache_mode_config();
+        let preprocessor_cache_mode_config = preprocessor_cache_storage.get_config();
         let too_hard_for_preprocessor_cache_mode = self
             .parsed_args
             .too_hard_for_preprocessor_cache_mode
@@ -416,6 +417,7 @@ where
             let mut use_preprocessor_cache_mode = can_use_preprocessor_cache_mode;
 
             // Allow overrides from the env
+            // FIXME: Is this needed when the environmental config is merged?
             for (key, val) in env_vars.iter() {
                 if key == "SCCACHE_DIRECT" {
                     if let Some(val) = val.to_str() {
@@ -461,7 +463,7 @@ where
         let (preprocessor_output, include_files) = if needs_preprocessing {
             if let Some(preprocessor_key) = &preprocessor_key {
                 if cache_control == CacheControl::Default {
-                    if let Some(mut seekable) = storage
+                    if let Some(mut seekable) = preprocessor_cache_storage
                         .get_preprocessor_cache_entry(preprocessor_key)
                         .await?
                     {
@@ -480,7 +482,7 @@ where
                                 "Preprocessor cache updated because of time macros: {preprocessor_key}"
                             );
 
-                            if let Err(e) = storage
+                            if let Err(e) = preprocessor_cache_storage
                                 .put_preprocessor_cache_entry(
                                     preprocessor_key,
                                     preprocessor_cache_entry,
@@ -647,7 +649,7 @@ where
                 files.sort_unstable_by(|a, b| a.1.cmp(&b.1));
                 preprocessor_cache_entry.add_result(start_of_compilation, &key, files);
 
-                if let Err(e) = storage
+                if let Err(e) = preprocessor_cache_storage
                     .put_preprocessor_cache_entry(&preprocessor_key, preprocessor_cache_entry)
                     .await
                 {
@@ -709,7 +711,7 @@ fn process_preprocessed_file(
     cwd: &Path,
     bytes: &mut [u8],
     included_files: &mut HashMap<PathBuf, String>,
-    config: PreprocessorCacheModeConfig,
+    config: &PreprocessorCacheModeConfig,
     time_of_compilation: std::time::SystemTime,
     fs_impl: impl PreprocessorFSAbstraction,
 ) -> Result<bool> {
@@ -828,7 +830,7 @@ fn process_preprocessor_line(
     input_file: &Path,
     cwd: &Path,
     included_files: &mut HashMap<PathBuf, String>,
-    config: PreprocessorCacheModeConfig,
+    config: &PreprocessorCacheModeConfig,
     time_of_compilation: std::time::SystemTime,
     bytes: &mut [u8],
     mut start: usize,
@@ -1035,7 +1037,7 @@ fn remember_include_file(
     included_files: &mut HashMap<PathBuf, String>,
     digest: &mut Digest,
     system: bool,
-    config: PreprocessorCacheModeConfig,
+    config: &PreprocessorCacheModeConfig,
     time_of_compilation: std::time::SystemTime,
     fs_impl: &impl PreprocessorFSAbstraction,
 ) -> Result<bool> {
@@ -1756,7 +1758,7 @@ mod test {
             Path::new(""),
             &mut bytes,
             &mut include_files,
-            config,
+            &config,
             std::time::SystemTime::now(),
             StandardFsAbstraction,
         )
@@ -1830,7 +1832,7 @@ mod test {
             input_file,
             Path::new(""),
             include_files,
-            config,
+            &config,
             std::time::SystemTime::now(),
             &mut bytes,
             0,

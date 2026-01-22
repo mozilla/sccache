@@ -163,10 +163,10 @@ pub fn sccache_client_cfg(
 
     let disk_cache = sccache::config::DiskCacheConfig {
         dir: tmpdir.join(cache_relpath),
-        preprocessor_cache_mode: sccache::config::PreprocessorCacheModeConfig {
-            use_preprocessor_cache_mode: preprocessor_cache_mode,
-            ..Default::default()
-        },
+        ..Default::default()
+    };
+    let preprocessor_cache_config = sccache::config::PreprocessorCacheModeConfig {
+        use_preprocessor_cache_mode: preprocessor_cache_mode,
         ..Default::default()
     };
     sccache::config::FileConfig {
@@ -180,6 +180,7 @@ pub fn sccache_client_cfg(
             s3: None,
             webdav: None,
             oss: None,
+            preprocessor: Some(preprocessor_cache_config),
             cos: None,
         },
         dist: sccache::config::DistConfig {
