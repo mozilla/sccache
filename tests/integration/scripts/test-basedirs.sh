@@ -2,23 +2,25 @@
 set -euo pipefail
 
 SCCACHE="${SCCACHE_PATH:-/sccache/target/debug/sccache}"
-TEST_FILE="/sccache/tests/test_clang_multicall.c"
 
-echo "=========================================="
-echo "Testing: Basedirs with all backends"
-echo "=========================================="
+echo "==================================================================="
+echo "Testing: Basedirs with all backends, autotools + headers + __FILE__"
+echo "==================================================================="
 
-# Create two different build directories
-mkdir -p /build/dir1/project /build/dir2/project
-
-# Copy test file to both directories
-cp "$TEST_FILE" /build/dir1/project/test.cpp
-cp "$TEST_FILE" /build/dir2/project/test.cpp
+autotools() (
+    cd "$1"
+    autoreconf -i >/dev/null 2>&1 || true
+    automake --add-missing >/dev/null 2>&1 || true
+    ./configure CXX="$SCCACHE g++" >/dev/null 2>&1
+    make >/dev/null 2>&1
+)
 
 # Function to test a backend
 test_backend() {
     local backend_name="$1"
     shift
+    cp -r /sccache/tests/integration/basedirs-autotools /build/dir1
+    cp -r /sccache/tests/integration/basedirs-autotools /build/dir2
 
     echo ""
     echo "=========================================="
@@ -33,15 +35,14 @@ test_backend() {
         export "${env_var?}"
     done
 
-    # Configure basedirs
+    # Configure basedirs - should strip /build/dir1 and /build/dir2 prefixes
     export SCCACHE_BASEDIRS="/build/dir1:/build/dir2"
 
     # Start sccache server
     "$SCCACHE" --start-server
 
     echo "Test 1: Compile from first directory (cache miss)"
-    "$SCCACHE" g++ -c /build/dir1/project/test.cpp -o /build/dir1/project/test.o
-    test -f /build/dir1/project/test.o || { echo "ERROR: No compiler output found"; exit 1; }
+    autotools /build/dir1
 
     echo "Checking stats after first build..."
     STATS_JSON=$("$SCCACHE" --show-stats --stats-format=json)
@@ -53,9 +54,12 @@ test_backend() {
         echo "WARNING: Expected backend '$backend_name' not found in cache_location: $CACHE_LOCATION"
     fi
 
+    FIRST_MISSES=$(echo "$STATS_JSON" | python3 -c "import sys, json; stats = json.load(sys.stdin).get('stats', {}); print(stats.get('cache_misses', {}).get('counts', {}).get('C/C++', 0))")
+    echo "Cache misses after first build: $FIRST_MISSES"
+
+    echo ""
     echo "Test 2: Compile from second directory with same relative path (cache hit expected)"
-    "$SCCACHE" g++ -c /build/dir2/project/test.cpp -o /build/dir2/project/test.o
-    test -f /build/dir2/project/test.o || { echo "ERROR: No compiler output found"; exit 1; }
+    autotools /build/dir2
 
     echo "Verifying cache hits..."
     STATS_JSON=$("$SCCACHE" --show-stats --stats-format=json)
@@ -80,7 +84,7 @@ test_backend() {
     fi
 
     # Clean up for next backend test
-    rm -f /build/dir1/project/test.o /build/dir2/project/test.o
+    rm -rf /build/dir1 /build/dir2
     "$SCCACHE" --stop-server &>/dev/null || true
 
     # Unset environment variables
