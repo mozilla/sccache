@@ -89,7 +89,7 @@ where
         let preprocessor_cache_storage =
             Arc::new(crate::cache::preprocessor_cache::PreprocessorCache::new(
                 &PreprocessorCacheModeConfig {
-                    dir: cache_dir.join("preprocessor_cache"),
+                    dir: Some(cache_dir),
                     max_size: cache_size / 10,
                     use_preprocessor_cache_mode: true,
                     ..Default::default()
