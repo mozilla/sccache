@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 use crate::errors::*;
 
 use super::lazy_disk_cache::LazyDiskCache;
-use super::{PreprocessorCacheModeConfig, normalize_key};
+use super::{PreprocessorCacheModeConfig, utils::normalize_key};
 
 /// A cache that stores entries at local disk paths.
 pub struct DiskCache {
