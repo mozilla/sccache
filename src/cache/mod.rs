@@ -16,9 +16,9 @@
 pub mod azure;
 #[allow(clippy::module_inception)]
 pub mod cache;
+pub mod cache_io;
 #[cfg(feature = "cos")]
 pub mod cos;
-pub mod cache_io;
 pub mod disk;
 #[cfg(feature = "gcs")]
 pub mod gcs;
@@ -51,9 +51,9 @@ pub mod webdav;
     feature = "cos"
 ))]
 pub(crate) mod http_client;
-
-pub use crate::cache::lazy_disk_cache::*;
 pub use crate::cache::cache::*;
 pub use crate::cache::cache_io::*;
+pub use crate::cache::lazy_disk_cache::*;
+pub use crate::cache::lazy_disk_cache::*;
 pub use crate::cache::preprocessor_cache::*;
 pub use crate::cache::storage::*;

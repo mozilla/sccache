@@ -54,8 +54,6 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::errors::*;
-
 /// Implement storage for operator.
 #[cfg(any(
     feature = "azure",
@@ -155,178 +153,171 @@ impl Storage for opendal::Operator {
     }
 }
 
-/// Get a suitable `Storage` implementation from configuration.
-#[allow(clippy::cognitive_complexity)] // TODO simplify!
-pub fn storage_from_config(
-    config: &Config,
 fn get_preprocessor_cache_storage(config: &Config) -> Result<Arc<dyn PreprocessorCacheStorage>> {
     Ok(Arc::new(PreprocessorCache::new(&config.preprocessor_cache)))
 }
 
+#[cfg(feature = "azure")]
+fn get_azure_storage(config: &config::AzureCacheConfig) -> Result<Arc<dyn Storage>> {
+    debug!(
+        "Init azure cache with container {}, key_prefix {}",
+        config.container, config.key_prefix
+    );
+    let storage = AzureBlobCache::build(
+        &config.connection_string,
+        &config.container,
+        &config.key_prefix,
+    )
+    .map_err(|err| anyhow!("create azure cache failed: {err:?}"))?;
+    Ok(Arc::new(storage))
+}
+
+#[cfg(feature = "gcs")]
+fn get_gcs_storage(config: &config::GCSCacheConfig) -> Result<Arc<dyn Storage>> {
+    debug!(
+        "Init gcs cache with bucket {}, key_prefix {}",
+        config.bucket, config.key_prefix
+    );
+
+    let storage = GCSCache::build(
+        &config.bucket,
+        &config.key_prefix,
+        config.cred_path.as_deref(),
+        config.service_account.as_deref(),
+        config.rw_mode.into(),
+        config.credential_url.as_deref(),
+    )
+    .map_err(|err| anyhow!("create gcs cache failed: {err:?}"))?;
+
+    Ok(Arc::new(storage))
+}
+
+#[cfg(feature = "gha")]
+fn get_gha_storage(config: &config::GHACacheConfig) -> Result<Arc<dyn Storage>> {
+    debug!("Init gha cache with version {}", config.version);
+
+    let storage = GHACache::build(&config.version)
+        .map_err(|err| anyhow!("create gha cache failed: {err:?}"))?;
+    Ok(Arc::new(storage))
+}
+
+#[cfg(feature = "memcached")]
+fn get_memcached_storage(config: &config::MemcachedCacheConfig) -> Result<Arc<dyn Storage>> {
+    debug!("Init memcached cache with url {}", config.url);
+    let storage = MemcachedCache::build(
+        &config.url,
+        config.username.as_deref(),
+        config.password.as_deref(),
+        &config.key_prefix,
+        config.expiration,
+    )
+    .map_err(|err| anyhow!("create memcached cache failed: {err:?}"))?;
+    Ok(Arc::new(storage))
+}
+
+#[cfg(feature = "redis")]
+fn get_redis_storage(config: &config::RedisCacheConfig) -> Result<Arc<dyn Storage>> {
+    debug!("Init redis cache with endpoint {:?}", config.endpoint);
+    let storage = RedisCache::build_single(
+        config
+            .endpoint
+            .as_ref()
+            .ok_or_else(|| anyhow!("redis endpoint is required"))?,
+        config.username.as_deref(),
+        config.password.as_deref(),
+        config.db,
+        &config.key_prefix,
+        config.ttl,
+    )
+    .map_err(|err| anyhow!("create redis cache failed: {err:?}"))?;
+    Ok(Arc::new(storage))
+}
+
+#[cfg(feature = "s3")]
+fn get_s3_storage(config: &config::S3CacheConfig) -> Result<Arc<dyn Storage>> {
+    debug!(
+        "Init s3 cache with bucket {}, endpoint {:?}",
+        config.bucket, config.endpoint
+    );
+    let storage_builder = S3Cache::new(
+        config.bucket.clone(),
+        config.key_prefix.clone(),
+        config.no_credentials,
+    );
+    let storage = storage_builder
+        .with_region(config.region.clone())
+        .with_endpoint(config.endpoint.clone())
+        .with_use_ssl(config.use_ssl)
+        .with_server_side_encryption(config.server_side_encryption)
+        .with_enable_virtual_host_style(config.enable_virtual_host_style)
+        .build()
+        .map_err(|err| anyhow!("create s3 cache failed: {err:?}"))?;
+
+    Ok(Arc::new(storage))
+}
+
+#[cfg(feature = "webdav")]
+fn get_webdav_storage(config: &config::WebdavCacheConfig) -> Result<Arc<dyn Storage>> {
+    debug!("Init webdav cache with endpoint {}", config.endpoint);
+    let storage = WebdavCache::build(
+        &config.endpoint,
+        &config.key_prefix,
+        config.username.as_deref(),
+        config.password.as_deref(),
+        config.token.as_deref(),
+    )
+    .map_err(|err| anyhow!("create webdav cache failed: {err:?}"))?;
+    Ok(Arc::new(storage))
+}
+
+#[cfg(feature = "oss")]
+fn get_oss_storage(config: &config::OSSCacheConfig) -> Result<Arc<dyn Storage>> {
+    debug!(
+        "Init oss cache with bucket {}, endpoint {:?}",
+        config.bucket, config.endpoint
+    );
+    let storage = OSSCache::build(
+        &config.bucket,
+        &config.key_prefix,
+        config.endpoint.as_deref(),
+        config.no_credentials,
+    )
+    .map_err(|err| anyhow!("create oss cache failed: {err:?}"))?;
+    Ok(Arc::new(storage))
+}
+
+fn get_disk_storage(
+    config: &DiskCacheConfig,
     pool: &tokio::runtime::Handle,
 ) -> Result<Arc<dyn Storage>> {
+    let (dir, size) = (&config.dir, config.size);
+    let rw_mode = config.rw_mode.into();
+    debug!("Init disk cache with dir {:?}, size {}", dir, size);
+    Ok(Arc::new(DiskCache::new(dir, size, pool, rw_mode)))
+}
+
+/// Get a suitable cache `Storage` implementation from configuration.
+fn get_storage(config: &Config, pool: &tokio::runtime::Handle) -> Result<Arc<dyn Storage>> {
     if let Some(cache_type) = &config.cache {
         match cache_type {
             #[cfg(feature = "azure")]
-            CacheType::Azure(config::AzureCacheConfig {
-                connection_string,
-                container,
-                key_prefix,
-            }) => {
-                debug!("Init azure cache with container {container}, key_prefix {key_prefix}");
-                let storage = AzureBlobCache::build(connection_string, container, key_prefix)
-                    .map_err(|err| anyhow!("create azure cache failed: {err:?}"))?;
-                return Ok(Arc::new(storage));
-            }
+            CacheType::Azure(azure_config) => return get_azure_storage(azure_config),
             #[cfg(feature = "gcs")]
-            CacheType::GCS(config::GCSCacheConfig {
-                bucket,
-                key_prefix,
-                cred_path,
-                rw_mode,
-                service_account,
-                credential_url,
-            }) => {
-                debug!("Init gcs cache with bucket {bucket}, key_prefix {key_prefix}");
-
-                let storage = GCSCache::build(
-                    bucket,
-                    key_prefix,
-                    cred_path.as_deref(),
-                    service_account.as_deref(),
-                    (*rw_mode).into(),
-                    credential_url.as_deref(),
-                )
-                .map_err(|err| anyhow!("create gcs cache failed: {err:?}"))?;
-
-                return Ok(Arc::new(storage));
-            }
+            CacheType::GCS(gcs_config) => return get_gcs_storage(gcs_config),
             #[cfg(feature = "gha")]
-            CacheType::GHA(config::GHACacheConfig { version, .. }) => {
-                debug!("Init gha cache with version {version}");
-
-                let storage = GHACache::build(version)
-                    .map_err(|err| anyhow!("create gha cache failed: {err:?}"))?;
-                return Ok(Arc::new(storage));
-            }
+            CacheType::GHA(gha_config) => return get_gha_storage(gha_config),
             #[cfg(feature = "memcached")]
-            CacheType::Memcached(config::MemcachedCacheConfig {
-                url,
-                username,
-                password,
-                expiration,
-                key_prefix,
-            }) => {
-                debug!("Init memcached cache with url {url}");
-
-                let storage = MemcachedCache::build(
-                    url,
-                    username.as_deref(),
-                    password.as_deref(),
-                    key_prefix,
-                    *expiration,
-                )
-                .map_err(|err| anyhow!("create memcached cache failed: {err:?}"))?;
-                return Ok(Arc::new(storage));
+            CacheType::Memcached(memcached_config) => {
+                return get_memcached_storage(memcached_config);
             }
             #[cfg(feature = "redis")]
-            CacheType::Redis(config::RedisCacheConfig {
-                endpoint,
-                cluster_endpoints,
-                username,
-                password,
-                db,
-                url,
-                ttl,
-                key_prefix,
-            }) => {
-                let storage = match (endpoint, cluster_endpoints, url) {
-                    (Some(url), None, None) => {
-                        debug!("Init redis single-node cache with url {url}");
-                        RedisCache::build_single(
-                            url,
-                            username.as_deref(),
-                            password.as_deref(),
-                            *db,
-                            key_prefix,
-                            *ttl,
-                        )
-                    }
-                    (None, Some(urls), None) => {
-                        debug!("Init redis cluster cache with urls {urls}");
-                        RedisCache::build_cluster(
-                            urls,
-                            username.as_deref(),
-                            password.as_deref(),
-                            *db,
-                            key_prefix,
-                            *ttl,
-                        )
-                    }
-                    (None, None, Some(url)) => {
-                        warn!("Init redis single-node cache from deprecated API with url {url}");
-                        if username.is_some() || password.is_some() || *db != crate::config::DEFAULT_REDIS_DB {
-                            bail!("`username`, `password` and `db` has no effect when `url` is set. Please use `endpoint` or `cluster_endpoints` for new API accessing");
-                        }
-
-                        RedisCache::build_from_url(url, key_prefix, *ttl)
-                    }
-                    _ => bail!("Only one of `endpoint`, `cluster_endpoints`, `url` must be set"),
-                }
-                .map_err(|err| anyhow!("create redis cache failed: {err:?}"))?;
-                return Ok(Arc::new(storage));
-            }
+            CacheType::Redis(redis_config) => return get_redis_storage(redis_config),
             #[cfg(feature = "s3")]
-            CacheType::S3(c) => {
-                debug!(
-                    "Init s3 cache with bucket {}, endpoint {:?}",
-                    c.bucket, c.endpoint
-                );
-                let storage_builder =
-                    S3Cache::new(c.bucket.clone(), c.key_prefix.clone(), c.no_credentials);
-                let storage = storage_builder
-                    .with_region(c.region.clone())
-                    .with_endpoint(c.endpoint.clone())
-                    .with_use_ssl(c.use_ssl)
-                    .with_server_side_encryption(c.server_side_encryption)
-                    .with_enable_virtual_host_style(c.enable_virtual_host_style)
-                    .build()
-                    .map_err(|err| anyhow!("create s3 cache failed: {err:?}"))?;
-
-                return Ok(Arc::new(storage));
-            }
+            CacheType::S3(s3_config) => return get_s3_storage(s3_config),
             #[cfg(feature = "webdav")]
-            CacheType::Webdav(c) => {
-                debug!("Init webdav cache with endpoint {}", c.endpoint);
-
-                let storage = WebdavCache::build(
-                    &c.endpoint,
-                    &c.key_prefix,
-                    c.username.as_deref(),
-                    c.password.as_deref(),
-                    c.token.as_deref(),
-                )
-                .map_err(|err| anyhow!("create webdav cache failed: {err:?}"))?;
-
-                return Ok(Arc::new(storage));
-            }
+            CacheType::Webdav(webdav_config) => return get_webdav_storage(webdav_config),
             #[cfg(feature = "oss")]
-            CacheType::OSS(c) => {
-                debug!(
-                    "Init oss cache with bucket {}, endpoint {:?}",
-                    c.bucket, c.endpoint
-                );
-
-                let storage = OSSCache::build(
-                    &c.bucket,
-                    &c.key_prefix,
-                    c.endpoint.as_deref(),
-                    c.no_credentials,
-                )
-                .map_err(|err| anyhow!("create oss cache failed: {err:?}"))?;
-
-                return Ok(Arc::new(storage));
-            }
+            CacheType::OSS(oss_config) => return get_oss_storage(oss_config),
             #[cfg(feature = "cos")]
             CacheType::COS(c) => {
                 debug!(
@@ -346,17 +337,9 @@ fn get_preprocessor_cache_storage(config: &Config) -> Result<Arc<dyn Preprocesso
         }
     }
 
-    let (dir, size) = (&config.fallback_cache.dir, config.fallback_cache.size);
-    let preprocessor_cache_mode_config = config.fallback_cache.preprocessor_cache_mode;
-    let rw_mode = config.fallback_cache.rw_mode.into();
-    debug!("Init disk cache with dir {:?}, size {}", dir, size);
-    Ok(Arc::new(DiskCache::new(
-        dir,
-        size,
-        pool,
-        preprocessor_cache_mode_config,
-        rw_mode,
-    )))
+    get_disk_storage(&config.fallback_cache, pool)
+}
+
 pub fn get_storage_from_config(
     config: &Config,
     pool: &tokio::runtime::Handle,
