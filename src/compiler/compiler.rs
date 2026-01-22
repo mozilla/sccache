@@ -1855,7 +1855,8 @@ where
 mod test {
     use super::*;
     use crate::cache::disk::DiskCache;
-    use crate::cache::{CacheMode, CacheRead, PreprocessorCacheModeConfig};
+    use crate::cache::{CacheMode, CacheRead};
+    use crate::config::PreprocessorCacheModeConfig;
     use crate::mock_command::*;
     use crate::test::mock_storage::MockStorage;
     use crate::test::utils::*;

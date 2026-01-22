@@ -12,10 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::cache::CacheMode;
 use crate::cache::disk::DiskCache;
-use crate::cache::{CacheMode, PreprocessorCacheModeConfig};
 use crate::client::connect_to_server;
 use crate::commands::{do_compile, request_shutdown, request_stats};
+use crate::config::PreprocessorCacheModeConfig;
 use crate::jobserver::Client;
 use crate::mock_command::*;
 use crate::server::{DistClientContainer, SccacheServer, ServerMessage};

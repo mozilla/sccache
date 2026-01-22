@@ -32,7 +32,6 @@ use std::str::FromStr;
 use std::sync::{LazyLock, Mutex};
 use std::{collections::HashMap, fmt};
 
-pub use crate::cache::PreprocessorCacheModeConfig;
 use crate::errors::*;
 
 static CACHED_CONFIG_PATH: LazyLock<PathBuf> = LazyLock::new(CachedConfig::file_config_path);
@@ -184,6 +183,57 @@ pub struct AzureCacheConfig {
     pub connection_string: String,
     pub container: String,
     pub key_prefix: String,
+}
+
+/// Configuration switches for preprocessor cache mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(default)]
+pub struct PreprocessorCacheModeConfig {
+    /// Whether to use preprocessor cache mode entirely
+    pub use_preprocessor_cache_mode: bool,
+    /// If false (default), only compare header files by hashing their contents.
+    /// If true, will use size + ctime + mtime to check whether a file has changed.
+    /// See other flags below for more control over this behavior.
+    pub file_stat_matches: bool,
+    /// If true (default), uses the ctime (file status change on UNIX,
+    /// creation time on Windows) to check that a file has/hasn't changed.
+    /// Can be useful to disable when backdating modification times
+    /// in a controlled manner.
+    pub use_ctime_for_stat: bool,
+    /// If true, ignore `__DATE__`, `__TIME__` and `__TIMESTAMP__` being present
+    /// in the source code. Will speed up preprocessor cache mode,
+    /// but can result in false positives.
+    pub ignore_time_macros: bool,
+    /// If true, preprocessor cache mode will not cache system headers, only
+    /// add them to the hash.
+    pub skip_system_headers: bool,
+    /// If true (default), will add the current working directory in the hash to
+    /// distinguish two compilations from different directories.
+    pub hash_working_directory: bool,
+}
+
+impl Default for PreprocessorCacheModeConfig {
+    fn default() -> Self {
+        Self {
+            use_preprocessor_cache_mode: false,
+            file_stat_matches: false,
+            use_ctime_for_stat: true,
+            ignore_time_macros: false,
+            skip_system_headers: false,
+            hash_working_directory: true,
+        }
+    }
+}
+
+impl PreprocessorCacheModeConfig {
+    /// Return a default [`Self`], but with the cache active.
+    pub fn activated() -> Self {
+        Self {
+            use_preprocessor_cache_mode: true,
+            ..Default::default()
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]

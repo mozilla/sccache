@@ -12,7 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cache::{Cache, CacheWrite, PreprocessorCacheModeConfig, Storage};
+use crate::cache::{Cache, CacheWrite, Storage};
+use crate::config::PreprocessorCacheModeConfig;
 use crate::errors::*;
 use async_trait::async_trait;
 use futures::channel::mpsc;

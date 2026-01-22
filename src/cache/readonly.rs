@@ -17,9 +17,8 @@ use async_trait::async_trait;
 
 use crate::cache::{Cache, CacheMode, CacheWrite, Storage};
 use crate::compiler::PreprocessorCacheEntry;
+use crate::config::PreprocessorCacheModeConfig;
 use crate::errors::*;
-
-use super::PreprocessorCacheModeConfig;
 
 pub struct ReadOnlyStorage(pub Arc<dyn Storage>);
 
