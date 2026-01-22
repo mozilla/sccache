@@ -16,6 +16,11 @@ use std::path::Path;
 
 use crate::errors::*;
 
+/// Normalize key `abcdef` into `a/b/c/abcdef`
+pub(in crate::cache) fn normalize_key(key: &str) -> String {
+    format!("{}/{}/{}/{}", &key[0..1], &key[1..2], &key[2..3], &key)
+}
+
 #[cfg(unix)]
 pub(in crate::cache) fn get_file_mode(file: &fs::File) -> Result<Option<u32>> {
     use std::os::unix::fs::MetadataExt;
@@ -41,4 +46,17 @@ pub(in crate::cache) fn set_file_mode(path: &Path, mode: u32) -> Result<()> {
 #[allow(clippy::unnecessary_wraps)]
 pub(in crate::cache) fn set_file_mode(_path: &Path, _mode: u32) -> Result<()> {
     Ok(())
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_normalize_key() {
+        assert_eq!(
+            normalize_key("0123456789abcdef0123456789abcdef"),
+            "0/1/2/0123456789abcdef0123456789abcdef"
+        );
+    }
 }

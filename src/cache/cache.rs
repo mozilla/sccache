@@ -45,6 +45,7 @@ use crate::config::Config;
     feature = "oss",
     feature = "cos"
 ))]
+use crate::cache::utils::normalize_key;
 use crate::config::{self, CacheType};
 use async_trait::async_trait;
 
@@ -332,11 +333,6 @@ impl Storage for RemoteStorage {
     }
 }
 
-/// Normalize key `abcdef` into `a/b/c/abcdef`
-pub(in crate::cache) fn normalize_key(key: &str) -> String {
-    format!("{}/{}/{}/{}", &key[0..1], &key[1..2], &key[2..3], &key)
-}
-
 /// Build a single cache storage from CacheType
 /// Helper function used by storage_from_config for both single and multi-level caches
 #[cfg(any(
@@ -586,14 +582,6 @@ mod test {
     use super::*;
     use crate::config::CacheModeConfig;
     use fs_err as fs;
-
-    #[test]
-    fn test_normalize_key() {
-        assert_eq!(
-            normalize_key("0123456789abcdef0123456789abcdef"),
-            "0/1/2/0123456789abcdef0123456789abcdef"
-        );
-    }
 
     #[test]
     fn test_read_write_mode_local() {
