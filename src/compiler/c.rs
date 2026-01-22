@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cache::{FileObjectSource, PreprocessorCacheModeConfig, Storage};
+use crate::cache::{FileObjectSource, Storage};
 use crate::compiler::preprocessor_cache::preprocessor_cache_entry_hash_key;
 use crate::compiler::{
     Cacheable, ColorMode, Compilation, CompileCommand, Compiler, CompilerArguments, CompilerHasher,
@@ -20,6 +20,7 @@ use crate::compiler::{
 };
 #[cfg(feature = "dist-client")]
 use crate::compiler::{DistPackagers, NoopOutputsRewriter};
+use crate::config::PreprocessorCacheModeConfig;
 use crate::dist;
 #[cfg(feature = "dist-client")]
 use crate::dist::pkg;
