@@ -1758,7 +1758,7 @@ key_prefix = "cosprefix"
                     hash_working_directory: true,
                     max_size: 1028576,
                     rw_mode: CacheModeConfig::ReadWrite,
-                    dir: "/tmp/.cache/sccache-preprocessor".into(),
+                    dir: Some("/tmp/.cache/sccache-preprocessor".into()),
                 }),
             },
             dist: DistConfig {
