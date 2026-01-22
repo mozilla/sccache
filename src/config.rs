@@ -217,7 +217,7 @@ pub struct PreprocessorCacheModeConfig {
     /// Readonly mode for preprocessor cache
     pub rw_mode: CacheModeConfig,
     /// Cache directory
-    pub dir: PathBuf,
+    pub dir: Option<PathBuf>,
 }
 
 impl Default for PreprocessorCacheModeConfig {
@@ -231,7 +231,7 @@ impl Default for PreprocessorCacheModeConfig {
             hash_working_directory: true,
             max_size: default_disk_cache_size(),
             rw_mode: CacheModeConfig::ReadWrite,
-            dir: default_disk_cache_dir(),
+            dir: None,
         }
     }
 }
@@ -492,7 +492,11 @@ impl CacheConfigs {
             .or_else(|| cos.map(CacheType::COS));
 
         let fallback = disk.unwrap_or_default();
-        let preprocessor_config = preprocessor.unwrap_or_default();
+        let mut preprocessor_config = preprocessor.unwrap_or_default();
+
+        if preprocessor_config.dir.is_none() {
+            preprocessor_config.dir = Some(fallback.dir.join("preprocessor"));
+        }
 
         (cache_type, fallback, preprocessor_config)
     }
