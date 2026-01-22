@@ -67,10 +67,12 @@ test_backend() {
 
     echo "Cache hits for $backend_name: $CACHE_HITS"
 
-    if [ "$CACHE_HITS" -gt 0 ]; then
+    SECOND_MISSES=$(echo "$STATS_JSON" | python3 -c "import sys, json; stats = json.load(sys.stdin).get('stats', {}); print(stats.get('cache_misses', {}).get('counts', {}).get('C/C++', 0))")
+
+    if [ "$FIRST_MISSES" == "$SECOND_MISSES" ]; then
         echo "✓ PASS: $backend_name - Basedir test successful"
     else
-        echo "✗ FAIL: $backend_name - No cache hits detected with basedirs"
+        echo "✗ FAIL: $backend_name - Basedir test failed, cache misses did not remain the same: $FIRST_MISSES != $SECOND_MISSES"
         echo "$STATS_JSON" | python3 -m json.tool
         exit 1
     fi
