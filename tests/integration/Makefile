@@ -10,36 +10,36 @@ BACKENDS := redis redis-deprecated memcached memcached-deprecated s3 azblob webd
 TOOLS := gcc clang cmake autotools coverage zstd
 
 # Map backends to their compose profiles
-PROFILE_redis := redis
-PROFILE_redis-deprecated := redis
-PROFILE_memcached := memcached
-PROFILE_memcached-deprecated := memcached
-PROFILE_s3 := s3
+PROFILE_autotools := autotools
 PROFILE_azblob := azblob
-PROFILE_webdav := webdav
-PROFILE_gcc := gcc
+PROFILE_basedirs := basedirs
 PROFILE_clang := clang
 PROFILE_cmake := cmake
-PROFILE_autotools := autotools
 PROFILE_coverage := coverage
+PROFILE_gcc := gcc
+PROFILE_memcached := memcached
+PROFILE_memcached-deprecated := memcached
+PROFILE_redis := redis
+PROFILE_redis-deprecated := redis
+PROFILE_s3 := s3
+PROFILE_webdav := webdav
 PROFILE_zstd := zstd
-PROFILE_basedirs := basedirs
 
 # Map backends to their services
-SERVICES_redis := redis
-SERVICES_redis-deprecated := redis
-SERVICES_memcached := memcached
-SERVICES_memcached-deprecated := memcached
-SERVICES_s3 := minio minio-setup
+SERVICES_autotools :=
 SERVICES_azblob := azurite azurite-setup
-SERVICES_webdav := webdav
-SERVICES_gcc :=
+SERVICES_basedirs := redis memcached minio minio-setup azurite azurite-setup webdav
 SERVICES_clang :=
 SERVICES_cmake :=
-SERVICES_autotools :=
 SERVICES_coverage :=
+SERVICES_gcc :=
+SERVICES_memcached := memcached
+SERVICES_memcached-deprecated := memcached
+SERVICES_redis := redis
+SERVICES_redis-deprecated := redis
+SERVICES_s3 := minio minio-setup
+SERVICES_webdav := webdav
 SERVICES_zstd :=
-SERVICES_basedirs := redis memcached minio minio-setup azurite azurite-setup webdav
 
 help:
 	@echo "sccache Integration Tests"
