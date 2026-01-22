@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::cache_io::*;
 use super::preprocessor_cache::PreprocessorCacheStorage;
 use super::storage::Storage;
 use crate::cache::PreprocessorCache;
@@ -33,129 +32,12 @@ use crate::cache::oss::OSSCache;
 use crate::cache::redis::RedisCache;
 #[cfg(feature = "s3")]
 use crate::cache::s3::S3Cache;
-#[cfg(any(
-    feature = "azure",
-    feature = "gcs",
-    feature = "gha",
-    feature = "memcached",
-    feature = "redis",
-    feature = "s3",
-    feature = "webdav",
-    feature = "oss",
-    feature = "cos"
-))]
-use crate::cache::utils::normalize_key;
 #[cfg(feature = "webdav")]
 use crate::cache::webdav::WebdavCache;
 use crate::config::{self, CacheType};
 use crate::config::{Config, DiskCacheConfig};
 use crate::errors::*;
-use async_trait::async_trait;
 use std::sync::Arc;
-use std::time::Duration;
-
-/// Implement storage for operator.
-#[cfg(any(
-    feature = "azure",
-    feature = "gcs",
-    feature = "gha",
-    feature = "memcached",
-    feature = "redis",
-    feature = "s3",
-    feature = "webdav",
-))]
-#[async_trait]
-impl Storage for opendal::Operator {
-    async fn get(&self, key: &str) -> Result<Cache> {
-        match self.read(&normalize_key(key)).await {
-            Ok(res) => {
-                let hit = CacheRead::from(std::io::Cursor::new(res.to_bytes()))?;
-                Ok(Cache::Hit(hit))
-            }
-            Err(e) if e.kind() == opendal::ErrorKind::NotFound => Ok(Cache::Miss),
-            Err(e) => {
-                warn!("Got unexpected error: {:?}", e);
-                Ok(Cache::Miss)
-            }
-        }
-    }
-
-    async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration> {
-        let start = std::time::Instant::now();
-
-        self.write(&normalize_key(key), entry.finish()?).await?;
-
-        Ok(start.elapsed())
-    }
-
-    async fn check(&self) -> Result<CacheMode> {
-        use opendal::ErrorKind;
-
-        let path = ".sccache_check";
-
-        // Read is required, return error directly if we can't read .
-        match self.read(path).await {
-            Ok(_) => (),
-            // Read not exist file with not found is ok.
-            Err(err) if err.kind() == ErrorKind::NotFound => (),
-            // Tricky Part.
-            //
-            // We tolerate rate limited here to make sccache keep running.
-            // For the worse case, we will miss all the cache.
-            //
-            // In some super rare cases, user could configure storage in wrong
-            // and hitting other services rate limit. There are few things we
-            // can do, so we will print our the error here to make users know
-            // about it.
-            Err(err) if err.kind() == ErrorKind::RateLimited => {
-                eprintln!("cache storage read check: {err:?}, but we decide to keep running");
-            }
-            Err(err) => bail!("cache storage failed to read: {:?}", err),
-        }
-
-        let can_write = match self.write(path, "Hello, World!").await {
-            Ok(_) => true,
-            Err(err) if err.kind() == ErrorKind::AlreadyExists => true,
-            // Tolerate all other write errors because we can do read at least.
-            Err(err) => {
-                eprintln!("storage write check failed: {err:?}");
-                false
-            }
-        };
-
-        let mode = if can_write {
-            CacheMode::ReadWrite
-        } else {
-            CacheMode::ReadOnly
-        };
-
-        debug!("storage check result: {mode:?}");
-
-        Ok(mode)
-    }
-
-    fn location(&self) -> String {
-        let meta = self.info();
-        format!(
-            "{}, name: {}, prefix: {}",
-            meta.scheme(),
-            meta.name(),
-            meta.root()
-        )
-    }
-
-    async fn current_size(&self) -> Result<Option<u64>> {
-        Ok(None)
-    }
-
-    async fn max_size(&self) -> Result<Option<u64>> {
-        Ok(None)
-    }
-}
-
-fn get_preprocessor_cache_storage(config: &Config) -> Result<Arc<dyn PreprocessorCacheStorage>> {
-    Ok(Arc::new(PreprocessorCache::new(&config.preprocessor_cache)))
-}
 
 #[cfg(feature = "azure")]
 fn get_azure_storage(config: &config::AzureCacheConfig) -> Result<Arc<dyn Storage>> {
@@ -286,6 +168,21 @@ fn get_oss_storage(config: &config::OSSCacheConfig) -> Result<Arc<dyn Storage>> 
     Ok(Arc::new(storage))
 }
 
+#[cfg(feature = "cos")]
+fn get_cos_storage(config: &config::COSCacheConfig) -> Result<Arc<dyn Storage>> {
+    debug!(
+        "Init cos cache with bucket {}, endpoint {:?}",
+        config.bucket, config.endpoint
+    );
+    let storage = COSCache::build(
+        &config.bucket,
+        &config.key_prefix,
+        config.endpoint.as_deref(),
+    )
+    .map_err(|err| anyhow!("create cos cache failed: {err:?}"))?;
+    Ok(Arc::new(storage))
+}
+
 fn get_disk_storage(
     config: &DiskCacheConfig,
     pool: &tokio::runtime::Handle,
@@ -319,17 +216,7 @@ fn get_storage(config: &Config, pool: &tokio::runtime::Handle) -> Result<Arc<dyn
             #[cfg(feature = "oss")]
             CacheType::OSS(oss_config) => return get_oss_storage(oss_config),
             #[cfg(feature = "cos")]
-            CacheType::COS(c) => {
-                debug!(
-                    "Init cos cache with bucket {}, endpoint {:?}",
-                    c.bucket, c.endpoint
-                );
-
-                let storage = COSCache::build(&c.bucket, &c.key_prefix, c.endpoint.as_deref())
-                    .map_err(|err| anyhow!("create cos cache failed: {err:?}"))?;
-
-                return Ok(Arc::new(storage));
-            }
+            CacheType::COS(c) => return get_cos_storage(c),
             #[allow(unreachable_patterns)]
             // if we build only with `cargo build --no-default-features`
             // we only want to use sccache with a local cache (no remote storage)
@@ -340,6 +227,12 @@ fn get_storage(config: &Config, pool: &tokio::runtime::Handle) -> Result<Arc<dyn
     get_disk_storage(&config.fallback_cache, pool)
 }
 
+/// Get preprocessor cache storage from configuration.
+fn get_preprocessor_cache_storage(config: &Config) -> Result<Arc<dyn PreprocessorCacheStorage>> {
+    Ok(Arc::new(PreprocessorCache::new(&config.preprocessor_cache)))
+}
+
+/// Get both general cache storage and preprocessor cache storage from configuration.
 pub fn get_storage_from_config(
     config: &Config,
     pool: &tokio::runtime::Handle,
@@ -353,6 +246,7 @@ pub fn get_storage_from_config(
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::cache::CacheWrite;
     use crate::compiler::PreprocessorCacheEntry;
     use crate::config::CacheModeConfig;
     use fs_err as fs;
