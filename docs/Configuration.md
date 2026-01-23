@@ -6,6 +6,9 @@
 # If specified, wait this long for the server to start up.
 server_startup_timeout_ms = 10000
 
+# If specified, write JSON-formatted stats to this file after each compile operation.
+cache_stats_file = "/home/user/.cache/sccache-stats.json"
+
 [dist]
 # where to find the scheduler
 scheduler_url = "http://1.2.3.4:10600"

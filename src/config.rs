@@ -600,6 +600,7 @@ pub struct FileConfig {
     pub cache: CacheConfigs,
     pub dist: DistConfig,
     pub server_startup_timeout_ms: Option<u64>,
+    pub cache_stats_file: Option<PathBuf>,
 }
 
 // If the file doesn't exist or we can't read it, log the issue and proceed. If the
@@ -1009,6 +1010,7 @@ pub struct Config {
     pub fallback_cache: DiskCacheConfig,
     pub dist: DistConfig,
     pub server_startup_timeout: Option<std::time::Duration>,
+    pub cache_stats_file: Option<PathBuf>,
 }
 
 impl Config {
@@ -1030,6 +1032,7 @@ impl Config {
             cache,
             dist,
             server_startup_timeout_ms,
+            cache_stats_file,
         } = file_conf;
         conf_caches.merge(cache);
 
@@ -1045,6 +1048,7 @@ impl Config {
             fallback_cache,
             dist,
             server_startup_timeout,
+            cache_stats_file,
         }
     }
 }
@@ -1344,6 +1348,7 @@ fn config_overrides() {
         },
         dist: Default::default(),
         server_startup_timeout_ms: None,
+        cache_stats_file: None,
     };
 
     assert_eq!(
@@ -1366,6 +1371,7 @@ fn config_overrides() {
             },
             dist: Default::default(),
             server_startup_timeout: None,
+            cache_stats_file: None,
         }
     );
 }
@@ -1515,6 +1521,7 @@ fn test_gcs_service_account() {
 fn full_toml_parse() {
     const CONFIG_STR: &str = r#"
 server_startup_timeout_ms = 10000
+cache_stats_file = "/home/user/.cache/sccache-stats.json"
 
 [dist]
 # where to find the scheduler
@@ -1685,6 +1692,7 @@ key_prefix = "cosprefix"
                 rewrite_includes_only: false,
             },
             server_startup_timeout_ms: Some(10000),
+            cache_stats_file: Some(PathBuf::from("/home/user/.cache/sccache-stats.json"))
         }
     )
 }
@@ -1777,6 +1785,7 @@ size = "7g"
                 ..Default::default()
             },
             server_startup_timeout_ms: None,
+            cache_stats_file: None,
         }
     );
 }
