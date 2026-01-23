@@ -105,3 +105,6 @@ Configuration options and their default values:
 
 See where to write the config in [the configuration doc](Configuration.md).
 
+`sccache --debug-preprocessor-cache` can be used to investigate the content of the preprocessor cache.
+
+The preprocessor cache uses random read and write; thus, certain file systems, including `s3fs`, are not supported.
