@@ -33,7 +33,7 @@ dir = "/tmp/.cache/sccache"
 size = 7516192768 # 7 GiBytes
 
 # See the local docs on more explanations about this mode
-[cache.disk.preprocessor_cache_mode]
+[cache.preprocessor_cache_mode]
 # Whether to use the preprocessor cache mode
 use_preprocessor_cache_mode = true
 # Whether to use file times to check for changes
@@ -46,6 +46,12 @@ ignore_time_macros = false
 skip_system_headers = false
 # Whether hash the current working directory
 hash_working_directory = true
+# Maximum size of the cache
+max_size = 1048576
+# ReadOnly/ReadWrite mode
+rw_mode = "ReadWrite"
+# Path to the cache
+dir = "/tmp/.cache/sccache-preprocess/"
 
 [cache.gcs]
 # optional oauth url
