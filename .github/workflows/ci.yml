@@ -53,8 +53,13 @@ jobs:
       - name: Clone repository
         uses: actions/checkout@v5
 
+      - name: Install taplo-cli
+        uses: taiki-e/install-action@v2
+        with:
+          tool: taplo-cli
+
       - name: Check
-        run: npx --yes @taplo/cli fmt --check
+        run: taplo fmt --check --diff
 
 
 
