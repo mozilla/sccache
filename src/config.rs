@@ -1431,7 +1431,10 @@ fn config_overrides() {
                 password: Some("secret".to_owned()),
                 ..Default::default()
             }),),
-            preprocessor_cache: PreprocessorCacheModeConfig::default(),
+            preprocessor_cache: PreprocessorCacheModeConfig {
+                dir: Some("/env-cache/preprocessor".into()),
+                ..Default::default()
+            },
             fallback_cache: DiskCacheConfig {
                 dir: "/env-cache".into(),
                 size: 5,

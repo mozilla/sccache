@@ -60,12 +60,14 @@ pub(crate) struct PreprocessorCache {
 impl PreprocessorCache {
     pub fn new(config: &PreprocessorCacheModeConfig) -> PreprocessorCache {
         debug!("Creating PreprocessorCache with config: {:?}", config);
-        if config.dir.is_none() {
-            panic!("PreprocessorCacheModeConfig.dir must be set");
-        }
-        let config_dir = config.dir.as_ref().unwrap().clone();
         PreprocessorCache {
             cache: if config.use_preprocessor_cache_mode {
+                assert!(
+                    config.dir.is_some(),
+                    "Preprocessor cache dir must be set when using preprocessor cache mode"
+                );
+                let config_dir = config.dir.as_ref().unwrap().clone();
+                debug!("Using preprocessor cache dir: {:?}", config_dir);
                 Some(Arc::new(Mutex::new(LazyDiskCache::Uninit {
                     root: config_dir.into_os_string(),
                     max_size: config.max_size,

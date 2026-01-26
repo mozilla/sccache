@@ -2461,6 +2461,7 @@ LLVM version: 6.0",
         let preprocessor_cache_storage = if preprocessor_cache_mode {
             Arc::new(PreprocessorCache::new(&PreprocessorCacheModeConfig {
                 use_preprocessor_cache_mode: true,
+                dir: Some(f.tempdir.path().join("preprocessor")),
                 ..Default::default()
             }))
         } else {
@@ -2604,6 +2605,7 @@ LLVM version: 6.0",
         let preprocessor_cache_storage = if preprocessor_cache_mode {
             Arc::new(PreprocessorCache::new(&PreprocessorCacheModeConfig {
                 use_preprocessor_cache_mode: true,
+                dir: Some(f.tempdir.path().join("preprocessor")),
                 ..Default::default()
             }))
         } else {
@@ -2932,6 +2934,7 @@ LLVM version: 6.0",
         let preprocessor_cache_storage = if preprocessor_cache_mode {
             Arc::new(PreprocessorCache::new(&PreprocessorCacheModeConfig {
                 use_preprocessor_cache_mode: true,
+                dir: Some(f.tempdir.path().join("preprocessor")),
                 ..Default::default()
             }))
         } else {
@@ -3074,6 +3077,7 @@ LLVM version: 6.0",
         let preprocessor_cache_storage = if preprocessor_cache_mode {
             Arc::new(PreprocessorCache::new(&PreprocessorCacheModeConfig {
                 use_preprocessor_cache_mode: true,
+                dir: Some(f.tempdir.path().join("preprocessor")),
                 ..Default::default()
             }))
         } else {
@@ -3184,6 +3188,7 @@ LLVM version: 6.0",
         let preprocessor_cache_storage = if preprocessor_cache_mode {
             Arc::new(PreprocessorCache::new(&PreprocessorCacheModeConfig {
                 use_preprocessor_cache_mode: true,
+                dir: Some(f.tempdir.path().join("preprocessor")),
                 ..Default::default()
             }))
         } else {
