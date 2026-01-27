@@ -48,5 +48,5 @@ pub mod webdav;
 ))]
 pub(crate) mod http_client;
 
-pub use crate::cache::lazy_disk_cache::*;
 pub use crate::cache::cache::*;
+pub use crate::cache::lazy_disk_cache::*;
