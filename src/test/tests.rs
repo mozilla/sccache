@@ -12,10 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::cache::CacheMode;
 use crate::cache::disk::DiskCache;
-use crate::cache::{CacheMode, PreprocessorCacheModeConfig};
 use crate::client::connect_to_server;
 use crate::commands::{do_compile, request_shutdown, request_stats};
+use crate::config::PreprocessorCacheModeConfig;
 use crate::jobserver::Client;
 use crate::mock_command::*;
 use crate::server::{DistClientContainer, SccacheServer, ServerMessage};
@@ -83,12 +84,28 @@ where
             &cache_dir,
             cache_size,
             runtime.handle(),
-            PreprocessorCacheModeConfig::default(),
             CacheMode::ReadWrite,
         ));
+        let preprocessor_cache_storage =
+            Arc::new(crate::cache::preprocessor_cache::PreprocessorCache::new(
+                &PreprocessorCacheModeConfig {
+                    dir: Some(cache_dir),
+                    max_size: cache_size / 10,
+                    use_preprocessor_cache_mode: true,
+                    ..Default::default()
+                },
+            ));
 
         let client = Client::new();
-        let srv = SccacheServer::new(0, runtime, client, dist_client, storage).unwrap();
+        let srv = SccacheServer::new(
+            0,
+            runtime,
+            client,
+            dist_client,
+            storage,
+            preprocessor_cache_storage,
+        )
+        .unwrap();
         let mut srv: SccacheServer<_, Arc<Mutex<MockCommandCreator>>> = srv;
         let addr = srv.local_addr().unwrap();
         assert!(matches!(addr, crate::net::SocketAddr::Net(a) if a.port() > 0));

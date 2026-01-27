@@ -13,7 +13,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cache::{Cache, CacheWrite, DecompressionFailure, FileObjectSource, Storage};
+use crate::cache::{
+    Cache, CacheWrite, DecompressionFailure, FileObjectSource, PreprocessorCacheStorage, Storage,
+};
 use crate::compiler::args::*;
 use crate::compiler::c::{CCompiler, CCompilerKind};
 use crate::compiler::cicc::Cicc;
@@ -473,6 +475,7 @@ where
         pool: &tokio::runtime::Handle,
         rewrite_includes_only: bool,
         storage: Arc<dyn Storage>,
+        preprocessor_cache_storage: Arc<dyn PreprocessorCacheStorage>,
         cache_control: CacheControl,
     ) -> Result<HashResult<T>>;
 
@@ -488,6 +491,7 @@ where
         dist_client: Option<Arc<dyn dist::Client>>,
         creator: T,
         storage: Arc<dyn Storage>,
+        preprocessor_cache_storage: Arc<dyn PreprocessorCacheStorage>,
         arguments: Vec<OsString>,
         cwd: PathBuf,
         env_vars: Vec<(OsString, OsString)>,
@@ -511,6 +515,7 @@ where
                 &pool,
                 rewrite_includes_only,
                 storage.clone(),
+                preprocessor_cache_storage.clone(),
                 cache_control,
             )
             .await;
@@ -669,12 +674,14 @@ where
                     // This compilation only had enough information to find and use a cache entry (or to
                     // run a local compile, which doesn't need locally preprocessed code).
                     // For distributed compilation, the local preprocessing step still needs to be done.
+
                     return self
                         .get_cached_or_compile(
                             service,
                             dist_client,
                             creator,
                             storage,
+                            preprocessor_cache_storage,
                             arguments,
                             cwd,
                             env_vars,
@@ -1855,8 +1862,10 @@ where
 mod test {
     use super::*;
     use crate::cache::disk::DiskCache;
-    use crate::cache::{CacheMode, CacheRead, PreprocessorCacheModeConfig};
+    use crate::cache::{CacheMode, CacheRead, PreprocessorCache};
+    use crate::config::PreprocessorCacheModeConfig;
     use crate::mock_command::*;
+    use crate::test::mock_preprocessor_cache::MockPreprocessorCacheStorage;
     use crate::test::mock_storage::MockStorage;
     use crate::test::utils::*;
     use fs::File;
@@ -2266,7 +2275,8 @@ LLVM version: 6.0",
                         false,
                         pool,
                         false,
-                        Arc::new(MockStorage::new(None, preprocessor_cache_mode)),
+                        Arc::new(MockStorage::new(None)),
+                        Arc::new(MockPreprocessorCacheStorage::new(preprocessor_cache_mode)),
                         CacheControl::Default,
                     )
                     .wait()
@@ -2334,7 +2344,8 @@ LLVM version: 6.0",
                         false,
                         pool,
                         false,
-                        Arc::new(MockStorage::new(None, preprocessor_cache_mode)),
+                        Arc::new(MockStorage::new(None)),
+                        Arc::new(MockPreprocessorCacheStorage::new(preprocessor_cache_mode)),
                         CacheControl::Default,
                     )
                     .wait()
@@ -2400,7 +2411,8 @@ LLVM version: 6.0",
                         false,
                         pool,
                         false,
-                        Arc::new(MockStorage::new(None, preprocessor_cache_mode)),
+                        Arc::new(MockStorage::new(None)),
+                        Arc::new(MockPreprocessorCacheStorage::new(preprocessor_cache_mode)),
                         CacheControl::Default,
                     )
                     .wait()
@@ -2444,16 +2456,28 @@ LLVM version: 6.0",
             f.tempdir.path().join("cache"),
             u64::MAX,
             &pool,
-            PreprocessorCacheModeConfig {
-                use_preprocessor_cache_mode: preprocessor_cache_mode,
-                ..Default::default()
-            },
             CacheMode::ReadWrite,
         );
+        let preprocessor_cache_storage = if preprocessor_cache_mode {
+            Arc::new(PreprocessorCache::new(&PreprocessorCacheModeConfig {
+                use_preprocessor_cache_mode: true,
+                dir: Some(f.tempdir.path().join("preprocessor")),
+                ..Default::default()
+            }))
+        } else {
+            Arc::new(PreprocessorCache::new(&PreprocessorCacheModeConfig {
+                use_preprocessor_cache_mode: false,
+                ..Default::default()
+            }))
+        };
         // Write a dummy input file so the preprocessor cache mode can work
         std::fs::write(f.tempdir.path().join("foo.c"), "whatever").unwrap();
         let storage = Arc::new(storage);
-        let service = server::SccacheService::mock_with_storage(storage.clone(), pool.clone());
+        let service = server::SccacheService::mock_with_storage(
+            storage.clone(),
+            preprocessor_cache_storage.clone(),
+            pool.clone(),
+        );
 
         // Pretend to be GCC.
         next_command(
@@ -2506,6 +2530,7 @@ LLVM version: 6.0",
                         None,
                         creator.clone(),
                         storage.clone(),
+                        preprocessor_cache_storage.clone(),
                         arguments.clone(),
                         cwd.to_path_buf(),
                         vec![],
@@ -2543,6 +2568,7 @@ LLVM version: 6.0",
                         None,
                         creator,
                         storage,
+                        preprocessor_cache_storage,
                         arguments,
                         cwd.to_path_buf(),
                         vec![],
@@ -2574,12 +2600,20 @@ LLVM version: 6.0",
             f.tempdir.path().join("cache"),
             u64::MAX,
             &pool,
-            PreprocessorCacheModeConfig {
-                use_preprocessor_cache_mode: preprocessor_cache_mode,
-                ..Default::default()
-            },
             CacheMode::ReadWrite,
         );
+        let preprocessor_cache_storage = if preprocessor_cache_mode {
+            Arc::new(PreprocessorCache::new(&PreprocessorCacheModeConfig {
+                use_preprocessor_cache_mode: true,
+                dir: Some(f.tempdir.path().join("preprocessor")),
+                ..Default::default()
+            }))
+        } else {
+            Arc::new(PreprocessorCache::new(&PreprocessorCacheModeConfig {
+                use_preprocessor_cache_mode: false,
+                ..Default::default()
+            }))
+        };
         // Write a dummy input file so the preprocessor cache mode can work
         std::fs::write(f.tempdir.path().join("foo.c"), "whatever").unwrap();
         let storage = Arc::new(storage);
@@ -2618,6 +2652,7 @@ LLVM version: 6.0",
         let service = server::SccacheService::mock_with_dist_client(
             dist_client.clone(),
             storage.clone(),
+            preprocessor_cache_storage.clone(),
             pool.clone(),
         );
 
@@ -2635,6 +2670,7 @@ LLVM version: 6.0",
                         Some(dist_client.clone()),
                         creator.clone(),
                         storage.clone(),
+                        preprocessor_cache_storage.clone(),
                         arguments.clone(),
                         cwd.to_path_buf(),
                         vec![],
@@ -2672,6 +2708,7 @@ LLVM version: 6.0",
                         Some(dist_client.clone()),
                         creator,
                         storage,
+                        preprocessor_cache_storage,
                         arguments,
                         cwd.to_path_buf(),
                         vec![],
@@ -2700,9 +2737,15 @@ LLVM version: 6.0",
         let gcc = f.mk_bin("gcc").unwrap();
         let runtime = Runtime::new().unwrap();
         let pool = runtime.handle().clone();
-        let storage = MockStorage::new(None, preprocessor_cache_mode);
+        let storage = MockStorage::new(None);
         let storage: Arc<MockStorage> = Arc::new(storage);
-        let service = server::SccacheService::mock_with_storage(storage.clone(), pool.clone());
+        let preprocessor_cache_storage =
+            Arc::new(MockPreprocessorCacheStorage::new(preprocessor_cache_mode));
+        let service = server::SccacheService::mock_with_storage(
+            storage.clone(),
+            preprocessor_cache_storage.clone(),
+            pool.clone(),
+        );
 
         // Write a dummy input file so the preprocessor cache mode can work
         std::fs::write(f.tempdir.path().join("foo.c"), "whatever").unwrap();
@@ -2757,6 +2800,7 @@ LLVM version: 6.0",
                 None,
                 creator,
                 storage,
+                preprocessor_cache_storage,
                 arguments.clone(),
                 cwd.to_path_buf(),
                 vec![],
@@ -2793,9 +2837,15 @@ LLVM version: 6.0",
         std::fs::write(f.tempdir.path().join("foo.c"), "whatever").unwrap();
         // Make our storage wait 2ms for each get/put operation.
         let storage_delay = Duration::from_millis(2);
-        let storage = MockStorage::new(Some(storage_delay), preprocessor_cache_mode);
+        let storage = MockStorage::new(Some(storage_delay));
         let storage: Arc<MockStorage> = Arc::new(storage);
-        let service = server::SccacheService::mock_with_storage(storage.clone(), pool.clone());
+        let preprocessor_cache_storage =
+            Arc::new(MockPreprocessorCacheStorage::new(preprocessor_cache_mode));
+        let service = server::SccacheService::mock_with_storage(
+            storage.clone(),
+            preprocessor_cache_storage.clone(),
+            pool.clone(),
+        );
         // Pretend to be GCC.
         next_command(
             &creator,
@@ -2849,6 +2899,7 @@ LLVM version: 6.0",
                 None,
                 creator,
                 storage,
+                preprocessor_cache_storage,
                 arguments.clone(),
                 cwd.to_path_buf(),
                 vec![],
@@ -2877,14 +2928,26 @@ LLVM version: 6.0",
             f.tempdir.path().join("cache"),
             u64::MAX,
             &pool,
-            PreprocessorCacheModeConfig {
-                use_preprocessor_cache_mode: preprocessor_cache_mode,
-                ..Default::default()
-            },
             CacheMode::ReadWrite,
         );
         let storage = Arc::new(storage);
-        let service = server::SccacheService::mock_with_storage(storage.clone(), pool.clone());
+        let preprocessor_cache_storage = if preprocessor_cache_mode {
+            Arc::new(PreprocessorCache::new(&PreprocessorCacheModeConfig {
+                use_preprocessor_cache_mode: true,
+                dir: Some(f.tempdir.path().join("preprocessor")),
+                ..Default::default()
+            }))
+        } else {
+            Arc::new(PreprocessorCache::new(&PreprocessorCacheModeConfig {
+                use_preprocessor_cache_mode: false,
+                ..Default::default()
+            }))
+        };
+        let service = server::SccacheService::mock_with_storage(
+            storage.clone(),
+            preprocessor_cache_storage.clone(),
+            pool.clone(),
+        );
         // Write a dummy input file so the preprocessor cache mode can work
         std::fs::write(f.tempdir.path().join("foo.c"), "whatever").unwrap();
         // Pretend to be GCC.
@@ -2942,6 +3005,7 @@ LLVM version: 6.0",
                         None,
                         creator.clone(),
                         storage.clone(),
+                        preprocessor_cache_storage.clone(),
                         arguments.clone(),
                         cwd.to_path_buf(),
                         vec![],
@@ -2971,6 +3035,7 @@ LLVM version: 6.0",
                 None,
                 creator,
                 storage,
+                preprocessor_cache_storage,
                 arguments,
                 cwd.to_path_buf(),
                 vec![],
@@ -3006,14 +3071,26 @@ LLVM version: 6.0",
             f.tempdir.path().join("cache"),
             u64::MAX,
             &pool,
-            PreprocessorCacheModeConfig {
-                use_preprocessor_cache_mode: preprocessor_cache_mode,
-                ..Default::default()
-            },
             CacheMode::ReadWrite,
         );
         let storage = Arc::new(storage);
-        let service = server::SccacheService::mock_with_storage(storage.clone(), pool.clone());
+        let preprocessor_cache_storage = if preprocessor_cache_mode {
+            Arc::new(PreprocessorCache::new(&PreprocessorCacheModeConfig {
+                use_preprocessor_cache_mode: true,
+                dir: Some(f.tempdir.path().join("preprocessor")),
+                ..Default::default()
+            }))
+        } else {
+            Arc::new(PreprocessorCache::new(&PreprocessorCacheModeConfig {
+                use_preprocessor_cache_mode: false,
+                ..Default::default()
+            }))
+        };
+        let service = server::SccacheService::mock_with_storage(
+            storage.clone(),
+            preprocessor_cache_storage.clone(),
+            pool.clone(),
+        );
 
         // Pretend to be GCC.  Also inject a fake object file that the subsequent
         // preprocessor failure should remove.
@@ -3064,6 +3141,7 @@ LLVM version: 6.0",
                         None,
                         creator,
                         storage,
+                        preprocessor_cache_storage,
                         arguments,
                         cwd.to_path_buf(),
                         vec![],
@@ -3104,13 +3182,21 @@ LLVM version: 6.0",
             f.tempdir.path().join("cache"),
             u64::MAX,
             &pool,
-            PreprocessorCacheModeConfig {
-                use_preprocessor_cache_mode: preprocessor_cache_mode,
-                ..Default::default()
-            },
             CacheMode::ReadWrite,
         );
         let storage = Arc::new(storage);
+        let preprocessor_cache_storage = if preprocessor_cache_mode {
+            Arc::new(PreprocessorCache::new(&PreprocessorCacheModeConfig {
+                use_preprocessor_cache_mode: true,
+                dir: Some(f.tempdir.path().join("preprocessor")),
+                ..Default::default()
+            }))
+        } else {
+            Arc::new(PreprocessorCache::new(&PreprocessorCacheModeConfig {
+                use_preprocessor_cache_mode: false,
+                ..Default::default()
+            }))
+        };
         // Pretend to be GCC.
         next_command(
             &creator,
@@ -3163,6 +3249,7 @@ LLVM version: 6.0",
             let service = server::SccacheService::mock_with_dist_client(
                 dist_client.clone(),
                 storage.clone(),
+                preprocessor_cache_storage.clone(),
                 pool.clone(),
             );
 
@@ -3176,6 +3263,7 @@ LLVM version: 6.0",
                     Some(dist_client.clone()),
                     creator.clone(),
                     storage.clone(),
+                    preprocessor_cache_storage.clone(),
                     arguments.clone(),
                     cwd.to_path_buf(),
                     vec![],

@@ -32,7 +32,6 @@ use std::str::FromStr;
 use std::sync::{LazyLock, Mutex};
 use std::{collections::HashMap, fmt};
 
-pub use crate::cache::PreprocessorCacheModeConfig;
 use crate::errors::*;
 
 static CACHED_CONFIG_PATH: LazyLock<PathBuf> = LazyLock::new(CachedConfig::file_config_path);
@@ -186,6 +185,67 @@ pub struct AzureCacheConfig {
     pub key_prefix: String,
 }
 
+/// Configuration switches for preprocessor cache mode.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(default)]
+pub struct PreprocessorCacheModeConfig {
+    /// Whether to use preprocessor cache mode entirely
+    pub use_preprocessor_cache_mode: bool,
+    /// If false (default), only compare header files by hashing their contents.
+    /// If true, will use size + ctime + mtime to check whether a file has changed.
+    /// See other flags below for more control over this behavior.
+    pub file_stat_matches: bool,
+    /// If true (default), uses the ctime (file status change on UNIX,
+    /// creation time on Windows) to check that a file has/hasn't changed.
+    /// Can be useful to disable when backdating modification times
+    /// in a controlled manner.
+    pub use_ctime_for_stat: bool,
+    /// If true, ignore `__DATE__`, `__TIME__` and `__TIMESTAMP__` being present
+    /// in the source code. Will speed up preprocessor cache mode,
+    /// but can result in false positives.
+    pub ignore_time_macros: bool,
+    /// If true, preprocessor cache mode will not cache system headers, only
+    /// add them to the hash.
+    pub skip_system_headers: bool,
+    /// If true (default), will add the current working directory in the hash to
+    /// distinguish two compilations from different directories.
+    pub hash_working_directory: bool,
+    /// Maximum space of the cache
+    #[serde(deserialize_with = "deserialize_size_from_str")]
+    pub max_size: u64,
+    /// Readonly mode for preprocessor cache
+    pub rw_mode: CacheModeConfig,
+    /// Cache directory
+    pub dir: Option<PathBuf>,
+}
+
+impl Default for PreprocessorCacheModeConfig {
+    fn default() -> Self {
+        Self {
+            use_preprocessor_cache_mode: false,
+            file_stat_matches: false,
+            use_ctime_for_stat: true,
+            ignore_time_macros: false,
+            skip_system_headers: false,
+            hash_working_directory: true,
+            max_size: default_disk_cache_size(),
+            rw_mode: CacheModeConfig::ReadWrite,
+            dir: None,
+        }
+    }
+}
+
+impl PreprocessorCacheModeConfig {
+    /// Return a default [`Self`], but with the cache active.
+    pub fn activated() -> Self {
+        Self {
+            use_preprocessor_cache_mode: true,
+            ..Default::default()
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[serde(default)]
@@ -193,7 +253,6 @@ pub struct DiskCacheConfig {
     pub dir: PathBuf,
     #[serde(deserialize_with = "deserialize_size_from_str")]
     pub size: u64,
-    pub preprocessor_cache_mode: PreprocessorCacheModeConfig,
     pub rw_mode: CacheModeConfig,
 }
 
@@ -202,7 +261,6 @@ impl Default for DiskCacheConfig {
         DiskCacheConfig {
             dir: default_disk_cache_dir(),
             size: default_disk_cache_size(),
-            preprocessor_cache_mode: PreprocessorCacheModeConfig::activated(),
             rw_mode: CacheModeConfig::ReadWrite,
         }
     }
@@ -395,13 +453,19 @@ pub struct CacheConfigs {
     pub s3: Option<S3CacheConfig>,
     pub webdav: Option<WebdavCacheConfig>,
     pub oss: Option<OSSCacheConfig>,
+    pub preprocessor: Option<PreprocessorCacheModeConfig>,
     pub cos: Option<COSCacheConfig>,
 }
 
 impl CacheConfigs {
-    /// Return cache type in an arbitrary but
-    /// consistent ordering
-    fn into_fallback(self) -> (Option<CacheType>, DiskCacheConfig) {
+    /// Return cache type in an arbitrary but consistent ordering
+    fn into_fallback(
+        self,
+    ) -> (
+        Option<CacheType>,
+        DiskCacheConfig,
+        PreprocessorCacheModeConfig,
+    ) {
         let CacheConfigs {
             azure,
             disk,
@@ -412,6 +476,7 @@ impl CacheConfigs {
             s3,
             webdav,
             oss,
+            preprocessor,
             cos,
         } = self;
 
@@ -427,8 +492,13 @@ impl CacheConfigs {
             .or_else(|| cos.map(CacheType::COS));
 
         let fallback = disk.unwrap_or_default();
+        let mut preprocessor_config = preprocessor.unwrap_or_default();
 
-        (cache_type, fallback)
+        if preprocessor_config.dir.is_none() {
+            preprocessor_config.dir = Some(fallback.dir.join("preprocessor"));
+        }
+
+        (cache_type, fallback, preprocessor_config)
     }
 
     /// Override self with any existing fields from other
@@ -443,6 +513,7 @@ impl CacheConfigs {
             s3,
             webdav,
             oss,
+            preprocessor,
             cos,
         } = other;
 
@@ -475,6 +546,9 @@ impl CacheConfigs {
         }
         if cos.is_some() {
             self.cos = cos;
+        }
+        if preprocessor.is_some() {
+            self.preprocessor = preprocessor;
         }
     }
 }
@@ -922,19 +996,21 @@ fn config_from_env() -> Result<EnvConfig> {
         None
     };
 
+    // ======= Preprocessor cache =======
+    let preprocessor_mode_config = if let Some(value) = bool_from_env_var("SCCACHE_DIRECT")? {
+        Some(PreprocessorCacheModeConfig {
+            use_preprocessor_cache_mode: value,
+            ..Default::default()
+        })
+    } else {
+        None
+    };
+
     // ======= Local =======
     let disk_dir = env::var_os("SCCACHE_DIR").map(PathBuf::from);
     let disk_sz = env::var("SCCACHE_CACHE_SIZE")
         .ok()
         .and_then(|v| parse_size(&v));
-
-    let mut preprocessor_mode_config = PreprocessorCacheModeConfig::activated();
-    let preprocessor_mode_overridden = if let Some(value) = bool_from_env_var("SCCACHE_DIRECT")? {
-        preprocessor_mode_config.use_preprocessor_cache_mode = value;
-        true
-    } else {
-        false
-    };
 
     let (disk_rw_mode, disk_rw_mode_overridden) = match env::var("SCCACHE_LOCAL_RW_MODE")
         .as_ref()
@@ -949,15 +1025,11 @@ fn config_from_env() -> Result<EnvConfig> {
         _ => (CacheModeConfig::ReadWrite, false),
     };
 
-    let any_overridden = disk_dir.is_some()
-        || disk_sz.is_some()
-        || preprocessor_mode_overridden
-        || disk_rw_mode_overridden;
+    let any_overridden = disk_dir.is_some() || disk_sz.is_some() || disk_rw_mode_overridden;
     let disk = if any_overridden {
         Some(DiskCacheConfig {
             dir: disk_dir.unwrap_or_else(default_disk_cache_dir),
             size: disk_sz.unwrap_or_else(default_disk_cache_size),
-            preprocessor_cache_mode: preprocessor_mode_config,
             rw_mode: disk_rw_mode,
         })
     } else {
@@ -974,6 +1046,7 @@ fn config_from_env() -> Result<EnvConfig> {
         s3,
         webdav,
         oss,
+        preprocessor: preprocessor_mode_config,
         cos,
     };
 
@@ -1006,6 +1079,7 @@ fn config_file(env_var: &str, leaf: &str) -> PathBuf {
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Config {
     pub cache: Option<CacheType>,
+    pub preprocessor_cache: PreprocessorCacheModeConfig,
     pub fallback_cache: DiskCacheConfig,
     pub dist: DistConfig,
     pub server_startup_timeout: Option<std::time::Duration>,
@@ -1039,9 +1113,10 @@ impl Config {
         let EnvConfig { cache } = env_conf;
         conf_caches.merge(cache);
 
-        let (caches, fallback_cache) = conf_caches.into_fallback();
+        let (caches, fallback_cache, preprocessor_cache) = conf_caches.into_fallback();
         Self {
             cache: caches,
+            preprocessor_cache,
             fallback_cache,
             dist,
             server_startup_timeout,
@@ -1304,7 +1379,6 @@ fn config_overrides() {
             disk: Some(DiskCacheConfig {
                 dir: "/env-cache".into(),
                 size: 5,
-                preprocessor_cache_mode: Default::default(),
                 rw_mode: CacheModeConfig::ReadWrite,
             }),
             redis: Some(RedisCacheConfig {
@@ -1325,7 +1399,6 @@ fn config_overrides() {
             disk: Some(DiskCacheConfig {
                 dir: "/file-cache".into(),
                 size: 15,
-                preprocessor_cache_mode: Default::default(),
                 rw_mode: CacheModeConfig::ReadWrite,
             }),
             memcached: Some(MemcachedCacheConfig {
@@ -1358,10 +1431,13 @@ fn config_overrides() {
                 password: Some("secret".to_owned()),
                 ..Default::default()
             }),),
+            preprocessor_cache: PreprocessorCacheModeConfig {
+                dir: Some("/env-cache/preprocessor".into()),
+                ..Default::default()
+            },
             fallback_cache: DiskCacheConfig {
                 dir: "/env-cache".into(),
                 size: 5,
-                preprocessor_cache_mode: Default::default(),
                 rw_mode: CacheModeConfig::ReadWrite,
             },
             dist: Default::default(),
@@ -1537,6 +1613,17 @@ token = "secrettoken"
 dir = "/tmp/.cache/sccache"
 size = 7516192768 # 7 GiBytes
 
+[cache.preprocessor]
+use_preprocessor_cache_mode = true
+file_stat_matches = true
+use_ctime_for_stat = true
+ignore_time_macros = false
+skip_system_headers = true
+hash_working_directory = true
+max_size = 1028576 # 1 MiBytes
+rw_mode = "READ_WRITE"
+dir = "/tmp/.cache/sccache-preprocessor"
+
 [cache.gcs]
 rw_mode = "READ_ONLY"
 # rw_mode = "READ_WRITE"
@@ -1606,7 +1693,6 @@ key_prefix = "cosprefix"
                 disk: Some(DiskCacheConfig {
                     dir: PathBuf::from("/tmp/.cache/sccache"),
                     size: 7 * 1024 * 1024 * 1024,
-                    preprocessor_cache_mode: PreprocessorCacheModeConfig::activated(),
                     rw_mode: CacheModeConfig::ReadWrite,
                 }),
                 gcs: Some(GCSCacheConfig {
@@ -1665,6 +1751,17 @@ key_prefix = "cosprefix"
                     bucket: "name".to_owned(),
                     endpoint: Some("cos.na-siliconvalley.myqcloud.com".to_owned()),
                     key_prefix: "cosprefix".into(),
+                }),
+                preprocessor: Some(PreprocessorCacheModeConfig {
+                    use_preprocessor_cache_mode: true,
+                    file_stat_matches: true,
+                    use_ctime_for_stat: true,
+                    ignore_time_macros: false,
+                    skip_system_headers: true,
+                    hash_working_directory: true,
+                    max_size: 1028576,
+                    rw_mode: CacheModeConfig::ReadWrite,
+                    dir: Some("/tmp/.cache/sccache-preprocessor".into()),
                 }),
             },
             dist: DistConfig {
