@@ -1009,6 +1009,7 @@ pub struct Config {
     pub fallback_cache: DiskCacheConfig,
     pub dist: DistConfig,
     pub server_startup_timeout: Option<std::time::Duration>,
+    pub file_conf_path: PathBuf,
 }
 
 impl Config {
@@ -1020,10 +1021,18 @@ impl Config {
             .context("Failed to load config file")?
             .unwrap_or_default();
 
-        Ok(Self::from_env_and_file_configs(env_conf, file_conf))
+        Ok(Self::from_env_and_file_configs(
+            env_conf,
+            file_conf,
+            file_conf_path,
+        ))
     }
 
-    fn from_env_and_file_configs(env_conf: EnvConfig, file_conf: FileConfig) -> Self {
+    fn from_env_and_file_configs(
+        env_conf: EnvConfig,
+        file_conf: FileConfig,
+        file_conf_path: PathBuf,
+    ) -> Self {
         let mut conf_caches: CacheConfigs = Default::default();
 
         let FileConfig {
@@ -1045,6 +1054,7 @@ impl Config {
             fallback_cache,
             dist,
             server_startup_timeout,
+            file_conf_path,
         }
     }
 }
@@ -1067,28 +1077,56 @@ pub struct CachedFileConfig {
 pub struct CachedConfig(());
 
 impl CachedConfig {
+    fn setup_watcher() -> Result<()> {
+        use notify::{recommended_watcher, Event, EventKind, RecursiveMode, Watcher};
+
+        let path = Self::file_config_path();
+        let mut watcher = recommended_watcher({
+            let path = path.clone();
+            move |res: std::result::Result<Event, _>| match res {
+                Ok(ref event) => match &event.kind {
+                    EventKind::Modify(_) => {
+                        info!("Reloading {} due to modification", path.display());
+                        let _res = Self::reload();
+                    }
+                    EventKind::Create(_) => {
+                        info!("Reloading {} due to creation", path.display());
+                        let _res = Self::reload();
+                    }
+                    _ => {}
+                },
+                Err(e) => warn!("Failed to watch due to an error: {:?}", e),
+            }
+        })?;
+        watcher.watch(&path, RecursiveMode::NonRecursive)?;
+        Ok(())
+    }
+
     pub fn load() -> Result<Self> {
         let mut cached_file_config = CACHED_CONFIG.lock().unwrap();
 
         if cached_file_config.is_none() {
             let cfg = Self::load_file_config().context("Unable to initialise cached config")?;
             *cached_file_config = Some(cfg);
+            Self::setup_watcher()?;
         }
         Ok(CachedConfig(()))
     }
+
     pub fn reload() -> Result<Self> {
-        {
-            let mut cached_file_config = CACHED_CONFIG.lock().unwrap();
-            *cached_file_config = None;
-        };
-        Self::load()
+        let mut cached_file_config = CACHED_CONFIG.lock().unwrap();
+        let cfg = Self::load_file_config().context("Unable to initialise cached config")?;
+        cached_file_config.replace(cfg);
+        Ok(CachedConfig(()))
     }
+
     pub fn with<F: FnOnce(&CachedFileConfig) -> T, T>(&self, f: F) -> T {
         let cached_file_config = CACHED_CONFIG.lock().unwrap();
         let cached_file_config = cached_file_config.as_ref().unwrap();
 
         f(cached_file_config)
     }
+
     pub fn with_mut<F: FnOnce(&mut CachedFileConfig)>(&self, f: F) -> Result<()> {
         let mut cached_file_config = CACHED_CONFIG.lock().unwrap();
         let cached_file_config = cached_file_config.as_mut().unwrap();
@@ -1347,7 +1385,7 @@ fn config_overrides() {
     };
 
     assert_eq!(
-        Config::from_env_and_file_configs(env_conf, file_conf),
+        Config::from_env_and_file_configs(env_conf, file_conf, PathBuf::new()),
         Config {
             cache: Some(CacheType::Redis(RedisCacheConfig {
                 endpoint: Some("myotherredisurl".to_owned()),
@@ -1366,6 +1404,7 @@ fn config_overrides() {
             },
             dist: Default::default(),
             server_startup_timeout: None,
+            file_conf_path: PathBuf::new(), // Not testing config reloading here
         }
     );
 }
