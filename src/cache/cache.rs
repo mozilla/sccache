@@ -50,6 +50,7 @@ use fs_err as fs;
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::fs::File;
 use std::io::{self, Cursor, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -210,6 +211,15 @@ impl CacheRead {
                 optional,
             } in objects
             {
+                if path == Path::new("/dev/null") {
+                    debug!("Skipping output to /dev/null");
+                    continue;
+                }
+                #[cfg(windows)]
+                if path == Path::new("NUL") {
+                    debug!("Skipping output to NUL");
+                    continue;
+                }
                 let dir = match path.parent() {
                     Some(d) => d,
                     None => bail!("Output file without a parent directory!"),
@@ -217,15 +227,35 @@ impl CacheRead {
                 // Write the cache entry to a tempfile and then atomically
                 // move it to its final location so that other rustc invocations
                 // happening in parallel don't see a partially-written file.
-                let mut tmp = NamedTempFile::new_in(dir)?;
-                match (self.get_object(&key, &mut tmp), optional) {
-                    (Ok(mode), _) => {
-                        tmp.persist(&path)?;
-                        if let Some(mode) = mode {
-                            set_file_mode(&path, mode)?;
+                match (NamedTempFile::new_in(dir), optional) {
+                    (Ok(mut tmp), _) => {
+                        match (self.get_object(&key, &mut tmp), optional) {
+                            (Ok(mode), _) => {
+                                tmp.persist(&path)?;
+                                if let Some(mode) = mode {
+                                    set_file_mode(&path, mode)?;
+                                }
+                            }
+                            (Err(e), false) => return Err(e),
+                            // skip if no object found and it's optional
+                            (Err(_), true) => continue,
                         }
                     }
-                    (Err(e), false) => return Err(e),
+                    (Err(e), false) => {
+                        // Fall back to writing directly to the final location
+                        warn!("Failed to create temp file on the same file system: {e}");
+                        let mut f = File::create(&path)?;
+                        // `optional` is false in this branch, so do not ignore errors
+                        let mode = self.get_object(&key, &mut f)?;
+                        if let Some(mode) = mode {
+                            if let Err(e) = set_file_mode(&path, mode) {
+                                // Here we ignore errors from setting file mode because
+                                // if we could not create a temp file in the same directory,
+                                // we probably can't set the mode either (e.g. /dev/stuff)
+                                warn!("Failed to reset file mode: {e}");
+                            }
+                        }
+                    }
                     // skip if no object found and it's optional
                     (Err(_), true) => continue,
                 }
@@ -837,5 +867,66 @@ mod test {
                 );
             });
         }
+    }
+
+    #[test]
+    fn test_extract_object_to_devnull_works() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .worker_threads(1)
+            .build()
+            .unwrap();
+
+        let pool = runtime.handle();
+
+        let cache_data = CacheWrite::new();
+        let cache_read = CacheRead::from(io::Cursor::new(cache_data.finish().unwrap())).unwrap();
+
+        let objects = vec![FileObjectSource {
+            key: "test_key".to_string(),
+            path: PathBuf::from("/dev/null"),
+            optional: false,
+        }];
+
+        let result = runtime.block_on(cache_read.extract_objects(objects, pool));
+        assert!(result.is_ok(), "Extracting to /dev/null should succeed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_extract_object_to_dev_fd_something() {
+        // Open a pipe, write to `/dev/fd/{fd}` and check the other end that the correct data was written.
+        use std::os::fd::AsRawFd;
+        use tokio::io::AsyncReadExt;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .worker_threads(1)
+            .build()
+            .unwrap();
+        let pool = runtime.handle();
+        let mut cache_data = CacheWrite::new();
+        let data = b"test data";
+        cache_data.put_bytes("test_key", data).unwrap();
+        let cache_read = CacheRead::from(io::Cursor::new(cache_data.finish().unwrap())).unwrap();
+        runtime.block_on(async {
+            let (sender, mut receiver) = tokio::net::unix::pipe::pipe().unwrap();
+            let sender_fd = sender.into_blocking_fd().unwrap();
+            let raw_fd = sender_fd.as_raw_fd();
+            let objects = vec![FileObjectSource {
+                key: "test_key".to_string(),
+                path: PathBuf::from(format!("/dev/fd/{}", raw_fd)),
+                optional: false,
+            }];
+            let result = cache_read.extract_objects(objects, pool).await;
+            assert!(
+                result.is_ok(),
+                "Extracting to /dev/fd/{} should succeed",
+                raw_fd
+            );
+            let mut buf = vec![0; data.len()];
+            let n = receiver.read_exact(&mut buf).await.unwrap();
+            assert_eq!(n, data.len(), "Read the correct number of bytes");
+            assert_eq!(buf, data, "Read the correct data from /dev/fd/{}", raw_fd);
+        });
     }
 }
