@@ -993,6 +993,7 @@ fn config_from_env() -> Result<EnvConfig> {
     let basedirs = env::var_os("SCCACHE_BASEDIRS").map(|s| {
         s.to_string_lossy()
             .split(split_symbol)
+            .map(|s| s.trim())
             .filter(|s| !s.is_empty())
             .map(|s| s.to_owned())
             .collect()
