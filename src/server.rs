@@ -1636,6 +1636,7 @@ pub struct ServerInfo {
     pub max_cache_size: Option<u64>,
     pub use_preprocessor_cache_mode: bool,
     pub version: String,
+    pub basedirs: Vec<String>,
 }
 
 /// Status of the dist client.
@@ -1932,6 +1933,7 @@ impl ServerInfo {
         let use_preprocessor_cache_mode;
         let cache_size;
         let max_cache_size;
+        let basedirs;
         if let Some(storage) = storage {
             cache_location = storage.location();
             use_preprocessor_cache_mode = storage
@@ -1939,11 +1941,17 @@ impl ServerInfo {
                 .use_preprocessor_cache_mode;
             (cache_size, max_cache_size) =
                 futures::try_join!(storage.current_size(), storage.max_size())?;
+            basedirs = storage
+                .basedirs()
+                .iter()
+                .map(|p| String::from_utf8_lossy(p).to_string())
+                .collect();
         } else {
             cache_location = String::new();
             use_preprocessor_cache_mode = false;
             cache_size = None;
             max_cache_size = None;
+            basedirs = Vec::new();
         }
         let version = env!("CARGO_PKG_VERSION").to_string();
         Ok(ServerInfo {
@@ -1953,6 +1961,7 @@ impl ServerInfo {
             max_cache_size,
             use_preprocessor_cache_mode,
             version,
+            basedirs,
         })
     }
 
@@ -1963,6 +1972,16 @@ impl ServerInfo {
             "{:<name_width$} {}",
             "Cache location",
             self.cache_location,
+            name_width = name_width
+        );
+        println!(
+            "{:<name_width$} {}",
+            "Base directories",
+            if self.basedirs.is_empty() {
+                "(none)".to_string()
+            } else {
+                self.basedirs.join(", ")
+            },
             name_width = name_width
         );
         if self.cache_location.starts_with("Local disk") {

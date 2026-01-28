@@ -85,6 +85,7 @@ where
             runtime.handle(),
             PreprocessorCacheModeConfig::default(),
             CacheMode::ReadWrite,
+            vec![],
         ));
 
         let client = Client::new();
