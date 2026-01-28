@@ -31,7 +31,6 @@ services:
     profiles:
       - test
       - redis
-      - basedirs
 
   memcached:
     image: memcached:latest
@@ -45,7 +44,6 @@ services:
     profiles:
       - test
       - memcached
-      - basedirs
 
   minio:
     image: minio/minio:latest
@@ -62,7 +60,6 @@ services:
     profiles:
       - test
       - s3
-      - basedirs
 
   minio-setup:
     image: minio/mc:latest
@@ -78,7 +75,6 @@ services:
     profiles:
       - test
       - s3
-      - basedirs
 
   azurite:
     image: mcr.microsoft.com/azure-storage/azurite:latest
@@ -91,7 +87,6 @@ services:
     profiles:
       - test
       - azblob
-      - basedirs
 
   azurite-setup:
     image: mcr.microsoft.com/azure-cli:latest
@@ -106,7 +101,6 @@ services:
     profiles:
       - test
       - azblob
-      - basedirs
 
   webdav:
     image: hacdias/webdav:latest
@@ -119,7 +113,6 @@ services:
     profiles:
       - test
       - webdav
-      - basedirs
 
   test-redis-deprecated:
     <<: *test-runner
