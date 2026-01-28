@@ -27,40 +27,40 @@ use crate::errors::*;
 
 use super::{PreprocessorCacheModeConfig, normalize_key};
 
-enum LazyDiskCache {
+enum LazyLruDiskCache {
     Uninit { root: OsString, max_size: u64 },
     Init(LruDiskCache),
 }
 
-impl LazyDiskCache {
+impl LazyLruDiskCache {
     fn get_or_init(&mut self) -> Result<&mut LruDiskCache> {
         match self {
-            LazyDiskCache::Uninit { root, max_size } => {
-                *self = LazyDiskCache::Init(LruDiskCache::new(&root, *max_size)?);
+            LazyLruDiskCache::Uninit { root, max_size } => {
+                *self = LazyLruDiskCache::Init(LruDiskCache::new(&root, *max_size)?);
                 self.get_or_init()
             }
-            LazyDiskCache::Init(d) => Ok(d),
+            LazyLruDiskCache::Init(d) => Ok(d),
         }
     }
 
     fn get(&mut self) -> Option<&mut LruDiskCache> {
         match self {
-            LazyDiskCache::Uninit { .. } => None,
-            LazyDiskCache::Init(d) => Some(d),
+            LazyLruDiskCache::Uninit { .. } => None,
+            LazyLruDiskCache::Init(d) => Some(d),
         }
     }
 
     fn capacity(&self) -> u64 {
         match self {
-            LazyDiskCache::Uninit { max_size, .. } => *max_size,
-            LazyDiskCache::Init(d) => d.capacity(),
+            LazyLruDiskCache::Uninit { max_size, .. } => *max_size,
+            LazyLruDiskCache::Init(d) => d.capacity(),
         }
     }
 
     fn path(&self) -> &Path {
         match self {
-            LazyDiskCache::Uninit { root, .. } => root.as_ref(),
-            LazyDiskCache::Init(d) => d.path(),
+            LazyLruDiskCache::Uninit { root, .. } => root.as_ref(),
+            LazyLruDiskCache::Init(d) => d.path(),
         }
     }
 }
@@ -68,11 +68,11 @@ impl LazyDiskCache {
 /// A cache that stores entries at local disk paths.
 pub struct DiskCache {
     /// `LruDiskCache` does all the real work here.
-    lru: Arc<Mutex<LazyDiskCache>>,
+    lru: Arc<Mutex<LazyLruDiskCache>>,
     /// Thread pool to execute disk I/O
     pool: tokio::runtime::Handle,
     preprocessor_cache_mode_config: PreprocessorCacheModeConfig,
-    preprocessor_cache: Arc<Mutex<LazyDiskCache>>,
+    preprocessor_cache: Arc<Mutex<LazyLruDiskCache>>,
     rw_mode: CacheMode,
     basedirs: Vec<Vec<u8>>,
 }
@@ -88,13 +88,13 @@ impl DiskCache {
         basedirs: Vec<Vec<u8>>,
     ) -> DiskCache {
         DiskCache {
-            lru: Arc::new(Mutex::new(LazyDiskCache::Uninit {
+            lru: Arc::new(Mutex::new(LazyLruDiskCache::Uninit {
                 root: root.as_ref().to_os_string(),
                 max_size,
             })),
             pool: pool.clone(),
             preprocessor_cache_mode_config,
-            preprocessor_cache: Arc::new(Mutex::new(LazyDiskCache::Uninit {
+            preprocessor_cache: Arc::new(Mutex::new(LazyLruDiskCache::Uninit {
                 root: Path::new(root.as_ref())
                     .join("preprocessor")
                     .into_os_string(),
@@ -176,7 +176,7 @@ impl Storage for DiskCache {
     }
 
     async fn current_size(&self) -> Result<Option<u64>> {
-        Ok(self.lru.lock().unwrap().get().map(|l| l.size()))
+        Ok(Some(self.lru.lock().unwrap().get_or_init()?.size()))
     }
     async fn max_size(&self) -> Result<Option<u64>> {
         Ok(Some(self.lru.lock().unwrap().capacity()))
