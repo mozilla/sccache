@@ -46,7 +46,7 @@ use ctor::ctor;
 use libc::dirent as dirent64;
 #[cfg(not(target_vendor = "apple"))]
 use libc::dirent64;
-use libc::{c_char, c_int, c_void, dirent, dlsym, DIR, RTLD_NEXT};
+use libc::{DIR, RTLD_NEXT, c_char, c_int, c_void, dirent, dlsym};
 use log::{error, info};
 use rand::seq::SliceRandom;
 use rand::thread_rng;

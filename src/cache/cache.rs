@@ -536,8 +536,8 @@ pub fn storage_from_config(
 #[cfg(test)]
 mod test {
     use super::*;
-    use fs_err as fs;
     use crate::config::CacheModeConfig;
+    use fs_err as fs;
 
     #[test]
     fn test_normalize_key() {
