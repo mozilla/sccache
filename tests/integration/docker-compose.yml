@@ -31,6 +31,7 @@ services:
     profiles:
       - test
       - redis
+      - basedirs
 
   memcached:
     image: memcached:latest
@@ -44,6 +45,7 @@ services:
     profiles:
       - test
       - memcached
+      - basedirs
 
   minio:
     image: minio/minio:latest
@@ -60,6 +62,7 @@ services:
     profiles:
       - test
       - s3
+      - basedirs
 
   minio-setup:
     image: minio/mc:latest
@@ -75,6 +78,7 @@ services:
     profiles:
       - test
       - s3
+      - basedirs
 
   azurite:
     image: mcr.microsoft.com/azure-storage/azurite:latest
@@ -87,6 +91,7 @@ services:
     profiles:
       - test
       - azblob
+      - basedirs
 
   azurite-setup:
     image: mcr.microsoft.com/azure-cli:latest
@@ -101,6 +106,7 @@ services:
     profiles:
       - test
       - azblob
+      - basedirs
 
   webdav:
     image: hacdias/webdav:latest
@@ -113,6 +119,7 @@ services:
     profiles:
       - test
       - webdav
+      - basedirs
 
   test-redis-deprecated:
     <<: *test-runner
@@ -302,6 +309,32 @@ services:
     profiles:
       - test
       - zstd
+
+  test-basedirs:
+    <<: *test-runner
+    image: gcc:latest
+    entrypoint: /sccache/tests/integration/scripts/test-basedirs.sh
+    depends_on:
+      redis:
+        condition: service_healthy
+      memcached:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-setup:
+        condition: service_completed_successfully
+      azurite:
+        condition: service_healthy
+      azurite-setup:
+        condition: service_completed_successfully
+      webdav:
+        condition: service_started
+    environment:
+      <<: *common-env
+      SCCACHE_PATH: /sccache/target/debug/sccache
+    profiles:
+      - test
+      - basedirs
 
 volumes:
   cargo-cache:

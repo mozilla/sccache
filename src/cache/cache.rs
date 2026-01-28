@@ -384,6 +384,10 @@ pub trait Storage: Send + Sync {
         // Enable by default, only in local mode
         PreprocessorCacheModeConfig::default()
     }
+    /// Return the base directories for path normalization if configured
+    fn basedirs(&self) -> &[Vec<u8>] {
+        &[]
+    }
     /// Return the preprocessor cache entry for a given preprocessor key,
     /// if it exists.
     /// Only applicable when using preprocessor cache mode.
@@ -456,6 +460,38 @@ impl PreprocessorCacheModeConfig {
     }
 }
 
+/// Wrapper for opendal::Operator that adds basedirs support
+#[cfg(any(
+    feature = "azure",
+    feature = "gcs",
+    feature = "gha",
+    feature = "memcached",
+    feature = "redis",
+    feature = "s3",
+    feature = "webdav",
+    feature = "oss",
+))]
+pub struct RemoteStorage {
+    operator: opendal::Operator,
+    basedirs: Vec<Vec<u8>>,
+}
+
+#[cfg(any(
+    feature = "azure",
+    feature = "gcs",
+    feature = "gha",
+    feature = "memcached",
+    feature = "redis",
+    feature = "s3",
+    feature = "webdav",
+    feature = "oss",
+))]
+impl RemoteStorage {
+    pub fn new(operator: opendal::Operator, basedirs: Vec<Vec<u8>>) -> Self {
+        Self { operator, basedirs }
+    }
+}
+
 /// Implement storage for operator.
 #[cfg(any(
     feature = "azure",
@@ -465,11 +501,12 @@ impl PreprocessorCacheModeConfig {
     feature = "redis",
     feature = "s3",
     feature = "webdav",
+    feature = "oss",
 ))]
 #[async_trait]
-impl Storage for opendal::Operator {
+impl Storage for RemoteStorage {
     async fn get(&self, key: &str) -> Result<Cache> {
-        match self.read(&normalize_key(key)).await {
+        match self.operator.read(&normalize_key(key)).await {
             Ok(res) => {
                 let hit = CacheRead::from(io::Cursor::new(res.to_bytes()))?;
                 Ok(Cache::Hit(hit))
@@ -485,7 +522,9 @@ impl Storage for opendal::Operator {
     async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration> {
         let start = std::time::Instant::now();
 
-        self.write(&normalize_key(key), entry.finish()?).await?;
+        self.operator
+            .write(&normalize_key(key), entry.finish()?)
+            .await?;
 
         Ok(start.elapsed())
     }
@@ -496,7 +535,7 @@ impl Storage for opendal::Operator {
         let path = ".sccache_check";
 
         // Read is required, return error directly if we can't read .
-        match self.read(path).await {
+        match self.operator.read(path).await {
             Ok(_) => (),
             // Read not exist file with not found is ok.
             Err(err) if err.kind() == ErrorKind::NotFound => (),
@@ -515,7 +554,7 @@ impl Storage for opendal::Operator {
             Err(err) => bail!("cache storage failed to read: {:?}", err),
         }
 
-        let can_write = match self.write(path, "Hello, World!").await {
+        let can_write = match self.operator.write(path, "Hello, World!").await {
             Ok(_) => true,
             Err(err) if err.kind() == ErrorKind::AlreadyExists => true,
             // Tolerate all other write errors because we can do read at least.
@@ -537,7 +576,7 @@ impl Storage for opendal::Operator {
     }
 
     fn location(&self) -> String {
-        let meta = self.info();
+        let meta = self.operator.info();
         format!(
             "{}, name: {}, prefix: {}",
             meta.scheme(),
@@ -552,6 +591,10 @@ impl Storage for opendal::Operator {
 
     async fn max_size(&self) -> Result<Option<u64>> {
         Ok(None)
+    }
+
+    fn basedirs(&self) -> &[Vec<u8>] {
+        &self.basedirs
     }
 }
 
@@ -575,8 +618,9 @@ pub fn storage_from_config(
                 key_prefix,
             }) => {
                 debug!("Init azure cache with container {container}, key_prefix {key_prefix}");
-                let storage = AzureBlobCache::build(connection_string, container, key_prefix)
+                let operator = AzureBlobCache::build(connection_string, container, key_prefix)
                     .map_err(|err| anyhow!("create azure cache failed: {err:?}"))?;
+                let storage = RemoteStorage::new(operator, config.basedirs.clone());
                 return Ok(Arc::new(storage));
             }
             #[cfg(feature = "gcs")]
@@ -590,7 +634,7 @@ pub fn storage_from_config(
             }) => {
                 debug!("Init gcs cache with bucket {bucket}, key_prefix {key_prefix}");
 
-                let storage = GCSCache::build(
+                let operator = GCSCache::build(
                     bucket,
                     key_prefix,
                     cred_path.as_deref(),
@@ -600,14 +644,16 @@ pub fn storage_from_config(
                 )
                 .map_err(|err| anyhow!("create gcs cache failed: {err:?}"))?;
 
+                let storage = RemoteStorage::new(operator, config.basedirs.clone());
                 return Ok(Arc::new(storage));
             }
             #[cfg(feature = "gha")]
             CacheType::GHA(config::GHACacheConfig { version, .. }) => {
                 debug!("Init gha cache with version {version}");
 
-                let storage = GHACache::build(version)
+                let operator = GHACache::build(version)
                     .map_err(|err| anyhow!("create gha cache failed: {err:?}"))?;
+                let storage = RemoteStorage::new(operator, config.basedirs.clone());
                 return Ok(Arc::new(storage));
             }
             #[cfg(feature = "memcached")]
@@ -620,7 +666,7 @@ pub fn storage_from_config(
             }) => {
                 debug!("Init memcached cache with url {url}");
 
-                let storage = MemcachedCache::build(
+                let operator = MemcachedCache::build(
                     url,
                     username.as_deref(),
                     password.as_deref(),
@@ -628,6 +674,7 @@ pub fn storage_from_config(
                     *expiration,
                 )
                 .map_err(|err| anyhow!("create memcached cache failed: {err:?}"))?;
+                let storage = RemoteStorage::new(operator, config.basedirs.clone());
                 return Ok(Arc::new(storage));
             }
             #[cfg(feature = "redis")]
@@ -675,6 +722,7 @@ pub fn storage_from_config(
                     _ => bail!("Only one of `endpoint`, `cluster_endpoints`, `url` must be set"),
                 }
                 .map_err(|err| anyhow!("create redis cache failed: {err:?}"))?;
+                let storage = RemoteStorage::new(storage, config.basedirs.clone());
                 return Ok(Arc::new(storage));
             }
             #[cfg(feature = "s3")]
@@ -685,7 +733,7 @@ pub fn storage_from_config(
                 );
                 let storage_builder =
                     S3Cache::new(c.bucket.clone(), c.key_prefix.clone(), c.no_credentials);
-                let storage = storage_builder
+                let operator = storage_builder
                     .with_region(c.region.clone())
                     .with_endpoint(c.endpoint.clone())
                     .with_use_ssl(c.use_ssl)
@@ -694,13 +742,14 @@ pub fn storage_from_config(
                     .build()
                     .map_err(|err| anyhow!("create s3 cache failed: {err:?}"))?;
 
+                let storage = RemoteStorage::new(operator, config.basedirs.clone());
                 return Ok(Arc::new(storage));
             }
             #[cfg(feature = "webdav")]
             CacheType::Webdav(c) => {
                 debug!("Init webdav cache with endpoint {}", c.endpoint);
 
-                let storage = WebdavCache::build(
+                let operator = WebdavCache::build(
                     &c.endpoint,
                     &c.key_prefix,
                     c.username.as_deref(),
@@ -709,6 +758,7 @@ pub fn storage_from_config(
                 )
                 .map_err(|err| anyhow!("create webdav cache failed: {err:?}"))?;
 
+                let storage = RemoteStorage::new(operator, config.basedirs.clone());
                 return Ok(Arc::new(storage));
             }
             #[cfg(feature = "oss")]
@@ -718,7 +768,7 @@ pub fn storage_from_config(
                     c.bucket, c.endpoint
                 );
 
-                let storage = OSSCache::build(
+                let operator = OSSCache::build(
                     &c.bucket,
                     &c.key_prefix,
                     c.endpoint.as_deref(),
@@ -726,6 +776,7 @@ pub fn storage_from_config(
                 )
                 .map_err(|err| anyhow!("create oss cache failed: {err:?}"))?;
 
+                let storage = RemoteStorage::new(operator, config.basedirs.clone());
                 return Ok(Arc::new(storage));
             }
             #[cfg(feature = "cos")]
@@ -735,9 +786,10 @@ pub fn storage_from_config(
                     c.bucket, c.endpoint
                 );
 
-                let storage = COSCache::build(&c.bucket, &c.key_prefix, c.endpoint.as_deref())
+                let operator = COSCache::build(&c.bucket, &c.key_prefix, c.endpoint.as_deref())
                     .map_err(|err| anyhow!("create cos cache failed: {err:?}"))?;
 
+                let storage = RemoteStorage::new(operator, config.basedirs.clone());
                 return Ok(Arc::new(storage));
             }
             #[allow(unreachable_patterns)]
@@ -751,12 +803,14 @@ pub fn storage_from_config(
     let preprocessor_cache_mode_config = config.fallback_cache.preprocessor_cache_mode;
     let rw_mode = config.fallback_cache.rw_mode.into();
     debug!("Init disk cache with dir {:?}, size {}", dir, size);
+
     Ok(Arc::new(DiskCache::new(
         dir,
         size,
         pool,
         preprocessor_cache_mode_config,
         rw_mode,
+        config.basedirs.clone(),
     )))
 }
 
@@ -837,5 +891,54 @@ mod test {
                 );
             });
         }
+    }
+
+    #[test]
+    #[cfg(feature = "s3")]
+    fn test_operator_storage_s3_with_basedirs() {
+        // Create S3 operator (doesn't need real credentials for this test)
+        let operator = crate::cache::s3::S3Cache::new(
+            "test-bucket".to_string(),
+            "test-prefix".to_string(),
+            true, // no_credentials = true
+        )
+        .with_region(Some("us-east-1".to_string()))
+        .build()
+        .expect("Failed to create S3 cache operator");
+
+        let basedirs = vec![b"/home/user/project".to_vec(), b"/opt/build".to_vec()];
+
+        // Wrap with OperatorStorage
+        let storage = RemoteStorage::new(operator, basedirs.clone());
+
+        // Verify basedirs are stored and retrieved correctly
+        assert_eq!(storage.basedirs(), basedirs.as_slice());
+        assert_eq!(storage.basedirs().len(), 2);
+        assert_eq!(storage.basedirs()[0], b"/home/user/project".to_vec());
+        assert_eq!(storage.basedirs()[1], b"/opt/build".to_vec());
+    }
+
+    #[test]
+    #[cfg(feature = "redis")]
+    fn test_operator_storage_redis_with_basedirs() {
+        // Create Redis operator
+        let operator = crate::cache::redis::RedisCache::build_single(
+            "redis://localhost:6379",
+            None,
+            None,
+            0,
+            "test-prefix",
+            0,
+        )
+        .expect("Failed to create Redis cache operator");
+
+        let basedirs = vec![b"/workspace".to_vec()];
+
+        // Wrap with OperatorStorage
+        let storage = RemoteStorage::new(operator, basedirs.clone());
+
+        // Verify basedirs work
+        assert_eq!(storage.basedirs(), basedirs.as_slice());
+        assert_eq!(storage.basedirs().len(), 1);
     }
 }
