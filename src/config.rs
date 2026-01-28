@@ -180,7 +180,7 @@ impl HTTPUrl {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AzureCacheConfig {
     pub connection_string: String,
@@ -239,7 +239,7 @@ impl PreprocessorCacheModeConfig {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[serde(default)]
 pub struct DiskCacheConfig {
@@ -279,7 +279,7 @@ impl From<CacheModeConfig> for CacheMode {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GCSCacheConfig {
     pub bucket: String,
@@ -290,7 +290,7 @@ pub struct GCSCacheConfig {
     pub credential_url: Option<String>,
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GHACacheConfig {
     pub enabled: bool,
@@ -312,7 +312,7 @@ fn default_memcached_cache_expiration() -> u32 {
     DEFAULT_MEMCACHED_CACHE_EXPIRATION
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct MemcachedCacheConfig {
     #[serde(alias = "endpoint")]
@@ -342,7 +342,7 @@ pub struct MemcachedCacheConfig {
 /// Please change this value freely if we have a better choice.
 const DEFAULT_REDIS_CACHE_TTL: u64 = 0;
 pub const DEFAULT_REDIS_DB: u32 = 0;
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct RedisCacheConfig {
     /// The single-node redis endpoint.
@@ -379,7 +379,7 @@ pub struct RedisCacheConfig {
     pub key_prefix: String,
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WebdavCacheConfig {
     pub endpoint: String,
@@ -390,7 +390,7 @@ pub struct WebdavCacheConfig {
     pub token: Option<String>,
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct S3CacheConfig {
     pub bucket: String,
@@ -404,7 +404,7 @@ pub struct S3CacheConfig {
     pub enable_virtual_host_style: Option<bool>,
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OSSCacheConfig {
     pub bucket: String,
@@ -414,7 +414,7 @@ pub struct OSSCacheConfig {
     pub no_credentials: bool,
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct COSCacheConfig {
     pub bucket: String,
@@ -423,7 +423,7 @@ pub struct COSCacheConfig {
     pub endpoint: Option<String>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CacheType {
     Azure(AzureCacheConfig),
     GCS(GCSCacheConfig),
@@ -436,7 +436,7 @@ pub enum CacheType {
     COS(COSCacheConfig),
 }
 
-#[derive(Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct CacheConfigs {
     pub azure: Option<AzureCacheConfig>,
@@ -449,11 +449,14 @@ pub struct CacheConfigs {
     pub webdav: Option<WebdavCacheConfig>,
     pub oss: Option<OSSCacheConfig>,
     pub cos: Option<COSCacheConfig>,
+    /// Ordered list of cache levels to use (e.g., ["disk", "s3", "redis"])
+    /// If not specified, a single cache is selected from configured backends
+    pub levels: Option<Vec<String>>,
 }
 
 impl CacheConfigs {
     /// Return cache type in an arbitrary but
-    /// consistent ordering
+    /// consistent ordering (Phase 1 behavior - single cache)
     fn into_fallback(self) -> (Option<CacheType>, DiskCacheConfig) {
         let CacheConfigs {
             azure,
@@ -466,6 +469,7 @@ impl CacheConfigs {
             webdav,
             oss,
             cos,
+            levels: _,
         } = self;
 
         let cache_type = s3
@@ -484,6 +488,62 @@ impl CacheConfigs {
         (cache_type, fallback)
     }
 
+    /// Get ordered list of cache types based on configured levels.
+    /// If levels are specified, returns them in order with validation.
+    /// If no levels specified and single remote cache, returns that single cache.
+    /// If no levels and multiple caches, returns error.
+    pub fn get_cache_levels(self) -> Result<Vec<CacheType>> {
+        if let Some(level_names) = &self.levels {
+            // Build caches in the order specified by levels
+            let mut caches = Vec::new();
+            for level_name in level_names {
+                let level_name = level_name.trim();
+                let cache_type = match level_name {
+                    "s3" => self.s3.clone().map(CacheType::S3).ok_or_else(|| {
+                        anyhow!("S3 cache not configured but specified in levels")
+                    })?,
+                    "redis" => self.redis.clone().map(CacheType::Redis).ok_or_else(|| {
+                        anyhow!("Redis cache not configured but specified in levels")
+                    })?,
+                    "memcached" => self
+                        .memcached
+                        .clone()
+                        .map(CacheType::Memcached)
+                        .ok_or_else(|| {
+                            anyhow!("Memcached cache not configured but specified in levels")
+                        })?,
+                    "gcs" => self.gcs.clone().map(CacheType::GCS).ok_or_else(|| {
+                        anyhow!("GCS cache not configured but specified in levels")
+                    })?,
+                    "gha" => self.gha.clone().map(CacheType::GHA).ok_or_else(|| {
+                        anyhow!("GHA cache not configured but specified in levels")
+                    })?,
+                    "azure" => self.azure.clone().map(CacheType::Azure).ok_or_else(|| {
+                        anyhow!("Azure cache not configured but specified in levels")
+                    })?,
+                    "webdav" => self.webdav.clone().map(CacheType::Webdav).ok_or_else(|| {
+                        anyhow!("Webdav cache not configured but specified in levels")
+                    })?,
+                    "oss" => self.oss.clone().map(CacheType::OSS).ok_or_else(|| {
+                        anyhow!("OSS cache not configured but specified in levels")
+                    })?,
+                    "disk" => {
+                        // Disk cache is handled separately in MultiLevelStorage::from_config
+                        // Mark it by continuing - it will be added to the storage list there
+                        continue;
+                    }
+                    _ => bail!("Unknown cache level: {}", level_name),
+                };
+                caches.push(cache_type);
+            }
+            Ok(caches)
+        } else {
+            // No levels specified - use single cache (backward compatible)
+            let (cache_type, _) = self.clone().into_fallback();
+            Ok(cache_type.map(|ct| vec![ct]).unwrap_or_default())
+        }
+    }
+
     /// Override self with any existing fields from other
     fn merge(&mut self, other: Self) {
         let CacheConfigs {
@@ -497,6 +557,7 @@ impl CacheConfigs {
             webdav,
             oss,
             cos,
+            levels,
         } = other;
 
         if azure.is_some() {
@@ -528,6 +589,10 @@ impl CacheConfigs {
         }
         if cos.is_some() {
             self.cos = cos;
+        }
+
+        if levels.is_some() {
+            self.levels = levels;
         }
     }
 }
@@ -1020,6 +1085,14 @@ fn config_from_env() -> Result<EnvConfig> {
         None
     };
 
+    // Parse SCCACHE_CACHE_LEVELS environment variable
+    let levels = if let Ok(levels_str) = env::var("SCCACHE_CACHE_LEVELS") {
+        let level_names: Vec<&str> = levels_str.split(',').map(|s| s.trim()).collect();
+        Some(level_names.iter().map(|s| s.to_string()).collect())
+    } else {
+        None
+    };
+
     let cache = CacheConfigs {
         azure,
         disk,
@@ -1031,6 +1104,7 @@ fn config_from_env() -> Result<EnvConfig> {
         webdav,
         oss,
         cos,
+        levels,
     };
 
     // ======= Base directory =======
@@ -1077,6 +1151,7 @@ fn config_file(env_var: &str, leaf: &str) -> PathBuf {
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Config {
     pub cache: Option<CacheType>,
+    pub cache_configs: CacheConfigs,
     pub fallback_cache: DiskCacheConfig,
     pub dist: DistConfig,
     pub server_startup_timeout: Option<std::time::Duration>,
@@ -1167,9 +1242,10 @@ impl Config {
             debug!("Using basedirs for path normalization: {:?}", basedirs_str);
         }
 
-        let (caches, fallback_cache) = conf_caches.into_fallback();
+        let (caches, fallback_cache) = conf_caches.clone().into_fallback();
         Ok(Self {
             cache: caches,
+            cache_configs: conf_caches,
             fallback_cache,
             dist,
             server_startup_timeout,
@@ -1489,6 +1565,35 @@ fn config_overrides() {
                 password: Some("secret".to_owned()),
                 ..Default::default()
             })),
+            cache_configs: CacheConfigs {
+                azure: Some(AzureCacheConfig {
+                    connection_string: String::new(),
+                    container: String::new(),
+                    key_prefix: String::new(),
+                }),
+                disk: Some(DiskCacheConfig {
+                    dir: "/env-cache".into(),
+                    size: 5,
+                    preprocessor_cache_mode: Default::default(),
+                    rw_mode: CacheModeConfig::ReadWrite,
+                }),
+                memcached: Some(MemcachedCacheConfig {
+                    url: "memurl".to_owned(),
+                    expiration: 24 * 3600,
+                    key_prefix: String::new(),
+                    ..Default::default()
+                }),
+                redis: Some(RedisCacheConfig {
+                    endpoint: Some("myotherredisurl".to_owned()),
+                    ttl: 24 * 3600,
+                    key_prefix: "/redis/prefix".into(),
+                    db: 10,
+                    username: Some("user".to_owned()),
+                    password: Some("secret".to_owned()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
             fallback_cache: DiskCacheConfig {
                 dir: "/env-cache".into(),
                 size: 5,
@@ -2199,6 +2304,7 @@ key_prefix = "cosprefix"
                     endpoint: Some("cos.na-siliconvalley.myqcloud.com".to_owned()),
                     key_prefix: "cosprefix".into(),
                 }),
+                levels: None,
             },
             dist: DistConfig {
                 auth: DistAuth::Token {
@@ -2596,4 +2702,102 @@ fn test_integration_env_variable_to_strip() {
     let input2 = b"# 1 \"/tmp/build/obj/file.o\"";
     let output2 = strip_basedirs(input2, &config.basedirs);
     assert_eq!(&*output2, b"# 1 \"obj/file.o\"");
+}
+
+#[test]
+fn test_cache_levels_parsing() {
+    // Test parsing cache levels from config
+    let config_str = r#"
+[cache.disk]
+dir = "/tmp/disk"
+size = 1024
+
+[cache.s3]
+bucket = "my-bucket"
+region = "us-west-2"
+no_credentials = false
+
+[cache.redis]
+endpoint = "redis://localhost"
+
+[cache]
+levels = ["disk", "redis", "s3"]
+"#;
+
+    let file_config: FileConfig = toml::from_str(config_str).expect("Is valid toml");
+    assert!(file_config.cache.levels.is_some());
+    let levels = file_config.cache.levels.unwrap();
+    assert_eq!(levels.len(), 3);
+    assert_eq!(levels[0], "disk");
+    assert_eq!(levels[1], "redis");
+    assert_eq!(levels[2], "s3");
+}
+
+#[test]
+fn test_cache_levels_backward_compatibility() {
+    // Test that configs without levels still work (single cache selection)
+    let config_str = r#"
+[cache.s3]
+bucket = "my-bucket"
+region = "us-west-2"
+no_credentials = false
+"#;
+
+    let file_config: FileConfig = toml::from_str(config_str).expect("Is valid toml");
+    assert!(file_config.cache.levels.is_none());
+    assert!(file_config.cache.s3.is_some());
+}
+
+#[test]
+fn test_get_cache_levels_single_cache() {
+    let configs = CacheConfigs {
+        s3: Some(S3CacheConfig {
+            bucket: "test".to_string(),
+            region: None,
+            key_prefix: String::new(),
+            no_credentials: false,
+            endpoint: None,
+            use_ssl: None,
+            server_side_encryption: None,
+            enable_virtual_host_style: None,
+        }),
+        ..Default::default()
+    };
+
+    let levels = configs.get_cache_levels().expect("Should get single cache");
+    assert_eq!(levels.len(), 1);
+}
+
+#[test]
+fn test_get_cache_levels_invalid_level() {
+    let configs = CacheConfigs {
+        levels: Some(vec!["unknown_cache".to_string()]),
+        ..Default::default()
+    };
+
+    let result = configs.get_cache_levels();
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("Unknown cache level")
+    );
+}
+
+#[test]
+fn test_get_cache_levels_missing_config() {
+    let configs = CacheConfigs {
+        levels: Some(vec!["s3".to_string()]),
+        ..Default::default()
+    };
+
+    let result = configs.get_cache_levels();
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("S3 cache not configured")
+    );
 }

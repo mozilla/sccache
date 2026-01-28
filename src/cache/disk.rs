@@ -17,7 +17,7 @@ use crate::compiler::PreprocessorCacheEntry;
 use crate::lru_disk_cache::{Error as LruError, ReadSeek};
 use async_trait::async_trait;
 use std::ffi::OsStr;
-use std::io::{BufWriter, Write};
+use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -102,6 +102,35 @@ impl Storage for DiskCache {
             .await?
     }
 
+    async fn get_raw(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        trace!("DiskCache::get_raw({})", key);
+        let path = make_key_path(key);
+        let lru = self.lru.clone();
+        let key = key.to_owned();
+
+        self.pool
+            .spawn_blocking(
+                move || match lru.lock().unwrap().get_or_init()?.get(&path) {
+                    Ok(mut io) => {
+                        let mut data = Vec::new();
+                        io.read_to_end(&mut data)?;
+                        trace!("DiskCache::get_raw({}): Found {} bytes", key, data.len());
+                        Ok(Some(data))
+                    }
+                    Err(LruError::FileNotInCache) => {
+                        trace!("DiskCache::get_raw({}): FileNotInCache", key);
+                        Ok(None)
+                    }
+                    Err(LruError::Io(e)) => {
+                        trace!("DiskCache::get_raw({}): IoError: {:?}", key, e);
+                        Err(e.into())
+                    }
+                    Err(_) => unreachable!(),
+                },
+            )
+            .await?
+    }
+
     async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration> {
         // We should probably do this on a background thread if we're going to buffer
         // everything in memory...
@@ -124,6 +153,31 @@ impl Storage for DiskCache {
                     .get_or_init()?
                     .prepare_add(key, v.len() as u64)?;
                 f.as_file_mut().write_all(&v)?;
+                lru.lock().unwrap().get().unwrap().commit(f)?;
+                Ok(start.elapsed())
+            })
+            .await?
+    }
+
+    async fn put_raw(&self, key: &str, data: Vec<u8>) -> Result<Duration> {
+        trace!("DiskCache::put_raw({}, {} bytes)", key, data.len());
+
+        if self.rw_mode == CacheMode::ReadOnly {
+            return Err(anyhow!("Cannot write to a read-only cache"));
+        }
+
+        let lru = self.lru.clone();
+        let key = make_key_path(key);
+
+        self.pool
+            .spawn_blocking(move || {
+                let start = Instant::now();
+                let mut f = lru
+                    .lock()
+                    .unwrap()
+                    .get_or_init()?
+                    .prepare_add(key, data.len() as u64)?;
+                f.as_file_mut().write_all(&data)?;
                 lru.lock().unwrap().get().unwrap().commit(f)?;
                 Ok(start.elapsed())
             })
