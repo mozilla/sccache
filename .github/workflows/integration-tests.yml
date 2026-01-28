@@ -36,7 +36,7 @@ jobs:
       - name: Clone repository
         uses: actions/checkout@v5
 
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v7
         with:
           name: integration-tests
           path: ./target/debug
@@ -71,7 +71,7 @@ jobs:
         with:
           toolchain: "stable"
 
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v7
         with:
           name: integration-tests
           path: /home/runner/.cargo/bin/
@@ -189,7 +189,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v7
         with:
           name: integration-tests
           path: ./target/debug
@@ -251,7 +251,7 @@ jobs:
         run: |
           cargo build -p randomize_readdir
 
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v7
         with:
           name: integration-tests
           path: /home/runner/.cargo/bin/
