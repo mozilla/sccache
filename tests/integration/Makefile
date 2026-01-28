@@ -10,20 +10,20 @@ BACKENDS := redis redis-deprecated memcached memcached-deprecated s3 azblob webd
 TOOLS := gcc clang cmake autotools coverage zstd
 
 # Map backends to their compose profiles
-PROFILE_autotools := autotools
-PROFILE_azblob := azblob
-PROFILE_basedirs := basedirs
-PROFILE_clang := clang
-PROFILE_cmake := cmake
-PROFILE_coverage := coverage
-PROFILE_gcc := gcc
-PROFILE_memcached := memcached
-PROFILE_memcached-deprecated := memcached
-PROFILE_redis := redis
-PROFILE_redis-deprecated := redis
-PROFILE_s3 := s3
-PROFILE_webdav := webdav
-PROFILE_zstd := zstd
+PROFILES_autotools := autotools
+PROFILES_azblob := azblob
+PROFILES_basedirs := basedirs redis memcached s3 azblob webdav
+PROFILES_clang := clang
+PROFILES_cmake := cmake
+PROFILES_coverage := coverage
+PROFILES_gcc := gcc
+PROFILES_memcached := memcached
+PROFILES_memcached-deprecated := memcached
+PROFILES_redis := redis
+PROFILES_redis-deprecated := redis
+PROFILES_s3 := s3
+PROFILES_webdav := webdav
+PROFILES_zstd := zstd
 
 # Map backends to their services
 SERVICES_autotools :=
@@ -93,16 +93,20 @@ $(SCCACHE_BIN): $(PROJECT_ROOT)/Cargo.toml $(PROJECT_ROOT)/Cargo.lock
 	@echo "Binary built: $(SCCACHE_BIN)"
 	@ls -lh $(SCCACHE_BIN)
 
+define profiles
+$(foreach profile,$(PROFILES_$(1)),--profile $(profile))
+endef
+
 # Pattern rule for cleaning backends
 clean-%:
-	@docker compose --profile $(PROFILE_$*) down -v
+	docker compose $(call profiles,$*) down -v
 
 # Pattern rule for testing backends
 test-%: build clean-%
 	@echo "Testing $* backend..."
-	@docker compose --profile $(PROFILE_$*) up --quiet-pull -d $(SERVICES_$*)
-	@docker compose --profile $(PROFILE_$*) run --quiet-pull --rm test-$*
-	@docker compose --profile $(PROFILE_$*) down
+	@docker compose $(call profiles,$*) up --quiet-pull -d $(SERVICES_$*)
+	@docker compose $(call profiles,$*) run --quiet-pull --rm test-$*
+	@docker compose $(call profiles,$*) down
 	@echo "$* test completed"
 
 test-backends: $(addprefix test-,$(BACKENDS))
