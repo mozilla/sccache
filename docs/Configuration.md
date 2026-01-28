@@ -39,6 +39,12 @@ cache_dir = "/home/user/.cache/sccache-dist-client"
 type = "token"
 token = "secrettoken"
 
+# Multi-level cache configuration
+# Define cache levels in order (fast to slow).
+# Each level must be separately configured below.
+# See docs/MultiLevel.md for details.
+[cache]
+levels = ["disk", "redis", "s3"]
 
 #[cache.azure]
 # Azure Storage connection string (see <https://docs.azure.cn/en-us/storage/common/storage-configure-connection-string>)
@@ -175,6 +181,24 @@ Note that some env variables may need sccache server restart to take effect.
 * `SCCACHE_LOG` log level, accepting standard env_logger values, see [env_logger documentation](https://docs.rs/env_logger/latest/env_logger/#enabling-logging) for details
 
 ### cache configs
+
+#### multi-level cache
+
+Multi-level caching enables hierarchical cache storage with automatic backfill. See the [Multi-Level Cache documentation](MultiLevel.md) for detailed information.
+
+* `SCCACHE_CACHE_LEVELS` comma-separated list of cache backend names to use in hierarchy (e.g., `disk,redis,s3`)
+  - Order matters: left-to-right is fast-to-slow (L0, L1, L2, ...)
+  - Valid names: `disk`, `redis`, `memcached`, `s3`, `gcs`, `azure`, `gha`, `webdav`, `oss`, `cos`
+  - Each level must be separately configured with its own environment variables
+  - If not set, sccache uses single-level mode (legacy behavior)
+
+Example:
+```bash
+export SCCACHE_CACHE_LEVELS="disk,redis,s3"
+export SCCACHE_DIR="/tmp/cache"              # for disk level
+export SCCACHE_REDIS_ENDPOINT="redis://..."  # for redis level
+export SCCACHE_BUCKET="my-bucket"            # for s3 level
+```
 
 #### disk (local)
 
