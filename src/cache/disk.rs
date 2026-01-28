@@ -14,10 +14,9 @@
 
 use crate::cache::{Cache, CacheMode, CacheRead, CacheWrite, Storage};
 use crate::compiler::PreprocessorCacheEntry;
-use crate::lru_disk_cache::LruDiskCache;
 use crate::lru_disk_cache::{Error as LruError, ReadSeek};
 use async_trait::async_trait;
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsStr;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -25,45 +24,8 @@ use std::time::{Duration, Instant};
 
 use crate::errors::*;
 
+use super::lazy_disk_cache::LazyDiskCache;
 use super::{PreprocessorCacheModeConfig, normalize_key};
-
-enum LazyDiskCache {
-    Uninit { root: OsString, max_size: u64 },
-    Init(LruDiskCache),
-}
-
-impl LazyDiskCache {
-    fn get_or_init(&mut self) -> Result<&mut LruDiskCache> {
-        match self {
-            LazyDiskCache::Uninit { root, max_size } => {
-                *self = LazyDiskCache::Init(LruDiskCache::new(&root, *max_size)?);
-                self.get_or_init()
-            }
-            LazyDiskCache::Init(d) => Ok(d),
-        }
-    }
-
-    fn get(&mut self) -> Option<&mut LruDiskCache> {
-        match self {
-            LazyDiskCache::Uninit { .. } => None,
-            LazyDiskCache::Init(d) => Some(d),
-        }
-    }
-
-    fn capacity(&self) -> u64 {
-        match self {
-            LazyDiskCache::Uninit { max_size, .. } => *max_size,
-            LazyDiskCache::Init(d) => d.capacity(),
-        }
-    }
-
-    fn path(&self) -> &Path {
-        match self {
-            LazyDiskCache::Uninit { root, .. } => root.as_ref(),
-            LazyDiskCache::Init(d) => d.path(),
-        }
-    }
-}
 
 /// A cache that stores entries at local disk paths.
 pub struct DiskCache {
