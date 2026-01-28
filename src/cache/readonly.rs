@@ -93,6 +93,11 @@ impl Storage for ReadOnlyStorage {
     ) -> Result<()> {
         Err(anyhow!("Cannot write to read-only storage"))
     }
+
+    /// Get raw serialized cache entry bytes (forwarded to inner storage)
+    async fn get_raw(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        self.0.get_raw(key).await
+    }
 }
 
 #[cfg(test)]
