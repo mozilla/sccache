@@ -212,6 +212,11 @@ pub enum CompilerKind {
     Rust,
 }
 
+// Used for tests
+// Need to be consistent with `Language`
+#[allow(dead_code)]
+const EXPECTED_LANGUAGE_COUNT: usize = 21;
+
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Language {
     AssemblerToPreprocess,
@@ -303,6 +308,28 @@ impl Language {
                 | Language::ObjectiveCxxPreprocessed
                 | Language::Rust
         )
+    }
+
+    pub fn is_c_like_header(self) -> bool {
+        matches!(
+            self,
+            Language::CHeader
+                | Language::CxxHeader
+                | Language::ObjectiveCHeader
+                | Language::ObjectiveCxxHeader
+                | Language::GenericHeader
+        )
+    }
+
+    pub fn to_c_preprocessed_language(self) -> Option<Language> {
+        match self {
+            Language::AssemblerToPreprocess => Some(Language::Assembler),
+            Language::C => Some(Language::CPreprocessed),
+            Language::Cxx => Some(Language::CxxPreprocessed),
+            Language::ObjectiveC => Some(Language::ObjectiveCPreprocessed),
+            Language::ObjectiveCxx => Some(Language::ObjectiveCxxPreprocessed),
+            _ => None,
+        }
     }
 
     /// Common implementation for GCC and Clang language argument mapping
@@ -1865,6 +1892,70 @@ mod test {
     use std::time::Duration;
     use test_case::test_case;
     use tokio::runtime::Runtime;
+
+    #[test]
+    fn test_c_preprocessing_consistent() {
+        // Must contain all possible values from `Language`.
+        // Cannot use `enum_iterator` because it adds macro to the real enum,
+        // and we don't want to add additional dependencies.
+        let languages = vec![
+            Language::AssemblerToPreprocess,
+            Language::Assembler,
+            Language::C,
+            Language::Cxx,
+            Language::GenericHeader,
+            Language::CHeader,
+            Language::CPreprocessed,
+            Language::CxxHeader,
+            Language::CxxPreprocessed,
+            Language::ObjectiveC,
+            Language::ObjectiveCHeader,
+            Language::ObjectiveCPreprocessed,
+            Language::ObjectiveCxx,
+            Language::ObjectiveCxxPreprocessed,
+            Language::ObjectiveCxxHeader,
+            Language::Cuda,
+            Language::CudaFE,
+            Language::Ptx,
+            Language::Cubin,
+            Language::Rust,
+            Language::Hip,
+        ];
+
+        assert_eq!(
+            languages.len(),
+            EXPECTED_LANGUAGE_COUNT,
+            "update the list of supported languages"
+        );
+
+        for lang in languages {
+            let maybe_processed = lang.to_c_preprocessed_language();
+
+            if let Some(processed) = maybe_processed {
+                assert!(
+                    !processed.needs_c_preprocessing(),
+                    "{:?} should not need preprocessing - it is a result of {:?} processing",
+                    processed,
+                    lang
+                );
+            }
+
+            if !lang.needs_c_preprocessing() {
+                assert!(
+                    maybe_processed.is_none(),
+                    "{:?} should not be processed, but it produces the {:?} as a C preprocessing result",
+                    lang,
+                    maybe_processed
+                );
+
+                assert!(
+                    !lang.is_c_like_header(),
+                    "{:?} should not be processed, but it is a C-like header and can be used as preprocessor input",
+                    lang
+                )
+            }
+        }
+    }
 
     #[test]
     fn test_detect_compiler_kind_gcc() {
