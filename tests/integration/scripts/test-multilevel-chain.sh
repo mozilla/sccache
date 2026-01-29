@@ -92,7 +92,7 @@ STATS_JSON=$("$SCCACHE" --show-stats --stats-format=json)
 CACHE_LOCATION=$(echo "$STATS_JSON" | python3 -c "import sys, json; print(json.load(sys.stdin).get('cache_location', ''))" || echo "unknown")
 echo "Cache location: $CACHE_LOCATION"
 
-if ! echo "$CACHE_LOCATION" | grep -qi "MultiLevel"; then
+if ! echo "$CACHE_LOCATION" | grep -qi "Multi-level"; then
     echo "FAIL: Multi-level cache not detected"
     exit 1
 fi

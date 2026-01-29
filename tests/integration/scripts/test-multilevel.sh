@@ -84,7 +84,7 @@ test_multilevel_backend() {
     echo "Cache location: $CACHE_LOCATION"
 
     # Verify multi-level is detected
-    if ! echo "$CACHE_LOCATION" | grep -qi "MultiLevel"; then
+    if ! echo "$CACHE_LOCATION" | grep -qi "Multi-level"; then
         echo "FAIL: Multi-level cache not detected in cache_location"
         echo "$STATS_JSON" | python3 -m json.tool
         exit 1
