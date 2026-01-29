@@ -21,7 +21,7 @@ else
 export SCCACHE_PATH := /sccache/target/debug/sccache
 endif
 
-BACKENDS := redis redis-deprecated memcached memcached-deprecated s3 azblob webdav basedirs multilevel
+BACKENDS := redis redis-deprecated memcached memcached-deprecated s3 azblob webdav basedirs multilevel multilevel-chain
 TOOLS := gcc clang cmake autotools coverage zstd
 
 # Map backends to their compose profiles
@@ -35,6 +35,7 @@ PROFILES_gcc := gcc
 PROFILES_memcached := memcached
 PROFILES_memcached-deprecated := memcached
 PROFILES_multilevel := multilevel redis memcached s3 azblob webdav
+PROFILES_multilevel-chain := multilevel-chain redis memcached s3
 PROFILES_redis := redis
 PROFILES_redis-deprecated := redis
 PROFILES_s3 := s3
@@ -52,6 +53,7 @@ SERVICES_gcc :=
 SERVICES_memcached := memcached
 SERVICES_memcached-deprecated := memcached
 SERVICES_multilevel := redis memcached minio minio-setup azurite azurite-setup webdav
+SERVICES_multilevel-chain := redis memcached minio minio-setup
 SERVICES_redis := redis
 SERVICES_redis-deprecated := redis
 SERVICES_s3 := minio minio-setup
@@ -86,6 +88,7 @@ help:
 	@echo "  make test-zstd               Run ZSTD compression levels test"
 	@echo "  make test-basedirs           Run basedirs test across all backends"
 	@echo "  make test-multilevel         Run multi-level cache test across all backends"
+	@echo "  make test-multilevel-chain   Run multi-level backfill chain test (4 levels)"
 	@echo ""
 	@echo "  make test-backends           Run all backend tests"
 	@echo "  make clean                   Stop all services and clean up"
