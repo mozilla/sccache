@@ -470,6 +470,7 @@ impl PreprocessorCacheModeConfig {
     feature = "s3",
     feature = "webdav",
     feature = "oss",
+    feature = "cos"
 ))]
 pub struct RemoteStorage {
     operator: opendal::Operator,
@@ -485,6 +486,7 @@ pub struct RemoteStorage {
     feature = "s3",
     feature = "webdav",
     feature = "oss",
+    feature = "cos"
 ))]
 impl RemoteStorage {
     pub fn new(operator: opendal::Operator, basedirs: Vec<Vec<u8>>) -> Self {
@@ -502,6 +504,7 @@ impl RemoteStorage {
     feature = "s3",
     feature = "webdav",
     feature = "oss",
+    feature = "cos"
 ))]
 #[async_trait]
 impl Storage for RemoteStorage {
