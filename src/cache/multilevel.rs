@@ -921,4 +921,259 @@ mod test {
             }
         });
     }
+
+    #[test]
+    #[serial_test::serial(multilevel_env)]
+    fn test_config_validation_invalid_level_name() {
+        // Test that invalid level names are rejected
+        use crate::config::Config;
+        use std::env;
+
+        let runtime = RuntimeBuilder::new_multi_thread()
+            .enable_all()
+            .worker_threads(1)
+            .build()
+            .unwrap();
+
+        // Set invalid level name
+        unsafe {
+            env::set_var("SCCACHE_CACHE_LEVELS", "disk,invalid_backend,s3");
+            env::set_var("SCCACHE_DIR", "/tmp/test-cache");
+        }
+
+        let config = Config::load().unwrap();
+        let result = MultiLevelStorage::from_config(&config, runtime.handle());
+
+        // Should error with unknown cache level
+        assert!(result.is_err());
+        if let Err(e) = result {
+            let err_msg = format!("{}", e);
+            assert!(err_msg.contains("Unknown cache level") || err_msg.contains("invalid_backend"));
+        }
+
+        unsafe {
+            env::remove_var("SCCACHE_CACHE_LEVELS");
+            env::remove_var("SCCACHE_DIR");
+        }
+    }
+
+    #[test]
+    fn test_config_validation_empty_levels() {
+        // Test that empty levels list is handled
+        let storage = MultiLevelStorage::new(vec![]);
+
+        let runtime = RuntimeBuilder::new_multi_thread()
+            .enable_all()
+            .worker_threads(1)
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            // Get should return miss (no levels to check)
+            match storage.get("test_key").await.unwrap() {
+                Cache::Miss => {} // Expected
+                _ => panic!("Empty levels should always miss"),
+            }
+        });
+    }
+
+    #[test]
+    fn test_config_validation_single_level() {
+        // Test that single level works (passthrough mode)
+        let cache = Arc::new(InMemoryStorage::new());
+        let storage = MultiLevelStorage::new(vec![cache.clone() as Arc<dyn Storage>]);
+
+        let runtime = RuntimeBuilder::new_multi_thread()
+            .enable_all()
+            .worker_threads(1)
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let entry = CacheWrite::default();
+            storage.put("single_key", entry).await.unwrap();
+
+            match storage.get("single_key").await.unwrap() {
+                Cache::Hit(_) => {} // Expected
+                _ => panic!("Single level should work as passthrough"),
+            }
+
+            // Should not backfill since only one level
+            match cache.get("single_key").await.unwrap() {
+                Cache::Hit(_) => {} // Expected - data is there
+                _ => panic!("Data should be in the single level"),
+            }
+        });
+    }
+
+    #[test]
+    #[serial_test::serial(multilevel_env)]
+    fn test_config_level_not_configured() {
+        use crate::config::Config;
+        use std::env;
+
+        let runtime = RuntimeBuilder::new_multi_thread()
+            .enable_all()
+            .worker_threads(1)
+            .build()
+            .unwrap();
+
+        // Set level without configuration
+        unsafe {
+            env::set_var("SCCACHE_CACHE_LEVELS", "redis");
+            // Don't set SCCACHE_REDIS_ENDPOINT
+            env::remove_var("SCCACHE_REDIS");
+            env::remove_var("SCCACHE_REDIS_ENDPOINT");
+        }
+
+        let config = Config::load().unwrap();
+        let result = MultiLevelStorage::from_config(&config, runtime.handle());
+
+        // Should error with "not configured" or "requires" (when feature disabled)
+        assert!(result.is_err());
+        if let Err(e) = result {
+            let err_msg = format!("{}", e);
+            assert!(
+                err_msg.contains("not configured")
+                    || err_msg.contains("missing")
+                    || err_msg.contains("requires"),
+                "Expected error about missing config or feature, got: {}",
+                err_msg
+            );
+        }
+
+        unsafe {
+            env::remove_var("SCCACHE_CACHE_LEVELS");
+        }
+    }
+
+    #[test]
+    fn test_concurrent_reads() {
+        // Test multiple simultaneous reads to different levels
+        let runtime = RuntimeBuilder::new_multi_thread()
+            .enable_all()
+            .worker_threads(4)
+            .build()
+            .unwrap();
+
+        let cache_l0 = Arc::new(InMemoryStorage::new());
+        let cache_l1 = Arc::new(InMemoryStorage::new());
+        let cache_l2 = Arc::new(InMemoryStorage::new());
+
+        let storage = Arc::new(MultiLevelStorage::new(vec![
+            cache_l0.clone() as Arc<dyn Storage>,
+            cache_l1.clone() as Arc<dyn Storage>,
+            cache_l2.clone() as Arc<dyn Storage>,
+        ]));
+
+        runtime.block_on(async {
+            // Populate different keys at different levels
+            cache_l0.put("key_l0", CacheWrite::default()).await.unwrap();
+            cache_l1.put("key_l1", CacheWrite::default()).await.unwrap();
+            cache_l2.put("key_l2", CacheWrite::default()).await.unwrap();
+
+            // Concurrent reads
+            let storage1 = Arc::clone(&storage);
+            let storage2 = Arc::clone(&storage);
+            let storage3 = Arc::clone(&storage);
+
+            let (r1, r2, r3) = tokio::join!(
+                async move { storage1.get("key_l0").await },
+                async move { storage2.get("key_l1").await },
+                async move { storage3.get("key_l2").await },
+            );
+
+            // All should hit
+            assert!(matches!(r1.unwrap(), Cache::Hit(_)));
+            assert!(matches!(r2.unwrap(), Cache::Hit(_)));
+            assert!(matches!(r3.unwrap(), Cache::Hit(_)));
+        });
+    }
+
+    #[test]
+    fn test_concurrent_write_and_read() {
+        // Test concurrent writes and reads to same key
+        let runtime = RuntimeBuilder::new_multi_thread()
+            .enable_all()
+            .worker_threads(4)
+            .build()
+            .unwrap();
+
+        let cache_l0 = Arc::new(InMemoryStorage::new());
+        let cache_l1 = Arc::new(InMemoryStorage::new());
+
+        let storage = Arc::new(MultiLevelStorage::new(vec![
+            cache_l0.clone() as Arc<dyn Storage>,
+            cache_l1.clone() as Arc<dyn Storage>,
+        ]));
+
+        runtime.block_on(async {
+            let storage_write = Arc::clone(&storage);
+            let storage_read = Arc::clone(&storage);
+
+            // Concurrent write and read
+            let write_task = tokio::spawn(async move {
+                storage_write
+                    .put("concurrent_key", CacheWrite::default())
+                    .await
+            });
+
+            let read_task = tokio::spawn(async move {
+                sleep(Duration::from_millis(10)).await;
+                storage_read.get("concurrent_key").await
+            });
+
+            let (write_result, read_result) = tokio::join!(write_task, read_task);
+
+            // Write should succeed
+            write_result.unwrap().unwrap();
+
+            // Read might miss or hit depending on timing (both are valid)
+            match read_result.unwrap().unwrap() {
+                Cache::Hit(_) | Cache::Miss => {} // Both valid
+                _ => panic!("Unexpected cache result"),
+            }
+        });
+    }
+
+    #[test]
+    fn test_large_data_handling() {
+        // Test with large cache entries
+        let runtime = RuntimeBuilder::new_multi_thread()
+            .enable_all()
+            .worker_threads(1)
+            .build()
+            .unwrap();
+
+        let cache_l0 = Arc::new(InMemoryStorage::new());
+        let cache_l1 = Arc::new(InMemoryStorage::new());
+
+        let storage = MultiLevelStorage::new(vec![
+            cache_l0.clone() as Arc<dyn Storage>,
+            cache_l1.clone() as Arc<dyn Storage>,
+        ]);
+
+        runtime.block_on(async {
+            // Create large entry (1MB of data)
+            let mut entry = CacheWrite::new();
+            let large_data = vec![0xAB; 1024 * 1024]; // 1MB of data
+            entry.put_stdout(&large_data).unwrap();
+            cache_l1.put("large_key", entry).await.unwrap();
+
+            // Read through multi-level - should hit at L1
+            match storage.get("large_key").await.unwrap() {
+                Cache::Hit(_) => {}
+                _ => panic!("Should hit at L1"),
+            }
+
+            // Wait for backfill
+            sleep(Duration::from_millis(200)).await;
+
+            // Verify L0 was backfilled
+            match cache_l0.get("large_key").await.unwrap() {
+                Cache::Hit(_) => {} // Expected
+                _ => panic!("L0 should have backfilled data from L1"),
+            }
+        });
+    }
 }
