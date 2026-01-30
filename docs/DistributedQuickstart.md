@@ -31,7 +31,7 @@ public_addr = "127.0.0.1:10600"
 
 [client_auth]
 type = "token"
-token = "my client token"
+token = "my client token" # Must be a valid HTTP header value.
 
 [server_auth]
 type = "jwt_hs256"
@@ -122,7 +122,7 @@ toolchain_cache_size = 5368709120
 [dist.auth]
 type = "token"
 # This should match the `client_auth` section of the scheduler config.
-token = "my client token"
+token = "my client token" # Must be a valid HTTP header value.
 ```
 
 Clients using Mozilla build servers should configure their `dist.auth` section as follows:
