@@ -183,7 +183,7 @@ impl PreprocessorCacheEntry {
         for (digest, includes) in self.results.iter_mut().rev() {
             let result_matches = Self::result_matches(digest, includes, config, updated);
             if result_matches {
-                return Some(digest.to_string());
+                return Some(digest.clone());
             }
         }
         None

@@ -531,7 +531,7 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
                     SccacheServer::<_>::with_listener(l, runtime, client, dist_client, storage);
                 Ok((
                     srv.local_addr()
-                        .unwrap_or_else(|| crate::net::SocketAddr::UnixAbstract(p.to_vec())),
+                        .unwrap_or_else(|| crate::net::SocketAddr::UnixAbstract(p.clone())),
                     Box::new(move |f| srv.run(f)) as Box<dyn FnOnce(_) -> _>,
                 ))
             }

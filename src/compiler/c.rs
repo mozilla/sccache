@@ -381,9 +381,9 @@ where
         // Create an argument vector containing both preprocessor and arch args, to
         // use in creating a hash key
         let mut preprocessor_and_arch_args = self.parsed_args.preprocessor_args.clone();
-        preprocessor_and_arch_args.extend(self.parsed_args.arch_args.to_vec());
+        preprocessor_and_arch_args.extend(self.parsed_args.arch_args.clone());
         // common_args is used in preprocessing too
-        preprocessor_and_arch_args.extend(self.parsed_args.common_args.to_vec());
+        preprocessor_and_arch_args.extend(self.parsed_args.common_args.clone());
 
         let absolute_input_path: Cow<'_, _> = if self.parsed_args.input.is_absolute() {
             Cow::Borrowed(&self.parsed_args.input)
@@ -508,15 +508,15 @@ where
                                 return Ok(HashResult {
                                     key,
                                     compilation: Box::new(CCompilation {
-                                        parsed_args: self.parsed_args.to_owned(),
+                                        parsed_args: self.parsed_args.clone(),
                                         is_locally_preprocessed: false,
                                         #[cfg(feature = "dist-client")]
                                         preprocessed_input: PREPROCESSING_SKIPPED_COMPILE_POISON
                                             .to_vec(),
-                                        executable: self.executable.to_owned(),
+                                        executable: self.executable.clone(),
                                         compiler: self.compiler.to_owned(),
-                                        cwd: cwd.to_owned(),
-                                        env_vars: env_vars.to_owned(),
+                                        cwd: cwd.clone(),
+                                        env_vars: env_vars.clone(),
                                     }),
                                     weak_toolchain_key,
                                 });
@@ -622,7 +622,7 @@ where
         // Create an argument vector containing both common and arch args, to
         // use in creating a hash key
         let mut common_and_arch_args = self.parsed_args.common_args.clone();
-        common_and_arch_args.extend(self.parsed_args.arch_args.to_vec());
+        common_and_arch_args.extend(self.parsed_args.arch_args.clone());
 
         let key = HashKeyParams::new(
             &self.executable_digest,

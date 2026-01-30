@@ -255,7 +255,7 @@ impl TimeMacroFinder {
         }
         // Also check the concatenation with the previous small read
         if !self.previous_small_read.is_empty() {
-            let mut concatenated = self.previous_small_read.to_owned();
+            let mut concatenated = self.previous_small_read.clone();
             concatenated.extend(visit);
             self.find_macros(&concatenated);
         }

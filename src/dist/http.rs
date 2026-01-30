@@ -1314,8 +1314,8 @@ mod client {
             weak_key: String,
             toolchain_packager: Box<dyn ToolchainPackager>,
         ) -> Result<(Toolchain, Option<(String, PathBuf)>)> {
-            let compiler_path = compiler_path.to_owned();
-            let weak_key = weak_key.to_owned();
+            let compiler_path = compiler_path.clone();
+            let weak_key = weak_key.clone();
             let tc_cache = self.tc_cache.clone();
 
             self.pool

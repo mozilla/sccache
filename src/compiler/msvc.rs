@@ -731,7 +731,7 @@ pub fn parse_arguments(
     }
     let (input, language) = match input_arg {
         Some(i) => match Language::from_file_name(Path::new(&i)) {
-            Some(l) => (i.to_owned(), l),
+            Some(l) => (i.clone(), l),
             None => cannot_cache!("unknown source language"),
         },
         // We can't cache compilation without an input.

@@ -1140,7 +1140,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                 match (opt.as_ref(), value) {
                     ("extra-filename", Some(value)) => extra_filename = Some(value.to_owned()),
                     ("extra-filename", None) => cannot_cache!("extra-filename"),
-                    ("profile-use", Some(v)) => profile = Some(v.to_string()),
+                    ("profile-use", Some(v)) => profile = Some(v.clone()),
                     // Incremental compilation makes a mess of sccache's entire world
                     // view. It produces additional compiler outputs that we don't cache,
                     // and just letting rustc do its work in incremental mode is likely
@@ -1887,7 +1887,7 @@ impl<T: CommandCreatorSync> Compilation<T> for RustCompilation {
 
     fn outputs<'a>(&'a self) -> Box<dyn Iterator<Item = FileObjectSource> + 'a> {
         Box::new(self.outputs.iter().map(|(k, v)| FileObjectSource {
-            key: k.to_string(),
+            key: k.clone(),
             path: v.path.clone(),
             optional: v.optional,
         }))
