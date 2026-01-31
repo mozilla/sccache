@@ -351,7 +351,7 @@ jobs:
 
 
   test_freebsd:
-    name: test freebsd-14.1 rust stable
+    name: test freebsd-15.0 rust stable
     runs-on: ${{ matrix.job.os }}
     timeout-minutes: 70
     strategy:
@@ -410,7 +410,7 @@ jobs:
         if: failure()
         uses: ./.github/actions/artifact_failure
         with:
-          name: test-freebsd-14.1-stable
+          name: test-freebsd-15.0-stable
 
   release:
     name: release
