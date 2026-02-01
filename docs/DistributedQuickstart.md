@@ -162,7 +162,7 @@ On Linux and macOS:
 [[dist.toolchains]]
 type = "path_override"
 compiler_executable = "/home/me/.mozbuild/clang/bin/clang"
-archive = "/home/me/.mozbuild/toolchains/33d92fcd79ffef6e-clang-dist-toolchain.tar.xz"
+archive = "/home/me/.mozbuild/toolchains/33d92fcd79ffef6e-clang-dist-toolchain.tar.gz"
 archive_compiler_executable = "/builds/worker/toolchains/clang/bin/clang"
 ```
 
@@ -172,7 +172,7 @@ On Windows:
 [[dist.toolchains]]
 type = "path_override"
 compiler_executable = "C:/clang/bin\\clang-cl.exe"
-archive = "C:/toolchains/33d92fcd79ffef6e-clang-dist-toolchain.tar.xz"
+archive = "C:/toolchains/33d92fcd79ffef6e-clang-dist-toolchain.tar.gz"
 archive_compiler_executable = "/builds/worker/toolchains/clang/bin/clang"
 ```
 
@@ -180,7 +180,7 @@ Where:
  - `compiler_executable` identifies the path that sccache will match against to activate
    this configuration (you need to be careful on Windows - paths can have slashes in both
    directions, and you may need to escape backslashes, as in the example)
- - `archive` is the compressed tar archive containing the compiler toolchain to distribute
+ - `archive` is the gzip-compressed tar archive containing the compiler toolchain to distribute
    when `compiler_executable` is matched
  - `archive_compiler_executable` is the path within the archive the distributed
    compilation should invoke
