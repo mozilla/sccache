@@ -1,4 +1,5 @@
 [package]
+# Should match .rustfmt.toml
 edition = "2024"
 name = "sccache"
 rust-version = "1.85.0"
