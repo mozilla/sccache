@@ -22,7 +22,7 @@
 use divan::{Bencher, black_box};
 use sccache::cache::{CacheRead, CacheWrite};
 use sccache::lru_disk_cache::LruCache;
-use sccache::util::{Digest, TimeMacroFinder};
+use sccache::util::{Digest, TimeMacroFinder, normalize_win_path, strip_basedirs};
 use std::io::Cursor;
 
 // =============================================================================
@@ -814,6 +814,83 @@ fn lru_realistic_eviction_pressure(bencher: Bencher) {
             }
             black_box(cache)
         });
+}
+
+// =============================================================================
+// Path Normalization Benchmarks
+// =============================================================================
+
+/// Generate a realistic Windows path for benchmarking
+fn generate_win_path(depth: usize) -> Vec<u8> {
+    let mut path = b"C:\\Users\\Developer\\Projects\\".to_vec();
+    for i in 0..depth {
+        path.extend_from_slice(format!("SubDir{}\\", i).as_bytes());
+    }
+    path.extend_from_slice(b"source_file.cpp");
+    path
+}
+
+/// Generate preprocessor output with embedded paths
+fn generate_preprocessor_output_with_paths(num_includes: usize, basedir: &[u8]) -> Vec<u8> {
+    let mut data = Vec::new();
+    for i in 0..num_includes {
+        data.extend_from_slice(b"# 1 \"");
+        data.extend_from_slice(basedir);
+        data.extend_from_slice(format!("src/module{}/file{}.c\"\n", i % 10, i).as_bytes());
+        data.extend_from_slice(b"int function_");
+        data.extend_from_slice(format!("{}", i).as_bytes());
+        data.extend_from_slice(b"() { return 0; }\n");
+    }
+    data
+}
+
+/// Benchmark normalize_win_path with typical path
+#[divan::bench]
+fn normalize_win_path_typical(bencher: Bencher) {
+    let path = generate_win_path(5);
+
+    bencher.bench(|| black_box(normalize_win_path(black_box(&path))));
+}
+
+/// Benchmark normalize_win_path with UTF-8 characters
+#[divan::bench]
+fn normalize_win_path_utf8(bencher: Bencher) {
+    let path = "C:\\Users\\Müller\\Projekte\\Überarbeitung\\Größe\\Datei.cpp".as_bytes();
+
+    bencher.bench(|| black_box(normalize_win_path(black_box(path))));
+}
+
+/// Benchmark strip_basedirs with typical preprocessor output
+#[divan::bench]
+fn strip_basedirs_typical(bencher: Bencher) {
+    let basedir = b"/home/user/project/".to_vec();
+    let output = generate_preprocessor_output_with_paths(500, &basedir);
+
+    bencher.bench(|| {
+        black_box(strip_basedirs(
+            black_box(&output),
+            black_box(&[basedir.clone()]),
+        ))
+    });
+}
+
+/// Benchmark strip_basedirs with multiple basedirs
+#[divan::bench]
+fn strip_basedirs_multiple(bencher: Bencher) {
+    let basedirs = vec![
+        b"/home/user/project/".to_vec(),
+        b"/usr/include/".to_vec(),
+        b"/opt/toolchain/include/".to_vec(),
+    ];
+    let mut output = Vec::new();
+    for i in 0..500 {
+        let basedir = &basedirs[i % basedirs.len()];
+        output.extend_from_slice(b"# 1 \"");
+        output.extend_from_slice(basedir);
+        output.extend_from_slice(format!("file{}.h\"\n", i).as_bytes());
+    }
+
+    bencher.bench(|| black_box(strip_basedirs(black_box(&output), black_box(&basedirs))));
 }
 
 fn main() {
