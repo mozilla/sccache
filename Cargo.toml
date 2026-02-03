@@ -68,7 +68,7 @@ memmap2 = "0.9.4"
 mime = "0.3"
 number_prefix = "0.4"
 object = "0.37"
-opendal = { version = "0.55.0", optional = true, default-features = false }
+opendal = { git = "https://github.com/apache/opendal", rev = "4c1e7cd75e30446a47e40fef184fb8a9018e83d3", optional = true, default-features = false, features = ["layers-logging"] }
 openssl = { version = "0.10.75", optional = true }
 rand = "0.8.4"
 regex = "1.10.3"
