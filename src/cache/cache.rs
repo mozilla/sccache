@@ -474,6 +474,8 @@ impl PreprocessorCacheModeConfig {
 pub struct RemoteStorage {
     operator: opendal::Operator,
     basedirs: Vec<Vec<u8>>,
+    /// Skip health check probe and assume read-write access.
+    skip_health_check: bool,
 }
 
 #[cfg(any(
@@ -488,7 +490,20 @@ pub struct RemoteStorage {
 ))]
 impl RemoteStorage {
     pub fn new(operator: opendal::Operator, basedirs: Vec<Vec<u8>>) -> Self {
-        Self { operator, basedirs }
+        Self {
+            operator,
+            basedirs,
+            skip_health_check: false,
+        }
+    }
+
+    /// Create a new RemoteStorage that skips the health check probe.
+    pub fn new_skip_health_check(operator: opendal::Operator, basedirs: Vec<Vec<u8>>) -> Self {
+        Self {
+            operator,
+            basedirs,
+            skip_health_check: true,
+        }
     }
 }
 
@@ -531,6 +546,14 @@ impl Storage for RemoteStorage {
 
     async fn check(&self) -> Result<CacheMode> {
         use opendal::ErrorKind;
+
+        // Skip the health check probe if configured.
+        // Useful for servers that don't support arbitrary paths
+        // (e.g., bazel-remote requires SHA256 hash paths).
+        if self.skip_health_check {
+            debug!("storage check skipped, assuming read-write access");
+            return Ok(CacheMode::ReadWrite);
+        }
 
         let path = ".sccache_check";
 
@@ -755,10 +778,15 @@ pub fn storage_from_config(
                     c.username.as_deref(),
                     c.password.as_deref(),
                     c.token.as_deref(),
+                    c.disable_create_dir,
                 )
                 .map_err(|err| anyhow!("create webdav cache failed: {err:?}"))?;
 
-                let storage = RemoteStorage::new(operator, config.basedirs.clone());
+                let storage = if c.skip_health_check {
+                    RemoteStorage::new_skip_health_check(operator, config.basedirs.clone())
+                } else {
+                    RemoteStorage::new(operator, config.basedirs.clone())
+                };
                 return Ok(Arc::new(storage));
             }
             #[cfg(feature = "oss")]

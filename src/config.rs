@@ -338,6 +338,12 @@ pub struct WebdavCacheConfig {
     pub username: Option<String>,
     pub password: Option<String>,
     pub token: Option<String>,
+    /// Skip the health check probe and assume read-write access.
+    #[serde(default)]
+    pub skip_health_check: bool,
+    /// Disable PROPFIND/MKCOL calls during writes.
+    #[serde(default)]
+    pub disable_create_dir: bool,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -875,6 +881,10 @@ fn config_from_env() -> Result<EnvConfig> {
         let username = env::var("SCCACHE_WEBDAV_USERNAME").ok();
         let password = env::var("SCCACHE_WEBDAV_PASSWORD").ok();
         let token = env::var("SCCACHE_WEBDAV_TOKEN").ok();
+        let skip_health_check =
+            bool_from_env_var("SCCACHE_WEBDAV_SKIP_HEALTH_CHECK")?.unwrap_or(false);
+        let disable_create_dir =
+            bool_from_env_var("SCCACHE_WEBDAV_DISABLE_CREATE_DIR")?.unwrap_or(false);
 
         Some(WebdavCacheConfig {
             endpoint,
@@ -882,6 +892,8 @@ fn config_from_env() -> Result<EnvConfig> {
             username,
             password,
             token,
+            skip_health_check,
+            disable_create_dir,
         })
     } else {
         None
@@ -2137,6 +2149,8 @@ key_prefix = "cosprefix"
                     username: Some("webdavusername".to_string()),
                     password: Some("webdavpassword".to_string()),
                     token: Some("webdavtoken".to_string()),
+                    skip_health_check: false,
+                    disable_create_dir: false,
                 }),
                 oss: Some(OSSCacheConfig {
                     bucket: "name".to_owned(),

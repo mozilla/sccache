@@ -28,13 +28,18 @@ impl WebdavCache {
         username: Option<&str>,
         password: Option<&str>,
         token: Option<&str>,
+        disable_create_dir: bool,
     ) -> Result<Operator> {
-        let builder = Webdav::default()
+        let mut builder = Webdav::default()
             .endpoint(endpoint)
             .root(key_prefix)
             .username(username.unwrap_or_default())
             .password(password.unwrap_or_default())
             .token(token.unwrap_or_default());
+
+        if disable_create_dir {
+            builder = builder.disable_create_dir(true);
+        }
 
         let op = Operator::new(builder)?
             .layer(HttpClientLayer::new(set_user_agent()))

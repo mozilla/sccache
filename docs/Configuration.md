@@ -126,6 +126,10 @@ username = "alice"
 password = "secret12"
 # Mutually exclusive with username & password. Bearer token value
 token = "token123"
+# Skip health check probe (for servers that reject .sccache_check path)
+skip_health_check = false
+# Disable PROPFIND/MKCOL calls (for servers that don't support them)
+disable_create_dir = false
 
 [cache.oss]
 bucket = "name"
@@ -251,6 +255,8 @@ The full url appears then as `redis://user:passwd@1.2.3.4:6379/?db=1`.
 * `SCCACHE_WEBDAV_USERNAME` a username to authenticate with webdav service (optional).
 * `SCCACHE_WEBDAV_PASSWORD` a password to authenticate with webdav service (optional).
 * `SCCACHE_WEBDAV_TOKEN` a token to authenticate with webdav service (optional) - may be used instead of login & password.
+* `SCCACHE_WEBDAV_SKIP_HEALTH_CHECK` skip health check probe for servers that reject `.sccache_check` path (optional).
+* `SCCACHE_WEBDAV_DISABLE_CREATE_DIR` disable PROPFIND/MKCOL calls for servers that don't support them (optional).
 
 #### OSS
 
