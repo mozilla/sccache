@@ -182,6 +182,7 @@ pub fn sccache_client_cfg(
             oss: None,
             cos: None,
             levels: None,
+            put_mode: None,
         },
         dist: sccache::config::DistConfig {
             auth: Default::default(), // dangerously_insecure
