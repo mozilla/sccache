@@ -44,7 +44,7 @@ use crate::compiler::PreprocessorCacheEntry;
     feature = "cos"
 ))]
 use crate::config::CacheType;
-use crate::config::{Config, PreprocessorCacheModeConfig};
+use crate::config::{Config, PreprocessorCacheModeConfig, PutMode};
 use crate::errors::*;
 
 /// A multi-level cache storage that checks multiple storage backends in order.
@@ -59,6 +59,7 @@ use crate::errors::*;
 /// See docs/MultiLevel.md for details.
 pub struct MultiLevelStorage {
     levels: Vec<Arc<dyn Storage>>,
+    put_mode: PutMode,
 }
 
 impl MultiLevelStorage {
@@ -67,7 +68,15 @@ impl MultiLevelStorage {
     /// Levels are checked in order (L0, L1, L2, ...) during reads.
     /// All levels receive writes in parallel.
     pub fn new(levels: Vec<Arc<dyn Storage>>) -> Self {
-        MultiLevelStorage { levels }
+        MultiLevelStorage {
+            levels,
+            put_mode: PutMode::default(),
+        }
+    }
+
+    /// Create a new multi-level storage with explicit put mode.
+    pub fn with_put_mode(levels: Vec<Arc<dyn Storage>>, put_mode: PutMode) -> Self {
+        MultiLevelStorage { levels, put_mode }
     }
 
     /// Create a multi-level storage from configuration.
@@ -200,7 +209,11 @@ impl MultiLevelStorage {
             "Initialized multi-level storage with {} total levels",
             storages.len()
         );
-        Ok(Some(MultiLevelStorage::new(storages)))
+
+        let put_mode = config.cache_configs.put_mode.unwrap_or_default();
+        debug!("Multi-level cache put mode: {}", put_mode);
+
+        Ok(Some(MultiLevelStorage::with_put_mode(storages, put_mode)))
     }
 
     /// Helper to write cache entry from raw bytes.
@@ -214,6 +227,28 @@ impl MultiLevelStorage {
         // Try to use put_raw for direct bytes write (most efficient)
         level.put_raw(key, (**data).clone()).await?;
         Ok(())
+    }
+
+    /// Write to levels starting from `start_idx` asynchronously
+    async fn write_remaining_levels_async(&self, key: &str, data: &Arc<Vec<u8>>, start_idx: usize) {
+        for (idx, level) in self.levels.iter().enumerate().skip(start_idx) {
+            // Check if level is read-only before spawning task
+            if matches!(level.check().await, Ok(CacheMode::ReadOnly)) {
+                debug!("Level {} is read-only, skipping write", idx);
+                continue;
+            }
+
+            let data = Arc::clone(data);
+            let key = key.to_string();
+            let level = Arc::clone(level);
+
+            tokio::spawn(async move {
+                match Self::write_entry_from_bytes(&level, &key, &data).await {
+                    Ok(_) => trace!("Backfilled cache level {} on write", idx),
+                    Err(e) => debug!("Background write to level {} failed: {}", idx, e),
+                }
+            });
+        }
     }
 }
 
@@ -306,42 +341,87 @@ impl Storage for MultiLevelStorage {
             return Err(anyhow!("No cache levels configured"));
         }
 
-        // Serialize cache entry once - single allocation
-        let data = entry.finish()?;
-        let data = Arc::new(data);
-        let mut last_duration = Duration::ZERO;
+        // Serialize cache entry once
+        let data = Arc::new(entry.finish()?);
+        let key_str = key.to_string();
 
-        // Write to all levels using the same data Arc
-        for (idx, level) in self.levels.iter().enumerate() {
-            let data_arc = Arc::clone(&data);
-            let key_str = key.to_string();
-            let level_arc = Arc::clone(level);
+        match self.put_mode {
+            PutMode::Ignore => {
+                // Never fail, log warnings only
+                self.write_remaining_levels_async(&key_str, &data, 0).await;
+                Ok(Duration::ZERO)
+            }
 
-            if idx == 0 {
-                // Write to first level synchronously and get duration
-                match Self::write_entry_from_bytes(&level_arc, &key_str, &data_arc).await {
-                    Ok(_) => {
-                        last_duration = Duration::ZERO; // Note: actual duration tracked in write_entry
-                        trace!("Stored in cache level {}", idx);
+            PutMode::L0 => {
+                // Fail only if L0 write fails (unless L0 is read-only)
+                if let Some(l0) = self.levels.first() {
+                    // Check if L0 is read-only before attempting write
+                    if matches!(l0.check().await, Ok(CacheMode::ReadOnly)) {
+                        debug!("Level 0 is read-only, skipping L0 write");
+                    } else {
+                        // Attempt write and propagate errors
+                        Self::write_entry_from_bytes(l0, &key_str, &data).await?;
+                        trace!("Stored in cache level 0");
                     }
-                    Err(e) => warn!("Failed to write to cache level {}: {}", idx, e),
+
+                    // Background writes for L1+ (best-effort)
+                    self.write_remaining_levels_async(&key_str, &data, 1).await;
                 }
-            } else {
-                // Spawn background task for other levels (non-blocking)
-                tokio::spawn(async move {
-                    match Self::write_entry_from_bytes(&level_arc, &key_str, &data_arc).await {
-                        Ok(_) => {
-                            trace!("Backfilled cache level {} on write", idx);
+                Ok(Duration::ZERO)
+            }
+
+            PutMode::All => {
+                // Fail if any RW level fails
+                use tokio::sync::mpsc;
+                let (tx, mut rx) = mpsc::channel(self.levels.len());
+
+                for (idx, level) in self.levels.iter().enumerate() {
+                    let data = Arc::clone(&data);
+                    let key_str = key_str.clone();
+                    let level = Arc::clone(level);
+                    let tx = tx.clone();
+
+                    let write_task = async move {
+                        let result = Self::write_entry_from_bytes(&level, &key_str, &data).await;
+                        (idx, result, level)
+                    };
+
+                    if idx == 0 {
+                        // L0 synchronous
+                        let (idx, result, level) = write_task.await;
+                        if let Err(e) = result {
+                            // Check if read-only before failing
+                            if !matches!(level.check().await, Ok(CacheMode::ReadOnly)) {
+                                return Err(anyhow!(
+                                    "Failed to write to cache level {}: {}",
+                                    idx,
+                                    e
+                                ));
+                            }
                         }
-                        Err(e) => {
-                            debug!("Background write to level {} failed: {}", idx, e);
+                    } else {
+                        // L1+ async
+                        tokio::spawn(async move {
+                            let result = write_task.await;
+                            let _ = tx.send(result).await;
+                        });
+                    }
+                }
+                drop(tx);
+
+                // Check async results
+                while let Some((idx, result, level)) = rx.recv().await {
+                    if let Err(e) = result {
+                        // Check if read-only before failing
+                        if !matches!(level.check().await, Ok(CacheMode::ReadOnly)) {
+                            return Err(anyhow!("Failed to write to cache level {}: {}", idx, e));
                         }
                     }
-                });
+                }
+
+                Ok(Duration::ZERO)
             }
         }
-
-        Ok(last_duration)
     }
 
     async fn check(&self) -> Result<CacheMode> {
@@ -621,19 +701,27 @@ mod test {
     /// behavior where remote caches support raw byte retrieval for efficient backfilling.
     struct InMemoryStorage {
         data: Arc<Mutex<HashMap<String, Vec<u8>>>>,
+        access_log: Arc<Mutex<Vec<String>>>,
     }
 
     impl InMemoryStorage {
         fn new() -> Self {
             Self {
                 data: Arc::new(Mutex::new(HashMap::new())),
+                access_log: Arc::new(Mutex::new(Vec::new())),
             }
+        }
+
+        fn get_access_log(&self) -> Arc<Mutex<Vec<String>>> {
+            Arc::clone(&self.access_log)
         }
     }
 
     #[async_trait]
     impl Storage for InMemoryStorage {
         async fn get(&self, key: &str) -> Result<Cache> {
+            self.access_log.lock().await.push(format!("get:{}", key));
+
             let data = self.data.lock().await;
             match data.get(key) {
                 Some(bytes) => {
@@ -648,6 +736,8 @@ mod test {
         }
 
         async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration> {
+            self.access_log.lock().await.push(format!("put:{}", key));
+
             let data = entry.finish()?;
             self.data.lock().await.insert(key.to_string(), data);
             Ok(Duration::ZERO)
@@ -1217,13 +1307,15 @@ mod test {
     #[test]
     fn test_all_levels_fail_on_put() {
         // Test behavior when all storage levels fail on write
+        // In multi-level design, put() succeeds if ANY level succeeds
+        // Even if all fail, it should not panic
         let runtime = RuntimeBuilder::new_multi_thread()
             .enable_all()
             .worker_threads(1)
             .build()
             .unwrap();
 
-        // Create mock storages that will fail (no responses queued)
+        // Create ReadOnly storages that will reject writes
         let cache_l0 = Arc::new(ReadOnlyStorage(Arc::new(InMemoryStorage::new())));
         let cache_l1 = Arc::new(ReadOnlyStorage(Arc::new(InMemoryStorage::new())));
 
@@ -1333,7 +1425,6 @@ mod test {
             assert!(result.unwrap().is_none());
 
             // Test put_preprocessor_cache_entry
-            use crate::compiler::PreprocessorCacheEntry;
             let entry = PreprocessorCacheEntry::default();
             let result = storage
                 .put_preprocessor_cache_entry("test_key", entry)
@@ -1345,8 +1436,6 @@ mod test {
     #[test]
     fn test_readonly_level_in_check() {
         // Test that check() properly detects read-only levels
-        use crate::cache::readonly::ReadOnlyStorage;
-
         let runtime = RuntimeBuilder::new_multi_thread()
             .enable_all()
             .worker_threads(1)
@@ -1380,6 +1469,378 @@ mod test {
                 CacheMode::ReadOnly => {} // Expected
                 _ => panic!("Should detect read-only mode"),
             }
+        });
+    }
+
+    #[test]
+    fn test_sequential_read_order() {
+        // Test that reads happen sequentially (L0, L1, L2, ...), not in parallel
+        // This verifies the documented behavior: "check multiple storage backends in sequence"
+        let runtime = RuntimeBuilder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        // Create three storage levels with access tracking
+        let l0 = Arc::new(InMemoryStorage::new());
+        let l1 = Arc::new(InMemoryStorage::new());
+        let l2 = Arc::new(InMemoryStorage::new());
+
+        let l0_log = l0.get_access_log();
+        let l1_log = l1.get_access_log();
+        let l2_log = l2.get_access_log();
+
+        // Put data only in L2 (slowest level)
+        let key = "test_key_12345678901234567890";
+        runtime.block_on(async {
+            let mut entry = CacheWrite::default();
+            entry.put_stdout(b"test data").unwrap();
+            l2.put(key, entry).await.unwrap();
+        });
+
+        let storage = MultiLevelStorage::new(vec![
+            l0 as Arc<dyn Storage>,
+            l1 as Arc<dyn Storage>,
+            l2 as Arc<dyn Storage>,
+        ]);
+
+        runtime.block_on(async {
+            let result = storage.get(key).await.unwrap();
+
+            assert!(matches!(result, Cache::Hit(_)));
+
+            // Check that all three levels were accessed in order
+            let l0_accesses = l0_log.lock().await;
+            let l1_accesses = l1_log.lock().await;
+            let l2_accesses = l2_log.lock().await;
+
+            // Each level should have been accessed exactly once for get
+            assert_eq!(l0_accesses.len(), 1, "L0 should be checked first");
+            assert_eq!(l1_accesses.len(), 1, "L1 should be checked second");
+            assert_eq!(l2_accesses.len(), 2, "L2: put (setup) + get (check)");
+
+            assert_eq!(l0_accesses[0], format!("get:{}", key));
+            assert_eq!(l1_accesses[0], format!("get:{}", key));
+            assert_eq!(l2_accesses[0], format!("put:{}", key)); // from setup
+            assert_eq!(l2_accesses[1], format!("get:{}", key)); // from sequential check
+        });
+    }
+
+    #[test]
+    fn test_read_stops_at_first_hit_not_parallel() {
+        // Test that when L1 has data, L2 is NEVER accessed (proving sequential not parallel)
+        let runtime = RuntimeBuilder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let l0 = Arc::new(InMemoryStorage::new());
+        let l1 = Arc::new(InMemoryStorage::new());
+        let l2 = Arc::new(InMemoryStorage::new());
+
+        let l0_log = l0.get_access_log();
+        let l1_log = l1.get_access_log();
+        let l2_log = l2.get_access_log();
+
+        let key = "test_key_early_hit_1234567890ab";
+
+        // Put data in L1
+        runtime.block_on(async {
+            let mut entry = CacheWrite::default();
+            entry.put_stdout(b"L1 data").unwrap();
+            l1.put(key, entry).await.unwrap();
+        });
+
+        let storage = MultiLevelStorage::new(vec![
+            l0 as Arc<dyn Storage>,
+            l1 as Arc<dyn Storage>,
+            l2 as Arc<dyn Storage>,
+        ]);
+
+        runtime.block_on(async {
+            let result = storage.get(key).await.unwrap();
+
+            assert!(matches!(result, Cache::Hit(_)));
+
+            // Verify L0 and L1 were accessed, but L2 was NOT
+            let l0_accesses = l0_log.lock().await;
+            let l1_accesses = l1_log.lock().await;
+            let l2_accesses = l2_log.lock().await;
+
+            assert_eq!(l0_accesses.len(), 1, "L0 should be checked first");
+            assert_eq!(l1_accesses.len(), 2, "L1: put (setup) + get (check)");
+            assert_eq!(
+                l2_accesses.len(),
+                0,
+                "L2 should NOT be checked (sequential read stops at first hit)"
+            );
+        });
+    }
+
+    /// Storage mock that always fails on write (for testing error handling).
+    ///
+    /// Unlike ReadOnlyStorage (which is a valid mode), this returns actual errors
+    /// to simulate real failure scenarios like disk full, network errors, etc.
+    struct FailingStorage;
+
+    #[async_trait]
+    impl Storage for FailingStorage {
+        async fn get(&self, _key: &str) -> Result<Cache> {
+            Ok(Cache::Miss)
+        }
+
+        async fn put(&self, _key: &str, _entry: CacheWrite) -> Result<Duration> {
+            Err(anyhow!("Intentional failure for testing"))
+        }
+
+        async fn put_raw(&self, _key: &str, _entry: Vec<u8>) -> Result<Duration> {
+            Err(anyhow!("Intentional failure for testing"))
+        }
+
+        async fn check(&self) -> Result<CacheMode> {
+            Ok(CacheMode::ReadWrite) // It's RW but fails on put
+        }
+
+        fn location(&self) -> String {
+            "FailingStorage".to_string()
+        }
+
+        async fn current_size(&self) -> Result<Option<u64>> {
+            Ok(None)
+        }
+
+        async fn max_size(&self) -> Result<Option<u64>> {
+            Ok(None)
+        }
+
+        fn preprocessor_cache_mode_config(&self) -> PreprocessorCacheModeConfig {
+            PreprocessorCacheModeConfig::default()
+        }
+
+        async fn get_preprocessor_cache_entry(
+            &self,
+            _key: &str,
+        ) -> Result<Option<Box<dyn crate::lru_disk_cache::ReadSeek>>> {
+            Err(anyhow!("Intentional failure for testing"))
+        }
+
+        async fn put_preprocessor_cache_entry(
+            &self,
+            _key: &str,
+            _entry: PreprocessorCacheEntry,
+        ) -> Result<()> {
+            Err(anyhow!("Intentional failure for testing"))
+        }
+    }
+
+    #[test]
+    fn test_put_mode_ignore() {
+        let runtime = RuntimeBuilder::new_multi_thread()
+            .enable_all()
+            .worker_threads(1)
+            .build()
+            .unwrap();
+
+        // All levels fail with actual errors
+        let cache_l0 = Arc::new(FailingStorage);
+        let cache_l1 = Arc::new(FailingStorage);
+
+        let storage = MultiLevelStorage::with_put_mode(
+            vec![cache_l0 as Arc<dyn Storage>, cache_l1 as Arc<dyn Storage>],
+            PutMode::Ignore,
+        );
+
+        runtime.block_on(async {
+            let entry = CacheWrite::new();
+            let result = storage.put("test_key", entry).await;
+
+            assert!(
+                result.is_ok(),
+                "PutMode::Ignore should never fail, even when all levels error"
+            );
+        });
+    }
+
+    #[test]
+    fn test_put_mode_l0_fails_on_error() {
+        let runtime = RuntimeBuilder::new_multi_thread()
+            .enable_all()
+            .worker_threads(1)
+            .build()
+            .unwrap();
+
+        // L0 fails with actual error, L1 succeeds
+        let cache_l0 = Arc::new(FailingStorage);
+        let cache_l1 = Arc::new(InMemoryStorage::new());
+
+        let storage = MultiLevelStorage::with_put_mode(
+            vec![cache_l0 as Arc<dyn Storage>, cache_l1 as Arc<dyn Storage>],
+            PutMode::L0,
+        );
+
+        runtime.block_on(async {
+            let entry = CacheWrite::new();
+            let result = storage.put("test_key", entry).await;
+
+            assert!(
+                result.is_err(),
+                "PutMode::L0 should fail when L0 write fails"
+            );
+            let err_msg = result.unwrap_err().to_string();
+            assert!(
+                err_msg.contains("Intentional") || err_msg.contains("put_raw not implemented"),
+                "Expected failure message, got: {}",
+                err_msg
+            );
+        });
+    }
+
+    #[test]
+    fn test_put_mode_l0_succeeds_if_l0_ok() {
+        let runtime = RuntimeBuilder::new_multi_thread()
+            .enable_all()
+            .worker_threads(1)
+            .build()
+            .unwrap();
+
+        // L0 succeeds, L1 fails (shouldn't matter in L0 mode)
+        let cache_l0 = Arc::new(InMemoryStorage::new());
+        let cache_l1 = Arc::new(FailingStorage);
+
+        let storage = MultiLevelStorage::with_put_mode(
+            vec![cache_l0 as Arc<dyn Storage>, cache_l1 as Arc<dyn Storage>],
+            PutMode::L0,
+        );
+
+        runtime.block_on(async {
+            let entry = CacheWrite::new();
+            let result = storage.put("test_key", entry).await;
+
+            assert!(
+                result.is_ok(),
+                "PutMode::L0 should succeed when L0 succeeds, even if L1+ fails"
+            );
+        });
+    }
+
+    #[test]
+    fn test_put_mode_all_fails_on_any_error() {
+        let runtime = RuntimeBuilder::new_multi_thread()
+            .enable_all()
+            .worker_threads(1)
+            .build()
+            .unwrap();
+
+        // L0 succeeds, L1 fails
+        let cache_l0 = Arc::new(InMemoryStorage::new());
+        let cache_l1 = Arc::new(FailingStorage);
+
+        let storage = MultiLevelStorage::with_put_mode(
+            vec![cache_l0 as Arc<dyn Storage>, cache_l1 as Arc<dyn Storage>],
+            PutMode::All,
+        );
+
+        runtime.block_on(async {
+            let entry = CacheWrite::new();
+            let result = storage.put("test_key", entry).await;
+
+            // Give background L1 task time to complete and report failure
+            sleep(Duration::from_millis(100)).await;
+
+            assert!(
+                result.is_err(),
+                "PutMode::All should fail when any RW level fails"
+            );
+        });
+    }
+
+    #[test]
+    fn test_put_mode_all_succeeds_when_all_ok() {
+        let runtime = RuntimeBuilder::new_multi_thread()
+            .enable_all()
+            .worker_threads(1)
+            .build()
+            .unwrap();
+
+        // Both levels succeed
+        let cache_l0 = Arc::new(InMemoryStorage::new());
+        let cache_l1 = Arc::new(InMemoryStorage::new());
+
+        let storage = MultiLevelStorage::with_put_mode(
+            vec![
+                cache_l0.clone() as Arc<dyn Storage>,
+                cache_l1.clone() as Arc<dyn Storage>,
+            ],
+            PutMode::All,
+        );
+
+        runtime.block_on(async {
+            let entry = CacheWrite::new();
+            let result = storage.put("test_key", entry).await;
+
+            // Give background tasks time to complete
+            sleep(Duration::from_millis(100)).await;
+
+            assert!(
+                result.is_ok(),
+                "PutMode::All should succeed when all levels succeed"
+            );
+
+            // Verify both levels have the data
+            assert!(matches!(
+                cache_l0.get("test_key").await.unwrap(),
+                Cache::Hit(_)
+            ));
+            assert!(matches!(
+                cache_l1.get("test_key").await.unwrap(),
+                Cache::Hit(_)
+            ));
+        });
+    }
+
+    #[test]
+    fn test_put_mode_all_skips_readonly() {
+        let runtime = RuntimeBuilder::new_multi_thread()
+            .enable_all()
+            .worker_threads(1)
+            .build()
+            .unwrap();
+
+        // L0 writable, L1 read-only (should be skipped), L2 writable
+        let cache_l0 = Arc::new(InMemoryStorage::new());
+        let cache_l1 = Arc::new(ReadOnlyStorage(Arc::new(InMemoryStorage::new())));
+        let cache_l2 = Arc::new(InMemoryStorage::new());
+
+        let storage = MultiLevelStorage::with_put_mode(
+            vec![
+                cache_l0.clone() as Arc<dyn Storage>,
+                cache_l1 as Arc<dyn Storage>,
+                cache_l2.clone() as Arc<dyn Storage>,
+            ],
+            PutMode::All,
+        );
+
+        runtime.block_on(async {
+            let entry = CacheWrite::new();
+            let result = storage.put("test_key", entry).await;
+
+            // Give background tasks time to complete
+            sleep(Duration::from_millis(100)).await;
+
+            assert!(
+                result.is_ok(),
+                "PutMode::All should succeed when read-only levels are skipped"
+            );
+
+            // Verify writable levels have the data
+            assert!(matches!(
+                cache_l0.get("test_key").await.unwrap(),
+                Cache::Hit(_)
+            ));
+            assert!(matches!(
+                cache_l2.get("test_key").await.unwrap(),
+                Cache::Hit(_)
+            ));
         });
     }
 }

@@ -37,6 +37,45 @@ use typed_path::Utf8TypedPathBuf;
 
 use crate::errors::*;
 
+/// Defines how strict the multi-level cache is about write failures.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PutMode {
+    /// Never fail on write errors - log warnings only (most permissive)
+    Ignore,
+    /// Fail only if L0 write fails (default - balances reliability and performance)
+    #[default]
+    L0,
+    /// Fail if any read-write level fails (most strict)
+    All,
+}
+
+impl FromStr for PutMode {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s.to_lowercase().as_str() {
+            "ignore" => Ok(PutMode::Ignore),
+            "l0" => Ok(PutMode::L0),
+            "all" => Ok(PutMode::All),
+            _ => Err(anyhow!(
+                "Invalid put mode '{}'. Valid values: ignore, l0, all",
+                s
+            )),
+        }
+    }
+}
+
+impl fmt::Display for PutMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PutMode::Ignore => write!(f, "ignore"),
+            PutMode::L0 => write!(f, "l0"),
+            PutMode::All => write!(f, "all"),
+        }
+    }
+}
+
 static CACHED_CONFIG_PATH: LazyLock<PathBuf> = LazyLock::new(CachedConfig::file_config_path);
 static CACHED_CONFIG: Mutex<Option<CachedFileConfig>> = Mutex::new(None);
 
@@ -452,6 +491,8 @@ pub struct CacheConfigs {
     /// Ordered list of cache levels to use (e.g., ["disk", "s3", "redis"])
     /// If not specified, a single cache is selected from configured backends
     pub levels: Option<Vec<String>>,
+    /// Put mode: how strict to be about write failures (ignore, l0 [default], all)
+    pub put_mode: Option<PutMode>,
 }
 
 impl CacheConfigs {
@@ -470,6 +511,7 @@ impl CacheConfigs {
             oss,
             cos,
             levels: _,
+            put_mode: _,
         } = self;
 
         let cache_type = s3
@@ -558,6 +600,7 @@ impl CacheConfigs {
             oss,
             cos,
             levels,
+            put_mode,
         } = other;
 
         if azure.is_some() {
@@ -593,6 +636,9 @@ impl CacheConfigs {
 
         if levels.is_some() {
             self.levels = levels;
+        }
+        if put_mode.is_some() {
+            self.put_mode = put_mode;
         }
     }
 }
@@ -1093,6 +1139,11 @@ fn config_from_env() -> Result<EnvConfig> {
         None
     };
 
+    // Parse SCCACHE_CACHE_PUT_MODE environment variable
+    let put_mode = env::var("SCCACHE_CACHE_PUT_MODE")
+        .ok()
+        .and_then(|s| s.parse::<PutMode>().ok());
+
     let cache = CacheConfigs {
         azure,
         disk,
@@ -1105,6 +1156,7 @@ fn config_from_env() -> Result<EnvConfig> {
         oss,
         cos,
         levels,
+        put_mode,
     };
 
     // ======= Base directory =======
@@ -2305,6 +2357,7 @@ key_prefix = "cosprefix"
                     key_prefix: "cosprefix".into(),
                 }),
                 levels: None,
+                put_mode: None,
             },
             dist: DistConfig {
                 auth: DistAuth::Token {
