@@ -441,8 +441,11 @@ mod test {
     use super::*;
     use crate::cache::CacheRead;
     use crate::cache::disk::DiskCache;
+    use crate::cache::readonly::ReadOnlyStorage;
+    use crate::config::Config;
     use crate::config::PreprocessorCacheModeConfig;
     use std::collections::HashMap;
+    use std::env;
     use std::fs;
     use std::io::Cursor;
     use std::sync::Arc;
@@ -926,9 +929,6 @@ mod test {
     #[serial_test::serial(multilevel_env)]
     fn test_config_validation_invalid_level_name() {
         // Test that invalid level names are rejected
-        use crate::config::Config;
-        use std::env;
-
         let runtime = RuntimeBuilder::new_multi_thread()
             .enable_all()
             .worker_threads(1)
@@ -1009,9 +1009,6 @@ mod test {
     #[test]
     #[serial_test::serial(multilevel_env)]
     fn test_config_level_not_configured() {
-        use crate::config::Config;
-        use std::env;
-
         let runtime = RuntimeBuilder::new_multi_thread()
             .enable_all()
             .worker_threads(1)
@@ -1220,8 +1217,6 @@ mod test {
     #[test]
     fn test_all_levels_fail_on_put() {
         // Test behavior when all storage levels fail on write
-        use crate::test::mock_storage::MockStorage;
-
         let runtime = RuntimeBuilder::new_multi_thread()
             .enable_all()
             .worker_threads(1)
@@ -1229,8 +1224,8 @@ mod test {
             .unwrap();
 
         // Create mock storages that will fail (no responses queued)
-        let cache_l0 = Arc::new(MockStorage::new(None, false));
-        let cache_l1 = Arc::new(MockStorage::new(None, false));
+        let cache_l0 = Arc::new(ReadOnlyStorage(Arc::new(InMemoryStorage::new())));
+        let cache_l1 = Arc::new(ReadOnlyStorage(Arc::new(InMemoryStorage::new())));
 
         let storage = MultiLevelStorage::new(vec![
             cache_l0 as Arc<dyn Storage>,
@@ -1240,10 +1235,11 @@ mod test {
         runtime.block_on(async {
             let entry = CacheWrite::new();
 
-            // put() should fail when all levels fail, but we need to queue responses
-            // for put to work. Actually, MockStorage.put() doesn't fail, it just returns
-            // Let's just verify put() doesn't panic
-            let _ = storage.put("fail_key", entry).await;
+            // put() should complete without panic even when all levels fail
+            // (writes to L0 are synchronous, L1+ are async background)
+            let result = storage.put("fail_key", entry).await;
+
+            assert!(result.is_ok(), "Put should succeed with read-only levels");
         });
     }
 
