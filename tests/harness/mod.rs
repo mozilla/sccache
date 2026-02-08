@@ -181,8 +181,7 @@ pub fn sccache_client_cfg(
             webdav: None,
             oss: None,
             cos: None,
-            levels: None,
-            put_mode: None,
+            multilevel: None,
         },
         dist: sccache::config::DistConfig {
             auth: Default::default(), // dangerously_insecure
