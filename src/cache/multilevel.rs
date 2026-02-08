@@ -12,10 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 
 #[cfg(any(
     feature = "azure",
@@ -47,6 +48,198 @@ use crate::config::CacheType;
 use crate::config::{Config, PreprocessorCacheModeConfig, WritePolicy};
 use crate::errors::*;
 
+/// Statistics for a single cache level in multi-level storage.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LevelStats {
+    /// Human-readable name of this level (e.g., "L0 (disk)")
+    pub name: String,
+    /// Number of cache hits at this level
+    pub hits: u64,
+    /// Number of cache misses (checked but not found) at this level
+    pub misses: u64,
+    /// Number of successful writes to this level
+    pub writes: u64,
+    /// Number of failed writes to this level
+    pub write_failures: u64,
+    /// Number of times data from this level was backfilled to faster levels
+    pub backfills_from: u64,
+    /// Number of times data from slower levels was backfilled to this level
+    pub backfills_to: u64,
+    /// Total time spent reading hits from this level
+    pub hit_duration: Duration,
+    /// Total time spent writing to this level
+    pub write_duration: Duration,
+}
+
+/// Statistics for multi-level cache operation.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MultiLevelStats {
+    /// Per-level statistics
+    pub levels: Vec<LevelStats>,
+    /// Number of times a hit occurred before checking all levels
+    pub early_hits: u64,
+}
+
+impl LevelStats {
+    /// Calculate hit rate as a percentage
+    pub fn hit_rate(&self) -> f64 {
+        let total = self.hits + self.misses;
+        if total > 0 {
+            (self.hits as f64 / total as f64) * 100.0
+        } else {
+            0.0
+        }
+    }
+
+    /// Calculate average hit latency in milliseconds
+    pub fn avg_hit_latency_ms(&self) -> f64 {
+        if self.hits > 0 {
+            self.hit_duration.as_secs_f64() * 1000.0 / self.hits as f64
+        } else {
+            0.0
+        }
+    }
+
+    /// Calculate average write latency in milliseconds
+    pub fn avg_write_latency_ms(&self) -> f64 {
+        if self.writes > 0 {
+            self.write_duration.as_secs_f64() * 1000.0 / self.writes as f64
+        } else {
+            0.0
+        }
+    }
+
+    /// Format stats for human-readable display
+    /// Returns a vector of (label, value_with_suffix, suffix_length) tuples
+    /// suffix_length is used for width calculations in formatting
+    /// Order: hits, misses, rate, writes, failures, backfills, write timing, read timing
+    pub fn format_stats(&self) -> Vec<(String, String, usize)> {
+        let mut stats = vec![];
+
+        // 1. Hits/Misses/Rate
+        stats.push((format!("  {} hits", self.name), self.hits.to_string(), 0));
+        stats.push((
+            format!("  {} misses", self.name),
+            self.misses.to_string(),
+            0,
+        ));
+
+        let total_checks = self.hits + self.misses;
+        if total_checks > 0 {
+            stats.push((
+                format!("  {} hit rate", self.name),
+                format!("{:.2} %", self.hit_rate()),
+                2, // " %" is 2 chars
+            ));
+        } else {
+            stats.push((format!("  {} hit rate", self.name), "-".to_string(), 0));
+        }
+
+        // 2. Writes and failures
+        stats.push((
+            format!("  {} writes", self.name),
+            self.writes.to_string(),
+            0,
+        ));
+        stats.push((
+            format!("  {} write failures", self.name),
+            self.write_failures.to_string(),
+            0,
+        ));
+
+        // 3. Backfills
+        stats.push((
+            format!("  {} backfills from", self.name),
+            self.backfills_from.to_string(),
+            0,
+        ));
+        stats.push((
+            format!("  {} backfills to", self.name),
+            self.backfills_to.to_string(),
+            0,
+        ));
+
+        // 4. Timing stats
+        let avg_write_duration = if self.writes > 0 {
+            self.write_duration / self.writes as u32
+        } else {
+            Duration::default()
+        };
+        stats.push((
+            format!("  {} avg cache write", self.name),
+            crate::util::fmt_duration_as_secs(&avg_write_duration),
+            2, // " s" is 2 chars
+        ));
+
+        let avg_read_duration = if self.hits > 0 {
+            self.hit_duration / self.hits as u32
+        } else {
+            Duration::default()
+        };
+        stats.push((
+            format!("  {} avg cache read hit", self.name),
+            crate::util::fmt_duration_as_secs(&avg_read_duration),
+            2, // " s" is 2 chars
+        ));
+
+        stats
+    }
+}
+
+impl MultiLevelStats {
+    fn new(level_count: usize) -> Self {
+        MultiLevelStats {
+            levels: (0..level_count)
+                .map(|idx| LevelStats {
+                    name: format!("L{}", idx),
+                    ..Default::default()
+                })
+                .collect(),
+            early_hits: 0,
+        }
+    }
+
+    /// Update level names based on actual storage types
+    fn update_level_names(&mut self, levels: &[Arc<dyn Storage>]) {
+        for (idx, (stats, level)) in self.levels.iter_mut().zip(levels.iter()).enumerate() {
+            stats.name = format!("L{} ({})", idx, level.cache_type_name());
+        }
+    }
+
+    /// Format all stats for human-readable display
+    /// Returns a vector of (label, value, suffix_type) tuples
+    /// suffix_type: 0=none, 1=%, 2=ms
+    pub fn format_stats(&self) -> Vec<(String, String, usize)> {
+        let mut result = vec![];
+
+        if self.levels.is_empty() {
+            return result;
+        }
+
+        // Global stats
+        result.push((
+            "Multi-level cache levels".to_string(),
+            self.levels.len().to_string(),
+            0,
+        ));
+
+        if self.early_hits > 0 {
+            result.push((
+                "Multi-level early hits".to_string(),
+                self.early_hits.to_string(),
+                0,
+            ));
+        }
+
+        // Per-level stats
+        for level_stats in &self.levels {
+            result.extend(level_stats.format_stats());
+        }
+
+        result
+    }
+}
+
 /// A multi-level cache storage that checks multiple storage backends in order.
 ///
 /// This enables hierarchical caching similar to CPU L1/L2/L3 caches:
@@ -60,6 +253,7 @@ use crate::errors::*;
 pub struct MultiLevelStorage {
     levels: Vec<Arc<dyn Storage>>,
     write_policy: WritePolicy,
+    stats: Arc<Mutex<MultiLevelStats>>,
 }
 
 impl MultiLevelStorage {
@@ -68,17 +262,45 @@ impl MultiLevelStorage {
     /// Levels are checked in order (L0, L1, L2, ...) during reads.
     /// All levels receive writes in parallel.
     pub fn new(levels: Vec<Arc<dyn Storage>>) -> Self {
+        let mut stats = MultiLevelStats::new(levels.len());
+        stats.update_level_names(&levels);
         MultiLevelStorage {
             levels,
             write_policy: WritePolicy::default(),
+            stats: Arc::new(Mutex::new(stats)),
         }
     }
 
     /// Create a new multi-level storage with explicit write policy.
     pub fn with_write_policy(levels: Vec<Arc<dyn Storage>>, write_policy: WritePolicy) -> Self {
+        let mut stats = MultiLevelStats::new(levels.len());
+        stats.update_level_names(&levels);
         MultiLevelStorage {
             levels,
             write_policy,
+            stats: Arc::new(Mutex::new(stats)),
+        }
+    }
+
+    /// Get a snapshot of current multi-level cache statistics.
+    pub fn stats(&self) -> MultiLevelStats {
+        self.stats.lock().unwrap().clone()
+    }
+
+    /// Record a successful write to a level
+    fn record_write_success(&self, idx: usize, duration: Duration) {
+        let mut stats = self.stats.lock().unwrap();
+        if let Some(level_stats) = stats.levels.get_mut(idx) {
+            level_stats.writes += 1;
+            level_stats.write_duration += duration;
+        }
+    }
+
+    /// Record a failed write to a level
+    fn record_write_failure(&self, idx: usize) {
+        let mut stats = self.stats.lock().unwrap();
+        if let Some(level_stats) = stats.levels.get_mut(idx) {
+            level_stats.write_failures += 1;
         }
     }
 
@@ -250,11 +472,27 @@ impl MultiLevelStorage {
             let data = Arc::clone(data);
             let key = key.to_string();
             let level = Arc::clone(level);
+            let stats_clone = Arc::clone(&self.stats);
 
             tokio::spawn(async move {
+                let start = Instant::now();
                 match Self::write_entry_from_bytes(&level, &key, &data).await {
-                    Ok(_) => trace!("Backfilled cache level {} on write", idx),
-                    Err(e) => debug!("Background write to level {} failed: {}", idx, e),
+                    Ok(_) => {
+                        let duration = start.elapsed();
+                        trace!("Backfilled cache level {} on write in {:?}", idx, duration);
+                        let mut stats = stats_clone.lock().unwrap();
+                        if let Some(level_stats) = stats.levels.get_mut(idx) {
+                            level_stats.writes += 1;
+                            level_stats.write_duration += duration;
+                        }
+                    }
+                    Err(e) => {
+                        debug!("Background write to level {} failed: {}", idx, e);
+                        let mut stats = stats_clone.lock().unwrap();
+                        if let Some(level_stats) = stats.levels.get_mut(idx) {
+                            level_stats.write_failures += 1;
+                        }
+                    }
                 }
             });
         }
@@ -265,9 +503,29 @@ impl MultiLevelStorage {
 impl Storage for MultiLevelStorage {
     async fn get(&self, key: &str) -> Result<Cache> {
         for (idx, level) in self.levels.iter().enumerate() {
+            let start = Instant::now();
             match level.get(key).await {
                 Ok(Cache::Hit(entry)) => {
-                    debug!("Cache hit at level {}", idx);
+                    let duration = start.elapsed();
+                    debug!("Cache hit at level {} in {:?}", idx, duration);
+
+                    // Update stats
+                    {
+                        let mut stats = self.stats.lock().unwrap();
+                        if let Some(level_stats) = stats.levels.get_mut(idx) {
+                            level_stats.hits += 1;
+                            level_stats.hit_duration += duration;
+                        }
+                        if idx > 0 {
+                            stats.early_hits += 1;
+                        }
+                        // Mark misses for all levels checked before this hit
+                        for miss_idx in 0..idx {
+                            if let Some(level_stats) = stats.levels.get_mut(miss_idx) {
+                                level_stats.misses += 1;
+                            }
+                        }
+                    }
 
                     // If hit at level > 0, backfill to faster levels (L0 to L(idx-1))
                     if idx > 0 {
@@ -279,12 +537,21 @@ impl Storage for MultiLevelStorage {
                             Ok(Some(raw_bytes)) => {
                                 let raw_bytes = Arc::new(raw_bytes);
 
+                                // Update backfill stats
+                                {
+                                    let mut stats = self.stats.lock().unwrap();
+                                    if let Some(level_stats) = stats.levels.get_mut(hit_level) {
+                                        level_stats.backfills_from += idx as u64;
+                                    }
+                                }
+
                                 // Spawn background backfill tasks for each faster level
                                 // Iterate slice directly instead of creating Vec
                                 for backfill_idx in 0..idx {
                                     let key_bf = key_str.clone();
                                     let bytes_bf = Arc::clone(&raw_bytes);
                                     let level_bf = Arc::clone(&self.levels[backfill_idx]);
+                                    let stats_clone = Arc::clone(&self.stats);
 
                                     tokio::spawn(async move {
                                         match Self::write_entry_from_bytes(
@@ -297,6 +564,13 @@ impl Storage for MultiLevelStorage {
                                                     "Backfilled cache level {} from level {}",
                                                     backfill_idx, hit_level
                                                 );
+                                                // Update backfill_to stats
+                                                let mut stats = stats_clone.lock().unwrap();
+                                                if let Some(level_stats) =
+                                                    stats.levels.get_mut(backfill_idx)
+                                                {
+                                                    level_stats.backfills_to += 1;
+                                                }
                                             }
                                             Err(e) => {
                                                 debug!(
@@ -342,6 +616,17 @@ impl Storage for MultiLevelStorage {
             }
         }
         debug!("Cache miss at all levels");
+
+        // Mark final miss for all checked levels
+        {
+            let mut stats = self.stats.lock().unwrap();
+            for idx in 0..self.levels.len() {
+                if let Some(level_stats) = stats.levels.get_mut(idx) {
+                    level_stats.misses += 1;
+                }
+            }
+        }
+
         Ok(Cache::Miss)
     }
 
@@ -369,8 +654,18 @@ impl Storage for MultiLevelStorage {
                         debug!("Level 0 is read-only, skipping L0 write");
                     } else {
                         // Attempt write and propagate errors
-                        Self::write_entry_from_bytes(l0, &key_str, &data).await?;
-                        trace!("Stored in cache level 0");
+                        let start = Instant::now();
+                        match Self::write_entry_from_bytes(l0, &key_str, &data).await {
+                            Ok(_) => {
+                                let duration = start.elapsed();
+                                trace!("Stored in cache level 0 in {:?}", duration);
+                                self.record_write_success(0, duration);
+                            }
+                            Err(e) => {
+                                self.record_write_failure(0);
+                                return Err(e);
+                            }
+                        }
                     }
 
                     // Background writes for L1+ (best-effort)
@@ -389,23 +684,36 @@ impl Storage for MultiLevelStorage {
                     let key_str = key_str.clone();
                     let level = Arc::clone(level);
                     let tx = tx.clone();
+                    let stats_clone = Arc::clone(&self.stats);
 
                     let write_task = async move {
+                        let start = Instant::now();
                         let result = Self::write_entry_from_bytes(&level, &key_str, &data).await;
-                        (idx, result, level)
+                        let duration = start.elapsed();
+                        (idx, result, level, duration, stats_clone)
                     };
 
                     if idx == 0 {
                         // L0 synchronous
-                        let (idx, result, level) = write_task.await;
+                        let (idx, result, level, duration, stats) = write_task.await;
                         if let Err(e) = result {
                             // Check if read-only before failing
                             if !matches!(level.check().await, Ok(CacheMode::ReadOnly)) {
+                                let mut st = stats.lock().unwrap();
+                                if let Some(level_stats) = st.levels.get_mut(idx) {
+                                    level_stats.write_failures += 1;
+                                }
                                 return Err(anyhow!(
                                     "Failed to write to cache level {}: {}",
                                     idx,
                                     e
                                 ));
+                            }
+                        } else {
+                            let mut st = stats.lock().unwrap();
+                            if let Some(level_stats) = st.levels.get_mut(idx) {
+                                level_stats.writes += 1;
+                                level_stats.write_duration += duration;
                             }
                         }
                     } else {
@@ -419,11 +727,21 @@ impl Storage for MultiLevelStorage {
                 drop(tx);
 
                 // Check async results
-                while let Some((idx, result, level)) = rx.recv().await {
+                while let Some((idx, result, level, duration, stats)) = rx.recv().await {
                     if let Err(e) = result {
                         // Check if read-only before failing
                         if !matches!(level.check().await, Ok(CacheMode::ReadOnly)) {
+                            let mut st = stats.lock().unwrap();
+                            if let Some(level_stats) = st.levels.get_mut(idx) {
+                                level_stats.write_failures += 1;
+                            }
                             return Err(anyhow!("Failed to write to cache level {}: {}", idx, e));
+                        }
+                    } else {
+                        let mut st = stats.lock().unwrap();
+                        if let Some(level_stats) = st.levels.get_mut(idx) {
+                            level_stats.writes += 1;
+                            level_stats.write_duration += duration;
                         }
                     }
                 }
@@ -484,6 +802,10 @@ impl Storage for MultiLevelStorage {
             }
         }
         if total > 0 { Ok(Some(total)) } else { Ok(None) }
+    }
+
+    fn multilevel_stats(&self) -> Option<crate::cache::multilevel::MultiLevelStats> {
+        Some(self.stats())
     }
 
     fn preprocessor_cache_mode_config(&self) -> PreprocessorCacheModeConfig {

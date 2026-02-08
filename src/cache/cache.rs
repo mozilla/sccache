@@ -119,6 +119,11 @@ pub trait Storage: Send + Sync {
     /// Get the maximum storage size, if applicable.
     async fn max_size(&self) -> Result<Option<u64>>;
 
+    /// Get multi-level cache statistics, if this is a multi-level storage.
+    fn multilevel_stats(&self) -> Option<crate::cache::multilevel::MultiLevelStats> {
+        None
+    }
+
     /// Return the config for preprocessor cache mode if applicable
     fn preprocessor_cache_mode_config(&self) -> PreprocessorCacheModeConfig {
         // Enable by default, only in local mode
