@@ -80,7 +80,7 @@ If any level fails, the error is logged but the write succeeds if at least one l
 
 **Solution**: Add Redis or Memcached as L1
 ```bash
-SCCACHE_CACHE_LEVELS="disk,redis"
+SCCACHE_MULTILEVEL_CHAIN="disk,redis"
 SCCACHE_DIR="/tmp/sccache"
 SCCACHE_REDIS_ENDPOINT="redis://cache.internal:6379"
 ```
@@ -93,7 +93,7 @@ SCCACHE_REDIS_ENDPOINT="redis://cache.internal:6379"
 
 **Solution**: Multi-tier hierarchy
 ```bash
-SCCACHE_CACHE_LEVELS="disk,redis,s3"
+SCCACHE_MULTILEVEL_CHAIN="disk,redis,s3"
 ```
 
 - L0: Local disk (instant)
@@ -108,7 +108,7 @@ SCCACHE_CACHE_LEVELS="disk,redis,s3"
 
 **Solution**: Disk + cloud storage
 ```bash
-SCCACHE_CACHE_LEVELS="disk,s3"
+SCCACHE_MULTILEVEL_CHAIN="disk,s3"
 SCCACHE_DIR="$HOME/.cache/sccache"
 SCCACHE_BUCKET="my-personal-sccache"
 SCCACHE_CACHE_SIZE="5G"  # Keep disk small
@@ -120,21 +120,67 @@ SCCACHE_CACHE_SIZE="5G"  # Keep disk small
 
 ### Via Environment Variables
 
-The primary configuration is `SCCACHE_CACHE_LEVELS`:
+The primary configuration is `SCCACHE_MULTILEVEL_CHAIN`:
 
 ```bash
-export SCCACHE_CACHE_LEVELS="disk,redis,s3"
+export SCCACHE_MULTILEVEL_CHAIN="disk,redis,s3"
 ```
 
 **Format**: Comma-separated list of cache backend names
 **Order**: Left-to-right is fast-to-slow (L0, L1, L2, ...)
 **Valid names**: `disk`, `redis`, `memcached`, `s3`, `gcs`, `azure`, `gha`, `webdav`, `oss`, `cos`
 
+### Write Policy Configuration
+
+Control how sccache handles write failures across cache levels using `SCCACHE_MULTILEVEL_WRITE_POLICY`:
+
+**Available policies**:
+- **`ignore`** - Never fail on write errors, log warnings only (most permissive)
+- **`l0`** - Fail only if L0 (first level) write fails (default - balances reliability and performance)
+- **`all`** - Fail if any read-write level write fails (most strict)
+
+**Note**: Read-only levels are always skipped during writes and never cause failures.
+
+#### Write Policy Examples
+
+**Example 1: Default Behavior (l0 policy)**
+```bash
+export SCCACHE_MULTILEVEL_CHAIN="disk,redis,s3"
+export SCCACHE_MULTILEVEL_WRITE_POLICY="l0"  # or omit, it's the default
+```
+Compilation succeeds if disk write succeeds. Redis/S3 failures are logged but don't block compilation. Ensures local cache is always populated. **Best for most use cases.**
+
+**Example 2: Best Effort (ignore policy)**
+```bash
+export SCCACHE_MULTILEVEL_CHAIN="disk,redis,s3"
+export SCCACHE_MULTILEVEL_WRITE_POLICY="ignore"
+```
+Compilation always succeeds, even if all writes fail. Write failures are logged as warnings. **Best for unstable cache backends** where you don't want cache issues blocking builds.
+
+**Example 3: Strict Consistency (all policy)**
+```bash
+export SCCACHE_MULTILEVEL_CHAIN="disk,redis,s3"
+export SCCACHE_MULTILEVEL_WRITE_POLICY="all"
+```
+Compilation succeeds only if all read-write levels succeed. Any write failure fails the compilation. **Best for critical environments** where cache consistency is mandatory.
+
+#### Read-Only Levels
+
+Any level configured as read-only (e.g., `SCCACHE_LOCAL_RW_MODE=READ_ONLY`) is automatically skipped during writes, regardless of write policy:
+
+```bash
+export SCCACHE_MULTILEVEL_CHAIN="disk,redis"
+export SCCACHE_MULTILEVEL_WRITE_POLICY="all"
+export SCCACHE_LOCAL_RW_MODE="READ_ONLY"  # Disk is read-only
+# Compilation succeeds if Redis write succeeds (disk is skipped)
+```
+
 ### Complete Example
 
 ```bash
 # Multi-level configuration
-export SCCACHE_CACHE_LEVELS="disk,redis,s3"
+export SCCACHE_MULTILEVEL_CHAIN="disk,redis,s3"
+export SCCACHE_MULTILEVEL_WRITE_POLICY="l0"  # Default: fail only if disk fails
 
 # Level 0: Disk cache
 export SCCACHE_DIR="/var/cache/sccache"
@@ -154,8 +200,9 @@ export SCCACHE_S3_USE_SSL="true"
 
 ```toml
 # ~/.config/sccache/config
-[cache]
-levels = ["disk", "redis", "s3"]
+[cache.multilevel]
+chain = ["disk", "redis", "s3"]
+write_policy = "l0"  # Optional: ignore, l0 (default), or all
 
 [cache.disk]
 dir = "/var/cache/sccache"
@@ -173,7 +220,7 @@ use_ssl = true
 
 ### Single Level (No Multi-Level)
 
-If `SCCACHE_CACHE_LEVELS` is not set, sccache uses the first configured cache backend (legacy behavior):
+If `SCCACHE_MULTILEVEL_CHAIN` is not set, sccache uses the first configured cache backend (legacy behavior):
 
 ```bash
 # Just uses disk (backwards compatible)

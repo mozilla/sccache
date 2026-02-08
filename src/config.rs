@@ -37,10 +37,10 @@ use typed_path::Utf8TypedPathBuf;
 
 use crate::errors::*;
 
-/// Defines how strict the multi-level cache is about write failures.
+/// Defines how the multi-level cache handles write failures.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum PutMode {
+pub enum WritePolicy {
     /// Never fail on write errors - log warnings only (most permissive)
     Ignore,
     /// Fail only if L0 write fails (default - balances reliability and performance)
@@ -50,30 +50,41 @@ pub enum PutMode {
     All,
 }
 
-impl FromStr for PutMode {
+impl FromStr for WritePolicy {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self> {
         match s.to_lowercase().as_str() {
-            "ignore" => Ok(PutMode::Ignore),
-            "l0" => Ok(PutMode::L0),
-            "all" => Ok(PutMode::All),
+            "ignore" => Ok(WritePolicy::Ignore),
+            "l0" => Ok(WritePolicy::L0),
+            "all" => Ok(WritePolicy::All),
             _ => Err(anyhow!(
-                "Invalid put mode '{}'. Valid values: ignore, l0, all",
+                "Invalid write policy '{}'. Valid values: ignore, l0, all",
                 s
             )),
         }
     }
 }
 
-impl fmt::Display for PutMode {
+impl fmt::Display for WritePolicy {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            PutMode::Ignore => write!(f, "ignore"),
-            PutMode::L0 => write!(f, "l0"),
-            PutMode::All => write!(f, "all"),
+            WritePolicy::Ignore => write!(f, "ignore"),
+            WritePolicy::L0 => write!(f, "l0"),
+            WritePolicy::All => write!(f, "all"),
         }
     }
+}
+
+/// Configuration for multi-level cache.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MultiLevelConfig {
+    /// Ordered list of cache backends (L0, L1, L2, ...)
+    #[serde(rename = "chain")]
+    pub chain: Vec<String>,
+    /// Write failure handling policy
+    #[serde(default)]
+    pub write_policy: WritePolicy,
 }
 
 static CACHED_CONFIG_PATH: LazyLock<PathBuf> = LazyLock::new(CachedConfig::file_config_path);
@@ -488,11 +499,8 @@ pub struct CacheConfigs {
     pub webdav: Option<WebdavCacheConfig>,
     pub oss: Option<OSSCacheConfig>,
     pub cos: Option<COSCacheConfig>,
-    /// Ordered list of cache levels to use (e.g., ["disk", "s3", "redis"])
-    /// If not specified, a single cache is selected from configured backends
-    pub levels: Option<Vec<String>>,
-    /// Put mode: how strict to be about write failures (ignore, l0 [default], all)
-    pub put_mode: Option<PutMode>,
+    /// Multi-level cache configuration
+    pub multilevel: Option<MultiLevelConfig>,
 }
 
 impl CacheConfigs {
@@ -510,8 +518,7 @@ impl CacheConfigs {
             webdav,
             oss,
             cos,
-            levels: _,
-            put_mode: _,
+            multilevel: _,
         } = self;
 
         let cache_type = s3
@@ -535,10 +542,10 @@ impl CacheConfigs {
     /// If no levels specified and single remote cache, returns that single cache.
     /// If no levels and multiple caches, returns error.
     pub fn get_cache_levels(self) -> Result<Vec<CacheType>> {
-        if let Some(level_names) = &self.levels {
-            // Build caches in the order specified by levels
+        if let Some(ml_config) = &self.multilevel {
+            // Build caches in the order specified by multilevel chain
             let mut caches = Vec::new();
-            for level_name in level_names {
+            for level_name in &ml_config.chain {
                 let level_name = level_name.trim();
                 let cache_type = match level_name {
                     "s3" => self.s3.clone().map(CacheType::S3).ok_or_else(|| {
@@ -599,8 +606,7 @@ impl CacheConfigs {
             webdav,
             oss,
             cos,
-            levels,
-            put_mode,
+            multilevel,
         } = other;
 
         if azure.is_some() {
@@ -634,11 +640,8 @@ impl CacheConfigs {
             self.cos = cos;
         }
 
-        if levels.is_some() {
-            self.levels = levels;
-        }
-        if put_mode.is_some() {
-            self.put_mode = put_mode;
+        if multilevel.is_some() {
+            self.multilevel = multilevel;
         }
     }
 }
@@ -1131,18 +1134,22 @@ fn config_from_env() -> Result<EnvConfig> {
         None
     };
 
-    // Parse SCCACHE_CACHE_LEVELS environment variable
-    let levels = if let Ok(levels_str) = env::var("SCCACHE_CACHE_LEVELS") {
-        let level_names: Vec<&str> = levels_str.split(',').map(|s| s.trim()).collect();
-        Some(level_names.iter().map(|s| s.to_string()).collect())
+    // Parse multi-level cache configuration
+    let multilevel = if let Ok(chain_str) = env::var("SCCACHE_MULTILEVEL_CHAIN") {
+        let chain: Vec<String> = chain_str.split(',').map(|s| s.trim().to_string()).collect();
+
+        let write_policy = env::var("SCCACHE_MULTILEVEL_WRITE_POLICY")
+            .ok()
+            .and_then(|s| s.parse::<WritePolicy>().ok())
+            .unwrap_or_default();
+
+        Some(MultiLevelConfig {
+            chain,
+            write_policy,
+        })
     } else {
         None
     };
-
-    // Parse SCCACHE_CACHE_PUT_MODE environment variable
-    let put_mode = env::var("SCCACHE_CACHE_PUT_MODE")
-        .ok()
-        .and_then(|s| s.parse::<PutMode>().ok());
 
     let cache = CacheConfigs {
         azure,
@@ -1155,8 +1162,7 @@ fn config_from_env() -> Result<EnvConfig> {
         webdav,
         oss,
         cos,
-        levels,
-        put_mode,
+        multilevel,
     };
 
     // ======= Base directory =======
@@ -2356,8 +2362,7 @@ key_prefix = "cosprefix"
                     endpoint: Some("cos.na-siliconvalley.myqcloud.com".to_owned()),
                     key_prefix: "cosprefix".into(),
                 }),
-                levels: None,
-                put_mode: None,
+                multilevel: None,
             },
             dist: DistConfig {
                 auth: DistAuth::Token {
@@ -2773,17 +2778,17 @@ no_credentials = false
 [cache.redis]
 endpoint = "redis://localhost"
 
-[cache]
-levels = ["disk", "redis", "s3"]
+[cache.multilevel]
+chain = ["disk", "redis", "s3"]
 "#;
 
     let file_config: FileConfig = toml::from_str(config_str).expect("Is valid toml");
-    assert!(file_config.cache.levels.is_some());
-    let levels = file_config.cache.levels.unwrap();
-    assert_eq!(levels.len(), 3);
-    assert_eq!(levels[0], "disk");
-    assert_eq!(levels[1], "redis");
-    assert_eq!(levels[2], "s3");
+    assert!(file_config.cache.multilevel.is_some());
+    let ml_config = file_config.cache.multilevel.unwrap();
+    assert_eq!(ml_config.chain.len(), 3);
+    assert_eq!(ml_config.chain[0], "disk");
+    assert_eq!(ml_config.chain[1], "redis");
+    assert_eq!(ml_config.chain[2], "s3");
 }
 
 #[test]
@@ -2797,7 +2802,7 @@ no_credentials = false
 "#;
 
     let file_config: FileConfig = toml::from_str(config_str).expect("Is valid toml");
-    assert!(file_config.cache.levels.is_none());
+    assert!(file_config.cache.multilevel.is_none());
     assert!(file_config.cache.s3.is_some());
 }
 
@@ -2824,7 +2829,10 @@ fn test_get_cache_levels_single_cache() {
 #[test]
 fn test_get_cache_levels_invalid_level() {
     let configs = CacheConfigs {
-        levels: Some(vec!["unknown_cache".to_string()]),
+        multilevel: Some(MultiLevelConfig {
+            chain: vec!["unknown_cache".to_string()],
+            write_policy: WritePolicy::default(),
+        }),
         ..Default::default()
     };
 
@@ -2841,7 +2849,10 @@ fn test_get_cache_levels_invalid_level() {
 #[test]
 fn test_get_cache_levels_missing_config() {
     let configs = CacheConfigs {
-        levels: Some(vec!["s3".to_string()]),
+        multilevel: Some(MultiLevelConfig {
+            chain: vec!["s3".to_string()],
+            write_policy: WritePolicy::default(),
+        }),
         ..Default::default()
     };
 

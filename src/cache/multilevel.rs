@@ -44,7 +44,7 @@ use crate::compiler::PreprocessorCacheEntry;
     feature = "cos"
 ))]
 use crate::config::CacheType;
-use crate::config::{Config, PreprocessorCacheModeConfig, PutMode};
+use crate::config::{Config, PreprocessorCacheModeConfig, WritePolicy};
 use crate::errors::*;
 
 /// A multi-level cache storage that checks multiple storage backends in order.
@@ -55,11 +55,11 @@ use crate::errors::*;
 /// - Cache hits trigger automatic async backfill to faster levels
 /// - Writes go to all levels in parallel
 ///
-/// Configure via SCCACHE_CACHE_LEVELS="disk,redis,s3" environment variable.
+/// Configure via SCCACHE_MULTILEVEL_CHAIN="disk,redis,s3" environment variable.
 /// See docs/MultiLevel.md for details.
 pub struct MultiLevelStorage {
     levels: Vec<Arc<dyn Storage>>,
-    put_mode: PutMode,
+    write_policy: WritePolicy,
 }
 
 impl MultiLevelStorage {
@@ -70,30 +70,39 @@ impl MultiLevelStorage {
     pub fn new(levels: Vec<Arc<dyn Storage>>) -> Self {
         MultiLevelStorage {
             levels,
-            put_mode: PutMode::default(),
+            write_policy: WritePolicy::default(),
         }
     }
 
-    /// Create a new multi-level storage with explicit put mode.
-    pub fn with_put_mode(levels: Vec<Arc<dyn Storage>>, put_mode: PutMode) -> Self {
-        MultiLevelStorage { levels, put_mode }
+    /// Create a new multi-level storage with explicit write policy.
+    pub fn with_write_policy(levels: Vec<Arc<dyn Storage>>, write_policy: WritePolicy) -> Self {
+        MultiLevelStorage {
+            levels,
+            write_policy,
+        }
     }
 
     /// Create a multi-level storage from configuration.
     ///
-    /// Returns None if no levels are configured (SCCACHE_CACHE_LEVELS not set).
+    /// Returns None if no levels are configured (SCCACHE_MULTILEVEL_CHAIN not set).
     /// Returns an error if levels are specified but can't be built.
     ///
-    /// Each level specified in config.cache_configs.levels must have its
+    /// Each level specified in config.cache_configs.multilevel.chain must have its
     /// corresponding configuration present (e.g., SCCACHE_DIR for disk,
     /// SCCACHE_REDIS_ENDPOINT for redis, etc).
     pub fn from_config(config: &Config, pool: &tokio::runtime::Handle) -> Result<Option<Self>> {
-        let levels = match config.cache_configs.levels.as_ref() {
-            Some(levels) if !levels.is_empty() => levels,
+        let ml_config = match config.cache_configs.multilevel.as_ref() {
+            Some(cfg) if !cfg.chain.is_empty() => cfg,
             _ => return Ok(None),
         };
 
-        debug!("Configuring multi-level cache with {} levels", levels.len());
+        debug!(
+            "Configuring multi-level cache with {} levels",
+            ml_config.chain.len()
+        );
+
+        let levels = &ml_config.chain;
+        let write_policy = ml_config.write_policy;
 
         let mut storages: Vec<Arc<dyn Storage>> = Vec::new();
 
@@ -173,7 +182,7 @@ impl MultiLevelStorage {
                         trace!("Added cache level: {}", level_name);
                     } else {
                         return Err(anyhow!(
-                            "Cache level '{}' specified in SCCACHE_CACHE_LEVELS but not configured (missing environment variables)",
+                            "Cache level '{}' specified in SCCACHE_MULTILEVEL_CHAIN but not configured (missing environment variables)",
                             level_name
                         ));
                     }
@@ -210,10 +219,10 @@ impl MultiLevelStorage {
             storages.len()
         );
 
-        let put_mode = config.cache_configs.put_mode.unwrap_or_default();
-        debug!("Multi-level cache put mode: {}", put_mode);
-
-        Ok(Some(MultiLevelStorage::with_put_mode(storages, put_mode)))
+        Ok(Some(MultiLevelStorage::with_write_policy(
+            storages,
+            write_policy,
+        )))
     }
 
     /// Helper to write cache entry from raw bytes.
@@ -345,14 +354,14 @@ impl Storage for MultiLevelStorage {
         let data = Arc::new(entry.finish()?);
         let key_str = key.to_string();
 
-        match self.put_mode {
-            PutMode::Ignore => {
+        match self.write_policy {
+            WritePolicy::Ignore => {
                 // Never fail, log warnings only
                 self.write_remaining_levels_async(&key_str, &data, 0).await;
                 Ok(Duration::ZERO)
             }
 
-            PutMode::L0 => {
+            WritePolicy::L0 => {
                 // Fail only if L0 write fails (unless L0 is read-only)
                 if let Some(l0) = self.levels.first() {
                     // Check if L0 is read-only before attempting write
@@ -370,7 +379,7 @@ impl Storage for MultiLevelStorage {
                 Ok(Duration::ZERO)
             }
 
-            PutMode::All => {
+            WritePolicy::All => {
                 // Fail if any RW level fails
                 use tokio::sync::mpsc;
                 let (tx, mut rx) = mpsc::channel(self.levels.len());
@@ -1027,7 +1036,7 @@ mod test {
 
         // Set invalid level name
         unsafe {
-            env::set_var("SCCACHE_CACHE_LEVELS", "disk,invalid_backend,s3");
+            env::set_var("SCCACHE_MULTILEVEL_CHAIN", "disk,invalid_backend,s3");
             env::set_var("SCCACHE_DIR", "/tmp/test-cache");
         }
 
@@ -1042,7 +1051,7 @@ mod test {
         }
 
         unsafe {
-            env::remove_var("SCCACHE_CACHE_LEVELS");
+            env::remove_var("SCCACHE_MULTILEVEL_CHAIN");
             env::remove_var("SCCACHE_DIR");
         }
     }
@@ -1107,7 +1116,7 @@ mod test {
 
         // Set level without configuration
         unsafe {
-            env::set_var("SCCACHE_CACHE_LEVELS", "redis");
+            env::set_var("SCCACHE_MULTILEVEL_CHAIN", "redis");
             // Don't set SCCACHE_REDIS_ENDPOINT
             env::remove_var("SCCACHE_REDIS");
             env::remove_var("SCCACHE_REDIS_ENDPOINT");
@@ -1130,7 +1139,7 @@ mod test {
         }
 
         unsafe {
-            env::remove_var("SCCACHE_CACHE_LEVELS");
+            env::remove_var("SCCACHE_MULTILEVEL_CHAIN");
         }
     }
 
@@ -1645,9 +1654,9 @@ mod test {
         let cache_l0 = Arc::new(FailingStorage);
         let cache_l1 = Arc::new(FailingStorage);
 
-        let storage = MultiLevelStorage::with_put_mode(
+        let storage = MultiLevelStorage::with_write_policy(
             vec![cache_l0 as Arc<dyn Storage>, cache_l1 as Arc<dyn Storage>],
-            PutMode::Ignore,
+            WritePolicy::Ignore,
         );
 
         runtime.block_on(async {
@@ -1656,7 +1665,7 @@ mod test {
 
             assert!(
                 result.is_ok(),
-                "PutMode::Ignore should never fail, even when all levels error"
+                "WritePolicy::Ignore should never fail, even when all levels error"
             );
         });
     }
@@ -1673,9 +1682,9 @@ mod test {
         let cache_l0 = Arc::new(FailingStorage);
         let cache_l1 = Arc::new(InMemoryStorage::new());
 
-        let storage = MultiLevelStorage::with_put_mode(
+        let storage = MultiLevelStorage::with_write_policy(
             vec![cache_l0 as Arc<dyn Storage>, cache_l1 as Arc<dyn Storage>],
-            PutMode::L0,
+            WritePolicy::L0,
         );
 
         runtime.block_on(async {
@@ -1684,7 +1693,7 @@ mod test {
 
             assert!(
                 result.is_err(),
-                "PutMode::L0 should fail when L0 write fails"
+                "WritePolicy::L0 should fail when L0 write fails"
             );
             let err_msg = result.unwrap_err().to_string();
             assert!(
@@ -1707,9 +1716,9 @@ mod test {
         let cache_l0 = Arc::new(InMemoryStorage::new());
         let cache_l1 = Arc::new(FailingStorage);
 
-        let storage = MultiLevelStorage::with_put_mode(
+        let storage = MultiLevelStorage::with_write_policy(
             vec![cache_l0 as Arc<dyn Storage>, cache_l1 as Arc<dyn Storage>],
-            PutMode::L0,
+            WritePolicy::L0,
         );
 
         runtime.block_on(async {
@@ -1718,7 +1727,7 @@ mod test {
 
             assert!(
                 result.is_ok(),
-                "PutMode::L0 should succeed when L0 succeeds, even if L1+ fails"
+                "WritePolicy::L0 should succeed when L0 succeeds, even if L1+ fails"
             );
         });
     }
@@ -1735,9 +1744,9 @@ mod test {
         let cache_l0 = Arc::new(InMemoryStorage::new());
         let cache_l1 = Arc::new(FailingStorage);
 
-        let storage = MultiLevelStorage::with_put_mode(
+        let storage = MultiLevelStorage::with_write_policy(
             vec![cache_l0 as Arc<dyn Storage>, cache_l1 as Arc<dyn Storage>],
-            PutMode::All,
+            WritePolicy::All,
         );
 
         runtime.block_on(async {
@@ -1749,7 +1758,7 @@ mod test {
 
             assert!(
                 result.is_err(),
-                "PutMode::All should fail when any RW level fails"
+                "WritePolicy::All should fail when any RW level fails"
             );
         });
     }
@@ -1766,12 +1775,12 @@ mod test {
         let cache_l0 = Arc::new(InMemoryStorage::new());
         let cache_l1 = Arc::new(InMemoryStorage::new());
 
-        let storage = MultiLevelStorage::with_put_mode(
+        let storage = MultiLevelStorage::with_write_policy(
             vec![
                 cache_l0.clone() as Arc<dyn Storage>,
                 cache_l1.clone() as Arc<dyn Storage>,
             ],
-            PutMode::All,
+            WritePolicy::All,
         );
 
         runtime.block_on(async {
@@ -1783,7 +1792,7 @@ mod test {
 
             assert!(
                 result.is_ok(),
-                "PutMode::All should succeed when all levels succeed"
+                "WritePolicy::All should succeed when all levels succeed"
             );
 
             // Verify both levels have the data
@@ -1811,13 +1820,13 @@ mod test {
         let cache_l1 = Arc::new(ReadOnlyStorage(Arc::new(InMemoryStorage::new())));
         let cache_l2 = Arc::new(InMemoryStorage::new());
 
-        let storage = MultiLevelStorage::with_put_mode(
+        let storage = MultiLevelStorage::with_write_policy(
             vec![
                 cache_l0.clone() as Arc<dyn Storage>,
                 cache_l1 as Arc<dyn Storage>,
                 cache_l2.clone() as Arc<dyn Storage>,
             ],
-            PutMode::All,
+            WritePolicy::All,
         );
 
         runtime.block_on(async {
@@ -1829,7 +1838,7 @@ mod test {
 
             assert!(
                 result.is_ok(),
-                "PutMode::All should succeed when read-only levels are skipped"
+                "WritePolicy::All should succeed when read-only levels are skipped"
             );
 
             // Verify writable levels have the data
