@@ -137,6 +137,10 @@ impl Storage for DiskCache {
         format!("Local disk: {:?}", self.lru.lock().unwrap().path())
     }
 
+    fn cache_type_name(&self) -> &'static str {
+        "disk"
+    }
+
     async fn current_size(&self) -> Result<Option<u64>> {
         Ok(self.lru.lock().unwrap().get().map(|l| l.size()))
     }
@@ -183,5 +187,29 @@ impl Storage for DiskCache {
             .get()
             .unwrap()
             .commit(f)?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_disk_cache_type_name() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+
+        let disk = DiskCache::new(
+            tempdir.path(),
+            1024 * 1024,
+            runtime.handle(),
+            PreprocessorCacheModeConfig::default(),
+            CacheMode::ReadWrite,
+            vec![],
+        );
+
+        assert_eq!(disk.cache_type_name(), "disk");
     }
 }
