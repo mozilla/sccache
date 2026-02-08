@@ -49,7 +49,7 @@ sleep 1
 # L2: memcached (medium, medium)  
 # L3: s3 (slowest, largest)
 
-export SCCACHE_CACHE_LEVELS="disk,redis,memcached,s3"
+export SCCACHE_MULTILEVEL_CHAIN="disk,redis,memcached,s3"
 
 # L0: Disk configuration
 export SCCACHE_DIR="/build/sccache-chain-disk"
@@ -252,7 +252,7 @@ echo "✓ L2 (memcached) assumed backfilled (verified via code path)"
 # ============================================================================
 echo ""
 echo "=== Scenario 5: Final build → should hit L0 (fastest) ==="
-export SCCACHE_CACHE_LEVELS="disk"
+export SCCACHE_MULTILEVEL_CHAIN="disk"
 "$SCCACHE" --stop-server &>/dev/null || true
 SCCACHE_LOG=debug "$SCCACHE" --start-server &>/dev/null
 cargo clean

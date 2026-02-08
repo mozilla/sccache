@@ -43,8 +43,9 @@ token = "secrettoken"
 # Define cache levels in order (fast to slow).
 # Each level must be separately configured below.
 # See docs/MultiLevel.md for details.
-[cache]
-levels = ["disk", "redis", "s3"]
+[cache.multilevel]
+chain = ["disk", "redis", "s3"]
+write_policy = "l0"  # Optional: ignore, l0 (default), or all
 
 #[cache.azure]
 # Azure Storage connection string (see <https://docs.azure.cn/en-us/storage/common/storage-configure-connection-string>)
@@ -186,18 +187,35 @@ Note that some env variables may need sccache server restart to take effect.
 
 Multi-level caching enables hierarchical cache storage with automatic backfill. See the [Multi-Level Cache documentation](MultiLevel.md) for detailed information.
 
-* `SCCACHE_CACHE_LEVELS` comma-separated list of cache backend names to use in hierarchy (e.g., `disk,redis,s3`)
+* `SCCACHE_MULTILEVEL_CHAIN` comma-separated list of cache backend names to use in hierarchy (e.g., `disk,redis,s3`)
   - Order matters: left-to-right is fast-to-slow (L0, L1, L2, ...)
   - Valid names: `disk`, `redis`, `memcached`, `s3`, `gcs`, `azure`, `gha`, `webdav`, `oss`, `cos`
   - Each level must be separately configured with its own environment variables
   - If not set, sccache uses single-level mode (legacy behavior)
+* `SCCACHE_MULTILEVEL_WRITE_POLICY` controls error handling on cache writes (default: `l0`)
+  - `ignore` - never fail on write errors, log warnings only (most permissive)
+  - `l0` - fail only if L0 (first level) write fails (default, balances reliability and performance)
+  - `all` - fail if any read-write level fails (most strict)
+  - Read-only levels are always skipped and never cause failures
 
-Example:
+**Basic example**:
 ```bash
-export SCCACHE_CACHE_LEVELS="disk,redis,s3"
+export SCCACHE_MULTILEVEL_CHAIN="disk,redis,s3"
 export SCCACHE_DIR="/tmp/cache"              # for disk level
 export SCCACHE_REDIS_ENDPOINT="redis://..."  # for redis level
 export SCCACHE_BUCKET="my-bucket"            # for s3 level
+```
+
+**Write policy examples**:
+```bash
+# Default: Fail only if disk write fails
+export SCCACHE_MULTILEVEL_WRITE_POLICY="l0"
+
+# Best effort: Never fail on cache writes
+export SCCACHE_MULTILEVEL_WRITE_POLICY="ignore"
+
+# Strict: Fail if any level write fails
+export SCCACHE_MULTILEVEL_WRITE_POLICY="all"
 ```
 
 #### disk (local)

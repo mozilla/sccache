@@ -56,7 +56,7 @@ test_multilevel_backend() {
     done
 
     # Configure multi-level cache: disk first (L1), then remote (L2)
-    export SCCACHE_CACHE_LEVELS="disk,$level_name"
+    export SCCACHE_MULTILEVEL_CHAIN="disk,$level_name"
     export SCCACHE_DIR="/build/sccache-disk"
 
     # Clean disk cache
@@ -205,7 +205,7 @@ test_multilevel_backend() {
         VAR_NAME="${env_var%%=*}"
         unset "$VAR_NAME"
     done
-    unset SCCACHE_CACHE_LEVELS
+    unset SCCACHE_MULTILEVEL_CHAIN
     unset SCCACHE_DIR
 }
 
