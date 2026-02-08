@@ -20,6 +20,10 @@ jobs:
           toolchain: "stable"
 
       - name: Build
+        env:
+          CARGO_INCREMENTAL: "0"
+          RUSTC_WRAPPER: ""
+          RUSTFLAGS: "-Cinstrument-coverage -Ccodegen-units=1 -Copt-level=0 -Coverflow-checks=off"
         run: |
           cargo build --all-features
 
@@ -28,9 +32,12 @@ jobs:
           name: integration-tests
           path: ./target/debug/sccache
 
-  backends:
+  integration-tests:
     runs-on: ubuntu-24.04
     needs: build
+    strategy:
+      matrix:
+        type: [backends, tools]
 
     steps:
       - name: Clone repository
@@ -39,13 +46,32 @@ jobs:
       - uses: actions/download-artifact@v5
         with:
           name: integration-tests
-          path: ./target/debug
+          path: ./target/coverage/debug
 
       - name: Chmod for binary
-        run: chmod +x ./target/debug/sccache
+        run: chmod +x ./target/coverage/debug/sccache
 
       - name: Test
-        run: cd tests/integration && make test-backends
+        run: cd tests/integration && WITH_COVERAGE=1 make test-${{ matrix.type }}
+
+      - name: Build report
+        run: |
+          cd tests/integration
+          WITH_COVERAGE=1 make coverage-report
+          echo "Coverage files:"
+          ls ../../target/integration-coverage/profraw -l
+          echo "Coverage report:"
+          ls ../../target/integration-coverage/reports/lcov.info -l
+
+      - name: Upload coverage results (to Codecov.io)
+        uses: codecov/codecov-action@v5
+        with:
+          files: target/integration-coverage/reports/lcov.info
+          name: codecov-umbrella-integration-${{ matrix.type }}
+          fail_ci_if_error: true
+          # verbose: true
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
   gha:
     runs-on: ubuntu-24.04
@@ -181,24 +207,6 @@ jobs:
         if: success() || failure()
         shell: bash
         run: cat "$SCCACHE_ERROR_LOG"
-
-  tools:
-    runs-on: ubuntu-24.04
-    needs: build
-
-    steps:
-      - uses: actions/checkout@v5
-
-      - uses: actions/download-artifact@v5
-        with:
-          name: integration-tests
-          path: ./target/debug
-
-      - name: Chmod for binary
-        run: chmod +x ./target/debug/sccache
-
-      - name: Test
-        run: cd tests/integration && make test-tools
 
   hip:
     # Probably wouldn't matter anyway since we run in a container, but staying
