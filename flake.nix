@@ -14,9 +14,14 @@
     cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
     version = cargoToml.package.version;
 
-    mkSccache = final:
+    mkSccache = {
+      final,
+      pname,
+      features ? [],
+      description,
+    }:
       final.rustPlatform.buildRustPackage {
-        pname = "sccache";
+        pname = pname;
         inherit version;
 
         src = ./.;
@@ -28,10 +33,18 @@
         nativeBuildInputs = [final.pkg-config];
         buildInputs = [final.openssl];
 
+        cargoBuildFlags =
+          if features != []
+          then [
+            "--features"
+            (builtins.concatStringsSep "," features)
+          ]
+          else [];
+
         doCheck = false;
 
         meta = with final.lib; {
-          description = "Ccache with Cloud Storage";
+          description = description;
           homepage = "https://github.com/mozilla/sccache";
           changelog = "https://github.com/mozilla/sccache/releases/tag/v${version}";
           license = licenses.asl20;
@@ -39,13 +52,15 @@
         };
       };
   in
-    flake-utils.lib.eachSystem [
+    flake-utils.lib.eachSystem
+    [
       "x86_64-linux"
       "aarch64-linux"
       "x86_64-darwin"
       "aarch64-darwin"
       "i686-linux"
-    ] (
+    ]
+    (
       system: let
         pkgs = import nixpkgs {
           inherit system;
@@ -55,6 +70,7 @@
         packages = {
           default = pkgs.sccache;
           sccache = pkgs.sccache;
+          sccache-dist = pkgs.sccache-dist;
         };
 
         devShells.default = pkgs.mkShell {
@@ -73,7 +89,20 @@
     )
     // {
       overlays.default = final: prev: {
-        sccache = mkSccache final;
+        sccache = mkSccache {
+          inherit final;
+          pname = "sccache";
+          description = "Ccache with Cloud Storage";
+        };
+        sccache-dist = mkSccache {
+          inherit final;
+          pname = "sccache-dist";
+          features = [
+            "dist-client"
+            "dist-server"
+          ];
+          description = "Ccache with Cloud Storage and Distributed Compilation";
+        };
       };
     };
 }
