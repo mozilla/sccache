@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCCACHE="${SCCACHE_PATH:-/sccache/target/debug/sccache}"
 export RUSTFLAGS="-Cinstrument-coverage"
-export LLVM_PROFILE_FILE="coverage-%p-%m.profraw"
+export LLVM_PROFILE_FILE="${LLVM_PROFILE_FILE:-coverage-%p-%m.profraw}"
 export CARGO_INCREMENTAL=0
 
 echo "=========================================="

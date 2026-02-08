@@ -1,19 +1,21 @@
 x-common-env: &common-env
   RUST_BACKTRACE: full
-  RUSTC_WRAPPER: /sccache/target/debug/sccache
+  RUSTC_WRAPPER: ${SCCACHE_PATH:-/sccache/target/debug/sccache}
   RUST_LOG: debug
+  SCCACHE_PATH: ${SCCACHE_PATH:-/sccache/target/debug/sccache}
+  LLVM_PROFILE_FILE: ${LLVM_PROFILE_FILE:-}
 
 x-test-runner: &test-runner
   user: "${UID:-1000}:${GID:-1000}"
   volumes:
     - ../../:/sccache:ro
     - ../../target/integration-cargo-cache:/usr/local/cargo/registry:rw
+    - ../../target/integration-coverage:/coverage:rw
   tmpfs:
     - /build:exec,uid=${UID:-1000},gid=${GID:-1000},mode=1777
   working_dir: /build
   environment:
     <<: *common-env
-    SCCACHE_PATH: /sccache/target/debug/sccache
 
 x-health-check: &healthcheck
   interval: 2s
@@ -264,6 +266,7 @@ services:
     image: silkeh/clang:21-trixie
     entrypoint: /sccache/tests/integration/scripts/test-cmake.sh
     environment:
+      <<: *common-env
       SCCACHE_DIR: /build/sccache
     profiles:
       - test
@@ -297,7 +300,6 @@ services:
     entrypoint: /sccache/tests/integration/scripts/test-zstd.sh
     environment:
       <<: *common-env
-      SCCACHE_PATH: /sccache/target/debug/sccache
       CARGO_INCREMENTAL: "0"
     profiles:
       - test
@@ -324,7 +326,6 @@ services:
         condition: service_started
     environment:
       <<: *common-env
-      SCCACHE_PATH: /sccache/target/debug/sccache
     profiles:
       - test
       - basedirs
