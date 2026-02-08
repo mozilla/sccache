@@ -197,7 +197,7 @@ impl CompileCommandImpl for SingleCompileCommand {
         let mut cmd = creator.clone().new_command_sync(executable);
         cmd.args(arguments)
             .env_clear()
-            .envs(env_vars.to_vec())
+            .envs(env_vars.clone())
             .current_dir(cwd);
         run_input_output(cmd, None).await
     }

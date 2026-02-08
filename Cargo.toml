@@ -217,3 +217,9 @@ members = ["tests/integration/randomize_readdir"]
 harness = false
 name = "sccache_bench"
 test = false
+
+[lints]
+workspace = true
+
+[workspace.lints.clippy]
+implicit_clone = "warn"

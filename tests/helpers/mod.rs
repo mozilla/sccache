@@ -86,7 +86,7 @@ impl SccacheTest<'_> {
 
         Ok(SccacheTest {
             tempdir,
-            env: env.to_owned(),
+            env: env.clone(),
         })
     }
 

@@ -822,7 +822,7 @@ where
                         // * .cpp1.ii - cicc/ptxas input
                         // * .cpp4.ii - cudafe++ input
                         if out_name.ends_with(".cpp1.ii") {
-                            Some(out_name.to_owned())
+                            Some(out_name.clone())
                         } else {
                             None
                         }
@@ -944,7 +944,7 @@ where
         .args(&[arguments, &["--dryrun".into(), "--keep".into()][..]].concat())
         .env_clear()
         .current_dir(cwd)
-        .envs(env_vars.to_vec());
+        .envs(env_vars.clone());
 
     let nvcc_dryrun_output = run_input_output(nvcc_dryrun_cmd, None).await?;
 
@@ -1250,7 +1250,7 @@ where
                 cwd,
                 [
                     vec![exe.clone().into_os_string().into_string().unwrap()],
-                    args.to_vec()
+                    args.clone()
                 ]
                 .concat()
                 .join(" ")
@@ -1264,7 +1264,7 @@ where
                 cmd.args(args)
                     .current_dir(cwd)
                     .env_clear()
-                    .envs(env_vars.to_vec());
+                    .envs(env_vars.clone());
 
                 run_input_output(cmd, None)
                     .await

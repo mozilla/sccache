@@ -1198,7 +1198,7 @@ mod test {
             o => panic!("Got unexpected parse result: {:?}", o),
         };
         let mut common_and_arch_args = common_args.clone();
-        common_and_arch_args.extend(common_args.to_vec());
+        common_and_arch_args.extend(common_args.clone());
         debug!("common_and_arch_args: {:?}", common_and_arch_args);
         assert_eq!(Some("foo.cpp"), input.to_str());
         assert_eq!(Language::Cxx, language);
