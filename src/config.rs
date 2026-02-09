@@ -2170,7 +2170,7 @@ key_prefix = "cosprefix"
             server_startup_timeout_ms: Some(10000),
             basedirs: vec![],
         }
-    )
+    );
 }
 
 #[test]

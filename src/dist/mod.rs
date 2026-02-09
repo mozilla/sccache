@@ -138,9 +138,9 @@ mod path_transform {
                     Component::ParentDir => "..",
                 };
                 if !dist_suffix.is_empty() {
-                    dist_suffix.push('/')
+                    dist_suffix.push('/');
                 }
-                dist_suffix.push_str(part)
+                dist_suffix.push_str(part);
             }
 
             let dist_path = if let Some(mut dist_prefix) = maybe_dist_prefix {

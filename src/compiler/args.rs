@@ -1020,10 +1020,10 @@ mod tests {
             None => {}
             Some(Diff::FirstMismatch(_, _, _)) => unreachable!(),
             Some(Diff::Shorter(_, i)) => {
-                assert_eq!(i.map(|a| a.unwrap()).collect::<Vec<_>>(), vec![])
+                assert_eq!(i.map(|a| a.unwrap()).collect::<Vec<_>>(), vec![]);
             }
             Some(Diff::Longer(_, i)) => {
-                assert_eq!(Vec::<Argument<ArgData>>::new(), i.collect::<Vec<_>>())
+                assert_eq!(Vec::<Argument<ArgData>>::new(), i.collect::<Vec<_>>());
             }
         }
     }

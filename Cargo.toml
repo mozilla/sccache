@@ -223,3 +223,4 @@ workspace = true
 
 [workspace.lints.clippy]
 implicit_clone = "warn"
+semicolon_if_nothing_returned = "warn"

@@ -738,7 +738,7 @@ fn wait_for<F: Fn() -> Result<(), String>>(f: F, interval: Duration, max_wait: D
         if start.elapsed() > max_wait {
             break;
         }
-        thread::sleep(interval)
+        thread::sleep(interval);
     }
     panic!("wait timed out, last error result: {}", lasterr)
 }
