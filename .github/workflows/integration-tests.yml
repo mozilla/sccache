@@ -20,10 +20,6 @@ jobs:
           toolchain: "stable"
 
       - name: Build
-        env:
-          CARGO_INCREMENTAL: "0"
-          RUSTC_WRAPPER: ""
-          RUSTFLAGS: "-Cinstrument-coverage -Ccodegen-units=1 -Copt-level=0 -Coverflow-checks=off"
         run: |
           cargo build --all-features
 
@@ -34,7 +30,6 @@ jobs:
 
   integration-tests:
     runs-on: ubuntu-24.04
-    needs: build
     strategy:
       matrix:
         type: [backends, tools]
@@ -42,14 +37,6 @@ jobs:
     steps:
       - name: Clone repository
         uses: actions/checkout@v5
-
-      - uses: actions/download-artifact@v5
-        with:
-          name: integration-tests
-          path: ./target/coverage/debug
-
-      - name: Chmod for binary
-        run: chmod +x ./target/coverage/debug/sccache
 
       - name: Test
         run: cd tests/integration && WITH_COVERAGE=1 make test-${{ matrix.type }}
