@@ -222,4 +222,5 @@ test = false
 workspace = true
 
 [workspace.lints.clippy]
+cloned_ref_to_slice_refs = "warn"
 implicit_clone = "warn"

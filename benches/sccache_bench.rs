@@ -869,7 +869,7 @@ fn strip_basedirs_typical(bencher: Bencher) {
     bencher.bench(|| {
         black_box(strip_basedirs(
             black_box(&output),
-            black_box(&[basedir.clone()]),
+            black_box(std::slice::from_ref(&basedir)),
         ))
     });
 }
