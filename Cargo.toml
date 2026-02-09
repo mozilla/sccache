@@ -222,6 +222,7 @@ test = false
 workspace = true
 
 [workspace.lints.clippy]
+cloned_instead_of_copied = "warn"
 cloned_ref_to_slice_refs = "warn"
 implicit_clone = "warn"
 semicolon_if_nothing_returned = "warn"
