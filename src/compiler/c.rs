@@ -454,7 +454,7 @@ where
                 &env_vars,
                 &absolute_input_path,
                 self.compiler.plusplus(),
-                &preprocessor_cache_mode_config,
+                preprocessor_cache_mode_config,
                 storage.basedirs(),
             )?
         } else {

@@ -1005,14 +1005,11 @@ fn config_from_env() -> Result<EnvConfig> {
     };
 
     // ======= Preprocessor cache =======
-    let preprocessor_mode_config = if let Some(value) = bool_from_env_var("SCCACHE_DIRECT")? {
-        Some(PreprocessorCacheModeConfig {
+    let preprocessor_mode_config =
+        bool_from_env_var("SCCACHE_DIRECT")?.map(|value| PreprocessorCacheModeConfig {
             use_preprocessor_cache_mode: value,
             ..Default::default()
-        })
-    } else {
-        None
-    };
+        });
 
     // ======= Local =======
     let disk_dir = env::var_os("SCCACHE_DIR").map(PathBuf::from);
