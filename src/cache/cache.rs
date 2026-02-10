@@ -30,10 +30,6 @@ use crate::cache::oss::OSSCache;
 use crate::cache::redis::RedisCache;
 #[cfg(feature = "s3")]
 use crate::cache::s3::S3Cache;
-#[cfg(feature = "webdav")]
-use crate::cache::webdav::WebdavCache;
-use crate::compiler::PreprocessorCacheEntry;
-use crate::config::Config;
 #[cfg(any(
     feature = "azure",
     feature = "gcs",
@@ -45,10 +41,14 @@ use crate::config::Config;
     feature = "oss",
     feature = "cos"
 ))]
-use crate::config::{self, CacheType};
+use crate::cache::utils::normalize_key;
+#[cfg(feature = "webdav")]
+use crate::cache::webdav::WebdavCache;
+use crate::compiler::PreprocessorCacheEntry;
+use crate::config::Config;
+use crate::config::{self, CacheType, PreprocessorCacheModeConfig};
 use async_trait::async_trait;
 
-use serde::{Deserialize, Serialize};
 use std::io;
 use std::sync::Arc;
 use std::time::Duration;
@@ -131,57 +131,6 @@ pub trait Storage: Send + Sync {
         _preprocessor_cache_entry: PreprocessorCacheEntry,
     ) -> Result<()> {
         Ok(())
-    }
-}
-
-/// Configuration switches for preprocessor cache mode.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-#[serde(default)]
-pub struct PreprocessorCacheModeConfig {
-    /// Whether to use preprocessor cache mode entirely
-    pub use_preprocessor_cache_mode: bool,
-    /// If false (default), only compare header files by hashing their contents.
-    /// If true, will use size + ctime + mtime to check whether a file has changed.
-    /// See other flags below for more control over this behavior.
-    pub file_stat_matches: bool,
-    /// If true (default), uses the ctime (file status change on UNIX,
-    /// creation time on Windows) to check that a file has/hasn't changed.
-    /// Can be useful to disable when backdating modification times
-    /// in a controlled manner.
-    pub use_ctime_for_stat: bool,
-    /// If true, ignore `__DATE__`, `__TIME__` and `__TIMESTAMP__` being present
-    /// in the source code. Will speed up preprocessor cache mode,
-    /// but can result in false positives.
-    pub ignore_time_macros: bool,
-    /// If true, preprocessor cache mode will not cache system headers, only
-    /// add them to the hash.
-    pub skip_system_headers: bool,
-    /// If true (default), will add the current working directory in the hash to
-    /// distinguish two compilations from different directories.
-    pub hash_working_directory: bool,
-}
-
-impl Default for PreprocessorCacheModeConfig {
-    fn default() -> Self {
-        Self {
-            use_preprocessor_cache_mode: false,
-            file_stat_matches: false,
-            use_ctime_for_stat: true,
-            ignore_time_macros: false,
-            skip_system_headers: false,
-            hash_working_directory: true,
-        }
-    }
-}
-
-impl PreprocessorCacheModeConfig {
-    /// Return a default [`Self`], but with the cache active.
-    pub fn activated() -> Self {
-        Self {
-            use_preprocessor_cache_mode: true,
-            ..Default::default()
-        }
     }
 }
 
@@ -330,11 +279,6 @@ impl Storage for RemoteStorage {
     fn basedirs(&self) -> &[Vec<u8>] {
         &self.basedirs
     }
-}
-
-/// Normalize key `abcdef` into `a/b/c/abcdef`
-pub(in crate::cache) fn normalize_key(key: &str) -> String {
-    format!("{}/{}/{}/{}", &key[0..1], &key[1..2], &key[2..3], &key)
 }
 
 /// Build a single cache storage from CacheType
@@ -586,14 +530,6 @@ mod test {
     use super::*;
     use crate::config::CacheModeConfig;
     use fs_err as fs;
-
-    #[test]
-    fn test_normalize_key() {
-        assert_eq!(
-            normalize_key("0123456789abcdef0123456789abcdef"),
-            "0/1/2/0123456789abcdef0123456789abcdef"
-        );
-    }
 
     #[test]
     fn test_read_write_mode_local() {

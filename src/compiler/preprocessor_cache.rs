@@ -33,7 +33,7 @@ use chrono::Datelike;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    cache::PreprocessorCacheModeConfig,
+    config::PreprocessorCacheModeConfig,
     util::{Digest, HashToDigest, MetadataCtimeExt, Timestamp, encode_path, strip_basedirs},
 };
 
