@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cache::storage_from_config;
+use crate::cache::get_storage_from_config;
 use crate::client::{ServerConnection, connect_to_server, connect_with_retry};
 use crate::cmdline::{Command, StatsFormat};
 use crate::compiler::ColorMode;
@@ -628,8 +628,14 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                 // anyways, so we can just return (mostly) empty stats directly.
                 Err(_) => {
                     let runtime = Runtime::new()?;
-                    let storage = storage_from_config(config, runtime.handle()).ok();
-                    runtime.block_on(ServerInfo::new(ServerStats::default(), storage.as_deref()))?
+                    let storage_data = get_storage_from_config(config, runtime.handle()).ok();
+                    let storage = storage_data.as_ref().map(|(s, _)| s.clone());
+                    let preprocessor_cache_storage = storage_data.as_ref().map(|(_, p)| p.clone());
+                    runtime.block_on(ServerInfo::new(
+                        ServerStats::default(),
+                        storage.as_deref(),
+                        preprocessor_cache_storage.as_deref(),
+                    ))?
                 }
             };
             match fmt {
