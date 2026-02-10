@@ -1953,7 +1953,7 @@ mod test {
                     !lang.is_c_like_header(),
                     "{:?} should not be processed, but it is a C-like header and can be used as preprocessor input",
                     lang
-                )
+                );
             }
         }
     }

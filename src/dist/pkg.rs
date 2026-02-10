@@ -164,7 +164,7 @@ mod toolchain_imp {
                 }
                 trace!("walkdir add_file {}", entry.path().display());
                 // It's either a file, or a symlink pointing to a file
-                self.add_file(entry.path().to_owned())?
+                self.add_file(entry.path().to_owned())?;
             }
             Ok(())
         }
@@ -187,11 +187,11 @@ mod toolchain_imp {
             builder.mode(tar::HeaderMode::Deterministic);
 
             for (tar_path, dir_path) in dir_set {
-                builder.append_dir(tar_path, dir_path)?
+                builder.append_dir(tar_path, dir_path)?;
             }
             for (tar_path, file_path) in file_set {
                 let file = &mut fs::File::open(file_path)?;
-                builder.append_file(tar_path, file.file_mut())?
+                builder.append_file(tar_path, file.file_mut())?;
             }
             for (from_path, to_path) in symlinks {
                 let mut header = tar::Header::new_gnu();
@@ -199,7 +199,7 @@ mod toolchain_imp {
                 header.set_size(0);
                 // Leave `to_path` as absolute, assuming the tar will be used in a chroot-like
                 // environment.
-                builder.append_link(&mut header, tar_safe_path(from_path), to_path)?
+                builder.append_link(&mut header, tar_safe_path(from_path), to_path)?;
             }
             builder.finish().map_err(Into::into)
         }
@@ -281,7 +281,7 @@ mod toolchain_imp {
             trace!(
                 "ldd stderr non-empty: {:?}",
                 String::from_utf8_lossy(&stderr)
-            )
+            );
         }
 
         let stdout = str::from_utf8(&stdout).context("ldd output not utf8")?;
@@ -321,7 +321,7 @@ mod toolchain_imp {
                     // Workaround: add libname to deps if it's abusolute and exists.
                     let libname_path = PathBuf::from(libname);
                     if libname_path.is_absolute() && libname_path.exists() {
-                        libs.push(libname_path)
+                        libs.push(libname_path);
                     }
 
                     PathBuf::from(libpath)
@@ -335,7 +335,7 @@ mod toolchain_imp {
                 continue;
             }
 
-            libs.push(libpath)
+            libs.push(libpath);
         }
 
         libs
@@ -364,7 +364,7 @@ mod toolchain_imp {
                 "/lib64/ld-linux-x86-64.so.2",
                 "/lib/x86_64-linux-gnu/libpthread.so.0",
             ]
-        )
+        );
     }
 
     #[test]
@@ -374,7 +374,7 @@ mod toolchain_imp {
             "\tldd (0x7f79ef662000)", // musl ldd output
         ];
         for static_output in static_outputs {
-            assert_eq!(parse_ldd_output(static_output).len(), 0)
+            assert_eq!(parse_ldd_output(static_output).len(), 0);
         }
     }
 
@@ -398,7 +398,7 @@ mod toolchain_imp {
                 "/lib64/ld-linux-x86-64.so.2",
                 "/usr/lib64/ld-linux-x86-64.so.2",
             ]
-        )
+        );
     }
 }
 

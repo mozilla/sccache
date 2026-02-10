@@ -108,7 +108,7 @@ fn compile_cmdline<T: AsRef<OsStr>>(
         _ => panic!("Unsupported compiler: {}", compiler),
     };
     if !extra_args.is_empty() {
-        arg.append(&mut extra_args)
+        arg.append(&mut extra_args);
     }
     arg
 }
@@ -149,7 +149,7 @@ fn compile_cuda_cmdline<T: AsRef<OsStr>>(
         _ => panic!("Unsupported compiler: {}", compiler),
     };
     if !extra_args.is_empty() {
-        arg.append(&mut extra_args)
+        arg.append(&mut extra_args);
     }
     arg
 }
@@ -176,7 +176,7 @@ fn compile_hip_cmdline<T: AsRef<OsStr>>(
         arg.push(format!("--offload-arch={}", arch).into());
     }
     if !extra_args.is_empty() {
-        arg.append(&mut extra_args)
+        arg.append(&mut extra_args);
     }
     arg
 }

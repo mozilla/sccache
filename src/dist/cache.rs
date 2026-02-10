@@ -452,7 +452,7 @@ mod client {
                     },
                 ],
             );
-            assert!(client_toolchains.is_err())
+            assert!(client_toolchains.is_err());
         }
     }
 }
