@@ -1802,7 +1802,7 @@ impl<T: CommandCreatorSync> Compilation<T> for RustCompilation {
                     }
                     "TMPDIR" => {
                         // The server will need to find its own tempdir.
-                        *v = "".to_string();
+                        *v = String::new();
                     }
                     "CARGO" | "CARGO_MANIFEST_DIR" => {
                         *v = path_transformer.as_dist(Path::new(v))?;
