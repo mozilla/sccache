@@ -224,4 +224,5 @@ workspace = true
 [workspace.lints.clippy]
 cloned_ref_to_slice_refs = "warn"
 implicit_clone = "warn"
+ref_option = "warn"
 semicolon_if_nothing_returned = "warn"
