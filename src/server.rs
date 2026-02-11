@@ -106,10 +106,10 @@ fn notify_server_startup_internal<W: Write>(mut w: W, status: ServerStartup) -> 
 }
 
 #[cfg(unix)]
-fn notify_server_startup(name: &Option<OsString>, status: ServerStartup) -> Result<()> {
+fn notify_server_startup(name: Option<&OsString>, status: ServerStartup) -> Result<()> {
     use std::os::unix::net::UnixStream;
-    let name = match *name {
-        Some(ref s) => s,
+    let name = match name {
+        Some(s) => s,
         None => return Ok(()),
     };
     debug!("notify_server_startup({:?})", status);
@@ -118,11 +118,11 @@ fn notify_server_startup(name: &Option<OsString>, status: ServerStartup) -> Resu
 }
 
 #[cfg(windows)]
-fn notify_server_startup(name: &Option<OsString>, status: ServerStartup) -> Result<()> {
+fn notify_server_startup(name: Option<&OsString>, status: ServerStartup) -> Result<()> {
     use fs::OpenOptions;
 
-    let name = match *name {
-        Some(ref s) => s,
+    let name = match name {
+        Some(s) => s,
         None => return Ok(()),
     };
     let pipe = OpenOptions::new().write(true).read(true).open(name)?;
@@ -455,7 +455,7 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
             error!("storage init failed for: {err:?}");
 
             notify_server_startup(
-                &notify,
+                notify.as_ref(),
                 ServerStartup::Err {
                     reason: err.to_string(),
                 },
@@ -472,7 +472,7 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
                 error!("storage check failed for: {err:?}");
 
                 notify_server_startup(
-                    &notify,
+                    notify.as_ref(),
                     ServerStartup::Err {
                         reason: err.to_string(),
                     },
@@ -541,7 +541,7 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
         Ok((addr, run)) => {
             info!("server started, listening on {addr}");
             notify_server_startup(
-                &notify,
+                notify.as_ref(),
                 ServerStartup::Ok {
                     addr: addr.to_string(),
                 },
@@ -552,16 +552,16 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
         Err(e) => {
             error!("failed to start server: {}", e);
             if io::ErrorKind::AddrInUse == e.kind() {
-                notify_server_startup(&notify, ServerStartup::AddrInUse)?;
+                notify_server_startup(notify.as_ref(), ServerStartup::AddrInUse)?;
             } else if cfg!(windows) && Some(10013) == e.raw_os_error() {
                 // 10013 is the "WSAEACCES" error, which can occur if the requested port
                 // has been allocated for other purposes, such as winNAT or Hyper-V.
                 let windows_help_message = "A Windows port exclusion is blocking use of the configured port.\nTry setting SCCACHE_SERVER_PORT to a new value.";
                 let reason: String = format!("{windows_help_message}\n{e}");
-                notify_server_startup(&notify, ServerStartup::Err { reason })?;
+                notify_server_startup(notify.as_ref(), ServerStartup::Err { reason })?;
             } else {
                 let reason = e.to_string();
-                notify_server_startup(&notify, ServerStartup::Err { reason })?;
+                notify_server_startup(notify.as_ref(), ServerStartup::Err { reason })?;
             }
             Err(e.into())
         }
