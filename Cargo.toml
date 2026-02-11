@@ -225,4 +225,5 @@ workspace = true
 cloned_instead_of_copied = "warn"
 cloned_ref_to_slice_refs = "warn"
 implicit_clone = "warn"
+ref_option = "warn"
 semicolon_if_nothing_returned = "warn"
