@@ -682,8 +682,7 @@ macro_rules! take_arg {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use itertools::{Diff, diff_with};
-    use std::iter::FromIterator;
+    use itertools::{Diff, Itertools as _, diff_with};
 
     macro_rules! arg {
         ($name:ident($x:expr)) => {
@@ -1028,40 +1027,38 @@ mod tests {
         }
     }
 
-    // https://github.com/rust-lang/rust-clippy/issues/6550
-    #[allow(clippy::from_iter_instead_of_collect)]
     #[test]
     fn test_argument_into_iter() {
         // Needs type annotation or ascription
         let raw: Argument<ArgData> = arg!(Raw("value"));
         let unknown: Argument<ArgData> = arg!(UnknownFlag("-foo"));
-        assert_eq!(Vec::from_iter(raw.iter_os_strings()), ovec!["value"]);
-        assert_eq!(Vec::from_iter(unknown.iter_os_strings()), ovec!["-foo"]);
+        assert_eq!(raw.iter_os_strings().collect_vec(), ovec!["value"]);
+        assert_eq!(unknown.iter_os_strings().collect_vec(), ovec!["-foo"]);
         assert_eq!(
-            Vec::from_iter(arg!(Flag("-foo", FooFlag)).iter_os_strings()),
+            arg!(Flag("-foo", FooFlag)).iter_os_strings().collect_vec(),
             ovec!["-foo"]
         );
 
         let arg = arg!(WithValue("-foo", Foo("bar"), Concatenated));
-        assert_eq!(Vec::from_iter(arg.iter_os_strings()), ovec!["-foobar"]);
+        assert_eq!(arg.iter_os_strings().collect_vec(), ovec!["-foobar"]);
 
         let arg = arg!(WithValue("-foo", Foo("bar"), Concatenated(b'=')));
-        assert_eq!(Vec::from_iter(arg.iter_os_strings()), ovec!["-foo=bar"]);
+        assert_eq!(arg.iter_os_strings().collect_vec(), ovec!["-foo=bar"]);
 
         let arg = arg!(WithValue("-foo", Foo("bar"), CanBeSeparated));
-        assert_eq!(Vec::from_iter(arg.iter_os_strings()), ovec!["-foobar"]);
+        assert_eq!(arg.iter_os_strings().collect_vec(), ovec!["-foobar"]);
 
         let arg = arg!(WithValue("-foo", Foo("bar"), CanBeSeparated(b'=')));
-        assert_eq!(Vec::from_iter(arg.iter_os_strings()), ovec!["-foo=bar"]);
+        assert_eq!(arg.iter_os_strings().collect_vec(), ovec!["-foo=bar"]);
 
         let arg = arg!(WithValue("-foo", Foo("bar"), CanBeConcatenated));
-        assert_eq!(Vec::from_iter(arg.iter_os_strings()), ovec!["-foo", "bar"]);
+        assert_eq!(arg.iter_os_strings().collect_vec(), ovec!["-foo", "bar"]);
 
         let arg = arg!(WithValue("-foo", Foo("bar"), CanBeConcatenated(b'=')));
-        assert_eq!(Vec::from_iter(arg.iter_os_strings()), ovec!["-foo", "bar"]);
+        assert_eq!(arg.iter_os_strings().collect_vec(), ovec!["-foo", "bar"]);
 
         let arg = arg!(WithValue("-foo", Foo("bar"), Separated));
-        assert_eq!(Vec::from_iter(arg.iter_os_strings()), ovec!["-foo", "bar"]);
+        assert_eq!(arg.iter_os_strings().collect_vec(), ovec!["-foo", "bar"]);
     }
 
     #[test]
