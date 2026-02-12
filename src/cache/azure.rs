@@ -78,11 +78,7 @@ impl AzureBlobCache {
         key_prefix: &str,
     ) -> Result<Operator> {
         let blob_endpoint = blob_endpoint_from_connection_string(connection_string)?;
-        let endpoint = format!(
-            "{}/{}",
-            blob_endpoint.trim_end_matches('/'),
-            container
-        );
+        let endpoint = format!("{}/{}", blob_endpoint.trim_end_matches('/'), container);
 
         let builder = Http::default().endpoint(&endpoint).root(key_prefix);
 
