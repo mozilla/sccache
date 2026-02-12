@@ -2611,7 +2611,10 @@ connection_string = "DefaultEndpointsProtocol=https;AccountName=test"
 container = "my-container"
 "#;
     let config: AzureCacheConfig = toml::from_str(toml_str).expect("should deserialize");
-    assert_eq!(config.connection_string, "DefaultEndpointsProtocol=https;AccountName=test");
+    assert_eq!(
+        config.connection_string,
+        "DefaultEndpointsProtocol=https;AccountName=test"
+    );
     assert_eq!(config.container, "my-container");
     assert_eq!(config.key_prefix, "");
     assert!(!config.no_credentials);
