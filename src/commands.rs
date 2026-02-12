@@ -640,7 +640,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
         Command::DebugPreprocessorCacheEntries => {
             trace!("Command::DebugPreprocessorCacheEntries");
             let entries_dir = default_disk_cache_dir().join("preprocessor");
-            for entry in WalkDir::new(entries_dir).sort_by_file_name().into_iter() {
+            for entry in WalkDir::new(entries_dir).sort_by_file_name() {
                 let preprocessor_cache_entry_file = entry?;
                 let path = preprocessor_cache_entry_file.path();
                 if !path.is_file() {
