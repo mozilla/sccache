@@ -41,6 +41,7 @@ use async_trait::async_trait;
 use filetime::FileTime;
 use fs::File;
 use fs_err as fs;
+use itertools::Itertools as _;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::ffi::{OsStr, OsString};
@@ -1705,7 +1706,7 @@ compiler_version=__VERSION__
         let arg = arg.unwrap_or_else(|_| Argument::Raw(OsString::from("")));
         if let Some(Detect_PassThrough(_)) = arg.get_data() {
             let required_arg = arg.normalize(NormalizedDisposition::Concatenated);
-            cmd.args(&Vec::from_iter(required_arg.iter_os_strings()));
+            cmd.args(&required_arg.iter_os_strings().collect_vec());
         }
     }
 
