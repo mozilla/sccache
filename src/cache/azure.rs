@@ -117,4 +117,20 @@ mod tests {
         let cs = "DefaultEndpointsProtocol=https;AccountName=myaccount";
         assert!(blob_endpoint_from_connection_string(cs).is_err());
     }
+
+    #[test]
+    fn test_build_no_credentials() {
+        let cs = "BlobEndpoint=https://myaccount.blob.core.windows.net";
+        let op = AzureBlobCache::build(cs, "mycontainer", "/prefix", true).unwrap();
+        let info = op.info();
+        assert_eq!(info.scheme(), "http");
+        assert_eq!(info.root(), "/prefix/");
+    }
+
+    #[test]
+    fn test_build_no_credentials_missing_endpoint() {
+        let cs = "AccountName=myaccount";
+        let op = AzureBlobCache::build(cs, "mycontainer", "/prefix", true);
+        assert!(op.is_err());
+    }
 }
