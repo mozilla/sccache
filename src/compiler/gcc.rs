@@ -728,29 +728,12 @@ where
     }
 
     if !module_only_flag {
-        if let Some(module_output_path) = module_output_path {
-            let empty_os_string = OsString::new();
-
-            let module_output_path = module_output_path.unwrap_or_else(|| {
-                let input_file_name = Path::new(&input).file_name().unwrap_or(&empty_os_string);
-                let mut path = output.with_file_name(input_file_name);
-                let mut ext = path
-                    .extension()
-                    .map(|e| e.to_os_string())
-                    .unwrap_or_default();
-                ext.push(".pcm");
-                path.set_extension(ext);
-                path
-            });
-
-            outputs.insert(
+        outputs.extend(module_output_path.into_iter().map(|p| {
+            (
                 "module",
-                ArtifactDescriptor {
-                    path: module_output_path,
-                    optional: false,
-                },
-            );
-        }
+                module_artifact_descriptor(Path::new(&input), &output, p.as_deref()),
+            )
+        }));
     }
 
     // Sometimes if this is precompiled this will be a module file,
@@ -783,6 +766,33 @@ where
         suppress_rewrite_includes_only,
         too_hard_for_preprocessor_cache_mode,
     })
+}
+
+fn module_artifact_descriptor(
+    input: &Path,
+    output: &Path,
+    module_output_path: Option<&Path>,
+) -> ArtifactDescriptor {
+    let empty_os_string = OsString::new();
+
+    let path = module_output_path
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| {
+            let input_file_name = input.file_name().unwrap_or(&empty_os_string);
+            let mut path = output.with_file_name(input_file_name);
+            let mut ext = path
+                .extension()
+                .map(|e| e.to_os_string())
+                .unwrap_or_default();
+            ext.push(".pcm");
+            path.set_extension(ext);
+            path
+        });
+
+    ArtifactDescriptor {
+        path,
+        optional: false,
+    }
 }
 
 pub fn language_to_gcc_arg(lang: Language) -> Option<&'static str> {
