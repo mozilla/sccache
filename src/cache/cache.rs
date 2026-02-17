@@ -217,13 +217,10 @@ impl Storage for RemoteStorage {
     }
 
     async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration> {
-        let start = std::time::Instant::now();
-
-        self.operator
-            .write(&normalize_key(key), entry.finish()?)
-            .await?;
-
-        Ok(start.elapsed())
+        trace!("RemoteStorage::put({})", key);
+        // Delegate to put_raw after serializing the entry
+        let data = entry.finish()?;
+        self.put_raw(key, data).await
     }
 
     async fn check(&self) -> Result<CacheMode> {

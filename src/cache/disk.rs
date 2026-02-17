@@ -132,31 +132,10 @@ impl Storage for DiskCache {
     }
 
     async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration> {
-        // We should probably do this on a background thread if we're going to buffer
-        // everything in memory...
-        trace!("DiskCache::finish_put({})", key);
-
-        if self.rw_mode == CacheMode::ReadOnly {
-            return Err(anyhow!("Cannot write to a read-only cache"));
-        }
-
-        let lru = self.lru.clone();
-        let key = make_key_path(key);
-
-        self.pool
-            .spawn_blocking(move || {
-                let start = Instant::now();
-                let v = entry.finish()?;
-                let mut f = lru
-                    .lock()
-                    .unwrap()
-                    .get_or_init()?
-                    .prepare_add(key, v.len() as u64)?;
-                f.as_file_mut().write_all(&v)?;
-                lru.lock().unwrap().get().unwrap().commit(f)?;
-                Ok(start.elapsed())
-            })
-            .await?
+        trace!("DiskCache::put({})", key);
+        // Delegate to put_raw after serializing the entry
+        let data = entry.finish()?;
+        self.put_raw(key, data).await
     }
 
     async fn put_raw(&self, key: &str, data: Vec<u8>) -> Result<Duration> {
