@@ -872,17 +872,32 @@ impl Storage for MultiLevelStorage {
         key: &str,
         preprocessor_cache_entry: PreprocessorCacheEntry,
     ) -> Result<()> {
-        for (idx, level) in self.levels.iter().enumerate() {
-            if let Err(e) = level
-                .put_preprocessor_cache_entry(key, preprocessor_cache_entry.clone())
-                .await
-            {
-                warn!(
-                    "Failed to write preprocessor cache entry to level {}: {}",
-                    idx, e
-                );
-            }
-        }
+        // Write preprocessor cache to all levels in parallel (best-effort)
+        // Unlike regular cache entries, preprocessor cache writes are not critical
+        // and shouldn't fail the compilation
+        let futures: Vec<_> = self
+            .levels
+            .iter()
+            .enumerate()
+            .map(|(idx, level)| {
+                let key = key.to_string();
+                let entry = preprocessor_cache_entry.clone();
+                let level = Arc::clone(level);
+
+                tokio::spawn(async move {
+                    if let Err(e) = level.put_preprocessor_cache_entry(&key, entry).await {
+                        warn!(
+                            "Failed to write preprocessor cache entry to level {}: {}",
+                            idx, e
+                        );
+                    }
+                })
+            })
+            .collect();
+
+        // Wait for all writes to complete (errors are logged, not propagated)
+        futures::future::join_all(futures).await;
+
         Ok(())
     }
 }
