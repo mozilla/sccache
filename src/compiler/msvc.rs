@@ -822,13 +822,24 @@ pub fn parse_arguments(
     // Clang is currently unable to generate PDB files
     if debug_info && !is_clang {
         match pdb {
-            Some(p) => outputs.insert(
-                "pdb",
-                ArtifactDescriptor {
-                    path: p,
-                    optional: false,
-                },
-            ),
+            Some(p) => {
+                // Append the default .pdb prefix if none was given, like how MSVC does.
+                let path = if p.extension().is_none() {
+                    let mut path = p;
+                    path.set_extension("pdb");
+                    path
+                } else {
+                    p
+                };
+
+                outputs.insert(
+                    "pdb",
+                    ArtifactDescriptor {
+                        path,
+                        optional: false,
+                    },
+                )
+            },
             None => {
                 // -Zi and -ZI without -Fd defaults to vcxxx.pdb (where xxx depends on the
                 // MSVC version), and that's used for all compilations with the same
