@@ -377,16 +377,24 @@ pub fn build_single_cache(
             key_prefix,
         }) => {
             let storage = match (endpoint, cluster_endpoints, url) {
-                (Some(url), None, None) => {
-                    debug!("Init redis single-node cache with url {url}");
-                    RedisCache::build_single(
-                        url,
-                        username.as_deref(),
-                        password.as_deref(),
-                        *db,
-                        key_prefix,
-                        *ttl,
-                    )
+                (Some(url_str), None, None) => {
+                    if url_str.starts_with("redis-sentinel://") {
+                        debug!("Init redis sentinel cache with url {url_str}");
+                        if username.is_some() || password.is_some() || *db != crate::config::DEFAULT_REDIS_DB {
+                            warn!("`username`, `password` and `db` have no effect when using a `redis-sentinel://` URL. Embed credentials in the URL instead.");
+                        }
+                        RedisCache::build_from_url(url_str, key_prefix, *ttl)
+                    } else {
+                        debug!("Init redis single-node cache with url {url_str}");
+                        RedisCache::build_single(
+                            url_str,
+                            username.as_deref(),
+                            password.as_deref(),
+                            *db,
+                            key_prefix,
+                            *ttl,
+                        )
+                    }
                 }
                 (None, Some(urls), None) => {
                     debug!("Init redis cluster cache with urls {urls}");
