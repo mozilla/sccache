@@ -324,11 +324,49 @@ services:
         condition: service_completed_successfully
       webdav:
         condition: service_started
-    environment:
-      <<: *common-env
     profiles:
       - test
       - basedirs
+
+  test-multilevel:
+    <<: *test-runner
+    image: rust:latest
+    entrypoint: /sccache/tests/integration/scripts/test-multilevel.sh
+    depends_on:
+      redis:
+        condition: service_healthy
+      memcached:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-setup:
+        condition: service_completed_successfully
+      azurite:
+        condition: service_healthy
+      azurite-setup:
+        condition: service_completed_successfully
+      webdav:
+        condition: service_started
+    profiles:
+      - test
+      - multilevel
+
+  test-multilevel-chain:
+    <<: *test-runner
+    image: rust:latest
+    entrypoint: /sccache/tests/integration/scripts/test-multilevel-chain.sh
+    depends_on:
+      redis:
+        condition: service_healthy
+      memcached:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-setup:
+        condition: service_completed_successfully
+    profiles:
+      - test
+      - multilevel-chain
 
 volumes:
   cargo-cache:

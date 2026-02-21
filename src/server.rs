@@ -1627,6 +1627,8 @@ pub struct ServerStats {
     pub dist_compiles: HashMap<String, usize>,
     /// The count of compilations that were distributed but failed and had to be re-run locally
     pub dist_errors: u64,
+    /// Multi-level cache statistics (if multi-level caching is enabled)
+    pub multi_level: Option<crate::cache::multilevel::MultiLevelStats>,
 }
 
 /// Info and stats about the server.
@@ -1676,6 +1678,7 @@ impl Default for ServerStats {
             not_cached: HashMap::new(),
             dist_compiles: HashMap::new(),
             dist_errors: u64::default(),
+            multi_level: None,
         }
     }
 }
@@ -1811,6 +1814,14 @@ impl ServerStats {
             self.dist_errors,
             "Failed distributed compilations"
         );
+
+        // Add multi-level cache statistics if available
+        if let Some(ref ml_stats) = self.multi_level {
+            for (name, value, suffix_type) in ml_stats.format_stats() {
+                stats_vec.push((name, value, suffix_type));
+            }
+        }
+
         let name_width = stats_vec.iter().map(|(n, _, _)| n.len()).max().unwrap();
         let stat_width = stats_vec.iter().map(|(_, s, _)| s.len()).max().unwrap();
         for (name, stat, suffix_len) in stats_vec {
@@ -1930,7 +1941,7 @@ fn set_percentage_stat(
 }
 
 impl ServerInfo {
-    pub async fn new(stats: ServerStats, storage: Option<&dyn Storage>) -> Result<Self> {
+    pub async fn new(mut stats: ServerStats, storage: Option<&dyn Storage>) -> Result<Self> {
         let cache_location;
         let use_preprocessor_cache_mode;
         let cache_size;
@@ -1948,6 +1959,8 @@ impl ServerInfo {
                 .iter()
                 .map(|p| String::from_utf8_lossy(p).to_string())
                 .collect();
+            // Get multi-level stats if available
+            stats.multi_level = storage.multilevel_stats();
         } else {
             cache_location = String::new();
             use_preprocessor_cache_mode = false;
