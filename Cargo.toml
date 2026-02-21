@@ -135,7 +135,7 @@ predicates = "=3.1.0"
 serial_test = "3.1"
 temp-env = "0.3.6"
 test-case = "3.3.1"
-thirtyfour_sync = "0.27"
+thirtyfour = "0.36"
 
 [target.'cfg(unix)'.dependencies]
 daemonix = "0.1"
