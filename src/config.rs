@@ -898,7 +898,7 @@ fn config_from_env() -> Result<EnvConfig> {
         // default version.
         Some(GHACacheConfig {
             enabled: true,
-            version: "".to_string(),
+            version: String::new(),
         })
     } else {
         None
