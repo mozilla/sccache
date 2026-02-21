@@ -676,7 +676,7 @@ pub fn wide_char_to_multi_byte(wide_char_str: &[u16]) -> std::io::Result<Vec<u8>
                 flags,
                 wide_char_str.as_ptr(),
                 wide_char_str.len() as i32,
-                astr.as_mut_ptr() as _,
+                astr.as_mut_ptr().cast(),
                 len,
                 std::ptr::null(),
                 std::ptr::null_mut(),
@@ -906,7 +906,7 @@ pub fn daemonize() -> Result<()> {
             fn write_str(&mut self, s: &str) -> Result {
                 unsafe {
                     let bytes = s.as_bytes();
-                    libc::write(libc::STDERR_FILENO, bytes.as_ptr() as *const _, bytes.len());
+                    libc::write(libc::STDERR_FILENO, bytes.as_ptr().cast(), bytes.len());
                     Ok(())
                 }
             }
