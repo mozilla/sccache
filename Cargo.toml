@@ -124,6 +124,8 @@ rouille = { version = "3.6", optional = true, default-features = false, features
 ] }
 syslog = { version = "7", optional = true }
 version-compare = { version = "0.1.1", optional = true }
+tracing = "0.1.44"
+redis = { version = "0.32", features = ["sentinel"], optional = true }
 
 [dev-dependencies]
 assert_cmd = "2.0.13"
@@ -175,7 +177,7 @@ gha = ["opendal/services-ghac", "reqwest"]
 memcached = ["opendal/services-memcached"]
 native-zlib = []
 oss = ["opendal/services-oss", "reqsign", "reqwest"]
-redis = ["url", "opendal/services-redis"]
+redis = ["dep:redis", "url", "opendal/services-redis"]
 s3 = ["opendal/services-s3", "reqsign", "reqwest"]
 webdav = ["opendal/services-webdav", "reqwest"]
 # Enable features that will build a vendored version of openssl and
