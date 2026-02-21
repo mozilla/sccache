@@ -25,7 +25,7 @@ use crate::compiler::{
 use crate::mock_command::{
     CommandChild, CommandCreator, CommandCreatorSync, ExitStatusValue, RunCommand, exit_status,
 };
-use crate::util::{OsStrExt, run_input_output};
+use crate::util::{OsStrExt, resolve_compiler_avoiding_ccache, run_input_output};
 use crate::{counted_array, dist, protocol, server};
 use async_trait::async_trait;
 use fs::File;
@@ -181,8 +181,11 @@ impl CCompilerImpl for Nvcc {
             _ => Err(anyhow!("PCH not supported by nvcc")),
         }?;
 
+        // Resolve compiler avoiding ccache wrappers to prevent double-caching.
+        let resolved_executable = resolve_compiler_avoiding_ccache(executable, &env_vars);
+
         let initialize_cmd_and_args = || {
-            let mut command = creator.clone().new_command_sync(executable);
+            let mut command = creator.clone().new_command_sync(&resolved_executable);
             command
                 .current_dir(cwd)
                 .env_clear()
@@ -938,7 +941,10 @@ where
         );
     }
 
-    let mut nvcc_dryrun_cmd = creator.clone().new_command_sync(executable);
+    // Resolve compiler avoiding ccache wrappers to prevent double-caching.
+    let resolved_executable = resolve_compiler_avoiding_ccache(executable, env_vars);
+
+    let mut nvcc_dryrun_cmd = creator.clone().new_command_sync(&resolved_executable);
 
     nvcc_dryrun_cmd
         .args(&[arguments, &["--dryrun".into(), "--keep".into()][..]].concat())
@@ -1257,9 +1263,12 @@ where
             );
         }
 
+        // Resolve compiler avoiding ccache wrappers to prevent double-caching.
+        let resolved_exe = resolve_compiler_avoiding_ccache(exe, env_vars);
+
         let out = match cacheable {
             Cacheable::No => {
-                let mut cmd = creator.clone().new_command_sync(exe);
+                let mut cmd = creator.clone().new_command_sync(&resolved_exe);
 
                 cmd.args(args)
                     .current_dir(cwd)
@@ -1275,7 +1284,7 @@ where
                 let args = dist::strings_to_osstrings(args);
 
                 match srvc
-                    .compiler_info(exe.clone(), cwd.to_owned(), &args, env_vars)
+                    .compiler_info(resolved_exe.clone(), cwd.to_owned(), &args, env_vars)
                     .await
                 {
                     Err(err) => error_to_output(err),
@@ -1283,9 +1292,15 @@ where
                         CompilerArguments::NotCompilation => Err(anyhow!("Not compilation")),
                         CompilerArguments::CannotCache(why, extra_info) => Err(extra_info
                             .map_or_else(
-                                || anyhow!("Cannot cache({}): {:?} {:?}", why, exe, args),
+                                || anyhow!("Cannot cache({}): {:?} {:?}", why, resolved_exe, args),
                                 |desc| {
-                                    anyhow!("Cannot cache({}, {}): {:?} {:?}", why, desc, exe, args)
+                                    anyhow!(
+                                        "Cannot cache({}, {}): {:?} {:?}",
+                                        why,
+                                        desc,
+                                        resolved_exe,
+                                        args
+                                    )
                                 },
                             )),
                         CompilerArguments::Ok(hasher) => {

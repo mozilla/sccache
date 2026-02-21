@@ -1174,10 +1174,181 @@ pub fn normalize_win_path(path: &[u8]) -> Vec<u8> {
     result
 }
 
+/// Resolve the compiler executable, avoiding ccache wrappers.
+///
+/// This function handles scenarios where ccache might interfere:
+/// 1. PATH contains directories like /usr/lib/ccache or /usr/lib64/ccache
+///    which contain wrapper scripts that would call ccache
+/// 2. The compiler executable itself is a symlink to ccache
+///
+/// Searches PATH for the compiler name, skipping any candidate whose path
+/// contains "ccache" or that resolves (via symlink) to ccache.
+/// Returns the absolute path to the first valid match, or the original
+/// executable if no valid match is found.
+///
+/// If the executable is already an absolute path, it is returned as-is
+/// without searching PATH.
+pub fn resolve_compiler_avoiding_ccache(
+    executable: &Path,
+    env_vars: &[(OsString, OsString)],
+) -> PathBuf {
+    // If the path is absolute, return it as-is without searching PATH
+    if executable.is_absolute() {
+        return executable.to_path_buf();
+    }
+
+    const CCACHE_DIR_COMPONENT: &str = "ccache";
+
+    // Helper to check if a path points to ccache (via symlink resolution)
+    let resolves_to_ccache = |path: &Path| -> bool {
+        std::fs::canonicalize(path)
+            .ok()
+            .and_then(|canonical| canonical.file_name().map(|n| n.to_os_string()))
+            .map(|name| {
+                let name_lower = name.to_string_lossy().to_lowercase();
+                name_lower == "ccache" || name_lower.starts_with("ccache.")
+            })
+            .unwrap_or(false)
+    };
+
+    // Helper to check if a path contains a ccache directory component
+    let path_contains_ccache = |path: &Path| -> bool {
+        path.components()
+            .any(|c| c.as_os_str() == CCACHE_DIR_COMPONENT)
+    };
+
+    // Get the compiler name to search for
+    let compiler_name = match executable.file_name() {
+        Some(name) => name,
+        None => return executable.to_path_buf(),
+    };
+
+    // Get PATH from env_vars
+    let path_value = match env_vars.iter().find(|(key, _)| key == "PATH") {
+        Some((_, value)) => value,
+        None => return executable.to_path_buf(),
+    };
+
+    // Search PATH for a valid compiler, skipping ccache candidates
+    for dir in std::env::split_paths(path_value) {
+        // Skip directories that contain "ccache" in the path
+        if path_contains_ccache(&dir) {
+            continue;
+        }
+
+        let candidate = dir.join(compiler_name);
+        if candidate.exists() && !resolves_to_ccache(&candidate) {
+            return candidate;
+        }
+    }
+
+    // No valid match found, return the original
+    executable.to_path_buf()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{OsStrExt, TimeMacroFinder};
+    use super::{OsStrExt, TimeMacroFinder, resolve_compiler_avoiding_ccache};
     use std::ffi::{OsStr, OsString};
+    use std::path::Path;
+
+    #[test]
+    fn test_resolve_compiler_avoiding_ccache_filters_path() {
+        use std::env;
+
+        // Create a PATH with ccache directories
+        let path_with_ccache = env::join_paths([
+            "/usr/lib64/ccache",
+            "/usr/lib/ccache",
+            "/usr/bin",
+            "/usr/local/bin",
+            "/home/user/bin",
+        ])
+        .unwrap();
+
+        let env_vars = vec![
+            (OsString::from("HOME"), OsString::from("/home/user")),
+            (OsString::from("PATH"), path_with_ccache),
+            (OsString::from("LANG"), OsString::from("en_US.UTF-8")),
+        ];
+
+        // When searching for "gcc", it should skip ccache directories
+        // and find gcc in /usr/bin (if it exists) or return original
+        let resolved = resolve_compiler_avoiding_ccache(Path::new("gcc"), &env_vars);
+
+        // The resolved path should not contain "ccache" in its path
+        let resolved_str = resolved.to_string_lossy();
+        assert!(
+            !resolved_str.contains("ccache"),
+            "Resolved path should not contain ccache: {}",
+            resolved_str
+        );
+    }
+
+    #[test]
+    fn test_resolve_compiler_avoiding_ccache_no_path() {
+        // No PATH variable at all
+        let env_vars = vec![
+            (OsString::from("HOME"), OsString::from("/home/user")),
+            (OsString::from("LANG"), OsString::from("en_US.UTF-8")),
+        ];
+
+        let resolved = resolve_compiler_avoiding_ccache(Path::new("/usr/bin/gcc"), &env_vars);
+
+        // Should return original when no PATH
+        assert_eq!(resolved, Path::new("/usr/bin/gcc"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_resolve_compiler_avoiding_ccache_skips_symlink_to_ccache() {
+        use std::env;
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let ccache_dir = temp_dir.path().join("ccache_bin");
+        let real_dir = temp_dir.path().join("real_bin");
+        std::fs::create_dir_all(&ccache_dir).unwrap();
+        std::fs::create_dir_all(&real_dir).unwrap();
+
+        // Create a fake "ccache" binary
+        let ccache_bin = ccache_dir.join("ccache");
+        std::fs::write(&ccache_bin, "fake ccache").unwrap();
+
+        // Create a symlink "gcc" -> "ccache" in ccache_dir
+        let gcc_symlink = ccache_dir.join("gcc");
+        symlink(&ccache_bin, &gcc_symlink).unwrap();
+
+        // Create a real "gcc" binary in real_dir
+        let real_gcc = real_dir.join("gcc");
+        std::fs::write(&real_gcc, "real gcc").unwrap();
+
+        // Set up PATH with ccache_dir first, then real_dir
+        let path = env::join_paths([&ccache_dir, &real_dir]).unwrap();
+        let env_vars = vec![(OsString::from("PATH"), path)];
+
+        let resolved = resolve_compiler_avoiding_ccache(Path::new("gcc"), &env_vars);
+
+        // Should skip the symlink to ccache and find the real gcc
+        assert_eq!(resolved, real_gcc);
+    }
+
+    #[test]
+    fn test_resolve_compiler_avoiding_ccache_absolute_path_unchanged() {
+        use std::env;
+
+        // Create a PATH with ccache directories first
+        let path_with_ccache =
+            env::join_paths(["/usr/lib64/ccache", "/usr/lib/ccache", "/usr/bin"]).unwrap();
+
+        let env_vars = vec![(OsString::from("PATH"), path_with_ccache)];
+
+        // When given an absolute path, it should be returned as-is without searching PATH
+        let absolute_path = Path::new("/some/specific/path/to/gcc");
+        let resolved = resolve_compiler_avoiding_ccache(absolute_path, &env_vars);
+
+        assert_eq!(resolved, absolute_path);
+    }
 
     #[test]
     fn simple_starts_with() {
