@@ -839,7 +839,7 @@ pub fn parse_arguments(
                         optional: false,
                     },
                 )
-            },
+            }
             None => {
                 // -Zi and -ZI without -Fd defaults to vcxxx.pdb (where xxx depends on the
                 // MSVC version), and that's used for all compilations with the same
