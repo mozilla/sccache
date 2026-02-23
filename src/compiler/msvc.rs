@@ -139,7 +139,7 @@ pub fn from_local_codepage(multi_byte_str: &[u8]) -> io::Result<String> {
         let len = MultiByteToWideChar(
             codepage,
             flags,
-            multi_byte_str.as_ptr() as _,
+            multi_byte_str.as_ptr().cast(),
             multi_byte_str.len() as i32,
             std::ptr::null_mut(),
             0,
@@ -150,9 +150,9 @@ pub fn from_local_codepage(multi_byte_str: &[u8]) -> io::Result<String> {
             let len = MultiByteToWideChar(
                 codepage,
                 flags,
-                multi_byte_str.as_ptr() as _,
+                multi_byte_str.as_ptr().cast(),
                 multi_byte_str.len() as i32,
-                wstr.as_mut_ptr() as _,
+                wstr.as_mut_ptr().cast(),
                 len,
             );
             if len > 0 {
