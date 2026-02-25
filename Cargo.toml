@@ -137,7 +137,7 @@ predicates = "=3.1.0"
 serial_test = "3.1"
 temp-env = "0.3.6"
 test-case = "3.3.1"
-thirtyfour_sync = "0.27"
+thirtyfour = "0.36"
 
 [target.'cfg(unix)'.dependencies]
 daemonix = "0.1"
@@ -226,5 +226,9 @@ workspace = true
 [workspace.lints.clippy]
 cloned_instead_of_copied = "warn"
 cloned_ref_to_slice_refs = "warn"
+explicit_into_iter_loop = "warn"
 implicit_clone = "warn"
+manual_string_new = "warn"
+ptr_as_ptr = "warn"
 semicolon_if_nothing_returned = "warn"
+unnecessary_semicolon = "warn"

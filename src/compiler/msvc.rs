@@ -139,7 +139,7 @@ pub fn from_local_codepage(multi_byte_str: &[u8]) -> io::Result<String> {
         let len = MultiByteToWideChar(
             codepage,
             flags,
-            multi_byte_str.as_ptr() as _,
+            multi_byte_str.as_ptr().cast(),
             multi_byte_str.len() as i32,
             std::ptr::null_mut(),
             0,
@@ -150,9 +150,9 @@ pub fn from_local_codepage(multi_byte_str: &[u8]) -> io::Result<String> {
             let len = MultiByteToWideChar(
                 codepage,
                 flags,
-                multi_byte_str.as_ptr() as _,
+                multi_byte_str.as_ptr().cast(),
                 multi_byte_str.len() as i32,
-                wstr.as_mut_ptr() as _,
+                wstr.as_mut_ptr().cast(),
                 len,
             );
             if len > 0 {
@@ -425,6 +425,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_take_arg!("analyze:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("arch:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_flag!("await", PassThrough),
+    msvc_flag!("await:strict", PassThrough),
     msvc_flag!("bigobj", PassThrough),
     msvc_flag!("c", DoCompilation),
     msvc_take_arg!("cgthreads", OsString, Concatenated, PassThroughWithSuffix),
@@ -432,6 +433,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("clr", PassThrough),
     msvc_take_arg!("clr:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("constexpr:", OsString, Concatenated, PassThroughWithSuffix),
+    msvc_flag!("d1nodatetime", PassThrough),
     msvc_take_arg!("deps", PathBuf, Concatenated, DepFile),
     msvc_take_arg!("diagnostics:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("doc", PathBuf, Concatenated, TooHardPath), // Creates an .xdc file.
@@ -2094,7 +2096,9 @@ mod test {
             "-Qpar",
             "-Qpar-",
             "-Gw",
+            "/d1nodatetime",
             "-EHa",
+            "-await:strict",
             "-Fmdictionary-map",
             "-c",
             "-Fohost_dictionary.obj",
@@ -2116,7 +2120,16 @@ mod test {
         assert!(!common_args.is_empty());
         assert_eq!(
             common_args,
-            ovec!("-Oy", "-Qpar", "-Qpar-", "-Gw", "-EHa", "-Fmdictionary-map")
+            ovec!(
+                "-Oy",
+                "-Qpar",
+                "-Qpar-",
+                "-Gw",
+                "/d1nodatetime",
+                "-EHa",
+                "-await:strict",
+                "-Fmdictionary-map"
+            )
         );
     }
 

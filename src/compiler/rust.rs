@@ -1802,7 +1802,7 @@ impl<T: CommandCreatorSync> Compilation<T> for RustCompilation {
                     }
                     "TMPDIR" => {
                         // The server will need to find its own tempdir.
-                        *v = "".to_string();
+                        *v = String::new();
                     }
                     "CARGO" | "CARGO_MANIFEST_DIR" => {
                         *v = path_transformer.as_dist(Path::new(v))?;
@@ -2034,7 +2034,7 @@ impl pkg::InputsPackager for RustInputsPackager {
         };
 
         let mut tar_inputs = vec![];
-        for input_path in inputs.into_iter() {
+        for input_path in inputs {
             let input_path = pkg::simplify_path(&input_path)?;
             if let Some(ext) = input_path.extension() {
                 if !super::CAN_DIST_DYLIBS && ext == DLL_EXTENSION {
@@ -2086,7 +2086,7 @@ impl pkg::InputsPackager for RustInputsPackager {
         // we've been able to use a dependency searcher then we can filter down just candidates for that
         // crate, otherwise we need to send everything.
         let mut tar_crate_libs = vec![];
-        for crate_link_path in crate_link_paths.into_iter() {
+        for crate_link_path in crate_link_paths {
             let crate_link_path = pkg::simplify_path(&crate_link_path)?;
             let dir_entries = match fs::read_dir(crate_link_path) {
                 Ok(iter) => iter,

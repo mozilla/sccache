@@ -971,7 +971,9 @@ where
                 Box::new(DistClientConfig {
                     pool: rt.clone(),
                     scheduler_url: None,
-                    auth: config::DistAuth::Token { token: "".into() },
+                    auth: config::DistAuth::Token {
+                        token: String::new(),
+                    },
                     cache_dir: "".into(),
                     toolchain_cache_size: 0,
                     toolchains: vec![],
