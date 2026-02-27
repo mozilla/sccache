@@ -221,6 +221,7 @@ counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     flag!("-fmodules", TooHardFlag),
     // New: C++20 gcc modules flag.
     // TODO: Add support for GCC modules
+    // See https://github.com/mozilla/sccache/issues/2630
     flag!("-fmodules-ts", TooHardFlag),
     flag!("-fno-diagnostics-color", NoDiagnosticsColorFlag),
     flag!("-fno-profile-generate", TooHardFlag),

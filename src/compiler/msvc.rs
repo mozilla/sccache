@@ -459,6 +459,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("hotpatch", PassThrough),
     // New: C++20 msvc modules flags.
     // TODO: Add support for msvc modules
+    // See https://github.com/mozilla/sccache/issues/2629
     msvc_take_arg!("ifcMap", PathBuf, Separated, TooHardPath),
     msvc_flag!("ifcOnly", TooHardFlag),
     msvc_take_arg!("ifcOutput", PathBuf, Separated, TooHardPath),
