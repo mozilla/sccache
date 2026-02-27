@@ -150,6 +150,7 @@ impl CacheRead {
                 // Write the cache entry to a tempfile and then atomically
                 // move it to its final location so that other rustc invocations
                 // happening in parallel don't see a partially-written file.
+                fs::create_dir_all(dir)?;
                 let mut tmp = NamedTempFile::new_in(dir)?;
                 match (self.get_object(&key, &mut tmp), optional) {
                     (Ok(mode), _) => {
