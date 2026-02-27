@@ -343,7 +343,7 @@ jobs:
           ID: ${{ startsWith(github.ref, 'refs/tags/') && github.ref || github.sha }}
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.binary || 'sccache' }}-${{ steps.id.outputs.id }}-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/${{ matrix.binary || 'sccache' }}${{ endsWith(matrix.target, '-msvc') && '.exe' || '' }}
