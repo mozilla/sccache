@@ -293,6 +293,72 @@ jobs:
           ${SCCACHE_PATH} --show-stats
           ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"
 
+  cmake-modules:
+    runs-on: ubuntu-24.04
+    needs: build
+
+    env:
+      SCCACHE_GHA_ENABLED: "on"
+      LLVM_VERSION: "19"
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Configure Cache Env
+        uses: actions/github-script@v8
+        with:
+          script: |
+            core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '')
+
+      - uses: actions/download-artifact@v5
+        with:
+          name: integration-tests
+          path: /home/runner/.cargo/bin/
+      - name: Chmod for binary
+        run: chmod +x ${SCCACHE_PATH}
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          wget https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh "${LLVM_VERSION}"
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+          pip install cmake
+
+      - name: Test
+        run: |
+          cd `pwd`/tests/cmake-modules/
+          cmake -B build -G Ninja \
+            -DCMAKE_C_COMPILER=clang-${LLVM_VERSION} \
+            -DCMAKE_CXX_COMPILER=clang++-${LLVM_VERSION} \
+            -DCMAKE_C_COMPILER_LAUNCHER=${SCCACHE_PATH} \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=${SCCACHE_PATH}
+          cmake --build build
+
+      - name: Output
+        run: |
+          ${SCCACHE_PATH} --show-stats
+
+      - name: Test Twice for Cache Read
+        run: |
+          cd `pwd`/tests/cmake-modules/
+          rm -rf build
+          cmake -B build -G Ninja \
+            -DCMAKE_C_COMPILER=clang-${LLVM_VERSION} \
+            -DCMAKE_CXX_COMPILER=clang++-${LLVM_VERSION} \
+            -DCMAKE_C_COMPILER_LAUNCHER=${SCCACHE_PATH} \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=${SCCACHE_PATH}
+          cmake --build build
+
+      - name: Output
+        run: |
+          ${SCCACHE_PATH} --show-stats
+
+          ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"
+
   xcode:
     runs-on: macos-latest
     env:

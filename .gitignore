@@ -20,3 +20,4 @@ tests/**/Cargo.lock
 
 .direnv/
 result
+.vscode/settings.json
