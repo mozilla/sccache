@@ -305,10 +305,12 @@ pub fn build_single_cache(
             connection_string,
             container,
             key_prefix,
+            no_credentials,
         }) => {
             debug!("Init azure cache with container {container}, key_prefix {key_prefix}");
-            let operator = AzureBlobCache::build(connection_string, container, key_prefix)
-                .map_err(|err| anyhow!("create azure cache failed: {err:?}"))?;
+            let operator =
+                AzureBlobCache::build(connection_string, container, key_prefix, *no_credentials)
+                    .map_err(|err| anyhow!("create azure cache failed: {err:?}"))?;
             let storage = RemoteStorage::new(operator, basedirs.to_vec());
             Ok(Arc::new(storage))
         }

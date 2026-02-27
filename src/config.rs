@@ -185,7 +185,10 @@ impl HTTPUrl {
 pub struct AzureCacheConfig {
     pub connection_string: String,
     pub container: String,
+    #[serde(default)]
     pub key_prefix: String,
+    #[serde(default)]
+    pub no_credentials: bool,
 }
 
 /// Configuration switches for preprocessor cache mode.
@@ -910,10 +913,12 @@ fn config_from_env() -> Result<EnvConfig> {
         env::var("SCCACHE_AZURE_BLOB_CONTAINER"),
     ) {
         let key_prefix = key_prefix_from_env_var("SCCACHE_AZURE_KEY_PREFIX");
+        let no_credentials = bool_from_env_var("SCCACHE_AZURE_NO_CREDENTIALS")?.unwrap_or(false);
         Some(AzureCacheConfig {
             connection_string,
             container,
             key_prefix,
+            no_credentials,
         })
     } else {
         None
@@ -1429,6 +1434,7 @@ fn config_overrides() {
                 connection_string: String::new(),
                 container: String::new(),
                 key_prefix: String::new(),
+                no_credentials: false,
             }),
             disk: Some(DiskCacheConfig {
                 dir: "/env-cache".into(),
@@ -2596,4 +2602,33 @@ fn test_integration_env_variable_to_strip() {
     let input2 = b"# 1 \"/tmp/build/obj/file.o\"";
     let output2 = strip_basedirs(input2, &config.basedirs);
     assert_eq!(&*output2, b"# 1 \"obj/file.o\"");
+}
+
+#[test]
+fn test_azure_config_deserializes_without_optional_fields() {
+    let toml_str = r#"
+connection_string = "DefaultEndpointsProtocol=https;AccountName=test"
+container = "my-container"
+"#;
+    let config: AzureCacheConfig = toml::from_str(toml_str).expect("should deserialize");
+    assert_eq!(
+        config.connection_string,
+        "DefaultEndpointsProtocol=https;AccountName=test"
+    );
+    assert_eq!(config.container, "my-container");
+    assert_eq!(config.key_prefix, "");
+    assert!(!config.no_credentials);
+}
+
+#[test]
+fn test_azure_config_deserializes_with_all_fields() {
+    let toml_str = r#"
+connection_string = "DefaultEndpointsProtocol=https;AccountName=test"
+container = "my-container"
+key_prefix = "prefix/"
+no_credentials = true
+"#;
+    let config: AzureCacheConfig = toml::from_str(toml_str).expect("should deserialize");
+    assert_eq!(config.key_prefix, "prefix/");
+    assert!(config.no_credentials);
 }
