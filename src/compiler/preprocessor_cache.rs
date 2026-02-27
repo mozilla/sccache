@@ -45,7 +45,7 @@ const FORMAT_VERSION: u8 = 0;
 const MAX_PREPROCESSOR_CACHE_ENTRIES: usize = 100;
 const MAX_PREPROCESSOR_CACHE_FILE_INFO_ENTRIES: usize = 10000;
 
-#[derive(Deserialize, Serialize, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Deserialize, Serialize, Debug, Default, PartialEq, Eq)]
 pub struct PreprocessorCacheEntry {
     /// A counter of the overall number of [`IncludeEntry`] in this
     /// preprocessor cache entry, as an optimization when checking
@@ -438,7 +438,7 @@ pub fn preprocessor_cache_entry_hash_key(
 }
 
 /// Corresponds to a cached include file used in the pre-processor stage
-#[derive(Deserialize, Serialize, Debug, PartialEq, Eq)]
+#[derive(Clone, Deserialize, Serialize, Debug, PartialEq, Eq)]
 pub struct IncludeEntry {
     /// Its absolute path
     path: OsString,
