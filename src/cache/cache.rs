@@ -13,6 +13,9 @@
 // limitations under the License.
 
 use super::cache_io::*;
+use super::preprocessor_cache::PreprocessorCacheStorage;
+use super::storage::Storage;
+use crate::cache::PreprocessorCache;
 #[cfg(feature = "azure")]
 use crate::cache::azure::AzureBlobCache;
 #[cfg(feature = "cos")]
@@ -44,95 +47,12 @@ use crate::cache::s3::S3Cache;
 use crate::cache::utils::normalize_key;
 #[cfg(feature = "webdav")]
 use crate::cache::webdav::WebdavCache;
-use crate::compiler::PreprocessorCacheEntry;
 use crate::config::Config;
-use crate::config::{self, CacheType, PreprocessorCacheModeConfig};
+use crate::config::{self, CacheType};
+use crate::errors::*;
 use async_trait::async_trait;
-
-use std::io;
 use std::sync::Arc;
 use std::time::Duration;
-
-use crate::errors::*;
-
-/// An interface to cache storage.
-#[async_trait]
-pub trait Storage: Send + Sync {
-    /// Get a cache entry by `key`.
-    ///
-    /// If an error occurs, this method should return a `Cache::Error`.
-    /// If nothing fails but the entry is not found in the cache,
-    /// it should return a `Cache::Miss`.
-    /// If the entry is successfully found in the cache, it should
-    /// return a `Cache::Hit`.
-    async fn get(&self, key: &str) -> Result<Cache>;
-
-    /// Put `entry` in the cache under `key`.
-    ///
-    /// Returns a `Future` that will provide the result or error when the put is
-    /// finished.
-    async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration>;
-
-    /// Check the cache capability.
-    ///
-    /// - `Ok(CacheMode::ReadOnly)` means cache can only be used to `get`
-    ///   cache.
-    /// - `Ok(CacheMode::ReadWrite)` means cache can do both `get` and `put`.
-    /// - `Err(err)` means cache is not setup correctly or not match with
-    ///   users input (for example, user try to use `ReadWrite` but cache
-    ///   is `ReadOnly`).
-    ///
-    /// We will provide a default implementation which returns
-    /// `Ok(CacheMode::ReadWrite)` for service that doesn't
-    /// support check yet.
-    async fn check(&self) -> Result<CacheMode> {
-        Ok(CacheMode::ReadWrite)
-    }
-
-    /// Get the storage location.
-    fn location(&self) -> String;
-
-    /// Get the cache backend type name (e.g., "disk", "redis", "s3").
-    /// Used for statistics and display purposes.
-    fn cache_type_name(&self) -> &'static str {
-        "unknown"
-    }
-
-    /// Get the current storage usage, if applicable.
-    async fn current_size(&self) -> Result<Option<u64>>;
-
-    /// Get the maximum storage size, if applicable.
-    async fn max_size(&self) -> Result<Option<u64>>;
-
-    /// Return the config for preprocessor cache mode if applicable
-    fn preprocessor_cache_mode_config(&self) -> PreprocessorCacheModeConfig {
-        // Enable by default, only in local mode
-        PreprocessorCacheModeConfig::default()
-    }
-    /// Return the base directories for path normalization if configured
-    fn basedirs(&self) -> &[Vec<u8>] {
-        &[]
-    }
-    /// Return the preprocessor cache entry for a given preprocessor key,
-    /// if it exists.
-    /// Only applicable when using preprocessor cache mode.
-    async fn get_preprocessor_cache_entry(
-        &self,
-        _key: &str,
-    ) -> Result<Option<Box<dyn crate::lru_disk_cache::ReadSeek>>> {
-        Ok(None)
-    }
-    /// Insert a preprocessor cache entry at the given preprocessor key,
-    /// overwriting the entry if it exists.
-    /// Only applicable when using preprocessor cache mode.
-    async fn put_preprocessor_cache_entry(
-        &self,
-        _key: &str,
-        _preprocessor_cache_entry: PreprocessorCacheEntry,
-    ) -> Result<()> {
-        Ok(())
-    }
-}
 
 /// Wrapper for opendal::Operator that adds basedirs support
 #[cfg(any(
@@ -185,7 +105,7 @@ impl Storage for RemoteStorage {
     async fn get(&self, key: &str) -> Result<Cache> {
         match self.operator.read(&normalize_key(key)).await {
             Ok(res) => {
-                let hit = CacheRead::from(io::Cursor::new(res.to_bytes()))?;
+                let hit = CacheRead::from(std::io::Cursor::new(res.to_bytes()))?;
                 Ok(Cache::Hit(hit))
             }
             Err(e) if e.kind() == opendal::ErrorKind::NotFound => Ok(Cache::Miss),
@@ -487,12 +407,13 @@ pub fn build_single_cache(
     }
 }
 
+fn get_preprocessor_cache_storage(config: &Config) -> Result<Arc<dyn PreprocessorCacheStorage>> {
+    Ok(Arc::new(PreprocessorCache::new(&config.preprocessor_cache)))
+}
+
 /// Get a suitable `Storage` implementation from configuration.
 /// Supports both single-cache (backward compatible) and multi-level cache configurations.
-pub fn storage_from_config(
-    config: &Config,
-    pool: &tokio::runtime::Handle,
-) -> Result<Arc<dyn Storage>> {
+pub fn get_storage(config: &Config, pool: &tokio::runtime::Handle) -> Result<Arc<dyn Storage>> {
     #[cfg(any(
         feature = "azure",
         feature = "gcs",
@@ -511,7 +432,6 @@ pub fn storage_from_config(
 
     // No remote cache configured - use disk cache only
     let (dir, size) = (&config.fallback_cache.dir, config.fallback_cache.size);
-    let preprocessor_cache_mode_config = config.fallback_cache.preprocessor_cache_mode;
     let rw_mode = config.fallback_cache.rw_mode.into();
     debug!("Init disk cache with dir {:?}, size {}", dir, size);
 
@@ -519,15 +439,25 @@ pub fn storage_from_config(
         dir,
         size,
         pool,
-        preprocessor_cache_mode_config,
         rw_mode,
         config.basedirs.clone(),
     )))
 }
 
+pub fn get_storage_from_config(
+    config: &Config,
+    pool: &tokio::runtime::Handle,
+) -> Result<(Arc<dyn Storage>, Arc<dyn PreprocessorCacheStorage>)> {
+    Ok((
+        get_storage(config, pool)?,
+        get_preprocessor_cache_storage(config)?,
+    ))
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::compiler::PreprocessorCacheEntry;
     use crate::config::CacheModeConfig;
     use fs_err as fs;
 
@@ -559,11 +489,12 @@ mod test {
         config.fallback_cache.rw_mode = CacheModeConfig::ReadWrite;
 
         {
-            let cache = storage_from_config(&config, runtime.handle()).unwrap();
+            let (cache, preprocessor_cache) =
+                get_storage_from_config(&config, runtime.handle()).unwrap();
 
             runtime.block_on(async move {
                 cache.put("test1", CacheWrite::default()).await.unwrap();
-                cache
+                preprocessor_cache
                     .put_preprocessor_cache_entry("test1", PreprocessorCacheEntry::default())
                     .await
                     .unwrap();
@@ -572,9 +503,11 @@ mod test {
 
         // Test Read-only
         config.fallback_cache.rw_mode = CacheModeConfig::ReadOnly;
+        config.preprocessor_cache.rw_mode = CacheModeConfig::ReadOnly;
 
         {
-            let cache = storage_from_config(&config, runtime.handle()).unwrap();
+            let (cache, preprocessor_cache) =
+                get_storage_from_config(&config, runtime.handle()).unwrap();
 
             runtime.block_on(async move {
                 assert_eq!(
@@ -586,7 +519,7 @@ mod test {
                     "Cannot write to a read-only cache"
                 );
                 assert_eq!(
-                    cache
+                    preprocessor_cache
                         .put_preprocessor_cache_entry("test1", PreprocessorCacheEntry::default())
                         .await
                         .unwrap_err()
