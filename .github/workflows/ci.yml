@@ -454,7 +454,7 @@ jobs:
           fi
 
       - name: Get artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
 
       - name: Create release assets
         run: |
