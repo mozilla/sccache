@@ -852,14 +852,6 @@ fn normalize_win_path_typical(bencher: Bencher) {
     bencher.bench(|| black_box(normalize_win_path(black_box(&path))));
 }
 
-/// Benchmark normalize_win_path with UTF-8 characters
-#[divan::bench]
-fn normalize_win_path_utf8(bencher: Bencher) {
-    let path = "C:\\Users\\Müller\\Projekte\\Überarbeitung\\Größe\\Datei.cpp".as_bytes();
-
-    bencher.bench(|| black_box(normalize_win_path(black_box(path))));
-}
-
 /// Benchmark strip_basedirs with typical preprocessor output
 #[divan::bench]
 fn strip_basedirs_typical(bencher: Bencher) {
