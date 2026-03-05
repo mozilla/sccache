@@ -241,11 +241,16 @@ impl OverlayBuilder {
                     // toolchains to prevent repeated sort/delete cycles.
                     entries.sort_by(|a, b| (a.1).ctime.cmp(&(b.1).ctime));
                     entries.truncate(entries.len() / 2);
-                    for (tc, _) in entries {
-                        warn!("Removing old un-compressed toolchain: {:?}", tc);
-                        assert!(toolchain_dir_map.remove(tc).is_some());
-                        fs::remove_dir_all(self.dir.join("toolchains").join(&tc.archive_id))
+                    for (del_tc, _) in entries {
+                        // In any case, don't delete the current toolchain
+                        if del_tc.archive_id != tc.archive_id {
+                            warn!("Removing old un-compressed toolchain: {:?}", del_tc);
+                            assert!(toolchain_dir_map.remove(tc).is_some());
+                            fs::remove_dir_all(
+                                self.dir.join("toolchains").join(&del_tc.archive_id),
+                            )
                             .context("Failed to remove old toolchain directory")?;
+                        }
                     }
                 }
                 entry
