@@ -158,6 +158,8 @@ pub struct ParsedArguments {
     crate_name: String,
     /// The crate types that will be generated
     crate_types: CrateTypes,
+    /// The hash pased to -Cextra-filename
+    extra_filename: Option<String>,
     /// If dependency info is being emitted, the name of the dep info file.
     dep_info: Option<PathBuf>,
     /// If profile info is being emitted, the path of the profile.
@@ -1251,7 +1253,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
     // Figure out the dep-info filename, if emitting dep-info.
     let dep_info = if emit.contains("dep-info") {
         let mut dep_info = crate_name.clone();
-        if let Some(extra_filename) = extra_filename.clone() {
+        if let Some(extra_filename) = extra_filename.as_ref() {
             dep_info.push_str(&extra_filename[..]);
         }
         dep_info.push_str(".d");
@@ -1266,7 +1268,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
     // Figure out the gcno filename, if producing gcno files with `-Zprofile`.
     let gcno = if gcno && emit.contains("link") {
         let mut gcno = crate_name.clone();
-        if let Some(extra_filename) = extra_filename {
+        if let Some(extra_filename) = extra_filename.as_ref() {
             gcno.push_str(&extra_filename[..]);
         }
         gcno.push_str(".gcno");
@@ -1309,6 +1311,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
         crate_link_paths,
         staticlibs,
         crate_name,
+        extra_filename,
         dep_info: dep_info.map(|s| s.into()),
         profile: profile.map(|s| s.into()),
         gcno: gcno.map(|s| s.into()),
@@ -1455,16 +1458,26 @@ where
             let (mut sortables, rest): (Vec<_>, Vec<_>) = os_string_arguments
                 .iter()
                 // We exclude a few arguments from the hash:
-                //   -L, --extern, --out-dir, --diagnostic-width
+                //   -L, --extern, --out-dir, --diagnostic-width, -Cprefer-dynamic, -Cextra-filename
                 // These contain paths which aren't relevant to the output, and the compiler inputs
                 // in those paths (rlibs and static libs used in the compilation) are used as hash
-                // inputs below.
-                .filter(|&(arg, _)| {
+                // inputs below. -Cextra-filename is okay to exclude from the hash because we remove
+                // the extra component from the cache keys below (`remove_extra_filename`)
+                .filter(|&(arg, value)| {
                     !(arg == "--extern"
                         || arg == "-L"
                         || arg == "--check-cfg"
                         || arg == "--out-dir"
-                        || arg == "--diagnostic-width")
+                        || arg == "--diagnostic-width"
+                        || (arg == "-C" && value == &Some(OsString::from("prefer-dynamic")))
+                        || (arg == "-C"
+                            && value
+                                .as_ref()
+                                .is_some_and(|v| v.starts_with("extra-filename"))))
+                    // prefer-dynamic never affects staticlibs or rlib
+                    // see https://github.com/rust-lang/rust/blob/master/compiler/rustc_metadata/src/dependency_format.rs
+                    // note that the unstable `staticlib-prefer-dynamic` affects staticlibs but it
+                    // is an independent flag
                 })
                 // We also exclude `--target` if it specifies a path to a .json file. The file content
                 // is used as hash input below.
@@ -1598,6 +1611,19 @@ where
             }
         }
 
+        let remove_extra_filename = |p: String| {
+            if let Some(extra) = self.parsed_args.extra_filename.as_ref() {
+                if let Some((pre_ext, ext)) = p.rsplit_once(".") {
+                    if pre_ext.ends_with(extra) {
+                        let pre_extra_filename = &pre_ext[0..(pre_ext.len() - extra.len())];
+                        return format!("{}.{}", pre_extra_filename, ext);
+                    }
+                }
+            }
+
+            p
+        };
+
         // Convert output files into a map of basename -> full
         // path, and remove some unneeded / non-existing ones,
         // see https://github.com/rust-lang/rust/pull/68799.
@@ -1606,7 +1632,7 @@ where
             .map(|o| {
                 let p = self.parsed_args.output_dir.join(&o);
                 (
-                    o,
+                    remove_extra_filename(o),
                     ArtifactDescriptor {
                         path: p,
                         optional: false,
@@ -1617,7 +1643,7 @@ where
         let dep_info = if let Some(dep_info) = &self.parsed_args.dep_info {
             let p = self.parsed_args.output_dir.join(dep_info);
             outputs.insert(
-                dep_info.to_string_lossy().into_owned(),
+                remove_extra_filename(dep_info.to_string_lossy().into_owned()),
                 ArtifactDescriptor {
                     path: p.clone(),
                     optional: false,
@@ -1640,7 +1666,7 @@ where
         if let Some(gcno) = &self.parsed_args.gcno {
             let p = self.parsed_args.output_dir.join(gcno);
             outputs.insert(
-                gcno.to_string_lossy().into_owned(),
+                remove_extra_filename(gcno.to_string_lossy().into_owned()),
                 ArtifactDescriptor {
                     path: p,
                     optional: true,
@@ -2858,6 +2884,7 @@ LLVM version: 15.0.2
         );
         assert_eq!(h.output_dir.to_str(), Some("/foo/target/debug/deps"));
         assert_eq!(h.crate_name, "foo");
+        assert_eq!(h.extra_filename, Some("-d6ae26f5bcfb7733".to_string()));
         assert_eq!(
             h.dep_info.unwrap().to_str().unwrap(),
             "foo-d6ae26f5bcfb7733.d"
@@ -3476,6 +3503,7 @@ proc_macro false
                     rlib: true,
                     staticlib: false,
                 },
+                extra_filename: None,
                 dep_info: None,
                 emit,
                 color_mode: ColorMode::Auto,
@@ -3746,7 +3774,11 @@ proc_macro false
                     "--crate-type",
                     "lib",
                     "-L",
-                    "y=y"
+                    "y=y",
+                    "-C",
+                    "prefer-dynamic",
+                    "-C",
+                    "extra-filename=abcdabcdabcd"
                 ],
                 &[],
                 nothing,
