@@ -669,7 +669,15 @@ where
     let mut conn_mut = conn;
     let res = request_compile(&mut conn_mut, exe_path, &cmdline, cwd, env_vars)?;
     handle_compile_response(
-        creator, runtime, &mut conn_mut, res, exe_path, cmdline, cwd, stdout, stderr,
+        creator,
+        runtime,
+        &mut conn_mut,
+        res,
+        exe_path,
+        cmdline,
+        cwd,
+        stdout,
+        stderr,
     )
 }
 
