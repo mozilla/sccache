@@ -40,12 +40,15 @@ jobs:
     strategy:
       matrix:
         feature: [ azure, gcs, gha, memcached, redis, s3, webdav ]
+        client_side_compile: ["0", "1"]
     steps:
       - name: Clone repository
         uses: actions/checkout@v5
 
-      - name: Check feature ${{ matrix.feature }}
-        run: cargo check --no-default-features --features ${{ matrix.feature }}
+      - name: Test feature ${{ matrix.feature }} (SCCACHE_CLIENT_SIDE_COMPILE=${{ matrix.client_side_compile }})
+        run: cargo test --no-default-features --features ${{ matrix.feature }}
+        env:
+          SCCACHE_CLIENT_SIDE_COMPILE: ${{ matrix.client_side_compile }}
 
   toml_format:
     runs-on: ubuntu-latest
