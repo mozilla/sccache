@@ -634,22 +634,98 @@ where
 /// - Cache storage via server
 #[allow(clippy::too_many_arguments)]
 fn do_compile_client_side<T>(
-    _creator: T,
-    _runtime: &mut Runtime,
-    _conn: ServerConnection,
-    _exe_path: &Path,
-    _cmdline: Vec<OsString>,
-    _cwd: &Path,
-    _env_vars: Vec<(OsString, OsString)>,
-    _stdout: &mut dyn Write,
-    _stderr: &mut dyn Write,
+    creator: T,
+    runtime: &mut Runtime,
+    mut conn: ServerConnection,
+    exe_path: &Path,
+    cmdline: Vec<OsString>,
+    cwd: &Path,
+    env_vars: Vec<(OsString, OsString)>,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
 ) -> Result<i32>
 where
     T: CommandCreatorSync,
 {
-    // TODO: Implement full client-side compilation flow
-    // For now, return an error indicating this is not yet implemented
-    bail!("Client-side compilation not yet fully implemented. Set SCCACHE_CLIENT_SIDE_COMPILE=0 to use legacy mode.")
+    use crate::compiler::{get_compiler_info, CacheControl, ColorMode, CompileResult};
+    use crate::protocol::{CacheGetRequest, CacheGetResponse, Request, Response};
+    use std::io::Write as _;
+
+    trace!("do_compile_client_side");
+
+    // Step 1: Detect compiler
+    // TODO: Use client-side compiler cache to avoid repeated detection
+    trace!("Detecting compiler: {:?}", exe_path);
+    let (compiler, _mtime) = runtime.block_on(async {
+        let compiler = get_compiler_info(
+            creator.clone(),
+            exe_path,
+            cwd,
+            &cmdline,
+            &env_vars,
+            runtime.handle(),
+            None, // dist_archive - not used in client-side mode yet
+        )
+        .await?;
+        Ok::<_, anyhow::Error>((compiler.0, filetime::FileTime::zero()))
+    })?;
+
+    trace!("Compiler detected: {:?}", compiler.kind());
+
+    // Step 2: Parse arguments and check if cacheable
+    trace!("Parsing compilation command");
+    let hasher = match runtime.block_on(compiler.parse_arguments(&cmdline, cwd, &env_vars)) {
+        Ok(hasher) => hasher,
+        Err(e) => {
+            trace!("Failed to parse arguments: {}", e);
+            // Fall back to running directly
+            writeln!(stderr, "sccache: warning: failed to parse arguments, running directly: {}", e)?;
+            let mut cmd = creator.clone().new_command_sync(exe_path);
+            cmd.args(&cmdline).current_dir(cwd);
+            for (k, v) in env_vars {
+                cmd.env(k, v);
+            }
+            let output = cmd.output()?;
+            stdout.write_all(&output.stdout)?;
+            stderr.write_all(&output.stderr)?;
+            return Ok(output.status.code().unwrap_or(1));
+        }
+    };
+
+    trace!("Arguments parsed, language: {:?}", hasher.language());
+
+    // Step 3: Generate cache key
+    // For now, we'll skip the actual compilation and cache lookup
+    // and just run the compilation directly
+    trace!("Running compilation directly (cache lookup not yet implemented)");
+
+    // TODO: Implement the following steps:
+    // 1. Preprocess source files
+    // 2. Generate hash key from preprocessed sources
+    // 3. Request cache from server: conn.request(Request::CacheGet(CacheGetRequest { key }))
+    // 4. If cache hit, extract and use cached results
+    // 5. If cache miss:
+    //    - Compile locally
+    //    - Store results in cache: conn.request(Request::CachePut(...))
+    // 6. Return compilation results
+
+    // For now, just run the compiler directly as a fallback
+    writeln!(
+        stderr,
+        "sccache: warning: client-side caching not fully implemented, compiling directly"
+    )?;
+
+    let mut cmd = creator.clone().new_command_sync(exe_path);
+    cmd.args(&cmdline).current_dir(cwd);
+    for (k, v) in env_vars {
+        cmd.env(k, v);
+    }
+
+    let output = cmd.output()?;
+    stdout.write_all(&output.stdout)?;
+    stderr.write_all(&output.stderr)?;
+
+    Ok(output.status.code().unwrap_or(1))
 }
 
 /// Run `cmd` and return the process exit status.
