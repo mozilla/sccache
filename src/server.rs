@@ -1121,18 +1121,28 @@ where
     /// Handle a preprocessor cache get request.
     async fn handle_preprocessor_cache_get(&self, key: String) -> Result<SccacheResponse> {
         use crate::protocol::Response;
+        use std::io::Read;
 
         match self.storage.get_preprocessor_cache_entry(&key).await {
             Ok(Some(mut reader)) => {
                 // Read the preprocessor cache entry
                 use crate::compiler::PreprocessorCacheEntry;
-                match PreprocessorCacheEntry::deserialize_from(&mut reader) {
-                    Ok(entry) => Ok(Message::WithoutBody(
-                        Response::PreprocessorCacheGetResponse(Some(entry)),
-                    )),
-                    Err(_) => Ok(Message::WithoutBody(
-                        Response::PreprocessorCacheGetResponse(None),
-                    )),
+
+                // Read all bytes from the reader
+                let mut bytes = Vec::new();
+                match reader.read_to_end(&mut bytes) {
+                    Ok(_) => {
+                        // Parse the preprocessor cache entry
+                        match PreprocessorCacheEntry::read(&bytes) {
+                            Ok(entry) => Ok(Message::WithoutBody(Response::PreprocessorCacheGet(
+                                Some(entry),
+                            ))),
+                            Err(_) => {
+                                Ok(Message::WithoutBody(Response::PreprocessorCacheGet(None)))
+                            }
+                        }
+                    }
+                    Err(_) => Ok(Message::WithoutBody(Response::PreprocessorCacheGet(None))),
                 }
             }
             Ok(None) => Ok(Message::WithoutBody(Response::PreprocessorCacheGet(None))),

@@ -25,6 +25,3 @@ pub mod compile;
 pub mod detect;
 pub mod hash;
 pub mod preprocess;
-
-pub use self::cache::CompilerCache;
-pub use self::detect::detect_compiler;
