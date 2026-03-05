@@ -166,7 +166,29 @@ jobs:
 
       - name: "`grcov` ~ install"
         if: ${{ ! matrix.no_coverage }}
-        run: cargo install grcov --force --locked
+        shell: bash
+        run: |
+          GRCOV_VERSION="0.10.7"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            TARGET="x86_64-pc-windows-msvc"
+            EXT="zip"
+          elif [[ "$RUNNER_OS" == "macOS" && "$RUNNER_ARCH" == "ARM64" ]]; then
+            TARGET="aarch64-apple-darwin"
+            EXT="tar.bz2"
+          elif [[ "$RUNNER_OS" == "macOS" ]]; then
+            TARGET="x86_64-apple-darwin"
+            EXT="tar.bz2"
+          else
+            TARGET="x86_64-unknown-linux-musl"
+            EXT="tar.bz2"
+          fi
+          URL="https://github.com/mozilla/grcov/releases/download/v${GRCOV_VERSION}/grcov-${TARGET}.${EXT}"
+          curl -sL "$URL" -o "grcov.${EXT}"
+          if [[ "$EXT" == "zip" ]]; then
+            unzip -q "grcov.${EXT}" -d "$HOME/.cargo/bin/"
+          else
+            tar -xjf "grcov.${EXT}" -C "$HOME/.cargo/bin/"
+          fi
 
       - name: Create config for testing
         if: ${{ ! matrix.no_coverage }}
