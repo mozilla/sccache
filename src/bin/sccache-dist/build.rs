@@ -222,6 +222,16 @@ impl OverlayBuilder {
                 };
 
                 toolchain_dir_map.insert(tc.clone(), entry.clone());
+
+                // Drop entries with nonexistent or empty (these somehow happen) extraction dirs
+                // before deleting anything that might still be usable
+                if toolchain_dir_map.len() > tccache.len() {
+                    toolchain_dir_map.retain(|tc, _| {
+                        let toolchain_dir = self.dir.join("toolchains").join(&tc.archive_id);
+                        toolchain_dir.exists() && !fs::remove_dir(&toolchain_dir).is_ok()
+                    });
+                }
+
                 if toolchain_dir_map.len() > tccache.len() {
                     let dir_map = toolchain_dir_map.clone();
                     let mut entries: Vec<_> = dir_map.iter().collect();
