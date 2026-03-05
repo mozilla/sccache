@@ -2941,7 +2941,6 @@ dependencies = [
  "tokio-util",
  "toml",
  "tower-service",
- "tracing",
  "typed-path",
  "url",
  "uuid",

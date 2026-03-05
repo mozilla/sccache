@@ -383,7 +383,7 @@ pub fn build_single_cache(
                         if username.is_some() || password.is_some() || *db != crate::config::DEFAULT_REDIS_DB {
                             warn!("`username`, `password` and `db` have no effect when using a `redis-sentinel://` URL. Embed credentials in the URL instead.");
                         }
-                        RedisCache::build_from_url(url_str, key_prefix, *ttl)
+                        RedisCache::build_sentinel(url_str, key_prefix, *ttl)
                     } else {
                         debug!("Init redis single-node cache with url {url_str}");
                         RedisCache::build_single(

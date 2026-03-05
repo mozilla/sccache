@@ -78,10 +78,9 @@ impl RedisCache {
         );
 
         // Handle password if present
-        let (password, nodes_str) = if nodes_part.contains('@') {
-            let inner_parts: Vec<&str> = nodes_part.split('@').collect();
-            let pass = inner_parts[0].trim_start_matches(':');
-            (Some(pass.to_string()), inner_parts[1])
+        let (password, nodes_str) = if let Some((cred_part, nodes)) = nodes_part.rsplit_once('@') {
+            let pass = cred_part.trim_start_matches(':');
+            (Some(pass.to_string()), nodes)
         } else {
             (None, nodes_part)
         };
