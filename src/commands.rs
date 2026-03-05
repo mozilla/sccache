@@ -606,10 +606,50 @@ where
 {
     trace!("do_compile");
     let exe_path = which_in(exe, path, cwd)?;
+
+    // Check if client-side compilation is enabled
+    if env::var("SCCACHE_CLIENT_SIDE_COMPILE").unwrap_or_default() == "1" {
+        // Use new client-side compilation path
+        return do_compile_client_side(
+            creator, runtime, conn, &exe_path, cmdline, cwd, env_vars, stdout, stderr,
+        );
+    }
+
+    // Use legacy server-side compilation path
     let res = request_compile(&mut conn, &exe_path, &cmdline, cwd, env_vars)?;
     handle_compile_response(
         creator, runtime, &mut conn, res, &exe_path, cmdline, cwd, stdout, stderr,
     )
+}
+
+/// Perform client-side compilation with server acting as pure storage.
+///
+/// This is the new compilation path where the client handles:
+/// - Compiler detection and caching
+/// - Argument parsing
+/// - Preprocessing
+/// - Hash key generation
+/// - Cache lookup via server
+/// - Local compilation on cache miss
+/// - Cache storage via server
+#[allow(clippy::too_many_arguments)]
+fn do_compile_client_side<T>(
+    _creator: T,
+    _runtime: &mut Runtime,
+    _conn: ServerConnection,
+    _exe_path: &Path,
+    _cmdline: Vec<OsString>,
+    _cwd: &Path,
+    _env_vars: Vec<(OsString, OsString)>,
+    _stdout: &mut dyn Write,
+    _stderr: &mut dyn Write,
+) -> Result<i32>
+where
+    T: CommandCreatorSync,
+{
+    // TODO: Implement full client-side compilation flow
+    // For now, return an error indicating this is not yet implemented
+    bail!("Client-side compilation not yet fully implemented. Set SCCACHE_CLIENT_SIDE_COMPILE=0 to use legacy mode.")
 }
 
 /// Run `cmd` and return the process exit status.
