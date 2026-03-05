@@ -1,4 +1,4 @@
-use crate::compiler::ColorMode;
+use crate::compiler::{ColorMode, PreprocessorCacheEntry};
 use crate::server::{DistInfo, ServerInfo};
 use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
@@ -16,6 +16,14 @@ pub enum Request {
     Shutdown,
     /// Execute a compile or fetch a cached compilation result.
     Compile(Compile),
+    /// Get a cache entry by key.
+    CacheGet(CacheGetRequest),
+    /// Store a cache entry by key.
+    CachePut(CachePutRequest),
+    /// Get a preprocessor cache entry.
+    PreprocessorCacheGet(String),
+    /// Store a preprocessor cache entry.
+    PreprocessorCachePut(PreprocessorCachePutRequest),
 }
 
 /// A server response.
@@ -33,6 +41,14 @@ pub enum Response {
     ShuttingDown(Box<ServerInfo>),
     /// Second response for `Request::Compile`, containing the results of the compilation.
     CompileFinished(CompileFinished),
+    /// Response for `Request::CacheGet`.
+    CacheGet(CacheGetResponse),
+    /// Response for `Request::CachePut`, containing the duration of the put operation.
+    CachePut(std::time::Duration),
+    /// Response for `Request::PreprocessorCacheGet`.
+    PreprocessorCacheGet(Option<PreprocessorCacheEntry>),
+    /// Response for `Request::PreprocessorCachePut`.
+    PreprocessorCachePut,
 }
 
 /// Possible responses from the server for a `Compile` request.
@@ -72,4 +88,40 @@ pub struct Compile {
     pub args: Vec<OsString>,
     /// The environment variables present when the compiler was executed, as (var, val).
     pub env_vars: Vec<(OsString, OsString)>,
+}
+
+/// Request to get a cache entry by key.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct CacheGetRequest {
+    /// The cache key to look up.
+    pub key: String,
+}
+
+/// Request to store a cache entry.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct CachePutRequest {
+    /// The cache key to store under.
+    pub key: String,
+    /// The cache entry data (serialized zip format).
+    pub entry: Vec<u8>,
+}
+
+/// Request to store a preprocessor cache entry.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct PreprocessorCachePutRequest {
+    /// The preprocessor cache key.
+    pub key: String,
+    /// The preprocessor cache entry to store.
+    pub entry: PreprocessorCacheEntry,
+}
+
+/// Response for a cache get request.
+#[derive(Serialize, Deserialize, Debug)]
+pub enum CacheGetResponse {
+    /// Cache hit with the entry data (serialized zip format).
+    Hit(Vec<u8>),
+    /// Cache miss - entry not found.
+    Miss,
+    /// Error occurred during cache lookup.
+    Error(String),
 }

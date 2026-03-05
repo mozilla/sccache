@@ -97,6 +97,27 @@ impl CacheRead {
         Ok(CacheRead { zip: z })
     }
 
+    /// Convert this cache entry to raw bytes.
+    /// This consumes the CacheRead and extracts the underlying data.
+    pub fn into_bytes(self) -> Result<Vec<u8>> {
+        // We need to read all data from the underlying reader
+        // The ZipArchive consumes the reader, so we need to work around this
+        // by extracting the reader back from the ZipArchive and reading it
+        use std::io::Read;
+
+        // Get the underlying reader from the ZipArchive
+        let mut reader = self.zip.into_inner();
+
+        // Seek to the beginning
+        reader.seek(std::io::SeekFrom::Start(0))?;
+
+        // Read all bytes
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes)?;
+
+        Ok(bytes)
+    }
+
     /// Get an object from this cache entry at `name` and write it to `to`.
     /// If the file has stored permissions, return them.
     pub fn get_object<T>(&mut self, name: &str, to: &mut T) -> Result<Option<u32>>
@@ -179,6 +200,15 @@ impl CacheWrite {
     pub fn new() -> CacheWrite {
         CacheWrite {
             zip: ZipWriter::new(Cursor::new(vec![])),
+        }
+    }
+
+    /// Create a cache entry from pre-serialized bytes.
+    /// This is used when receiving cache data over the network that was already
+    /// serialized on the client side.
+    pub fn from_bytes(data: Vec<u8>) -> CacheWrite {
+        CacheWrite {
+            zip: ZipWriter::new(Cursor::new(data)),
         }
     }
 

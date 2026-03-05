@@ -898,6 +898,22 @@ where
                         Message::WithoutBody(Response::ShuttingDown(Box::new(info)))
                     })
                 }
+                Request::CacheGet(req) => {
+                    debug!("handle_client: cache_get");
+                    me.handle_cache_get(req).await
+                }
+                Request::CachePut(req) => {
+                    debug!("handle_client: cache_put");
+                    me.handle_cache_put(req).await
+                }
+                Request::PreprocessorCacheGet(key) => {
+                    debug!("handle_client: preprocessor_cache_get");
+                    me.handle_preprocessor_cache_get(key).await
+                }
+                Request::PreprocessorCachePut(req) => {
+                    debug!("handle_client: preprocessor_cache_put");
+                    me.handle_preprocessor_cache_put(req).await
+                }
             }
         })
     }
@@ -1051,6 +1067,75 @@ where
     /// Zero stats about the cache.
     async fn zero_stats(&self) {
         *self.stats.lock().await = ServerStats::default();
+    }
+
+    /// Handle a cache get request from a client.
+    async fn handle_cache_get(&self, req: crate::protocol::CacheGetRequest) -> Result<SccacheResponse> {
+        use crate::cache::Cache;
+        use crate::protocol::{CacheGetResponse, Response};
+
+        match self.storage.get(&req.key).await {
+            Ok(Cache::Hit(cache_read)) => {
+                // Convert CacheRead to raw bytes
+                match cache_read.into_bytes() {
+                    Ok(data) => Ok(Message::WithoutBody(Response::CacheGet(
+                        CacheGetResponse::Hit(data),
+                    ))),
+                    Err(e) => Ok(Message::WithoutBody(Response::CacheGet(
+                        CacheGetResponse::Error(format!("Failed to serialize cache entry: {}", e)),
+                    ))),
+                }
+            }
+            Ok(Cache::Miss) => Ok(Message::WithoutBody(Response::CacheGet(
+                CacheGetResponse::Miss,
+            ))),
+            Ok(_) => Ok(Message::WithoutBody(Response::CacheGet(
+                CacheGetResponse::Miss,
+            ))),
+            Err(e) => Ok(Message::WithoutBody(Response::CacheGet(
+                CacheGetResponse::Error(e.to_string()),
+            ))),
+        }
+    }
+
+    /// Handle a cache put request from a client.
+    async fn handle_cache_put(&self, req: crate::protocol::CachePutRequest) -> Result<SccacheResponse> {
+        use crate::cache::CacheWrite;
+        use crate::protocol::Response;
+
+        // Create a CacheWrite from the received bytes
+        let cache_entry = CacheWrite::from_bytes(req.entry);
+
+        // Store it using the storage backend
+        let duration = self.storage.put(&req.key, cache_entry).await?;
+
+        Ok(Message::WithoutBody(Response::CachePut(duration)))
+    }
+
+    /// Handle a preprocessor cache get request.
+    async fn handle_preprocessor_cache_get(&self, key: String) -> Result<SccacheResponse> {
+        use crate::protocol::Response;
+
+        match self.storage.get_preprocessor_cache_entry(&key).await {
+            Ok(Some(mut reader)) => {
+                // Read the preprocessor cache entry
+                use crate::compiler::PreprocessorCacheEntry;
+                match PreprocessorCacheEntry::deserialize_from(&mut reader) {
+                    Ok(entry) => Ok(Message::WithoutBody(Response::PreprocessorCacheGetResponse(Some(entry)))),
+                    Err(_) => Ok(Message::WithoutBody(Response::PreprocessorCacheGetResponse(None))),
+                }
+            }
+            Ok(None) => Ok(Message::WithoutBody(Response::PreprocessorCacheGetResponse(None))),
+            Err(_) => Ok(Message::WithoutBody(Response::PreprocessorCacheGetResponse(None))),
+        }
+    }
+
+    /// Handle a preprocessor cache put request.
+    async fn handle_preprocessor_cache_put(&self, req: crate::protocol::PreprocessorCachePutRequest) -> Result<SccacheResponse> {
+        use crate::protocol::Response;
+
+        let _ = self.storage.put_preprocessor_cache_entry(&req.key, req.entry).await;
+        Ok(Message::WithoutBody(Response::PreprocessorCachePutResponse))
     }
 
     /// Handle a compile request from a client.
