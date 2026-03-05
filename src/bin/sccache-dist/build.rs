@@ -181,11 +181,9 @@ impl OverlayBuilder {
             let mut toolchain_dir_map = self.toolchain_dir_map.lock().unwrap();
             // Create the toolchain dir (if necessary) while we have an exclusive lock
             let toolchain_dir = self.dir.join("toolchains").join(&tc.archive_id);
-            if toolchain_dir_map.contains_key(tc) && toolchain_dir.exists() {
-                // TODO: use if let when sccache can use NLL
-                let entry = toolchain_dir_map
-                    .get_mut(tc)
-                    .expect("Key missing after checking");
+            if let Some(entry) = toolchain_dir_map.get_mut(tc)
+                && toolchain_dir.exists()
+            {
                 entry.build_count += 1;
                 entry.clone()
             } else {
