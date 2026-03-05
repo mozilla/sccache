@@ -35,6 +35,7 @@ pub mod errors;
 
 pub mod cache;
 mod client;
+mod client_compiler;
 mod cmdline;
 mod commands;
 mod compiler;

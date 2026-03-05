@@ -1070,7 +1070,10 @@ where
     }
 
     /// Handle a cache get request from a client.
-    async fn handle_cache_get(&self, req: crate::protocol::CacheGetRequest) -> Result<SccacheResponse> {
+    async fn handle_cache_get(
+        &self,
+        req: crate::protocol::CacheGetRequest,
+    ) -> Result<SccacheResponse> {
         use crate::cache::Cache;
         use crate::protocol::{CacheGetResponse, Response};
 
@@ -1099,7 +1102,10 @@ where
     }
 
     /// Handle a cache put request from a client.
-    async fn handle_cache_put(&self, req: crate::protocol::CachePutRequest) -> Result<SccacheResponse> {
+    async fn handle_cache_put(
+        &self,
+        req: crate::protocol::CachePutRequest,
+    ) -> Result<SccacheResponse> {
         use crate::cache::CacheWrite;
         use crate::protocol::Response;
 
@@ -1121,21 +1127,31 @@ where
                 // Read the preprocessor cache entry
                 use crate::compiler::PreprocessorCacheEntry;
                 match PreprocessorCacheEntry::deserialize_from(&mut reader) {
-                    Ok(entry) => Ok(Message::WithoutBody(Response::PreprocessorCacheGetResponse(Some(entry)))),
-                    Err(_) => Ok(Message::WithoutBody(Response::PreprocessorCacheGetResponse(None))),
+                    Ok(entry) => Ok(Message::WithoutBody(
+                        Response::PreprocessorCacheGetResponse(Some(entry)),
+                    )),
+                    Err(_) => Ok(Message::WithoutBody(
+                        Response::PreprocessorCacheGetResponse(None),
+                    )),
                 }
             }
-            Ok(None) => Ok(Message::WithoutBody(Response::PreprocessorCacheGetResponse(None))),
-            Err(_) => Ok(Message::WithoutBody(Response::PreprocessorCacheGetResponse(None))),
+            Ok(None) => Ok(Message::WithoutBody(Response::PreprocessorCacheGet(None))),
+            Err(_) => Ok(Message::WithoutBody(Response::PreprocessorCacheGet(None))),
         }
     }
 
     /// Handle a preprocessor cache put request.
-    async fn handle_preprocessor_cache_put(&self, req: crate::protocol::PreprocessorCachePutRequest) -> Result<SccacheResponse> {
+    async fn handle_preprocessor_cache_put(
+        &self,
+        req: crate::protocol::PreprocessorCachePutRequest,
+    ) -> Result<SccacheResponse> {
         use crate::protocol::Response;
 
-        let _ = self.storage.put_preprocessor_cache_entry(&req.key, req.entry).await;
-        Ok(Message::WithoutBody(Response::PreprocessorCachePutResponse))
+        let _ = self
+            .storage
+            .put_preprocessor_cache_entry(&req.key, req.entry)
+            .await;
+        Ok(Message::WithoutBody(Response::PreprocessorCachePut))
     }
 
     /// Handle a compile request from a client.
