@@ -151,13 +151,15 @@ impl RedisCache {
                         }
                     }
                     Err(e) => {
-                        last_error = Some(format!("Connection failed: {}", e));
-                        debug!("{}", last_error.as_ref().unwrap());
+                        let msg = format!("Connection failed: {}", e);
+                        debug!("{}", msg);
+                        last_error = Some(msg);
                     }
                 },
                 Err(e) => {
-                    last_error = Some(format!("Client creation failed: {}", e));
-                    debug!("{}", last_error.as_ref().unwrap());
+                    let msg = format!("Client creation failed: {}", e);
+                    debug!("{}", msg);
+                    last_error = Some(msg);
                 }
             }
         }
