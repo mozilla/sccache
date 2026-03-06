@@ -742,6 +742,9 @@ mod server {
                     server_id.addr()
                 );
                 let mut client_builder = reqwest::blocking::ClientBuilder::new();
+                // Workaround reqwest ignoring root certificate when openssl backend is used.
+                // https://github.com/seanmonstar/reqwest/issues/1260
+                client_builder = client_builder.use_rustls_tls();
                 // Add all the certificates we know about
                 client_builder = client_builder.add_root_certificate(
                     reqwest::Certificate::from_pem(&cert_pem)
@@ -1148,6 +1151,9 @@ mod client {
             cert_pem: Vec<u8>,
         ) -> Result<()> {
             let mut client_async_builder = reqwest::ClientBuilder::new();
+            // Workaround reqwest ignoring root certificate when openssl backend is used.
+            // https://github.com/seanmonstar/reqwest/issues/1260
+            client_async_builder = client_async_builder.use_rustls_tls();
             // Add all the certificates we know about
             client_async_builder = client_async_builder.add_root_certificate(
                 reqwest::Certificate::from_pem(&cert_pem)
