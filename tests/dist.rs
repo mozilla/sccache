@@ -364,10 +364,9 @@ fn test_dist_preprocesspr_cache_bug_2173() {
 
     let mut sccache_cfg = dist_test_sccache_client_cfg(tmpdir, system.scheduler_url());
     let disk_cache = sccache_cfg.cache.disk.as_mut().unwrap();
-    disk_cache
-        .preprocessor_cache_mode
-        .use_preprocessor_cache_mode = true;
     disk_cache.size = 10_000_000; // enough for one tiny object file
+    let preprocessor_cache = sccache_cfg.cache.preprocessor.as_mut().unwrap();
+    preprocessor_cache.use_preprocessor_cache_mode = true;
     let sccache_cfg_path = tmpdir.join("sccache-cfg.json");
     write_json_cfg(tmpdir, "sccache-cfg.json", &sccache_cfg);
     let sccache_cached_cfg_path = tmpdir.join("sccache-cached-cfg");
