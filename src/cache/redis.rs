@@ -54,40 +54,37 @@ impl RedisCache {
         Ok(op)
     }
 
-    /// Create a new `RedisCache` for the given sentinel.
+    /// Create a new `RedisCache` by discovering the master via Redis Sentinel.
+    ///
+    /// Parses a `redis-sentinel://` URL, queries each sentinel node for the
+    /// master address, then connects to the discovered master.
+    ///
+    /// # URL Format
+    ///
+    /// ```text
+    /// redis-sentinel://[:password@]host1[:port1][,host2[:port2],...]/master_name[/db]
+    /// ```
+    ///
+    /// - Multiple sentinel nodes are comma-separated
+    /// - Password (if present) applies to the Redis master, not the sentinels
+    /// - The `db` segment is optional and defaults to 0
     pub fn build_sentinel(url: &str, key_prefix: &str, ttl: u64) -> Result<Operator> {
         use std::net::ToSocketAddrs;
 
         debug!("Building Redis Sentinel cache from URL: {}", url);
 
-        // Basic parsing for: redis-sentinel://[:password@]host1[:port1][,host2[:port2],...]/master_name[/db]
-        let clean_url = url.trim_start_matches("redis-sentinel://");
-        let parts: Vec<&str> = clean_url.split('/').collect();
-        if parts.len() < 2 {
-            return Err(anyhow!(
-                "Invalid sentinel URL format: expected redis-sentinel://host:port/master_name"
-            ));
-        }
-
-        let nodes_part = parts[0];
-        let master_name = parts[1];
+        let parsed = parse_sentinel_url(url)?;
 
         debug!(
-            "Sentinel nodes: {}, master_name: {}",
-            nodes_part, master_name
+            "Sentinel nodes: {:?}, master_name: {}",
+            parsed.nodes, parsed.master_name
         );
 
-        // Handle password if present
-        let (password, nodes_str) = if let Some((cred_part, nodes)) = nodes_part.rsplit_once('@') {
-            let pass = cred_part.trim_start_matches(':');
-            (Some(pass.to_string()), nodes)
-        } else {
-            (None, nodes_part)
-        };
-
-        let nodes_raw: Vec<&str> = nodes_str.split(',').collect();
+        let nodes_raw = parsed.nodes;
         let mut master_addr = None;
         let mut last_error: Option<String> = None;
+
+        let master_name = &parsed.master_name;
 
         debug!(
             "Attempting to discover master '{}' from {} sentinel node(s)",
@@ -126,7 +123,7 @@ impl RedisCache {
                     Ok(mut conn) => {
                         let res: redis::RedisResult<Vec<String>> = redis::cmd("SENTINEL")
                             .arg("get-master-addr-by-name")
-                            .arg(master_name)
+                            .arg(master_name.as_str())
                             .query(&mut conn);
 
                         match res {
@@ -138,15 +135,17 @@ impl RedisCache {
                                 break;
                             }
                             Ok(addr_parts) => {
-                                last_error = Some(format!(
+                                let msg = format!(
                                     "Sentinel returned incomplete response: {:?}",
                                     addr_parts
-                                ));
-                                debug!("{}", last_error.as_ref().unwrap());
+                                );
+                                debug!("{}", msg);
+                                last_error = Some(msg);
                             }
                             Err(e) => {
-                                last_error = Some(format!("Sentinel query failed: {}", e));
-                                debug!("{}", last_error.as_ref().unwrap());
+                                let msg = format!("Sentinel query failed: {}", e);
+                                debug!("{}", msg);
+                                last_error = Some(msg);
                             }
                         }
                     }
@@ -180,19 +179,16 @@ impl RedisCache {
 
         let mut builder = Redis::default().endpoint(&final_endpoint).root(key_prefix);
 
-        if let Some(pass) = password {
-            builder = builder.password(&pass);
+        if let Some(ref pass) = parsed.password {
+            builder = builder.password(pass);
         }
 
         if ttl != 0 {
             builder = builder.default_ttl(Duration::from_secs(ttl));
         }
 
-        // Optional DB from URL
-        if parts.len() > 2 {
-            if let Ok(db) = parts[2].parse::<i64>() {
-                builder = builder.db(db);
-            }
+        if let Some(db) = parsed.db {
+            builder = builder.db(db);
         }
 
         let op = Operator::new(builder)?
@@ -252,5 +248,136 @@ impl RedisCache {
             .layer(LoggingLayer::default())
             .finish();
         Ok(op)
+    }
+}
+
+/// Parsed components of a `redis-sentinel://` URL.
+#[derive(Debug, PartialEq)]
+struct SentinelUrl {
+    /// Sentinel node addresses (host:port).
+    nodes: Vec<String>,
+    /// Sentinel master name.
+    master_name: String,
+    /// Optional password for the Redis master.
+    password: Option<String>,
+    /// Optional database number.
+    db: Option<i64>,
+}
+
+/// Parse a `redis-sentinel://` URL into its components.
+///
+/// Format: `redis-sentinel://[:password@]host1[:port1][,host2[:port2],...]/master_name[/db]`
+fn parse_sentinel_url(url: &str) -> Result<SentinelUrl> {
+    let clean_url = url.trim_start_matches("redis-sentinel://");
+    let parts: Vec<&str> = clean_url.splitn(3, '/').collect();
+    if parts.len() < 2 || parts[1].is_empty() {
+        return Err(anyhow!(
+            "Invalid sentinel URL format: expected redis-sentinel://host:port/master_name"
+        ));
+    }
+
+    let nodes_part = parts[0];
+    let master_name = parts[1].to_string();
+
+    // Handle password: rsplit_once so passwords containing '@' work correctly
+    let (password, nodes_str) = if let Some((cred_part, nodes)) = nodes_part.rsplit_once('@') {
+        let pass = cred_part.trim_start_matches(':');
+        (Some(pass.to_string()), nodes)
+    } else {
+        (None, nodes_part)
+    };
+
+    let nodes: Vec<String> = nodes_str.split(',').map(|s| s.to_string()).collect();
+    if nodes.is_empty() || nodes.iter().all(|n| n.is_empty()) {
+        return Err(anyhow!("Invalid sentinel URL: no sentinel nodes specified"));
+    }
+
+    let db = if parts.len() > 2 && !parts[2].is_empty() {
+        Some(
+            parts[2]
+                .parse::<i64>()
+                .map_err(|_| anyhow!("Invalid db number in sentinel URL: '{}'", parts[2]))?,
+        )
+    } else {
+        None
+    };
+
+    Ok(SentinelUrl {
+        nodes,
+        master_name,
+        password,
+        db,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_simple_sentinel_url() {
+        let parsed = parse_sentinel_url("redis-sentinel://host1:26379/mymaster").unwrap();
+        assert_eq!(parsed.nodes, vec!["host1:26379"]);
+        assert_eq!(parsed.master_name, "mymaster");
+        assert_eq!(parsed.password, None);
+        assert_eq!(parsed.db, None);
+    }
+
+    #[test]
+    fn parse_multiple_nodes() {
+        let parsed =
+            parse_sentinel_url("redis-sentinel://h1:26379,h2:26379,h3:26379/mymaster").unwrap();
+        assert_eq!(parsed.nodes, vec!["h1:26379", "h2:26379", "h3:26379"]);
+        assert_eq!(parsed.master_name, "mymaster");
+    }
+
+    #[test]
+    fn parse_with_password() {
+        let parsed =
+            parse_sentinel_url("redis-sentinel://:secretpass@host1:26379/mymaster").unwrap();
+        assert_eq!(parsed.password, Some("secretpass".to_string()));
+        assert_eq!(parsed.nodes, vec!["host1:26379"]);
+    }
+
+    #[test]
+    fn parse_password_containing_at() {
+        let parsed =
+            parse_sentinel_url("redis-sentinel://:p@ss@word@host1:26379/mymaster").unwrap();
+        assert_eq!(parsed.password, Some("p@ss@word".to_string()));
+        assert_eq!(parsed.nodes, vec!["host1:26379"]);
+    }
+
+    #[test]
+    fn parse_with_db() {
+        let parsed = parse_sentinel_url("redis-sentinel://host1:26379/mymaster/3").unwrap();
+        assert_eq!(parsed.db, Some(3));
+    }
+
+    #[test]
+    fn parse_full_url() {
+        let parsed =
+            parse_sentinel_url("redis-sentinel://:hunter2@s1:26379,s2:26380/prod-master/5")
+                .unwrap();
+        assert_eq!(parsed.nodes, vec!["s1:26379", "s2:26380"]);
+        assert_eq!(parsed.master_name, "prod-master");
+        assert_eq!(parsed.password, Some("hunter2".to_string()));
+        assert_eq!(parsed.db, Some(5));
+    }
+
+    #[test]
+    fn parse_missing_master_name() {
+        assert!(parse_sentinel_url("redis-sentinel://host1:26379").is_err());
+        assert!(parse_sentinel_url("redis-sentinel://host1:26379/").is_err());
+    }
+
+    #[test]
+    fn parse_invalid_db() {
+        assert!(parse_sentinel_url("redis-sentinel://host:26379/master/notanumber").is_err());
+    }
+
+    #[test]
+    fn parse_no_port() {
+        let parsed = parse_sentinel_url("redis-sentinel://myhost/mymaster").unwrap();
+        assert_eq!(parsed.nodes, vec!["myhost"]);
     }
 }
