@@ -64,11 +64,12 @@ impl GCSCache {
                 .map_err(|err| anyhow!("gcs credential url is invalid: {err:?}"))?;
 
             // For TaskCluster integration, fetch token directly and provide it to OpenDAL
-            let token = tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current()
-                    .block_on(fetch_taskcluster_token(cred_url, rw_to_scope(rw_mode)))
-            })
-            .map_err(|e| anyhow!("Failed to fetch TaskCluster token: {e}"))?;
+            let token = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| anyhow!("Failed to create runtime for token fetch: {e}"))?
+                .block_on(fetch_taskcluster_token(cred_url, rw_to_scope(rw_mode)))
+                .map_err(|e| anyhow!("Failed to fetch TaskCluster token: {e}"))?;
             builder = builder.token(token);
         }
 
