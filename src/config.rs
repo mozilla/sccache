@@ -828,9 +828,12 @@ pub struct EnvConfig {
     basedirs: Option<Vec<String>>,
 }
 
+fn string_from_env_var(env_var_name: &str) -> Option<String> {
+    env::var(env_var_name).ok().filter(|s| !s.is_empty())
+}
+
 fn key_prefix_from_env_var(env_var_name: &str) -> String {
-    env::var(env_var_name)
-        .ok()
+    string_from_env_var(env_var_name)
         .as_ref()
         .map(|s| s.trim_end_matches('/'))
         .filter(|s| !s.is_empty())
@@ -839,23 +842,21 @@ fn key_prefix_from_env_var(env_var_name: &str) -> String {
 }
 
 fn cache_mode_from_env_var(env_var_name: &str) -> Option<CacheModeConfig> {
-    env::var(env_var_name)
-        .ok()
-        .and_then(|value| match value.to_uppercase().as_str() {
-            "READ_ONLY" => Some(CacheModeConfig::ReadOnly),
-            "READ_WRITE" => Some(CacheModeConfig::ReadWrite),
-            _ => {
-                warn!("{} must be 'READ_ONLY' or 'READ_WRITE'", env_var_name);
-                None
-            }
-        })
+    string_from_env_var(env_var_name).and_then(|value| match value.to_uppercase().as_str() {
+        "READ_ONLY" => Some(CacheModeConfig::ReadOnly),
+        "READ_WRITE" => Some(CacheModeConfig::ReadWrite),
+        _ => {
+            warn!("{} must be 'READ_ONLY' or 'READ_WRITE'", env_var_name);
+            None
+        }
+    })
 }
 
 fn number_from_env_var<A: std::str::FromStr>(env_var_name: &str) -> Option<Result<A>>
 where
     <A as FromStr>::Err: std::fmt::Debug,
 {
-    let value = env::var(env_var_name).ok()?;
+    let value = string_from_env_var(env_var_name)?;
 
     value
         .parse::<A>()
@@ -864,8 +865,7 @@ where
 }
 
 fn bool_from_env_var(env_var_name: &str) -> Result<Option<bool>> {
-    env::var(env_var_name)
-        .ok()
+    string_from_env_var(env_var_name)
         .map(|value| match value.to_lowercase().as_str() {
             "true" | "on" | "1" => Ok(true),
             "false" | "off" | "0" => Ok(false),
@@ -879,12 +879,12 @@ fn bool_from_env_var(env_var_name: &str) -> Result<Option<bool>> {
 
 fn config_from_env() -> Result<EnvConfig> {
     // ======= AWS =======
-    let s3 = if let Ok(bucket) = env::var("SCCACHE_BUCKET") {
-        let region = env::var("SCCACHE_REGION").ok();
+    let s3 = if let Some(bucket) = string_from_env_var("SCCACHE_BUCKET") {
+        let region = string_from_env_var("SCCACHE_REGION");
         let no_credentials = bool_from_env_var("SCCACHE_S3_NO_CREDENTIALS")?.unwrap_or(false);
         let use_ssl = bool_from_env_var("SCCACHE_S3_USE_SSL")?;
         let server_side_encryption = bool_from_env_var("SCCACHE_S3_SERVER_SIDE_ENCRYPTION")?;
-        let endpoint = env::var("SCCACHE_ENDPOINT").ok();
+        let endpoint = string_from_env_var("SCCACHE_ENDPOINT");
         let key_prefix = key_prefix_from_env_var("SCCACHE_S3_KEY_PREFIX");
         let enable_virtual_host_style = bool_from_env_var("SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE")?;
         let rw_mode =
@@ -914,9 +914,9 @@ fn config_from_env() -> Result<EnvConfig> {
 
     // ======= redis =======
     let redis = match (
-        env::var("SCCACHE_REDIS").ok(),
-        env::var("SCCACHE_REDIS_ENDPOINT").ok(),
-        env::var("SCCACHE_REDIS_CLUSTER_ENDPOINTS").ok(),
+        string_from_env_var("SCCACHE_REDIS"),
+        string_from_env_var("SCCACHE_REDIS_ENDPOINT"),
+        string_from_env_var("SCCACHE_REDIS_CLUSTER_ENDPOINTS"),
     ) {
         (None, None, None) => None,
         (url, endpoint, cluster_endpoints) => {
@@ -924,8 +924,8 @@ fn config_from_env() -> Result<EnvConfig> {
                 .transpose()?
                 .unwrap_or(DEFAULT_REDIS_DB);
 
-            let username = env::var("SCCACHE_REDIS_USERNAME").ok();
-            let password = env::var("SCCACHE_REDIS_PASSWORD").ok();
+            let username = string_from_env_var("SCCACHE_REDIS_USERNAME");
+            let password = string_from_env_var("SCCACHE_REDIS_PASSWORD");
 
             let ttl = number_from_env_var("SCCACHE_REDIS_EXPIRATION")
                 .or_else(|| number_from_env_var("SCCACHE_REDIS_TTL"))
@@ -958,11 +958,11 @@ fn config_from_env() -> Result<EnvConfig> {
     }
 
     // ======= memcached =======
-    let memcached = if let Ok(url) =
-        env::var("SCCACHE_MEMCACHED").or_else(|_| env::var("SCCACHE_MEMCACHED_ENDPOINT"))
+    let memcached = if let Some(url) = string_from_env_var("SCCACHE_MEMCACHED")
+        .or_else(|| string_from_env_var("SCCACHE_MEMCACHED_ENDPOINT"))
     {
-        let username = env::var("SCCACHE_MEMCACHED_USERNAME").ok();
-        let password = env::var("SCCACHE_MEMCACHED_PASSWORD").ok();
+        let username = string_from_env_var("SCCACHE_MEMCACHED_USERNAME");
+        let password = string_from_env_var("SCCACHE_MEMCACHED_PASSWORD");
 
         let expiration = number_from_env_var("SCCACHE_MEMCACHED_EXPIRATION")
             .transpose()?
@@ -994,28 +994,28 @@ fn config_from_env() -> Result<EnvConfig> {
     }
 
     // ======= GCP/GCS =======
-    if (env::var("SCCACHE_GCS_CREDENTIALS_URL").is_ok()
-        || env::var("SCCACHE_GCS_OAUTH_URL").is_ok()
-        || env::var("SCCACHE_GCS_KEY_PATH").is_ok())
-        && env::var("SCCACHE_GCS_BUCKET").is_err()
+    if (string_from_env_var("SCCACHE_GCS_CREDENTIALS_URL").is_some()
+        || string_from_env_var("SCCACHE_GCS_OAUTH_URL").is_some()
+        || string_from_env_var("SCCACHE_GCS_KEY_PATH").is_some())
+        && string_from_env_var("SCCACHE_GCS_BUCKET").is_none()
     {
         bail!(
             "If setting GCS credentials, SCCACHE_GCS_BUCKET and an auth mechanism need to be set."
         );
     }
 
-    let gcs = env::var("SCCACHE_GCS_BUCKET").ok().map(|bucket| {
+    let gcs = string_from_env_var("SCCACHE_GCS_BUCKET").map(|bucket| {
         let key_prefix = key_prefix_from_env_var("SCCACHE_GCS_KEY_PREFIX");
 
-        if env::var("SCCACHE_GCS_OAUTH_URL").is_ok() {
+        if string_from_env_var("SCCACHE_GCS_OAUTH_URL").is_some() {
             eprintln!("SCCACHE_GCS_OAUTH_URL has been deprecated");
             eprintln!("if you intend to use vm metadata for auth, please set correct service account instead");
         }
 
-        let credential_url = env::var("SCCACHE_GCS_CREDENTIALS_URL").ok();
+        let credential_url = string_from_env_var("SCCACHE_GCS_CREDENTIALS_URL");
 
-        let cred_path = env::var("SCCACHE_GCS_KEY_PATH").ok();
-        let service_account = env::var("SCCACHE_GCS_SERVICE_ACCOUNT").ok();
+        let cred_path = string_from_env_var("SCCACHE_GCS_KEY_PATH");
+        let service_account = string_from_env_var("SCCACHE_GCS_SERVICE_ACCOUNT");
 
         let rw_mode = cache_mode_from_env_var("SCCACHE_GCS_RW_MODE").unwrap_or_else(|| {
             warn!("No valid SCCACHE_GCS_RW_MODE value was found -- defaulting to READ_ONLY.");
@@ -1035,7 +1035,7 @@ fn config_from_env() -> Result<EnvConfig> {
     // ======= GHA =======
     let gha_rw_mode: CacheModeConfig =
         cache_mode_from_env_var("SCCACHE_GHA_RW_MODE").unwrap_or(CacheModeConfig::ReadWrite);
-    let gha = if let Ok(version) = env::var("SCCACHE_GHA_VERSION") {
+    let gha = if let Some(version) = string_from_env_var("SCCACHE_GHA_VERSION") {
         // If SCCACHE_GHA_VERSION has been set, we don't need to check
         // SCCACHE_GHA_ENABLED's value anymore.
         Some(GHACacheConfig {
@@ -1056,9 +1056,9 @@ fn config_from_env() -> Result<EnvConfig> {
     };
 
     // ======= Azure =======
-    let azure = if let (Ok(connection_string), Ok(container)) = (
-        env::var("SCCACHE_AZURE_CONNECTION_STRING"),
-        env::var("SCCACHE_AZURE_BLOB_CONTAINER"),
+    let azure = if let (Some(connection_string), Some(container)) = (
+        string_from_env_var("SCCACHE_AZURE_CONNECTION_STRING"),
+        string_from_env_var("SCCACHE_AZURE_BLOB_CONTAINER"),
     ) {
         let key_prefix = key_prefix_from_env_var("SCCACHE_AZURE_KEY_PREFIX");
         let rw_mode =
@@ -1075,11 +1075,11 @@ fn config_from_env() -> Result<EnvConfig> {
     };
 
     // ======= WebDAV =======
-    let webdav = if let Ok(endpoint) = env::var("SCCACHE_WEBDAV_ENDPOINT") {
+    let webdav = if let Some(endpoint) = string_from_env_var("SCCACHE_WEBDAV_ENDPOINT") {
         let key_prefix = key_prefix_from_env_var("SCCACHE_WEBDAV_KEY_PREFIX");
-        let username = env::var("SCCACHE_WEBDAV_USERNAME").ok();
-        let password = env::var("SCCACHE_WEBDAV_PASSWORD").ok();
-        let token = env::var("SCCACHE_WEBDAV_TOKEN").ok();
+        let username = string_from_env_var("SCCACHE_WEBDAV_USERNAME");
+        let password = string_from_env_var("SCCACHE_WEBDAV_PASSWORD");
+        let token = string_from_env_var("SCCACHE_WEBDAV_TOKEN");
         let rw_mode =
             cache_mode_from_env_var("SCCACHE_WEBDAV_RW_MODE").unwrap_or(CacheModeConfig::ReadWrite);
 
@@ -1096,8 +1096,8 @@ fn config_from_env() -> Result<EnvConfig> {
     };
 
     // ======= OSS =======
-    let oss = if let Ok(bucket) = env::var("SCCACHE_OSS_BUCKET") {
-        let endpoint = env::var("SCCACHE_OSS_ENDPOINT").ok();
+    let oss = if let Some(bucket) = string_from_env_var("SCCACHE_OSS_BUCKET") {
+        let endpoint = string_from_env_var("SCCACHE_OSS_ENDPOINT");
         let key_prefix = key_prefix_from_env_var("SCCACHE_OSS_KEY_PREFIX");
 
         let no_credentials = bool_from_env_var("SCCACHE_OSS_NO_CREDENTIALS")?.unwrap_or(false);
@@ -1127,8 +1127,8 @@ fn config_from_env() -> Result<EnvConfig> {
     }
 
     // ======= COS =======
-    let cos = if let Ok(bucket) = env::var("SCCACHE_COS_BUCKET") {
-        let endpoint = env::var("SCCACHE_COS_ENDPOINT").ok();
+    let cos = if let Some(bucket) = string_from_env_var("SCCACHE_COS_BUCKET") {
+        let endpoint = string_from_env_var("SCCACHE_COS_ENDPOINT");
         let key_prefix = key_prefix_from_env_var("SCCACHE_COS_KEY_PREFIX");
 
         let rw_mode =
@@ -1146,9 +1146,7 @@ fn config_from_env() -> Result<EnvConfig> {
 
     // ======= Local =======
     let disk_dir = env::var_os("SCCACHE_DIR").map(PathBuf::from);
-    let disk_sz = env::var("SCCACHE_CACHE_SIZE")
-        .ok()
-        .and_then(|v| parse_size(&v));
+    let disk_sz = string_from_env_var("SCCACHE_CACHE_SIZE").and_then(|v| parse_size(&v));
 
     let mut preprocessor_mode_config = PreprocessorCacheModeConfig::activated();
     let preprocessor_mode_overridden = if let Some(value) = bool_from_env_var("SCCACHE_DIRECT")? {
@@ -1180,11 +1178,10 @@ fn config_from_env() -> Result<EnvConfig> {
     };
 
     // Parse multi-level cache configuration
-    let multilevel = if let Ok(chain_str) = env::var("SCCACHE_MULTILEVEL_CHAIN") {
+    let multilevel = if let Some(chain_str) = string_from_env_var("SCCACHE_MULTILEVEL_CHAIN") {
         let chain: Vec<String> = chain_str.split(',').map(|s| s.trim().to_string()).collect();
 
-        let write_error_policy = env::var("SCCACHE_MULTILEVEL_WRITE_ERROR_POLICY")
-            .ok()
+        let write_error_policy = string_from_env_var("SCCACHE_MULTILEVEL_WRITE_ERROR_POLICY")
             .and_then(|s| s.parse::<WriteErrorPolicy>().ok())
             .unwrap_or_default();
 
@@ -1598,6 +1595,32 @@ fn test_parse_size() {
     assert_eq!(Some(10 * 1024 * 1024), parse_size("10M"));
     assert_eq!(Some(TEN_GIGS), parse_size("10G"));
     assert_eq!(Some(1024 * TEN_GIGS), parse_size("10T"));
+}
+
+#[test]
+fn test_string_from_env_var() {
+    let var_name = "TEST_SCCACHE_VAR";
+    for value in [None, Some(""), Some("foo")] {
+        match value {
+            None => unsafe {
+                std::env::remove_var(var_name);
+            },
+            Some(value) => unsafe {
+                std::env::set_var(var_name, value);
+            },
+        }
+        let result = string_from_env_var(var_name);
+        unsafe {
+            std::env::remove_var(var_name);
+        }
+
+        let expected = match value {
+            None | Some("") => None,
+            Some(value) => Some(value.to_string()),
+        };
+
+        assert_eq!(result, expected);
+    }
 }
 
 #[test]
