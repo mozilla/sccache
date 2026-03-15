@@ -143,8 +143,14 @@ impl CacheRead {
                 optional,
             } in objects
             {
+                #[cfg(unix)]
                 if path == Path::new("/dev/null") {
                     debug!("Skipping output to /dev/null");
+                    continue;
+                }
+                #[cfg(windows)]
+                if path == Path::new("NUL") {
+                    debug!("Skipping output to NUL");
                     continue;
                 }
                 let dir = match path.parent() {
@@ -358,5 +364,29 @@ mod tests {
             assert_eq!(n, data.len(), "Read the correct number of bytes");
             assert_eq!(buf, data, "Read the correct data from /dev/fd/{raw_fd}");
         });
+    }
+    #[cfg(windows)]
+    #[test]
+    fn test_extract_object_to_nul_works() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .worker_threads(1)
+            .build()
+            .unwrap();
+
+        let pool = runtime.handle();
+
+        let cache_data = CacheWrite::new();
+        let cache_read =
+            CacheRead::from(std::io::Cursor::new(cache_data.finish().unwrap())).unwrap();
+
+        let objects = vec![FileObjectSource {
+            key: "test_key".to_string(),
+            path: PathBuf::from("NUL"),
+            optional: false,
+        }];
+
+        let result = runtime.block_on(cache_read.extract_objects(objects, pool));
+        assert!(result.is_ok(), "Extracting to NUL should succeed");
     }
 }
