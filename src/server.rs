@@ -995,13 +995,22 @@ where
     where
         T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
+        // Use a generous default frame-length limit (512 MB) so that large cache
+        // entries (e.g. Rust rlib files with embedded bitcode and debug info) can be
+        // transferred over the IPC channel in client-side compilation mode, while
+        // still guarding against OOM from corrupted messages.
+        // SCCACHE_MAX_FRAME_LENGTH overrides this value entirely.
+        const DEFAULT_MAX_FRAME_LENGTH: usize = 512 * 1024 * 1024; // 512 MB
         let mut builder = length_delimited::Builder::new();
         if let Ok(max_frame_length_str) = env::var("SCCACHE_MAX_FRAME_LENGTH") {
             if let Ok(max_frame_length) = max_frame_length_str.parse::<usize>() {
                 builder.max_frame_length(max_frame_length);
             } else {
                 warn!("Content of SCCACHE_MAX_FRAME_LENGTH is not a valid number, using default");
+                builder.max_frame_length(DEFAULT_MAX_FRAME_LENGTH);
             }
+        } else {
+            builder.max_frame_length(DEFAULT_MAX_FRAME_LENGTH);
         }
         let io = builder.new_framed(socket);
 
@@ -1051,6 +1060,149 @@ where
     /// Zero stats about the cache.
     async fn zero_stats(&self) {
         *self.stats.lock().await = ServerStats::default();
+    }
+
+    /// Handle a cache get request from a client.
+    ///
+    /// On a hit the server extracts the artifacts directly to the paths
+    /// specified by the client (both share the same filesystem), so no
+    /// large data has to be transferred over the IPC channel.
+    ///
+    /// # Trust assumption
+    /// The client-supplied `output_paths` are written to without validation.
+    /// This is safe because client and server are co-located on the same
+    /// machine and communicate over a local socket — the IPC channel is not
+    /// exposed to untrusted processes.
+    async fn handle_cache_get(
+        &self,
+        req: crate::protocol::CacheGetRequest,
+    ) -> Result<SccacheResponse> {
+        use crate::cache::Cache;
+        use crate::protocol::{CacheGetResponse, Response};
+
+        match self.storage.get(&req.key).await {
+            Ok(Cache::Hit(mut cache_read)) => {
+                // Read stdout/stderr before consuming the entry.
+                let stdout = cache_read.get_stdout();
+                let stderr = cache_read.get_stderr();
+                // Extract compiled artifacts directly to disk – no IPC bulk transfer.
+                match cache_read.extract_objects(req.output_paths, &self.rt).await {
+                    Ok(()) => Ok(Message::WithoutBody(Response::CacheGet(
+                        CacheGetResponse::Hit { stdout, stderr },
+                    ))),
+                    Err(e) => {
+                        warn!(
+                            "CacheGet({}): failed to extract cache entry: {e:#}",
+                            req.key
+                        );
+                        Ok(Message::WithoutBody(Response::CacheGet(
+                            CacheGetResponse::Error(format!(
+                                "key={}: failed to extract cache entry: {e:#}",
+                                req.key
+                            )),
+                        )))
+                    }
+                }
+            }
+            Ok(Cache::Miss) | Ok(Cache::None) | Ok(Cache::Recache) => Ok(Message::WithoutBody(
+                Response::CacheGet(CacheGetResponse::Miss),
+            )),
+            Err(e) => {
+                warn!("CacheGet({}): storage error: {e:#}", req.key);
+                Ok(Message::WithoutBody(Response::CacheGet(
+                    CacheGetResponse::Error(format!("key={}: storage error: {e:#}", req.key)),
+                )))
+            }
+        }
+    }
+
+    /// Handle a cache put request from a client.
+    ///
+    /// The server reads the output artifacts from disk directly (shared
+    /// filesystem), packs them into a cache entry, and stores it.
+    ///
+    /// # Trust assumption
+    /// The client-supplied `output_paths` are read from without validation.
+    /// See [`handle_cache_get`] for rationale.
+    async fn handle_cache_put(
+        &self,
+        req: crate::protocol::CachePutRequest,
+    ) -> Result<SccacheResponse> {
+        use crate::cache::CacheWrite;
+        use crate::protocol::{CachePutResponse, Response};
+
+        let pool = self.rt.clone();
+        let mut entry = match CacheWrite::from_objects(req.output_paths, &pool).await {
+            Ok(e) => e,
+            Err(e) => {
+                let msg = format!("key={}: failed to read output files: {e:#}", req.key);
+                warn!("CachePut({}): {}", req.key, msg);
+                return Ok(Message::WithoutBody(Response::CachePut(
+                    CachePutResponse::Error(msg),
+                )));
+            }
+        };
+        let _ = entry.put_stdout(&req.stdout);
+        let _ = entry.put_stderr(&req.stderr);
+
+        match self.storage.put(&req.key, entry).await {
+            Ok(duration) => Ok(Message::WithoutBody(Response::CachePut(
+                CachePutResponse::Success(duration),
+            ))),
+            Err(e) => {
+                let msg = format!("key={}: failed to store to backend: {e:#}", req.key);
+                warn!("CachePut({}): {}", req.key, msg);
+                Ok(Message::WithoutBody(Response::CachePut(
+                    CachePutResponse::Error(msg),
+                )))
+            }
+        }
+    }
+
+    /// Handle a preprocessor cache get request.
+    async fn handle_preprocessor_cache_get(&self, key: String) -> Result<SccacheResponse> {
+        use crate::protocol::Response;
+        use std::io::Read;
+
+        match self.storage.get_preprocessor_cache_entry(&key).await {
+            Ok(Some(mut reader)) => {
+                // Read the preprocessor cache entry
+                use crate::compiler::PreprocessorCacheEntry;
+
+                // Read all bytes from the reader
+                let mut bytes = Vec::new();
+                match reader.read_to_end(&mut bytes) {
+                    Ok(_) => {
+                        // Parse the preprocessor cache entry
+                        match PreprocessorCacheEntry::read(&bytes) {
+                            Ok(entry) => Ok(Message::WithoutBody(Response::PreprocessorCacheGet(
+                                Some(entry),
+                            ))),
+                            Err(_) => {
+                                Ok(Message::WithoutBody(Response::PreprocessorCacheGet(None)))
+                            }
+                        }
+                    }
+                    Err(_) => Ok(Message::WithoutBody(Response::PreprocessorCacheGet(None))),
+                }
+            }
+            Ok(None) => Ok(Message::WithoutBody(Response::PreprocessorCacheGet(None))),
+            Err(_) => Ok(Message::WithoutBody(Response::PreprocessorCacheGet(None))),
+        }
+    }
+
+    /// Handle a preprocessor cache put request.
+    async fn handle_preprocessor_cache_put(
+        &self,
+        req: crate::protocol::PreprocessorCachePutRequest,
+    ) -> Result<SccacheResponse> {
+        use crate::protocol::Response;
+
+        let _ = self
+            .storage
+            .put_preprocessor_cache_entry(&req.key, req.entry)
+            .await;
+        Ok(Message::WithoutBody(Response::PreprocessorCachePut))
     }
 
     /// Handle a compile request from a client.
