@@ -45,6 +45,7 @@ impl GCSCache {
         service_account: Option<&str>,
         rw_mode: CacheMode,
         credential_url: Option<&str>,
+        pool: &tokio::runtime::Handle,
     ) -> Result<Operator> {
         let mut builder = Gcs::default()
             .bucket(bucket)
@@ -64,11 +65,9 @@ impl GCSCache {
                 .map_err(|err| anyhow!("gcs credential url is invalid: {err:?}"))?;
 
             // For TaskCluster integration, fetch token directly and provide it to OpenDAL
-            let token = tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current()
-                    .block_on(fetch_taskcluster_token(cred_url, rw_to_scope(rw_mode)))
-            })
-            .map_err(|e| anyhow!("Failed to fetch TaskCluster token: {e}"))?;
+            let token = pool
+                .block_on(fetch_taskcluster_token(cred_url, rw_to_scope(rw_mode)))
+                .map_err(|e| anyhow!("Failed to fetch TaskCluster token: {e}"))?;
             builder = builder.token(token);
         }
 
@@ -93,7 +92,10 @@ async fn fetch_taskcluster_token(url: &str, scope: &str) -> Result<String> {
     debug!("gcs: start to load token from: {}", url);
 
     let user_agent = format!("{}/{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
-    let client = Client::builder().user_agent(user_agent).build()?;
+    let client = Client::builder()
+        .user_agent(user_agent)
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?;
     let res = client.get(url).send().await?;
 
     if res.status().is_success() {
