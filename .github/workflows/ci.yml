@@ -44,6 +44,8 @@ jobs:
       - name: Clone repository
         uses: actions/checkout@v5
 
+      # TODO: restore `cargo test` once per-feature tests are compatible with
+      # both server-side and client-side compilation modes.
       - name: Check feature ${{ matrix.feature }}
         run: cargo check --no-default-features --features ${{ matrix.feature }}
 
