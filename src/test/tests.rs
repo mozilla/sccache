@@ -24,7 +24,6 @@ use crate::test::utils::*;
 use fs::File;
 use fs_err as fs;
 use futures::channel::oneshot::{self, Sender};
-#[cfg(not(target_os = "macos"))]
 use serial_test::serial;
 use std::io::{Cursor, Write};
 #[cfg(not(target_os = "macos"))]
@@ -173,7 +172,11 @@ fn test_server_stats() {
 }
 
 #[test]
+#[serial]
 fn test_server_unsupported_compiler() {
+    // This test exercises server-side compilation; disable client-side mode.
+    // Use #[serial] to avoid races with parallel tests that also modify env vars.
+    unsafe { std::env::set_var("SCCACHE_CLIENT_SIDE_COMPILE", "0") };
     let f = TestFixture::new();
     let (addr, sender, server_creator, child) = run_server_thread(f.tempdir.path(), None);
     // Connect to the server.
@@ -223,7 +226,11 @@ fn test_server_unsupported_compiler() {
 }
 
 #[test]
+#[serial]
 fn test_server_compile() {
+    // This test exercises server-side compilation; disable client-side mode.
+    // Use #[serial] to avoid races with parallel tests that also modify env vars.
+    unsafe { std::env::set_var("SCCACHE_CLIENT_SIDE_COMPILE", "0") };
     let _ = env_logger::try_init();
     let f = TestFixture::new();
     let gcc = f.mk_bin("gcc").unwrap();
