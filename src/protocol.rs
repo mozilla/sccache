@@ -1,7 +1,31 @@
-use crate::compiler::ColorMode;
+use crate::cache::FileObjectSource;
+use crate::compiler::{ColorMode, PreprocessorCacheEntry};
 use crate::server::{DistInfo, ServerInfo};
 use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
+
+/// Protocol version for backward compatibility tracking.
+///
+/// Version 1: Original protocol with Compile request (server-side compilation)
+/// Version 2: Extended protocol with CacheGet/CachePut (client-side compilation)
+///
+/// The protocol is backward compatible through enum variants:
+/// - Old clients (v1) send only: ZeroStats, GetStats, DistStatus, Shutdown, Compile
+/// - New clients (v2) can send all requests including: CacheGet, CachePut, etc.
+/// - Old servers (v1) handle: ZeroStats, GetStats, DistStatus, Shutdown, Compile
+/// - New servers (v2) handle all requests
+///
+/// Compatibility matrix:
+/// - Old client + Old server: Works (v1 protocol)
+/// - Old client + New server: Works (server supports v1 requests)
+/// - New client + Old server: Client must fall back to Compile for cache operations
+/// - New client + New server: Works optimally (v2 protocol with client-side compilation)
+#[allow(dead_code)]
+pub const PROTOCOL_VERSION: u32 = 2;
+
+/// Legacy protocol version (server-side compilation only)
+#[allow(dead_code)]
+pub const PROTOCOL_VERSION_1: u32 = 1;
 
 /// A client request.
 #[derive(Serialize, Deserialize, Debug)]
@@ -16,6 +40,14 @@ pub enum Request {
     Shutdown,
     /// Execute a compile or fetch a cached compilation result.
     Compile(Compile),
+    /// Get a cache entry by key.
+    CacheGet(CacheGetRequest),
+    /// Store a cache entry by key.
+    CachePut(CachePutRequest),
+    /// Get a preprocessor cache entry.
+    PreprocessorCacheGet(String),
+    /// Store a preprocessor cache entry.
+    PreprocessorCachePut(PreprocessorCachePutRequest),
 }
 
 /// A server response.
@@ -33,6 +65,14 @@ pub enum Response {
     ShuttingDown(Box<ServerInfo>),
     /// Second response for `Request::Compile`, containing the results of the compilation.
     CompileFinished(CompileFinished),
+    /// Response for `Request::CacheGet`.
+    CacheGet(CacheGetResponse),
+    /// Response for `Request::CachePut`.
+    CachePut(CachePutResponse),
+    /// Response for `Request::PreprocessorCacheGet`.
+    PreprocessorCacheGet(Option<PreprocessorCacheEntry>),
+    /// Response for `Request::PreprocessorCachePut`.
+    PreprocessorCachePut,
 }
 
 /// Possible responses from the server for a `Compile` request.
@@ -72,4 +112,96 @@ pub struct Compile {
     pub args: Vec<OsString>,
     /// The environment variables present when the compiler was executed, as (var, val).
     pub env_vars: Vec<(OsString, OsString)>,
+}
+
+/// Request to get a cache entry by key.
+///
+/// The server extracts output artifacts directly to `output_paths` on a hit,
+/// so no large data ever crosses the IPC channel.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct CacheGetRequest {
+    /// The cache key to look up.
+    pub key: String,
+    /// Where to extract output artifacts on a cache hit.
+    pub output_paths: Vec<FileObjectSource>,
+}
+
+/// Request to store a cache entry.
+///
+/// The server reads the output artifacts from `output_paths` directly from
+/// disk (client and server share the same filesystem), so no large data
+/// crosses the IPC channel.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct CachePutRequest {
+    /// The cache key to store under.
+    pub key: String,
+    /// Paths to the output artifacts the server should pack into the entry.
+    pub output_paths: Vec<FileObjectSource>,
+    /// The compiler's stdout.
+    pub stdout: Vec<u8>,
+    /// The compiler's stderr.
+    pub stderr: Vec<u8>,
+}
+
+/// Request to store a preprocessor cache entry.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct PreprocessorCachePutRequest {
+    /// The preprocessor cache key.
+    pub key: String,
+    /// The preprocessor cache entry to store.
+    pub entry: PreprocessorCacheEntry,
+}
+
+/// Response for a cache get request.
+///
+/// On a hit the server has already extracted the artifacts to the paths
+/// supplied in the request; the response carries only stdout/stderr.
+#[derive(Serialize, Deserialize, Debug)]
+pub enum CacheGetResponse {
+    /// Cache hit – artifacts extracted to the requested paths.
+    Hit { stdout: Vec<u8>, stderr: Vec<u8> },
+    /// Cache miss – entry not found.
+    Miss,
+    /// Error occurred during cache lookup.
+    Error(String),
+}
+
+/// Response for a cache put request.
+#[derive(Serialize, Deserialize, Debug)]
+pub enum CachePutResponse {
+    /// Cache entry stored successfully.
+    Success(std::time::Duration),
+    /// Error occurred during cache storage (best-effort, not fatal).
+    Error(String),
+}
+
+/// Protocol capability detection helpers.
+impl Request {
+    /// Check if this request requires protocol v2 features.
+    ///
+    /// Returns true for CacheGet, CachePut, and preprocessor cache requests
+    /// which are only available in v2 servers.
+    pub fn requires_v2(&self) -> bool {
+        matches!(
+            self,
+            Request::CacheGet(_)
+                | Request::CachePut(_)
+                | Request::PreprocessorCacheGet(_)
+                | Request::PreprocessorCachePut(_)
+        )
+    }
+
+    /// Check if this request is compatible with protocol v1.
+    ///
+    /// Returns true for legacy requests that work with both old and new servers.
+    pub fn is_v1_compatible(&self) -> bool {
+        matches!(
+            self,
+            Request::ZeroStats
+                | Request::GetStats
+                | Request::DistStatus
+                | Request::Shutdown
+                | Request::Compile(_)
+        )
+    }
 }
