@@ -34,8 +34,10 @@ pub struct FileObjectSource {
 
 /// Result of a cache lookup.
 pub enum Cache {
-    /// Result was found in cache.
+    /// Result was found in cache (compressed ZIP format).
     Hit(CacheRead),
+    /// Result was found in cache (uncompressed directory format).
+    UncompressedHit(UncompressedCacheEntry),
     /// Result was not found in cache.
     Miss,
     /// Do not cache the results of the compilation.
@@ -48,6 +50,7 @@ impl fmt::Debug for Cache {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             Cache::Hit(_) => write!(f, "Cache::Hit(...)"),
+            Cache::UncompressedHit(_) => write!(f, "Cache::UncompressedHit(...)"),
             Cache::Miss => write!(f, "Cache::Miss"),
             Cache::None => write!(f, "Cache::None"),
             Cache::Recache => write!(f, "Cache::Recache"),
@@ -266,5 +269,82 @@ impl CacheWrite {
 impl Default for CacheWrite {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// An uncompressed cache entry stored as a directory.
+#[derive(Debug)]
+pub struct UncompressedCacheEntry {
+    pub(crate) dir: PathBuf,
+}
+
+impl UncompressedCacheEntry {
+    pub fn new(dir: PathBuf) -> Self {
+        Self { dir }
+    }
+
+    pub async fn extract_objects<T>(self, objects: T, pool: &tokio::runtime::Handle) -> Result<()>
+    where
+        T: IntoIterator<Item = FileObjectSource> + Send + Sync + 'static,
+    {
+        pool.spawn_blocking(move || {
+            for FileObjectSource {
+                key,
+                path,
+                optional,
+            } in objects
+            {
+                let src = self.dir.join(&key);
+
+                if !src.exists() {
+                    if optional {
+                        continue;
+                    }
+                    bail!("Required object '{}' not found in cache", key);
+                }
+
+                let dir = path
+                    .parent()
+                    .context("Output file without a parent directory!")?;
+                fs::create_dir_all(dir)?;
+
+                // Read permissions from the cached source file directly
+                let mode = get_file_mode(&fs::File::open(&src)?);
+
+                // Write to a tempfile and then atomically rename to the final path,
+                // so parallel builds don't see partially-written files.
+                let tmp_path = NamedTempFile::new_in(dir)?.into_temp_path();
+                // Remove the empty temp file so reflink can create the destination
+                let _ = std::fs::remove_file(&tmp_path);
+
+                if let Err(e) = crate::reflink::reflink_or_copy(&src, &tmp_path) {
+                    if !optional {
+                        bail!("Failed to copy object '{}' to {:?}: {}", key, path, e);
+                    }
+                    continue;
+                }
+
+                tmp_path.persist(&path).map_err(|e| {
+                    anyhow::anyhow!("Failed to persist {:?} to {:?}: {}", e.path, path, e.error)
+                })?;
+
+                if let Ok(Some(mode)) = mode {
+                    set_file_mode(&path, mode)?;
+                }
+            }
+
+            Ok(())
+        })
+        .await?
+    }
+
+    pub fn get_stdout(&self) -> Vec<u8> {
+        let path = self.dir.join("stdout");
+        fs::read(&path).unwrap_or_default()
+    }
+
+    pub fn get_stderr(&self) -> Vec<u8> {
+        let path = self.dir.join("stderr");
+        fs::read(&path).unwrap_or_default()
     }
 }

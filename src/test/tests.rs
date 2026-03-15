@@ -87,6 +87,7 @@ where
             PreprocessorCacheModeConfig::default(),
             CacheMode::ReadWrite,
             vec![],
+            false,
         ));
 
         let client = Client::new();

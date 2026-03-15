@@ -4,6 +4,7 @@ use fs::File;
 use fs_err as fs;
 use std::borrow::Borrow;
 use std::boxed::Box;
+use std::collections::HashSet;
 use std::collections::hash_map::RandomState;
 use std::error::Error as StdError;
 use std::ffi::{OsStr, OsString};
@@ -12,13 +13,12 @@ use std::hash::BuildHasher;
 use std::io;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use filetime::{FileTime, set_file_times};
 pub use lru_cache::{LruCache, Meter};
 use tempfile::NamedTempFile;
 use walkdir::WalkDir;
-
-use crate::util::OsStrExt;
 
 const TEMPFILE_PREFIX: &str = ".sccachetmp";
 
@@ -35,30 +35,141 @@ impl<K> Meter<K, u64> for FileSize {
     }
 }
 
-/// Return an iterator of `(path, size)` of files under `path` sorted by ascending last-modified
-/// time, such that the oldest modified file is returned first.
-fn get_all_files<P: AsRef<Path>>(path: P) -> Box<dyn Iterator<Item = (PathBuf, u64)>> {
-    let mut files: Vec<_> = WalkDir::new(path.as_ref())
+/// Marker file placed inside directory cache entries so they can be identified during init.
+pub(crate) const DIR_ENTRY_MARKER: &str = ".sccache_dir_entry";
+
+/// Calculate the total size of all files in a directory.
+fn dir_content_size(path: &Path) -> u64 {
+    WalkDir::new(path)
         .into_iter()
-        .filter_map(|e| {
-            e.ok().and_then(|f| {
-                // Only look at files
-                if f.file_type().is_file() {
-                    // Get the last-modified time, size, and the full path.
-                    f.metadata().ok().and_then(|m| {
-                        m.modified()
-                            .ok()
-                            .map(|mtime| (mtime, f.path().to_owned(), m.len()))
-                    })
-                } else {
-                    None
+        .filter_map(std::result::Result::ok)
+        .filter(|e| e.file_type().is_file())
+        .filter_map(|e| e.metadata().ok())
+        .map(|m| m.len())
+        .sum()
+}
+
+/// Return an iterator of `(path, size, is_dir)` of cache entries under `path` sorted by ascending
+/// last-modified time, such that the oldest modified entry is returned first.
+///
+/// Cache entries can be either regular files or directories containing a marker file.
+/// A directory is recognized as a cache entry if it contains a `.sccache_dir_entry` marker file.
+fn get_all_entries<P: AsRef<Path>>(path: P) -> Box<dyn Iterator<Item = (PathBuf, u64, bool)>> {
+    let root = path.as_ref().to_path_buf();
+    let mut entries: Vec<(SystemTime, PathBuf, u64, bool)> = Vec::new();
+    // Track directories we've added as cache entries, so we skip their contained files
+    let mut dir_entry_paths: HashSet<PathBuf> = HashSet::new();
+
+    // First pass: find directory entries (directories containing the marker file)
+    //
+    // The disk cache uses a 2-level directory structure: keys are stored at
+    // `{char1}/{char2}/{full_key}`. Directories at depth 1 and 2 (e.g., `a/` and
+    // `a/b/`) are structural and naturally contain files (compressed cache entries)
+    // or subdirectories. Only directories at depth 3+ can be actual cache entries
+    // (uncompressed directory entries created by write_uncompressed_entry()).
+    let root_depth = root.components().count();
+    for entry in WalkDir::new(&root)
+        .min_depth(1)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        if !entry.file_type().is_dir() {
+            continue;
+        }
+        let entry_path = entry.path().to_owned();
+
+        // Skip temp dirs
+        if entry_path
+            .file_name()
+            .map(|n| n.to_string_lossy().starts_with(TEMPFILE_PREFIX))
+            .unwrap_or(false)
+        {
+            continue;
+        }
+
+        // Check for the marker file
+        if !entry_path.join(DIR_ENTRY_MARKER).exists() {
+            // Only directories at depth 3+ (i.e., at the cache key level) can be
+            // orphan uncompressed entries. Directories at depth 1-2 are structural
+            // path components ({char1}/, {char1}/{char2}/) and must not be removed.
+            let entry_depth = entry_path.components().count() - root_depth;
+            if entry_depth >= 3 {
+                // If this directory contains files (not just subdirectories), it's likely
+                // an orphan from a crash between write_uncompressed_entry() and add_dir().
+                // Clean it up to avoid dead space.
+                let has_files = WalkDir::new(&entry_path)
+                    .min_depth(1)
+                    .max_depth(1)
+                    .into_iter()
+                    .filter_map(|e| e.ok())
+                    .any(|e| e.file_type().is_file());
+                if has_files {
+                    warn!(
+                        "Removing orphan cache directory without marker: {}",
+                        entry_path.display()
+                    );
+                    fs::remove_dir_all(&entry_path).unwrap_or_else(|e| {
+                        error!(
+                            "Error removing orphan directory `{}`: {}",
+                            entry_path.display(),
+                            e
+                        );
+                    });
                 }
-            })
-        })
-        .collect();
-    // Sort by last-modified-time, so oldest file first.
-    files.sort_by_key(|k| k.0);
-    Box::new(files.into_iter().map(|(_mtime, path, size)| (path, size)))
+            }
+            continue;
+        }
+
+        let total_size = dir_content_size(&entry_path);
+
+        if let Ok(meta) = entry.metadata() {
+            if let Ok(mtime) = meta.modified() {
+                entries.push((mtime, entry_path.clone(), total_size, true));
+                dir_entry_paths.insert(entry_path);
+            }
+        }
+    }
+
+    // Second pass: find regular file entries (not inside directory entries)
+    for entry in WalkDir::new(&root)
+        .min_depth(1)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let entry_path = entry.path().to_owned();
+
+        // Skip temp files
+        if entry_path
+            .file_name()
+            .map(|n| n.to_string_lossy().starts_with(TEMPFILE_PREFIX))
+            .unwrap_or(false)
+        {
+            continue;
+        }
+
+        // Skip files that are inside a directory entry
+        let is_inside_dir_entry = entry_path.ancestors().any(|a| dir_entry_paths.contains(a));
+        if is_inside_dir_entry {
+            continue;
+        }
+
+        if let Ok(meta) = entry.metadata() {
+            if let Ok(mtime) = meta.modified() {
+                entries.push((mtime, entry_path, meta.len(), false));
+            }
+        }
+    }
+
+    // Sort by last-modified-time, so oldest entry first.
+    entries.sort_by_key(|k| k.0);
+    Box::new(
+        entries
+            .into_iter()
+            .map(|(_mtime, path, size, is_dir)| (path, size, is_dir)),
+    )
 }
 
 /// An LRU cache of files on disk.
@@ -67,6 +178,8 @@ pub struct LruDiskCache<S: BuildHasher = RandomState> {
     root: PathBuf,
     pending: Vec<OsString>,
     pending_size: u64,
+    /// Set of keys that are directory entries (not regular files).
+    dir_entries: HashSet<OsString>,
 }
 
 /// Errors returned by this crate.
@@ -149,6 +262,7 @@ impl LruDiskCache {
             root: PathBuf::from(path),
             pending: vec![],
             pending_size: 0,
+            dir_entries: HashSet::new(),
         }
         .init()
     }
@@ -182,28 +296,76 @@ impl LruDiskCache {
         self.root.join(rel_path)
     }
 
-    /// Scan `self.root` for existing files and store them.
+    /// Scan `self.root` for existing files and directories and store them.
     fn init(mut self) -> Result<Self> {
         fs::create_dir_all(&self.root)?;
-        for (file, size) in get_all_files(&self.root) {
-            if file
+
+        // First, clean up any temporary files/directories left over from incomplete operations.
+        // These are skipped by get_all_entries(), so we must handle them separately.
+        for entry in WalkDir::new(&self.root)
+            .min_depth(1)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            let entry_path = entry.path();
+            if entry_path
                 .file_name()
-                .expect("Bad path?")
-                .starts_with(TEMPFILE_PREFIX)
+                .map(|n| n.to_string_lossy().starts_with(TEMPFILE_PREFIX))
+                .unwrap_or(false)
             {
-                fs::remove_file(&file).unwrap_or_else(|e| {
-                    error!("Error removing temporary file `{}`: {}", file.display(), e);
-                });
-            } else if !self.can_store(size) {
-                fs::remove_file(file).unwrap_or_else(|e| {
-                    error!(
-                        "Error removing file `{}` which is too large for the cache ({} bytes)",
-                        e, size
-                    );
-                });
+                if entry.file_type().is_dir() {
+                    fs::remove_dir_all(entry_path).unwrap_or_else(|e| {
+                        error!(
+                            "Error removing temporary directory `{}`: {}",
+                            entry_path.display(),
+                            e
+                        );
+                    });
+                } else {
+                    fs::remove_file(entry_path).unwrap_or_else(|e| {
+                        error!(
+                            "Error removing temporary file `{}`: {}",
+                            entry_path.display(),
+                            e
+                        );
+                    });
+                }
+            }
+        }
+
+        // Now scan and register all cache entries (both files and directories).
+        for (entry_path, size, is_dir) in get_all_entries(&self.root) {
+            if !self.can_store(size) {
+                if is_dir {
+                    fs::remove_dir_all(&entry_path).unwrap_or_else(|e| {
+                        error!(
+                            "Error removing directory `{}` which is too large for the cache ({} bytes): {}",
+                            entry_path.display(),
+                            size,
+                            e
+                        );
+                    });
+                } else {
+                    fs::remove_file(&entry_path).unwrap_or_else(|e| {
+                        error!(
+                            "Error removing file `{}` which is too large for the cache ({} bytes): {}",
+                            entry_path.display(),
+                            size,
+                            e
+                        );
+                    });
+                }
             } else {
-                self.add_file(AddFile::AbsPath(file), size)
-                    .unwrap_or_else(|e| error!("Error adding file: {}", e));
+                if is_dir {
+                    let rel_path = entry_path
+                        .strip_prefix(&self.root)
+                        .expect("Bad path?")
+                        .as_os_str()
+                        .to_owned();
+                    self.dir_entries.insert(rel_path);
+                }
+                self.add_file(AddFile::AbsPath(entry_path), size)
+                    .unwrap_or_else(|e| error!("Error adding entry: {}", e));
             }
         }
         Ok(self)
@@ -221,27 +383,46 @@ impl LruDiskCache {
         //TODO: ideally LRUCache::insert would give us back the entries it had to remove.
         while self.size() + size > self.capacity() {
             let (rel_path, _) = self.lru.remove_lru().expect("Unexpectedly empty cache!");
-            let remove_path = self.rel_to_abs_path(rel_path);
+            let remove_path = self.rel_to_abs_path(&rel_path);
+            let is_dir = self.dir_entries.remove(&rel_path);
             //TODO: check that files are removable during `init`, so that this is only
             // due to outside interference.
-            fs::remove_file(&remove_path).unwrap_or_else(|e| {
-                // Sometimes the file has already been removed
-                // this seems to happen when the max cache size has been reached
-                // https://github.com/mozilla/sccache/issues/2092
-                if e.kind() == std::io::ErrorKind::NotFound {
-                    debug!(
-                        "Error removing file from cache as it was not found: `{:?}`",
-                        remove_path
-                    );
-                } else {
-                    panic!(
-                        "Error removing file from cache: `{:?}`: {}, {:?}",
-                        remove_path,
-                        e,
-                        e.kind()
-                    )
-                }
-            });
+            if is_dir {
+                fs::remove_dir_all(&remove_path).unwrap_or_else(|e| {
+                    if e.kind() == std::io::ErrorKind::NotFound {
+                        debug!(
+                            "Error removing directory from cache as it was not found: `{:?}`",
+                            remove_path
+                        );
+                    } else {
+                        panic!(
+                            "Error removing directory from cache: `{:?}`: {}, {:?}",
+                            remove_path,
+                            e,
+                            e.kind()
+                        )
+                    }
+                });
+            } else {
+                fs::remove_file(&remove_path).unwrap_or_else(|e| {
+                    // Sometimes the file has already been removed
+                    // this seems to happen when the max cache size has been reached
+                    // https://github.com/mozilla/sccache/issues/2092
+                    if e.kind() == std::io::ErrorKind::NotFound {
+                        debug!(
+                            "Error removing file from cache as it was not found: `{:?}`",
+                            remove_path
+                        );
+                    } else {
+                        panic!(
+                            "Error removing file from cache: `{:?}`: {}, {:?}",
+                            remove_path,
+                            e,
+                            e.kind()
+                        )
+                    }
+                });
+            }
         }
         Ok(())
     }
@@ -397,15 +578,60 @@ impl LruDiskCache {
         self.get_file(key).map(|f| Box::new(f) as Box<dyn ReadSeek>)
     }
 
+    /// Update the LRU recency of an entry without opening it. This is useful for
+    /// directory entries where `get_file()` doesn't make sense.
+    /// Returns `Ok(true)` if the entry was found and touched, `Ok(false)` if not found.
+    pub fn touch<K: AsRef<OsStr>>(&mut self, key: K) -> Result<bool> {
+        let rel_path = key.as_ref();
+        match self.lru.get(rel_path) {
+            Some(_) => {
+                let path = self.rel_to_abs_path(rel_path);
+                let t = FileTime::now();
+                set_file_times(&path, t, t).unwrap_or_else(|e| {
+                    debug!("Failed to update mtime for {:?}: {}", path, e);
+                });
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    /// Register a directory entry in the LRU cache. The directory should already exist
+    /// on disk at `self.root.join(key)`. The total size of all files within the directory
+    /// is calculated and used for LRU size tracking. A marker file is written inside the
+    /// directory so it can be recognized as a cache entry on restart.
+    pub fn add_dir<K: AsRef<OsStr>>(&mut self, key: K) -> Result<()> {
+        let rel_path = key.as_ref().to_owned();
+        let abs_path = self.rel_to_abs_path(&rel_path);
+        let size = dir_content_size(&abs_path);
+        self.make_space(size)?;
+        // Write the marker file so init() can recognize this as a directory entry
+        let marker_path = abs_path.join(DIR_ENTRY_MARKER);
+        if !marker_path.exists() {
+            fs::write(&marker_path, b"")?;
+        }
+        self.dir_entries.insert(rel_path.clone());
+        self.lru.insert(rel_path, size);
+        Ok(())
+    }
+
     /// Remove the given key from the cache.
     pub fn remove<K: AsRef<OsStr>>(&mut self, key: K) -> Result<()> {
         match self.lru.remove(key.as_ref()) {
             Some(_) => {
                 let path = self.rel_to_abs_path(key.as_ref());
-                fs::remove_file(&path).map_err(|e| {
-                    error!("Error removing file from cache: `{:?}`: {}", path, e);
-                    Into::into(e)
-                })
+                let is_dir = self.dir_entries.remove(key.as_ref());
+                if is_dir {
+                    fs::remove_dir_all(&path).map_err(|e| {
+                        error!("Error removing directory from cache: `{:?}`: {}", path, e);
+                        Into::into(e)
+                    })
+                } else {
+                    fs::remove_file(&path).map_err(|e| {
+                        error!("Error removing file from cache: `{:?}`: {}", path, e);
+                        Into::into(e)
+                    })
+                }
             }
             None => Ok(()),
         }
@@ -415,12 +641,37 @@ impl LruDiskCache {
 #[cfg(test)]
 mod tests {
     use super::fs::{self, File};
-    use super::{Error, LruDiskCache, LruDiskCacheAddEntry, get_all_files};
+    use super::{Error, LruDiskCache, LruDiskCacheAddEntry};
 
     use filetime::{FileTime, set_file_times};
     use std::io::{self, Read, Write};
     use std::path::{Path, PathBuf};
     use tempfile::TempDir;
+    use walkdir::WalkDir;
+
+    /// Return an iterator of all physical files under `path`, sorted by ascending
+    /// last-modified time. Used only in tests to verify disk-level cleanup (e.g.
+    /// that temp files are actually deleted, not just filtered out by get_all_entries).
+    fn get_all_files<P: AsRef<Path>>(path: P) -> Box<dyn Iterator<Item = (PathBuf, u64)>> {
+        let mut files: Vec<_> = WalkDir::new(path.as_ref())
+            .into_iter()
+            .filter_map(|e| {
+                e.ok().and_then(|f| {
+                    if f.file_type().is_file() {
+                        f.metadata().ok().and_then(|m| {
+                            m.modified()
+                                .ok()
+                                .map(|mtime| (mtime, f.path().to_owned(), m.len()))
+                        })
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect();
+        files.sort_by_key(|k| k.0);
+        Box::new(files.into_iter().map(|(_mtime, path, size)| (path, size)))
+    }
 
     struct TestFixture {
         /// Temp directory.
@@ -728,5 +979,53 @@ mod tests {
         assert!(!c.contains_key("file2"));
         assert!(!f.tmp().join("cache").join("file2").exists());
         assert!(!p4.exists());
+    }
+
+    #[test]
+    fn test_compressed_entries_survive_reinit() {
+        // Regression test: compressed entries stored at {char}/{char}/{key} must
+        // not be deleted by the orphan cleanup logic in get_all_entries() when the
+        // cache is re-initialized (e.g., server restart). The structural directories
+        // (depth 1 and 2) contain files but have no .sccache_dir_entry marker, and
+        // must not be treated as orphan directory entries.
+        //
+        // Keys use Path::join() to produce OS-native separators so that
+        // contains_key() matches after re-init (which stores paths from
+        // strip_prefix, using native separators).
+        let f = TestFixture::new();
+        let cache_dir = f.tmp().join("cache");
+
+        let key1 = Path::new("a").join("b").join("abcdef1234");
+        let key2 = Path::new("a").join("b").join("abcdef5678");
+        let key3 = Path::new("c").join("d").join("cdef1234");
+
+        {
+            let mut c = LruDiskCache::new(&cache_dir, 1000).unwrap();
+            // Insert entries using the same key path structure as the disk cache
+            c.insert_bytes(&key1, &[1; 10]).unwrap();
+            c.insert_bytes(&key2, &[2; 10]).unwrap();
+            c.insert_bytes(&key3, &[3; 10]).unwrap();
+            assert_eq!(c.len(), 3);
+            assert_eq!(c.size(), 30);
+        }
+        // Verify the files exist on disk
+        assert!(cache_dir.join(&key1).exists());
+        assert!(cache_dir.join(&key2).exists());
+        assert!(cache_dir.join(&key3).exists());
+
+        // Re-initialize the cache (simulates server restart)
+        {
+            let c = LruDiskCache::new(&cache_dir, 1000).unwrap();
+            // All entries must still be present after re-init
+            assert!(c.contains_key(&key1));
+            assert!(c.contains_key(&key2));
+            assert!(c.contains_key(&key3));
+            assert_eq!(c.len(), 3);
+            assert_eq!(c.size(), 30);
+        }
+        // Verify the files still exist on disk
+        assert!(cache_dir.join(&key1).exists());
+        assert!(cache_dir.join(&key2).exists());
+        assert!(cache_dir.join(&key3).exists());
     }
 }

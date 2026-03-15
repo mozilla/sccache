@@ -45,6 +45,7 @@ pub mod lru_disk_cache;
 mod mock_command;
 mod net;
 mod protocol;
+pub mod reflink;
 pub mod server;
 #[doc(hidden)]
 pub mod util;
