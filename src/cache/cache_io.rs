@@ -13,6 +13,7 @@
 use super::utils::{get_file_mode, set_file_mode};
 use crate::errors::*;
 use fs_err as fs;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::io::{Cursor, Read, Seek, Write};
 use std::path::PathBuf;
@@ -21,7 +22,7 @@ use zip::write::FileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 /// Cache object sourced by a file.
-#[derive(Clone)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FileObjectSource {
     /// Identifier for this object. Should be unique within a compilation unit.
     /// Note that a compilation unit is a single source file in C/C++ and a crate in Rust.
@@ -193,6 +194,9 @@ impl CacheRead {
 /// Data to be stored in the compiler cache.
 pub struct CacheWrite {
     zip: ZipWriter<Cursor<Vec<u8>>>,
+    /// Pre-built zip bytes (from `from_bytes`). When set, `finish()` returns
+    /// these bytes directly instead of finalising the ZipWriter.
+    prebuilt: Option<Vec<u8>>,
 }
 
 impl CacheWrite {
@@ -200,15 +204,16 @@ impl CacheWrite {
     pub fn new() -> CacheWrite {
         CacheWrite {
             zip: ZipWriter::new(Cursor::new(vec![])),
+            prebuilt: None,
         }
     }
 
-    /// Create a cache entry from pre-serialized bytes.
-    /// This is used when receiving cache data over the network that was already
-    /// serialized on the client side.
+    /// Create a cache entry from pre-serialized bytes received over the wire.
+    /// `finish()` will return these bytes unchanged.
     pub fn from_bytes(data: Vec<u8>) -> CacheWrite {
         CacheWrite {
-            zip: ZipWriter::new(Cursor::new(data)),
+            zip: ZipWriter::new(Cursor::new(vec![])),
+            prebuilt: Some(data),
         }
     }
 
@@ -287,7 +292,10 @@ impl CacheWrite {
 
     /// Finish writing data to the cache entry writer, and return the data.
     pub fn finish(self) -> Result<Vec<u8>> {
-        let CacheWrite { mut zip } = self;
+        let CacheWrite { mut zip, prebuilt } = self;
+        if let Some(bytes) = prebuilt {
+            return Ok(bytes);
+        }
         let cur = zip.finish().context("Failed to finish cache entry zip")?;
         Ok(cur.into_inner())
     }
