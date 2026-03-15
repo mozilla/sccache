@@ -297,7 +297,7 @@ impl Storage for RemoteStorage {
 pub fn build_single_cache(
     cache_type: &CacheType,
     basedirs: &[Vec<u8>],
-    _pool: &tokio::runtime::Handle,
+    pool: &tokio::runtime::Handle,
 ) -> Result<Arc<dyn Storage>> {
     match cache_type {
         #[cfg(feature = "azure")]
@@ -330,6 +330,7 @@ pub fn build_single_cache(
                 service_account.as_deref(),
                 (*rw_mode).into(),
                 credential_url.as_deref(),
+                pool,
             )
             .map_err(|err| anyhow!("create gcs cache failed: {err:?}"))?;
             let storage = RemoteStorage::new(operator, basedirs.to_vec());
