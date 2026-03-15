@@ -898,6 +898,22 @@ where
                         Message::WithoutBody(Response::ShuttingDown(Box::new(info)))
                     })
                 }
+                Request::CacheGet(req) => {
+                    debug!("handle_client: cache_get");
+                    me.handle_cache_get(req).await
+                }
+                Request::CachePut(req) => {
+                    debug!("handle_client: cache_put");
+                    me.handle_cache_put(req).await
+                }
+                Request::PreprocessorCacheGet(key) => {
+                    debug!("handle_client: preprocessor_cache_get");
+                    me.handle_preprocessor_cache_get(key).await
+                }
+                Request::PreprocessorCachePut(req) => {
+                    debug!("handle_client: preprocessor_cache_put");
+                    me.handle_preprocessor_cache_put(req).await
+                }
             }
         })
     }
