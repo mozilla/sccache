@@ -12,16 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cache::storage_from_config;
+use async_trait::async_trait;
+use crate::cache::{Cache, CacheWrite, FileObjectSource, Storage, storage_from_config};
 use crate::client::{ServerConnection, connect_to_server, connect_with_retry};
 use crate::cmdline::{Command, StatsFormat};
-use crate::compiler::ColorMode;
+use crate::compiler::{CacheControl, Cacheable, ColorMode, CompilerArguments, get_compiler_info};
 use crate::config::{Config, default_disk_cache_dir};
 use crate::jobserver::Client;
 use crate::mock_command::{CommandChild, CommandCreatorSync, ProcessCommandCreator, RunCommand};
-use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
+use crate::protocol::{
+    CacheGetRequest, CacheGetResponse, CachePutRequest, Compile, CompileFinished, CompileResponse,
+    Request, Response,
+};
 use crate::server::{self, DistInfo, ServerInfo, ServerStartup, ServerStats};
-use crate::util::daemonize;
+use crate::util::{daemonize, run_input_output};
 use byteorder::{BigEndian, ByteOrder};
 use fs::{File, OpenOptions};
 use fs_err as fs;
@@ -29,6 +33,7 @@ use log::Level::Trace;
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::io::{self, IsTerminal, Write};
+use std::sync::Arc;
 #[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
@@ -622,23 +627,49 @@ where
     )
 }
 
-/// Perform client-side compilation with server acting as pure storage.
+/// A no-op `Storage` implementation used on the client side solely to satisfy
+/// the `generate_hash_key` API, which needs a storage reference for preprocessor
+/// cache lookups. All operations return Miss / success without touching any
+/// actual storage backend; real cache I/O goes through the server connection.
+struct NoopStorage;
+
+#[async_trait]
+impl Storage for NoopStorage {
+    async fn get(&self, _key: &str) -> Result<Cache> {
+        Ok(Cache::Miss)
+    }
+
+    async fn put(&self, _key: &str, _entry: CacheWrite) -> Result<std::time::Duration> {
+        Ok(std::time::Duration::default())
+    }
+
+    fn location(&self) -> String {
+        "noop".to_string()
+    }
+
+    async fn current_size(&self) -> Result<Option<u64>> {
+        Ok(None)
+    }
+
+    async fn max_size(&self) -> Result<Option<u64>> {
+        Ok(None)
+    }
+}
+
+/// Perform client-side compilation with the server acting as a pure cache store.
 ///
-/// This is the new compilation path where the client handles:
-/// - Compiler detection and caching
-/// - Argument parsing
-/// - Preprocessing
-/// - Hash key generation
-/// - Cache lookup via server
-/// - Local compilation on cache miss
-/// - Cache storage via server
-///
-/// TODO: Full implementation pending. Currently falls back to legacy server-side path.
+/// Steps:
+/// 1. Detect the compiler.
+/// 2. Parse the compiler arguments.
+/// 3. Run the preprocessor locally and compute the cache hash key.
+/// 4. Ask the server for the cache entry (`CacheGet`).
+///    5a. Cache hit  → extract output artifacts and write stdout/stderr.
+///    5b. Cache miss → compile locally, store the result (`CachePut`), write output.
 #[allow(clippy::too_many_arguments)]
 fn do_compile_client_side<T>(
     creator: T,
     runtime: &mut Runtime,
-    conn: ServerConnection,
+    mut conn: ServerConnection,
     exe_path: &Path,
     cmdline: Vec<OsString>,
     cwd: &Path,
@@ -649,36 +680,148 @@ fn do_compile_client_side<T>(
 where
     T: CommandCreatorSync,
 {
-    trace!("do_compile_client_side - falling back to legacy mode");
+    trace!("do_compile_client_side");
+    let pool = runtime.handle().clone();
 
-    // TODO: Implement full client-side compilation flow:
-    // 1. Detect compiler (with client-side caching)
-    // 2. Parse arguments
-    // 3. Preprocess source files
-    // 4. Generate hash key
-    // 5. Request cache from server via CacheGet
-    // 6. If cache miss: compile locally and store via CachePut
-    // 7. Return compilation results
-
-    // For now, fall back to legacy server-side compilation
-    writeln!(
-        stderr,
-        "sccache: client-side compilation not fully implemented, using legacy mode"
-    )?;
-
-    let mut conn_mut = conn;
-    let res = request_compile(&mut conn_mut, exe_path, &cmdline, cwd, env_vars)?;
-    handle_compile_response(
-        creator,
-        runtime,
-        &mut conn_mut,
-        res,
+    // Step 1: Detect compiler.
+    let (compiler, _proxy) = runtime.block_on(get_compiler_info(
+        creator.clone(),
         exe_path,
-        cmdline,
         cwd,
-        stdout,
-        stderr,
-    )
+        &cmdline,
+        &env_vars,
+        &pool,
+        None,
+    ))?;
+
+    // Step 2: Parse arguments.
+    let mut hasher = match compiler.parse_arguments(&cmdline, cwd, &env_vars) {
+        CompilerArguments::Ok(h) => h,
+        CompilerArguments::NotCompilation | CompilerArguments::CannotCache(_, _) => {
+            // Not a compilation or un-cacheable — run the compiler directly.
+            let mut cmd = creator.clone().new_command_sync(exe_path);
+            cmd.args(&cmdline).current_dir(cwd);
+            let status = runtime.block_on(async move {
+                let child = cmd.spawn().await?;
+                child.wait().await.context("failed to wait for compiler")
+            })?;
+            return Ok(status.code().unwrap_or(-1));
+        }
+    };
+
+    // Step 3: Preprocess locally and generate the hash key.
+    // NoopStorage satisfies the API; preprocessor cache operations are ignored.
+    let noop_storage = Arc::new(NoopStorage) as Arc<dyn Storage>;
+    let hash_result = runtime.block_on(hasher.generate_hash_key(
+        &creator,
+        cwd.to_path_buf(),
+        env_vars.clone(),
+        false, // may_dist
+        &pool,
+        false, // rewrite_includes_only
+        noop_storage,
+        CacheControl::Default,
+    ))?;
+
+    let key = hash_result.key;
+    let compilation = hash_result.compilation;
+
+    // Collect the expected output paths once (relative → absolute).
+    let outputs: Vec<FileObjectSource> = compilation
+        .outputs()
+        .map(|o| FileObjectSource {
+            path: cwd.join(&o.path),
+            ..o
+        })
+        .collect();
+
+    // Step 4: Ask the server for a cached result.
+    // The server extracts artifacts directly to `outputs` paths on a hit, so
+    // only stdout/stderr cross the IPC channel – no large data transfer.
+    let cache_response = conn.request(Request::CacheGet(CacheGetRequest {
+        key: key.clone(),
+        output_paths: outputs.clone(),
+    }))?;
+
+    match cache_response {
+        // ── Step 5a: Cache hit ──────────────────────────────────────────────
+        Response::CacheGet(CacheGetResponse::Hit {
+            stdout: cached_stdout,
+            stderr: cached_stderr,
+        }) => {
+            debug!("client-side cache hit for key {}", key);
+            // Artifacts already extracted by the server; just forward stdio.
+            stdout.write_all(&cached_stdout)?;
+            stderr.write_all(&cached_stderr)?;
+            Ok(0)
+        }
+
+        // ── Step 5b: Cache miss or server-side error ────────────────────────
+        cache_miss_or_error => {
+            match &cache_miss_or_error {
+                Response::CacheGet(CacheGetResponse::Miss) => {
+                    debug!("client-side cache miss for key {}", key);
+                }
+                Response::CacheGet(CacheGetResponse::Error(msg)) => {
+                    debug!(
+                        "client-side cache error for key {} (treating as miss): {}",
+                        key, msg
+                    );
+                }
+                other => bail!(
+                    "unexpected response from server for CacheGet (key={}): {:?}",
+                    key, other
+                ),
+            }
+
+            // Build the concrete compile command.
+            let mut path_transformer = crate::dist::PathTransformer::new();
+            let (compile_cmd, _, cacheable) = compilation
+                .generate_compile_commands(&mut path_transformer, true)
+                .context("failed to generate compile commands")?;
+
+            // Run the compiler.
+            let compile_exe = compile_cmd.get_executable();
+            let compile_args = compile_cmd.get_arguments();
+            let compile_env = compile_cmd.get_env_vars();
+            let compile_cwd = compile_cmd.get_cwd();
+
+            let mut cmd = creator.clone().new_command_sync(&compile_exe);
+            cmd.args(&compile_args)
+                .env_clear()
+                .envs(compile_env)
+                .current_dir(&compile_cwd);
+
+            let output = runtime.block_on(run_input_output(cmd, None))?;
+            let exit_code = output.status.code().unwrap_or(-1);
+
+            // If compilation succeeded and the result is cacheable, store it.
+            // The server reads the output files from disk directly.
+            if output.status.success() && cacheable == Cacheable::Yes {
+                // Best-effort: log but don't fail on cache-put errors.
+                match conn.request(Request::CachePut(CachePutRequest {
+                    key: key.clone(),
+                    output_paths: outputs,
+                    stdout: output.stdout.clone(),
+                    stderr: output.stderr.clone(),
+                })) {
+                    Ok(Response::CachePut(
+                        crate::protocol::CachePutResponse::Error(msg),
+                    )) => {
+                        debug!("server failed to store cache entry for key {}: {}", key, msg);
+                    }
+                    Err(e) => {
+                        debug!("failed to store cache entry for key {}: {:#}", key, e);
+                    }
+                    _ => {}
+                }
+            }
+
+            stdout.write_all(&output.stdout)?;
+            stderr.write_all(&output.stderr)?;
+            Ok(exit_code)
+        }
+    }
 }
 
 /// Run `cmd` and return the process exit status.
