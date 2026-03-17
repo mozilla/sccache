@@ -136,8 +136,6 @@ pub struct LevelStats {
 pub struct MultiLevelStats {
     /// Per-level statistics
     pub levels: Vec<LevelStats>,
-    /// Number of times a hit occurred before checking all levels
-    pub early_hits: u64,
 }
 
 impl LevelStats {
@@ -264,14 +262,6 @@ impl MultiLevelStats {
             0,
         ));
 
-        if self.early_hits > 0 {
-            result.push((
-                "Multi-level early hits".to_string(),
-                self.early_hits.to_string(),
-                0,
-            ));
-        }
-
         // Per-level stats
         for level_stats in &self.levels {
             result.extend(level_stats.format_stats());
@@ -296,8 +286,6 @@ pub struct MultiLevelStorage {
     write_policy: WritePolicy,
     /// Lock-free atomic statistics per level
     atomic_stats: Vec<Arc<AtomicLevelStats>>,
-    /// Early hits counter
-    early_hits: AtomicU64,
 }
 
 impl MultiLevelStorage {
@@ -312,7 +300,6 @@ impl MultiLevelStorage {
             levels,
             write_policy: WritePolicy::default(),
             atomic_stats,
-            early_hits: AtomicU64::new(0),
         }
     }
 
@@ -324,7 +311,6 @@ impl MultiLevelStorage {
             levels,
             write_policy,
             atomic_stats,
-            early_hits: AtomicU64::new(0),
         }
     }
 
@@ -332,7 +318,6 @@ impl MultiLevelStorage {
     pub fn stats(&self) -> MultiLevelStats {
         MultiLevelStats {
             levels: self.atomic_stats.iter().map(|s| s.snapshot()).collect(),
-            early_hits: self.early_hits.load(Ordering::Relaxed),
         }
     }
 
@@ -564,9 +549,6 @@ impl Storage for MultiLevelStorage {
                         stats
                             .hit_duration_nanos
                             .fetch_add(duration.as_nanos() as u64, Ordering::Relaxed);
-                    }
-                    if idx > 0 {
-                        self.early_hits.fetch_add(1, Ordering::Relaxed);
                     }
                     // Mark misses for all levels checked before this hit
                     for miss_idx in 0..idx {
