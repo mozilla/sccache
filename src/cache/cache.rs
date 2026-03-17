@@ -24,7 +24,7 @@ use crate::cache::gcs::GCSCache;
 use crate::cache::gha::GHACache;
 #[cfg(feature = "memcached")]
 use crate::cache::memcached::MemcachedCache;
-use crate::cache::multilevel::MultiLevelStorage;
+use crate::cache::multilevel::{MultiLevelStats, MultiLevelStorage};
 #[cfg(feature = "oss")]
 use crate::cache::oss::OSSCache;
 #[cfg(feature = "redis")]
@@ -120,7 +120,7 @@ pub trait Storage: Send + Sync {
     async fn max_size(&self) -> Result<Option<u64>>;
 
     /// Get multi-level cache statistics, if this is a multi-level storage.
-    fn multilevel_stats(&self) -> Option<crate::cache::multilevel::MultiLevelStats> {
+    fn multilevel_stats(&self) -> Option<MultiLevelStats> {
         None
     }
 

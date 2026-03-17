@@ -53,7 +53,7 @@ This creates a cache hierarchy where frequently accessed artifacts stay in fast 
 1. Check L0 (disk)    → Miss (5ms)
 2. Check L1 (redis)   → Miss (10ms)
 3. Check L2 (s3)      → Hit! (200ms)
-4. Return to compiler (Total: 215ms)
+4. Return to compiler wrapper / sccache (Total: 215ms)
 5. Background: Backfill L2→L1 (async, non-blocking)
 6. Background: Backfill L2→L0 (async, non-blocking)
 7. Next request: Check L0 → Hit! (10ms)
