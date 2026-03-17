@@ -136,6 +136,9 @@ rouille = { version = "3.6", optional = true, default-features = false, features
 syslog = { version = "7", optional = true }
 version-compare = { version = "0.1.1", optional = true }
 
+[build-dependencies]
+cfg_aliases = "0.2.1"
+
 [dev-dependencies]
 assert_cmd = "2.0.13"
 cc = "1.0"
