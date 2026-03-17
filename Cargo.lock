@@ -2898,6 +2898,7 @@ dependencies = [
  "byteorder",
  "bytes",
  "cc",
+ "cfg_aliases",
  "chrono",
  "clap",
  "codspeed-divan-compat",
