@@ -82,9 +82,14 @@ winget install Mozilla.sccache
 
 If you have a Rust toolchain installed you can install sccache using cargo. **Note that this will compile sccache from source which is fairly resource-intensive. For CI purposes you should use prebuilt binary packages.**
 
-
 ```bash
 cargo install sccache --locked
+```
+
+Or, using [cargo-binstall](https://github.com/cargo-bins/cargo-binstall) to install a prebuilt binary:
+
+```bash
+cargo binstall sccache
 ```
 
 ### With Nix
