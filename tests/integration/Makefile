@@ -23,7 +23,7 @@ export SCCACHE_PATH := /sccache/target/debug/sccache
 endif
 
 BACKENDS := redis redis-deprecated memcached memcached-deprecated s3 azblob webdav basedirs
-TOOLS := gcc clang cmake autotools coverage zstd
+TOOLS := gcc clang cmake cmake-modules autotools coverage zstd
 
 # Map backends to their compose profiles
 PROFILES_autotools := autotools
@@ -31,6 +31,7 @@ PROFILES_azblob := azblob
 PROFILES_basedirs := basedirs redis memcached s3 azblob webdav
 PROFILES_clang := clang
 PROFILES_cmake := cmake
+PROFILES_cmake-modules := cmake-modules
 PROFILES_coverage := coverage
 PROFILES_gcc := gcc
 PROFILES_memcached := memcached
@@ -47,6 +48,7 @@ SERVICES_azblob := azurite azurite-setup
 SERVICES_basedirs := redis memcached minio minio-setup azurite azurite-setup webdav
 SERVICES_clang :=
 SERVICES_cmake :=
+SERVICES_cmake-modules :=
 SERVICES_coverage :=
 SERVICES_gcc :=
 SERVICES_memcached := memcached
@@ -78,6 +80,7 @@ help:
 	@echo ""
 	@echo "Build System Tests:"
 	@echo "  make test-cmake              Run CMake integration test"
+	@echo "  make test-cmake-modules      Run CMake C++20 modules test"
 	@echo "  make test-autotools          Run Autotools integration test"
 	@echo ""
 	@echo "Advanced Tests:"

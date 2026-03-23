@@ -272,6 +272,19 @@ services:
       - test
       - cmake
 
+  test-cmake-modules:
+    <<: *test-runner
+    build:
+      context: .
+      dockerfile: cmake-modules.Dockerfile
+    entrypoint: /sccache/tests/integration/scripts/test-cmake-modules.sh
+    environment:
+      <<: *common-env
+      SCCACHE_DIR: /build/sccache
+    profiles:
+      - test
+      - cmake-modules
+
   test-autotools:
     <<: *test-runner
     image: gcc:latest
