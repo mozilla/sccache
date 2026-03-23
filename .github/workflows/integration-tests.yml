@@ -1,5 +1,10 @@
 name: integration-tests
 on: [ push, pull_request ]
+# If you want to add integration tests for linux-based binary,
+# please, use the following files:
+# - tests/integration/Makefile
+# - tests/integration/docker-compose.yml
+# - tests/integration/scripts/*.sh
 
 env:
   RUST_BACKTRACE: full
