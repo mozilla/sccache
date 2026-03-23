@@ -286,31 +286,42 @@ pub struct MultiLevelStorage {
     write_policy: WritePolicy,
     /// Lock-free atomic statistics per level
     atomic_stats: Vec<Arc<AtomicLevelStats>>,
+    /// Base directories for path normalization, propagated to compiler pipeline
+    basedirs: Vec<Vec<u8>>,
 }
 
 impl MultiLevelStorage {
+    /// Collect and deduplicate basedirs from all cache levels.
+    fn collect_basedirs(levels: &[Arc<dyn Storage>]) -> Vec<Vec<u8>> {
+        let mut seen = Vec::new();
+        for level in levels {
+            for basedir in level.basedirs() {
+                if !seen.contains(basedir) {
+                    seen.push(basedir.clone());
+                }
+            }
+        }
+        seen
+    }
+
     /// Create a new multi-level storage from a list of storage backends.
     ///
     /// Levels are checked in order (L0, L1, L2, ...) during reads.
     /// All levels receive writes in parallel.
     pub fn new(levels: Vec<Arc<dyn Storage>>) -> Self {
-        let atomic_stats = AtomicLevelStats::from_levels(&levels);
-
-        MultiLevelStorage {
-            levels,
-            write_policy: WritePolicy::default(),
-            atomic_stats,
-        }
+        Self::with_write_policy(levels, WritePolicy::default())
     }
 
     /// Create a new multi-level storage with explicit write policy.
     pub fn with_write_policy(levels: Vec<Arc<dyn Storage>>, write_policy: WritePolicy) -> Self {
         let atomic_stats = AtomicLevelStats::from_levels(&levels);
+        let basedirs = Self::collect_basedirs(&levels);
 
         MultiLevelStorage {
             levels,
             write_policy,
             atomic_stats,
+            basedirs,
         }
     }
 
@@ -835,6 +846,10 @@ impl Storage for MultiLevelStorage {
             .first()
             .map(|level| level.preprocessor_cache_mode_config())
             .unwrap_or_default()
+    }
+
+    fn basedirs(&self) -> &[Vec<u8>] {
+        &self.basedirs
     }
 
     async fn get_preprocessor_cache_entry(
