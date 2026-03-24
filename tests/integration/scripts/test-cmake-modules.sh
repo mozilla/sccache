@@ -20,7 +20,7 @@ cmake -B build -G Ninja \
     -DCMAKE_CXX_COMPILER=clang++ \
     -DCMAKE_C_COMPILER_LAUNCHER="$SCCACHE" \
     -DCMAKE_CXX_COMPILER_LAUNCHER="$SCCACHE"
-cmake --build build
+cmake --build build | cat  # unfold output
 
 echo "Checking stats after first build..."
 "$SCCACHE" --show-stats
@@ -34,7 +34,7 @@ cmake -B build -G Ninja \
     -DCMAKE_CXX_COMPILER=clang++ \
     -DCMAKE_C_COMPILER_LAUNCHER="$SCCACHE" \
     -DCMAKE_CXX_COMPILER_LAUNCHER="$SCCACHE"
-cmake --build build
+cmake --build build | cat  # unfold output
 
 echo "Verifying cache hits..."
 STATS_JSON=$("$SCCACHE" --show-stats --stats-format=json)
