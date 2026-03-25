@@ -1333,7 +1333,7 @@ where
         _may_dist: bool,
         pool: &tokio::runtime::Handle,
         _rewrite_includes_only: bool,
-        _storage: Arc<dyn Storage>,
+        _storage: Option<Arc<dyn Storage>>,
         _cache_control: CacheControl,
     ) -> Result<HashResult<T>> {
         trace!("[{}]: generate_hash_key", self.parsed_args.crate_name);
@@ -3513,7 +3513,7 @@ proc_macro false
                 false,
                 &pool,
                 false,
-                Arc::new(MockStorage::new(None, preprocessor_cache_mode)),
+                Some(Arc::new(MockStorage::new(None, preprocessor_cache_mode))),
                 CacheControl::Default,
             )
             .wait()
@@ -3605,7 +3605,7 @@ proc_macro false
                 false,
                 &pool,
                 false,
-                Arc::new(MockStorage::new(None, preprocessor_cache_mode)),
+                Some(Arc::new(MockStorage::new(None, preprocessor_cache_mode))),
                 CacheControl::Default,
             )
             .wait()
