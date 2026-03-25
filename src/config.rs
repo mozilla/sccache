@@ -18,7 +18,7 @@ use crate::util::normalize_win_path;
 use directories::ProjectDirs;
 use fs::File;
 use fs_err as fs;
-#[cfg(any(feature = "dist-client", feature = "dist-server"))]
+#[cfg(any_dist)]
 use serde::ser::Serializer;
 use serde::{
     Deserialize, Serialize,
@@ -128,10 +128,10 @@ pub fn parse_size(val: &str) -> Option<u64> {
     u64::from_str(val).ok().map(|size| size * multiplier)
 }
 
-#[cfg(any(feature = "dist-client", feature = "dist-server"))]
+#[cfg(any_dist)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HTTPUrl(reqwest::Url);
-#[cfg(any(feature = "dist-client", feature = "dist-server"))]
+#[cfg(any_dist)]
 impl Serialize for HTTPUrl {
     fn serialize<S>(&self, serializer: S) -> StdResult<S::Ok, S::Error>
     where
@@ -140,7 +140,7 @@ impl Serialize for HTTPUrl {
         serializer.serialize_str(self.0.as_str())
     }
 }
-#[cfg(any(feature = "dist-client", feature = "dist-server"))]
+#[cfg(any_dist)]
 impl<'a> Deserialize<'a> for HTTPUrl {
     fn deserialize<D>(deserializer: D) -> StdResult<Self, D::Error>
     where
@@ -152,7 +152,7 @@ impl<'a> Deserialize<'a> for HTTPUrl {
         Ok(HTTPUrl(url))
     }
 }
-#[cfg(any(feature = "dist-client", feature = "dist-server"))]
+#[cfg(any_dist)]
 fn parse_http_url(url: &str) -> Result<reqwest::Url> {
     use std::net::SocketAddr;
     let url = if let Ok(sa) = url.parse::<SocketAddr>() {
@@ -170,7 +170,7 @@ fn parse_http_url(url: &str) -> Result<reqwest::Url> {
     }
     Ok(url)
 }
-#[cfg(any(feature = "dist-client", feature = "dist-server"))]
+#[cfg(any_dist)]
 impl HTTPUrl {
     pub fn from_url(u: reqwest::Url) -> Self {
         HTTPUrl(u)
@@ -621,9 +621,9 @@ impl Default for DistAuth {
 #[serde(deny_unknown_fields)]
 pub struct DistConfig {
     pub auth: DistAuth,
-    #[cfg(any(feature = "dist-client", feature = "dist-server"))]
+    #[cfg(any_dist)]
     pub scheduler_url: Option<HTTPUrl>,
-    #[cfg(not(any(feature = "dist-client", feature = "dist-server")))]
+    #[cfg(not(any_dist))]
     pub scheduler_url: Option<String>,
     pub cache_dir: PathBuf,
     pub toolchains: Vec<DistToolchainConfig>,
@@ -2204,13 +2204,13 @@ key_prefix = "cosprefix"
                 auth: DistAuth::Token {
                     token: "secrettoken".to_owned()
                 },
-                #[cfg(any(feature = "dist-client", feature = "dist-server"))]
+                #[cfg(any_dist)]
                 scheduler_url: Some(
                     parse_http_url("http://1.2.3.4:10600")
                         .map(|url| { HTTPUrl::from_url(url) })
                         .expect("Scheduler url must be valid url str")
                 ),
-                #[cfg(not(any(feature = "dist-client", feature = "dist-server")))]
+                #[cfg(not(any_dist))]
                 scheduler_url: Some("http://1.2.3.4:10600".to_owned()),
                 cache_dir: PathBuf::from("/home/user/.cache/sccache-dist-client"),
                 toolchains: vec![],
