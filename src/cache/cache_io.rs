@@ -15,7 +15,7 @@ use crate::errors::*;
 use fs_err as fs;
 use std::fmt;
 use std::io::{Cursor, Read, Seek, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 use zip::write::FileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
@@ -143,6 +143,16 @@ impl CacheRead {
                 optional,
             } in objects
             {
+                #[cfg(unix)]
+                if path == Path::new("/dev/null") {
+                    debug!("Skipping output to /dev/null");
+                    continue;
+                }
+                #[cfg(windows)]
+                if path == Path::new("NUL") {
+                    debug!("Skipping output to NUL");
+                    continue;
+                }
                 let dir = match path.parent() {
                     Some(d) => d,
                     None => bail!("Output file without a parent directory!"),
@@ -150,15 +160,35 @@ impl CacheRead {
                 // Write the cache entry to a tempfile and then atomically
                 // move it to its final location so that other rustc invocations
                 // happening in parallel don't see a partially-written file.
-                let mut tmp = NamedTempFile::new_in(dir)?;
-                match (self.get_object(&key, &mut tmp), optional) {
-                    (Ok(mode), _) => {
-                        tmp.persist(&path)?;
-                        if let Some(mode) = mode {
-                            set_file_mode(&path, mode)?;
+                match (NamedTempFile::new_in(dir), optional) {
+                    (Ok(mut tmp), _) => {
+                        match (self.get_object(&key, &mut tmp), optional) {
+                            (Ok(mode), _) => {
+                                tmp.persist(&path)?;
+                                if let Some(mode) = mode {
+                                    set_file_mode(path.as_path(), mode)?;
+                                }
+                            }
+                            (Err(e), false) => return Err(e),
+                            // skip if no object found and it's optional
+                            (Err(_), true) => continue,
                         }
                     }
-                    (Err(e), false) => return Err(e),
+                    (Err(e), false) => {
+                        // Fall back to writing directly to the final location
+                        warn!("Failed to create temp file on the same file system: {e}");
+                        let mut f = std::fs::File::create(&path)?;
+                        // `optional` is false in this branch, so do not ignore errors
+                        let mode = self.get_object(&key, &mut f)?;
+                        if let Some(mode) = mode {
+                            if let Err(e) = set_file_mode(path.as_path(), mode) {
+                                // Here we ignore errors from setting file mode because
+                                // if we could not create a temp file in the same directory,
+                                // we probably can't set the mode either (e.g. /dev/stuff)
+                                warn!("Failed to reset file mode: {e}");
+                            }
+                        }
+                    }
                     // skip if no object found and it's optional
                     (Err(_), true) => continue,
                 }
@@ -266,5 +296,161 @@ impl CacheWrite {
 impl Default for CacheWrite {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn test_extract_object_to_devnull_works() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .worker_threads(1)
+            .build()
+            .unwrap();
+
+        let pool = runtime.handle();
+
+        let cache_data = CacheWrite::new();
+        let cache_read =
+            CacheRead::from(std::io::Cursor::new(cache_data.finish().unwrap())).unwrap();
+
+        let objects = vec![FileObjectSource {
+            key: "test_key".to_string(),
+            path: PathBuf::from("/dev/null"),
+            optional: false,
+        }];
+
+        let result = runtime.block_on(cache_read.extract_objects(objects, pool));
+        assert!(result.is_ok(), "Extracting to /dev/null should succeed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_extract_object_to_dev_fd_something() {
+        // Open a pipe, write to `/dev/fd/{fd}` and check the other end that the correct data was written.
+        use std::os::fd::AsRawFd;
+        use tokio::io::AsyncReadExt;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .worker_threads(1)
+            .build()
+            .unwrap();
+        let pool = runtime.handle();
+        let mut cache_data = CacheWrite::new();
+        let data = b"test data";
+        cache_data.put_bytes("test_key", data).unwrap();
+        let cache_read =
+            CacheRead::from(std::io::Cursor::new(cache_data.finish().unwrap())).unwrap();
+        runtime.block_on(async {
+            let (sender, mut receiver) = tokio::net::unix::pipe::pipe().unwrap();
+            let sender_fd = sender.into_blocking_fd().unwrap();
+            let raw_fd = sender_fd.as_raw_fd();
+            let fd_path = PathBuf::from(format!("/dev/fd/{raw_fd}"));
+            let objects = vec![FileObjectSource {
+                key: "test_key".to_string(),
+                path: fd_path.clone(),
+                optional: false,
+            }];
+            // On FreeBSD, `/dev/fd/{fd}` does not always exist (i.e. without mounting `fdescfs`), so we skip this test if we get `ENOENT`.
+            if ! fd_path.exists() {
+                info!("Skipping test_extract_object_to_dev_fd_something because /dev/fd/{raw_fd} does not exist");
+                return;
+            }
+            let result = cache_read.extract_objects(objects, pool).await;
+            assert!(
+                result.is_ok(),
+                "Extracting to /dev/fd/{raw_fd} should succeed"
+            );
+            let mut buf = vec![0; data.len()];
+            let n = receiver.read_exact(&mut buf).await.unwrap();
+            assert_eq!(n, data.len(), "Read the correct number of bytes");
+            assert_eq!(buf, data, "Read the correct data from /dev/fd/{raw_fd}");
+        });
+    }
+
+    #[test]
+    fn test_extract_object_to_non_writable_path() {
+        // See `test_extract_object_to_dev_fd_something`: we still cannot cover all platforms by the other tests. Here we test a more portable case of creating a file and making its parent directory non-writable, in which case we should still be able to extract the object successfully.
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .worker_threads(1)
+            .build()
+            .unwrap();
+
+        let pool = runtime.handle();
+
+        let mut cache_data = CacheWrite::new();
+        cache_data.put_bytes("test_key", b"real_test_data").unwrap();
+        let cache_read =
+            CacheRead::from(std::io::Cursor::new(cache_data.finish().unwrap())).unwrap();
+
+        let tmpdir = tempfile::tempdir().unwrap();
+        let target_path = tmpdir.path().join("test_file");
+        std::fs::write(&target_path, b"test").unwrap();
+        // The current Rust fs permissions API is kind of awkward...
+        let mut perm = tmpdir.path().metadata().unwrap().permissions();
+        perm.set_readonly(true);
+        std::fs::set_permissions(tmpdir.path(), perm.clone()).unwrap();
+        // Note that this doesn't guarantee that the a new file cannot be created anymore.
+        // For example, as documented in `std::fs::Permissions::set_readonly`, the
+        // `FILE_ATTRIBUTE_READONLY` attribute on Windows is entirely ignored for directories.
+        // std::fs::File::create(tmpdir.path().join("another_file")).unwrap_err();
+
+        let objects = vec![FileObjectSource {
+            key: "test_key".to_string(),
+            path: target_path.clone(),
+            optional: false,
+        }];
+
+        let result = runtime.block_on(cache_read.extract_objects(objects, pool));
+        assert!(
+            result.is_ok(),
+            "Extracting to the target path should succeed"
+        );
+        // Test the content; make sure the old content is overwritten
+        let content = std::fs::read(&target_path).unwrap();
+        assert_eq!(
+            content, b"real_test_data",
+            "Extracted content should be correct"
+        );
+
+        // `tempfile` needs us to reset permissions for cleanup to work
+        #[allow(
+            clippy::permissions_set_readonly_false,
+            reason = "The affected directory is immediately deleted with no security implications"
+        )]
+        perm.set_readonly(false);
+        std::fs::set_permissions(tmpdir.path(), perm).unwrap();
+        tmpdir.close().unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_extract_object_to_nul_works() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .worker_threads(1)
+            .build()
+            .unwrap();
+
+        let pool = runtime.handle();
+
+        let cache_data = CacheWrite::new();
+        let cache_read =
+            CacheRead::from(std::io::Cursor::new(cache_data.finish().unwrap())).unwrap();
+
+        let objects = vec![FileObjectSource {
+            key: "test_key".to_string(),
+            path: PathBuf::from("NUL"),
+            optional: false,
+        }];
+
+        let result = runtime.block_on(cache_read.extract_objects(objects, pool));
+        assert!(result.is_ok(), "Extracting to NUL should succeed");
     }
 }
