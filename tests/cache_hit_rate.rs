@@ -1,5 +1,6 @@
 pub mod helpers;
 
+use std::ffi::OsString;
 use std::process::Command;
 
 use anyhow::Result;
@@ -8,10 +9,16 @@ use helpers::{CARGO, CRATE_DIR, SccacheTest, cargo_clean};
 use predicates::{boolean::PredicateBooleanExt, str::PredicateStrExt};
 use serial_test::serial;
 
+/// These tests check server-side "Cache hits rate" stats, so client-side
+/// compilation must be disabled to ensure compilations go through the server.
+fn server_side_envs() -> Vec<(&'static str, OsString)> {
+    vec![("SCCACHE_CLIENT_SIDE_COMPILE", OsString::from("0"))]
+}
+
 #[test]
 #[serial]
 fn test_cache_hit_rate() -> Result<()> {
-    let test_info = SccacheTest::new(None)?;
+    let test_info = SccacheTest::new(Some(&server_side_envs()))?;
 
     Command::new(CARGO.as_os_str())
         .args(["build", "--color=never"])
@@ -66,7 +73,7 @@ fn test_cache_hit_rate() -> Result<()> {
 #[test]
 #[serial]
 fn test_adv_cache_hit_rate() -> Result<()> {
-    let test_info = SccacheTest::new(None)?;
+    let test_info = SccacheTest::new(Some(&server_side_envs()))?;
 
     Command::new(CARGO.as_os_str())
         .args(["build", "--color=never"])
