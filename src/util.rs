@@ -1134,40 +1134,59 @@ pub fn normalize_win_path(path: &[u8]) -> Vec<u8> {
             continue;
         }
 
-        // Non-ASCII: try to decode UTF-8 sequence
-        // Determine expected length from the first byte
-        let char_len = match b {
-            0b1100_0000..=0b1101_1111 => 2, // 110xxxxx
-            0b1110_0000..=0b1110_1111 => 3, // 1110xxxx
-            0b1111_0000..=0b1111_0111 => 4, // 11110xxx
-            _ => {
-                // Invalid UTF-8 start byte, copy as-is
-                result.push(b);
-                i += 1;
-                continue;
-            }
-        };
+        // Non-ASCII: find the longest valid UTF-8 sequence we can process at once
+        // This reduces heap allocations by batching to_lowercase() calls
+        let start = i;
+        let mut end = i;
 
-        // Check if we have enough bytes
-        if i + char_len > path.len() {
-            // Incomplete sequence, copy as-is
-            result.push(b);
-            i += 1;
-            continue;
+        // Scan ahead to find consecutive valid UTF-8 characters
+        while end < path.len() {
+            let b = path[end];
+
+            // Stop at ASCII boundary to process the accumulated UTF-8 chunk
+            if b < 128 {
+                break;
+            }
+
+            // Determine expected length from the first byte
+            let char_len = match b {
+                0b1100_0000..=0b1101_1111 => 2, // 110xxxxx
+                0b1110_0000..=0b1110_1111 => 3, // 1110xxxx
+                0b1111_0000..=0b1111_0111 => 4, // 11110xxx
+                _ => {
+                    // Invalid UTF-8 start byte, stop scanning
+                    break;
+                }
+            };
+
+            // Check if we have enough bytes
+            if end + char_len > path.len() {
+                break;
+            }
+
+            // Validate the UTF-8 sequence
+            if std::str::from_utf8(&path[end..end + char_len]).is_err() {
+                break;
+            }
+
+            end += char_len;
         }
 
-        // Validate and decode the UTF-8 sequence
-        match std::str::from_utf8(&path[i..i + char_len]) {
-            Ok(s) => {
-                // Valid UTF-8, lowercase it
+        // Process the accumulated UTF-8 chunk
+        if end > start {
+            // We have a valid UTF-8 chunk to process
+            if let Ok(s) = std::str::from_utf8(&path[start..end]) {
                 result.extend_from_slice(s.to_lowercase().as_bytes());
-                i += char_len;
-            }
-            Err(_) => {
-                // Invalid sequence, copy first byte as-is
-                result.push(b);
+                i = end;
+            } else {
+                // Shouldn't happen since we validated, but handle gracefully
+                result.push(path[i]);
                 i += 1;
             }
+        } else {
+            // No valid UTF-8 sequence found, copy byte as-is
+            result.push(path[i]);
+            i += 1;
         }
     }
 
