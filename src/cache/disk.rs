@@ -12,21 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use super::lazy_disk_cache::LazyDiskCache;
 use crate::cache::{Cache, CacheMode, CacheRead, CacheWrite, Storage};
-use crate::compiler::PreprocessorCacheEntry;
-use crate::lru_disk_cache::{Error as LruError, ReadSeek};
+use crate::errors::*;
+use crate::lru_disk_cache::Error as LruError;
 use async_trait::async_trait;
 use std::ffi::OsStr;
-use std::io::{BufWriter, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-
-use crate::errors::*;
-
-use super::lazy_disk_cache::LazyDiskCache;
-use super::utils::normalize_key;
-use crate::config::PreprocessorCacheModeConfig;
 
 /// A cache that stores entries at local disk paths.
 pub struct DiskCache {
@@ -34,8 +29,6 @@ pub struct DiskCache {
     lru: Arc<Mutex<LazyDiskCache>>,
     /// Thread pool to execute disk I/O
     pool: tokio::runtime::Handle,
-    preprocessor_cache_mode_config: PreprocessorCacheModeConfig,
-    preprocessor_cache: Arc<Mutex<LazyDiskCache>>,
     rw_mode: CacheMode,
     basedirs: Vec<Vec<u8>>,
 }
@@ -46,7 +39,6 @@ impl DiskCache {
         root: T,
         max_size: u64,
         pool: &tokio::runtime::Handle,
-        preprocessor_cache_mode_config: PreprocessorCacheModeConfig,
         rw_mode: CacheMode,
         basedirs: Vec<Vec<u8>>,
     ) -> DiskCache {
@@ -56,13 +48,6 @@ impl DiskCache {
                 max_size,
             })),
             pool: pool.clone(),
-            preprocessor_cache_mode_config,
-            preprocessor_cache: Arc::new(Mutex::new(LazyDiskCache::Uninit {
-                root: Path::new(root.as_ref())
-                    .join("preprocessor")
-                    .into_os_string(),
-                max_size,
-            })),
             rw_mode,
             basedirs,
         }
@@ -145,49 +130,13 @@ impl Storage for DiskCache {
     async fn current_size(&self) -> Result<Option<u64>> {
         Ok(self.lru.lock().unwrap().get().map(|l| l.size()))
     }
+
     async fn max_size(&self) -> Result<Option<u64>> {
         Ok(Some(self.lru.lock().unwrap().capacity()))
     }
-    fn preprocessor_cache_mode_config(&self) -> PreprocessorCacheModeConfig {
-        self.preprocessor_cache_mode_config
-    }
+
     fn basedirs(&self) -> &[Vec<u8>] {
         &self.basedirs
-    }
-    async fn get_preprocessor_cache_entry(&self, key: &str) -> Result<Option<Box<dyn ReadSeek>>> {
-        let key = normalize_key(key);
-        Ok(self
-            .preprocessor_cache
-            .lock()
-            .unwrap()
-            .get_or_init()?
-            .get(key)
-            .ok())
-    }
-    async fn put_preprocessor_cache_entry(
-        &self,
-        key: &str,
-        preprocessor_cache_entry: PreprocessorCacheEntry,
-    ) -> Result<()> {
-        if self.rw_mode == CacheMode::ReadOnly {
-            return Err(anyhow!("Cannot write to a read-only cache"));
-        }
-
-        let key = normalize_key(key);
-        let mut f = self
-            .preprocessor_cache
-            .lock()
-            .unwrap()
-            .get_or_init()?
-            .prepare_add(key, 0)?;
-        preprocessor_cache_entry.serialize_to(BufWriter::new(f.as_file_mut()))?;
-        Ok(self
-            .preprocessor_cache
-            .lock()
-            .unwrap()
-            .get()
-            .unwrap()
-            .commit(f)?)
     }
 }
 
@@ -206,7 +155,6 @@ mod tests {
             tempdir.path(),
             1024 * 1024,
             runtime.handle(),
-            PreprocessorCacheModeConfig::default(),
             CacheMode::ReadWrite,
             vec![],
         );

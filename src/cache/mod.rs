@@ -30,11 +30,13 @@ pub mod lazy_disk_cache;
 pub mod memcached;
 #[cfg(feature = "oss")]
 pub mod oss;
+pub mod preprocessor_cache;
 pub mod readonly;
 #[cfg(feature = "redis")]
 pub mod redis;
 #[cfg(feature = "s3")]
 pub mod s3;
+pub mod storage;
 pub(crate) mod utils;
 #[cfg(feature = "webdav")]
 pub mod webdav;
@@ -53,3 +55,5 @@ pub(crate) mod http_client;
 pub use crate::cache::cache::*;
 pub use crate::cache::cache_io::*;
 pub use crate::cache::lazy_disk_cache::*;
+pub use crate::cache::preprocessor_cache::*;
+pub use crate::cache::storage::*;

@@ -463,6 +463,7 @@ mod test {
     use crate::compiler::*;
     use crate::mock_command::*;
     use crate::server;
+    use crate::test::mock_preprocessor_cache::MockPreprocessorCacheStorage;
     use crate::test::mock_storage::MockStorage;
     use crate::test::utils::*;
     use fs::File;
@@ -792,9 +793,15 @@ mod test {
             too_hard_for_preprocessor_cache_mode: None,
         };
         let runtime = single_threaded_runtime();
-        let storage = MockStorage::new(None, false);
+        let storage = MockStorage::new(None);
         let storage: std::sync::Arc<MockStorage> = std::sync::Arc::new(storage);
-        let service = server::SccacheService::mock_with_storage(storage, runtime.handle().clone());
+        let preprocessor_cache_storage =
+            std::sync::Arc::new(MockPreprocessorCacheStorage::new(false));
+        let service = server::SccacheService::mock_with_storage(
+            storage,
+            preprocessor_cache_storage,
+            runtime.handle().clone(),
+        );
         let compiler = &f.bins[0];
         // Compiler invocation.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
