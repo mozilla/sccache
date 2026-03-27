@@ -248,6 +248,7 @@ pub struct DiskCacheConfig {
     pub size: u64,
     pub preprocessor_cache_mode: PreprocessorCacheModeConfig,
     pub rw_mode: CacheModeConfig,
+    pub file_clone: bool,
 }
 
 impl Default for DiskCacheConfig {
@@ -257,6 +258,7 @@ impl Default for DiskCacheConfig {
             size: default_disk_cache_size(),
             preprocessor_cache_mode: PreprocessorCacheModeConfig::activated(),
             rw_mode: CacheModeConfig::ReadWrite,
+            file_clone: false,
         }
     }
 }
@@ -1005,16 +1007,26 @@ fn config_from_env() -> Result<EnvConfig> {
         _ => (CacheModeConfig::ReadWrite, false),
     };
 
+    let mut file_clone = false;
+    let file_clone_overridden = if let Some(value) = bool_from_env_var("SCCACHE_FILE_CLONE")? {
+        file_clone = value;
+        true
+    } else {
+        false
+    };
+
     let any_overridden = disk_dir.is_some()
         || disk_sz.is_some()
         || preprocessor_mode_overridden
-        || disk_rw_mode_overridden;
+        || disk_rw_mode_overridden
+        || file_clone_overridden;
     let disk = if any_overridden {
         Some(DiskCacheConfig {
             dir: disk_dir.unwrap_or_else(default_disk_cache_dir),
             size: disk_sz.unwrap_or_else(default_disk_cache_size),
             preprocessor_cache_mode: preprocessor_mode_config,
             rw_mode: disk_rw_mode,
+            file_clone,
         })
     } else {
         None
@@ -1435,6 +1447,7 @@ fn config_overrides() {
                 size: 5,
                 preprocessor_cache_mode: Default::default(),
                 rw_mode: CacheModeConfig::ReadWrite,
+                file_clone: false,
             }),
             redis: Some(RedisCacheConfig {
                 endpoint: Some("myotherredisurl".to_owned()),
@@ -1457,6 +1470,7 @@ fn config_overrides() {
                 size: 15,
                 preprocessor_cache_mode: Default::default(),
                 rw_mode: CacheModeConfig::ReadWrite,
+                file_clone: false,
             }),
             memcached: Some(MemcachedCacheConfig {
                 url: "memurl".to_owned(),
@@ -1494,6 +1508,7 @@ fn config_overrides() {
                 size: 5,
                 preprocessor_cache_mode: Default::default(),
                 rw_mode: CacheModeConfig::ReadWrite,
+                file_clone: false,
             },
             dist: Default::default(),
             server_startup_timeout: None,
@@ -2141,6 +2156,7 @@ key_prefix = "cosprefix"
                     size: 7 * 1024 * 1024 * 1024,
                     preprocessor_cache_mode: PreprocessorCacheModeConfig::activated(),
                     rw_mode: CacheModeConfig::ReadWrite,
+                    file_clone: false,
                 }),
                 gcs: Some(GCSCacheConfig {
                     bucket: "bucket".to_owned(),

@@ -615,7 +615,7 @@ where
                     // In this mode, cache entries are exclusively distinguished by their preprocessed
                     // source contents. But two files may differ in their names and / or the names of
                     // included files while still producing the same preprocessed output, so they get the
-                    // same cache entry. That entry will have wrong (file names) dependency informaton in
+                    // same cache entry. That entry will have wrong (file names) dependency information in
                     // the dependency file except for the compilation unit that originally produced it.
                     // Since we did local preprocessing, that should already have produced the dependency
                     // file - just leave that one alone and don't overwrite it from the cache.
@@ -642,6 +642,40 @@ where
                         } else {
                             Err(e)
                         }
+                    }
+                }
+            }
+            (Ok(Ok(Cache::UncompressedHit(entry))), duration) => {
+                debug!(
+                    "[{}]: Cache uncompressed hit in {}",
+                    out_pretty,
+                    fmt_duration_as_secs(&duration)
+                );
+                let output = process::Output {
+                    status: exit_status(0),
+                    stdout: entry.get_stdout(),
+                    stderr: entry.get_stderr(),
+                };
+
+                let filtered_outputs = if compilation.is_locally_preprocessed() {
+                    outputs
+                        .iter()
+                        .filter(|fobj_source| fobj_source.key != "d")
+                        .cloned()
+                        .collect()
+                } else {
+                    outputs.clone()
+                };
+
+                let hit = CompileResult::CacheHit(duration);
+                match entry.extract_objects(filtered_outputs, &pool).await {
+                    Ok(()) => Ok(CacheLookupResult::Success(hit, output)),
+                    Err(e) => {
+                        debug!(
+                            "[{}]: Failed to extract uncompressed object: {:?}",
+                            out_pretty, e
+                        );
+                        Ok(CacheLookupResult::Miss(MissType::CacheReadError))
                     }
                 }
             }
@@ -2553,6 +2587,7 @@ LLVM version: 6.0",
             },
             CacheMode::ReadWrite,
             vec![],
+            false,
         );
         // Write a dummy input file so the preprocessor cache mode can work
         std::fs::write(f.tempdir.path().join("foo.c"), "whatever").unwrap();
@@ -2684,6 +2719,7 @@ LLVM version: 6.0",
             },
             CacheMode::ReadWrite,
             vec![],
+            false,
         );
         // Write a dummy input file so the preprocessor cache mode can work
         std::fs::write(f.tempdir.path().join("foo.c"), "whatever").unwrap();
@@ -2988,6 +3024,7 @@ LLVM version: 6.0",
             },
             CacheMode::ReadWrite,
             vec![],
+            false,
         );
         let storage = Arc::new(storage);
         let service = server::SccacheService::mock_with_storage(storage.clone(), pool.clone());
@@ -3118,6 +3155,7 @@ LLVM version: 6.0",
             },
             CacheMode::ReadWrite,
             vec![],
+            false,
         );
         let storage = Arc::new(storage);
         let service = server::SccacheService::mock_with_storage(storage.clone(), pool.clone());
@@ -3217,6 +3255,7 @@ LLVM version: 6.0",
             },
             CacheMode::ReadWrite,
             vec![],
+            false,
         );
         let storage = Arc::new(storage);
         // Pretend to be GCC.
