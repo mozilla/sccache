@@ -234,7 +234,7 @@ jobs:
 
       - name: Upload coverage results (to Codecov.io)
         if: ${{ ! matrix.no_coverage }}
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v6
         with:
           files: ${{ steps.coverage.outputs.report }}
           ## flags: IntegrationTests, UnitTests, ${{ steps.vars.outputs.CODECOV_FLAGS }}
