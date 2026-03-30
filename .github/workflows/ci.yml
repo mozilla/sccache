@@ -262,12 +262,14 @@ jobs:
           - os: ubuntu-22.04
             target: s390x-unknown-linux-musl
             container: '{"image": "messense/rust-musl-cross:s390x-musl"}'
+            rustflags: -Ctarget-feature=+crt-static
             lto: "false"
           - os: ubuntu-22.04
             target: s390x-unknown-linux-gnu
           - os: ubuntu-22.04
             target: riscv64gc-unknown-linux-musl
             container: '{"image": "messense/rust-musl-cross:riscv64gc-musl"}'
+            rustflags: -Ctarget-feature=+crt-static
             lto: "false"
           - os: ubuntu-22.04
             binary: sccache-dist
@@ -355,6 +357,20 @@ jobs:
           SDKROOT: ${{ matrix.sdkroot }}
           RUSTFLAGS: ${{ env.RUSTFLAGS || matrix.rustflags }}
           CARGO_PROFILE_RELEASE_LTO: ${{ matrix.lto || 'true' }}
+
+      - name: Verify static linking for musl artifacts
+        if: ${{ contains(matrix.target, '-unknown-linux-musl') }}
+        run: |
+          BINARY="target/${{ matrix.target }}/release/${{ matrix.binary || 'sccache' }}"
+          [ -f "$BINARY" ] || { echo "Error: expected binary not found at $BINARY"; exit 1; }
+          NEEDED_PATTERN='^[[:space:]]*0x[0-9a-fA-F]+[[:space:]]+\(NEEDED\)[[:space:]]+Shared library:'
+          DYNAMIC_SECTION="$(readelf -d "$BINARY")"
+          echo "$DYNAMIC_SECTION"
+          if echo "$DYNAMIC_SECTION" | grep -Eq "$NEEDED_PATTERN"; then
+            echo "Expected a statically linked musl binary, but found dynamic dependencies:"
+            echo "$DYNAMIC_SECTION" | grep -E "$NEEDED_PATTERN"
+            exit 1
+          fi
 
       # Workaround for the lack of substring() function in github actions expressions.
       - name: Id
