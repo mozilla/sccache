@@ -39,6 +39,95 @@ fn test_rust_cargo_build() -> Result<()> {
 
 #[test]
 #[serial]
+fn test_rust_cargo_basedirs_cross_dir_cache_hit() -> Result<()> {
+    // Copy tests/test-crate to two different absolute paths, then build in
+    // each with SCCACHE_BASEDIRS covering both roots. Without basedir
+    // stripping the two builds would compute different cache keys (cwd +
+    // CARGO_MANIFEST_DIR differ); with it, keys converge and the second
+    // build hits the first build's cache entries.
+    let work = tempfile::Builder::new()
+        .prefix("sccache_basedirs_xdir")
+        .tempdir()
+        .context("tempdir")?;
+    // On macOS `/var/...` is a symlink to `/private/var/...` and cargo reports
+    // the resolved target for CARGO_MANIFEST_DIR. Basedirs are compared by
+    // byte prefix, so the user-supplied path must be in the same canonical
+    // form. Windows `fs::canonicalize` returns `\\?\`-prefixed UNC paths that
+    // cargo does not emit, so only canonicalize on Unix.
+    #[cfg(unix)]
+    let work_root = fs::canonicalize(work.path())?;
+    #[cfg(not(unix))]
+    let work_root = work.path().to_path_buf();
+    let root_a = work_root.join("machine_a");
+    let root_b = work_root.join("machine_b");
+    let crate_a = root_a.join("project");
+    let crate_b = root_b.join("project");
+    copy_crate(&CRATE_DIR, &crate_a)?;
+    copy_crate(&CRATE_DIR, &crate_b)?;
+
+    // Basedir separator: `:` on Unix, `;` on Windows (matches config.rs).
+    let sep = if cfg!(windows) { ';' } else { ':' };
+    let basedirs = format!("{}{sep}{}", root_a.display(), root_b.display());
+    let test = SccacheTest::new(Some(&[(
+        "SCCACHE_BASEDIRS",
+        std::ffi::OsString::from(basedirs),
+    )]))?;
+
+    run_cargo_build(&test, &crate_a, &crate_a.join("target"))?;
+    run_cargo_build(&test, &crate_b, &crate_b.join("target"))?;
+
+    // After the second build, sccache must report Rust cache hits. The exact
+    // count matches the existing `test_rust_cargo_cmd` baseline (2), which
+    // exercises the same crate in a single directory with `cargo clean`
+    // between runs; if basedirs works, a cross-directory run should behave
+    // identically.
+    test.show_stats()?
+        .try_stdout(predicates::str::contains(r#""cache_hits":{"counts":{"Rust":2}"#).from_utf8())?
+        .try_success()?;
+    Ok(())
+}
+
+fn copy_crate(src: &Path, dst: &Path) -> Result<()> {
+    use walkdir::WalkDir;
+    fs::create_dir_all(dst)?;
+    for entry in WalkDir::new(src) {
+        let entry = entry.context("walkdir")?;
+        let rel = entry.path().strip_prefix(src).unwrap();
+        let target = dst.join(rel);
+        if entry.file_type().is_dir() {
+            fs::create_dir_all(&target)?;
+        } else if entry.file_type().is_file() {
+            fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
+
+fn run_cargo_build(test: &SccacheTest, cwd: &Path, target_dir: &Path) -> Result<()> {
+    // The harness's default CARGO_TARGET_DIR is shared across invocations,
+    // which would let cargo short-circuit recompiles. Override per-build so
+    // each `cargo build` actually invokes rustc for every crate.
+    let env: Vec<_> = test
+        .env
+        .iter()
+        .filter(|(k, _)| *k != "CARGO_TARGET_DIR")
+        .cloned()
+        .chain(std::iter::once((
+            "CARGO_TARGET_DIR",
+            target_dir.as_os_str().to_owned(),
+        )))
+        .collect();
+    Command::new(CARGO.as_os_str())
+        .arg("build")
+        .envs(env)
+        .current_dir(cwd)
+        .assert()
+        .try_success()?;
+    Ok(())
+}
+
+#[test]
+#[serial]
 fn test_rust_cargo_build_readonly() -> Result<()> {
     test_rust_cargo_cmd_readonly("build", SccacheTest::new(None)?)
 }
