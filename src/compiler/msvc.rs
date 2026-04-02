@@ -401,6 +401,9 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_take_arg!("Wv:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_flag!("X", PassThrough),
     msvc_take_arg!("Xclang", OsString, Separated, XClang),
+    msvc_flag!("Y-", PassThrough), // Disable another PCH options
+    msvc_take_arg!("YI", OsString, Concatenated, PassThroughWithSuffix), // Has no effect without /Yc
+    msvc_flag!("YI-", PassThrough), // Has no effect without /Yc
     msvc_take_arg!("Yc", PathBuf, Concatenated, TooHardPath), // Compile PCH - not yet supported.
     msvc_flag!("Yd", PassThrough),
     msvc_flag!("Z7", PassThrough), // Add debug info to .obj files.
@@ -410,6 +413,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("Za", PassThrough),
     msvc_take_arg!("Zc:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_flag!("Ze", PassThrough),
+    msvc_flag!("Zf", PassThrough),
     msvc_flag!("Zi", DebugInfo),
     msvc_take_arg!("Zm", OsString, Concatenated, PassThroughWithSuffix),
     msvc_flag!("Zo", PassThrough),
@@ -512,7 +516,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     take_arg!("@", PathBuf, Concatenated, TooHardPath),
 ]);
 
-// TODO: what to do with precompiled header flags? eg: /Y-, /Yc, /YI, /Yu, /Zf, /Zm
+// TODO: what to do with precompiled header flags? eg: /Yc, /YI, /Yu
 
 pub fn parse_arguments(
     arguments: &[OsString],
@@ -2290,6 +2294,10 @@ mod test {
             "/d1nodatetime",
             "-EHa",
             "-await:strict",
+            "/YI",
+            "-Y-",
+            "/YI-",
+            "-Zf",
             "-Fmdictionary-map",
             "-c",
             "-Fohost_dictionary.obj",
@@ -2319,6 +2327,10 @@ mod test {
                 "/d1nodatetime",
                 "-EHa",
                 "-await:strict",
+                "/YI",
+                "-Y-",
+                "/YI-",
+                "-Zf",
                 "-Fmdictionary-map"
             )
         );
