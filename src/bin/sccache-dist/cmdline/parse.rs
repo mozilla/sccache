@@ -126,6 +126,7 @@ fn get_clap_command() -> ClapCommand {
                             flag_infer_long("secret-key")
                                 .help("Use specified key to create the token")
                                 .value_name("KEY"),
+                                .allow_hyphen_values(true),
                             config_with_help_message(
                                 "Use the key from the scheduler config file at PATH",
                             ),
