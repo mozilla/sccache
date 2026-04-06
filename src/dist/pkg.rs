@@ -20,7 +20,7 @@ use std::str;
 
 use crate::errors::*;
 
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
 pub use self::toolchain_imp::*;
 
 pub trait ToolchainPackager: Send {
@@ -36,7 +36,7 @@ pub trait OutputsRepackager {
     -> Result<dist::PathTransformer>;
 }
 
-#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+#[cfg(not(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64"))))]
 mod toolchain_imp {
     use super::ToolchainPackager;
     use fs_err as fs;
@@ -52,7 +52,7 @@ mod toolchain_imp {
     }
 }
 
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
 mod toolchain_imp {
     use super::SimplifyPath;
     use fs_err as fs;
