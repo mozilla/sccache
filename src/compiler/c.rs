@@ -27,7 +27,7 @@ use crate::dist::pkg;
 use crate::mock_command::CommandCreatorSync;
 use crate::util::{
     Digest, HashToDigest, MetadataCtimeExt, TimeMacroFinder, Timestamp, decode_path, encode_path,
-    hash_all, strip_basedirs,
+    hash_all, normalize_prefix_map_arg, strip_basedirs,
 };
 use async_trait::async_trait;
 use fs_err as fs;
@@ -1566,7 +1566,7 @@ impl<'a> HashKeyParams<'a> {
         m.update(CACHE_VERSION);
         m.update(self.language.as_str().as_bytes());
         for arg in self.arguments {
-            arg.hash(&mut HashToDigest { digest: &mut m });
+            normalize_prefix_map_arg(arg, self.basedirs).hash(&mut HashToDigest { digest: &mut m });
         }
         for hash in self.extra_hashes {
             m.update(hash.as_bytes());
