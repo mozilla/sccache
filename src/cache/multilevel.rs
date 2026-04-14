@@ -69,14 +69,14 @@ impl AtomicLevelStats {
         Self {
             name,
             location,
-            hits: AtomicU64::new(0),
-            misses: AtomicU64::new(0),
-            writes: AtomicU64::new(0),
-            write_failures: AtomicU64::new(0),
-            backfills_from: AtomicU64::new(0),
-            backfills_to: AtomicU64::new(0),
-            hit_duration_nanos: AtomicU64::new(0),
-            write_duration_nanos: AtomicU64::new(0),
+            hits: Default::default(),
+            misses: Default::default(),
+            writes: Default::default(),
+            write_failures: Default::default(),
+            backfills_from: Default::default(),
+            backfills_to: Default::default(),
+            hit_duration_nanos: Default::default(),
+            write_duration_nanos: Default::default(),
         }
     }
 
