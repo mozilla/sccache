@@ -303,6 +303,214 @@ fn test_server_compile() {
     });
 }
 
+/// Test the CacheGet → Miss → CachePut → CacheGet → Hit round-trip at the
+/// protocol level.  This exercises `handle_cache_get` and `handle_cache_put`
+/// in `server.rs` without going through `do_compile_client_side`.
+#[test]
+#[serial]
+fn test_cache_get_put_round_trip() {
+    let f = TestFixture::new();
+    let (addr, sender, _server_creator, child) = run_server_thread(f.tempdir.path(), None);
+
+    // --- CacheGet on a key that doesn't exist → Miss -------------------------
+    let mut conn = connect_to_server(&addr).unwrap();
+    let output_path = f.tempdir.path().join("output.o");
+    let output_paths = vec![crate::cache::FileObjectSource {
+        key: "obj".into(),
+        path: output_path.clone(),
+        optional: false,
+    }];
+    let resp = conn
+        .request(crate::protocol::Request::CacheGet(
+            crate::protocol::CacheGetRequest {
+                key: "test-key-1".into(),
+                output_paths: output_paths.clone(),
+            },
+        ))
+        .unwrap();
+    assert!(
+        matches!(
+            resp,
+            crate::protocol::Response::CacheGet(crate::protocol::CacheGetResponse::Miss)
+        ),
+        "expected CacheGet Miss, got: {resp:?}"
+    );
+
+    // --- CachePut: write an artifact file and store it -----------------------
+    fs::write(&output_path, b"object file contents").unwrap();
+    let resp = conn
+        .request(crate::protocol::Request::CachePut(
+            crate::protocol::CachePutRequest {
+                key: "test-key-1".into(),
+                output_paths: output_paths.clone(),
+                stdout: b"compile stdout".to_vec(),
+                stderr: b"compile stderr".to_vec(),
+            },
+        ))
+        .unwrap();
+    assert!(
+        matches!(
+            resp,
+            crate::protocol::Response::CachePut(crate::protocol::CachePutResponse::Success)
+        ),
+        "expected CachePut Success, got: {resp:?}"
+    );
+
+    // Remove the artifact so we can verify CacheGet recreates it.
+    fs::remove_file(&output_path).unwrap();
+    assert!(!output_path.exists());
+
+    // --- CacheGet on the same key → Hit, artifacts extracted ------------------
+    let resp = conn
+        .request(crate::protocol::Request::CacheGet(
+            crate::protocol::CacheGetRequest {
+                key: "test-key-1".into(),
+                output_paths: output_paths.clone(),
+            },
+        ))
+        .unwrap();
+    match resp {
+        crate::protocol::Response::CacheGet(crate::protocol::CacheGetResponse::Hit {
+            stdout,
+            stderr,
+        }) => {
+            assert_eq!(stdout, b"compile stdout");
+            assert_eq!(stderr, b"compile stderr");
+        }
+        other => panic!("expected CacheGet Hit, got: {other:?}"),
+    }
+    // The artifact should have been extracted back to disk.
+    assert!(output_path.exists(), "artifact was not extracted to disk");
+    assert_eq!(fs::read(&output_path).unwrap(), b"object file contents");
+
+    // Drop the connection so the server can shut down cleanly.
+    drop(conn);
+
+    // --- Check stats reflect the operations ----------------------------------
+    // request_stats consumes the connection, so it will be dropped.
+    let stats_conn = connect_to_server(&addr).unwrap();
+    let info = request_stats(stats_conn).unwrap();
+    assert_eq!(
+        info.stats.client_side_cache_misses, 1,
+        "expected 1 client-side cache miss"
+    );
+    assert_eq!(
+        info.stats.client_side_cache_hits, 1,
+        "expected 1 client-side cache hit"
+    );
+    assert_eq!(info.stats.cache_writes, 1, "expected 1 cache write");
+
+    // Shut down.
+    sender.send(ServerMessage::Shutdown).ok().unwrap();
+    child.join().unwrap();
+}
+
+/// CacheGet with a relative path should return an error, not extract anything.
+#[test]
+#[serial]
+fn test_cache_get_rejects_relative_path() {
+    let f = TestFixture::new();
+    let (addr, sender, _server_creator, child) = run_server_thread(f.tempdir.path(), None);
+
+    let mut conn = connect_to_server(&addr).unwrap();
+    let resp = conn
+        .request(crate::protocol::Request::CacheGet(
+            crate::protocol::CacheGetRequest {
+                key: "test-key-bad".into(),
+                output_paths: vec![crate::cache::FileObjectSource {
+                    key: "obj".into(),
+                    path: "relative/file.o".into(),
+                    optional: false,
+                }],
+            },
+        ))
+        .unwrap();
+    match resp {
+        crate::protocol::Response::CacheGet(crate::protocol::CacheGetResponse::Error(msg)) => {
+            assert!(
+                msg.contains("must be absolute"),
+                "unexpected error message: {msg}"
+            );
+        }
+        other => panic!("expected CacheGet Error for relative path, got: {other:?}"),
+    }
+
+    drop(conn);
+    sender.send(ServerMessage::Shutdown).ok().unwrap();
+    child.join().unwrap();
+}
+
+/// CachePut with a path containing '..' should return an error.
+#[test]
+#[serial]
+fn test_cache_put_rejects_dotdot_path() {
+    let f = TestFixture::new();
+    let (addr, sender, _server_creator, child) = run_server_thread(f.tempdir.path(), None);
+
+    let mut conn = connect_to_server(&addr).unwrap();
+    let resp = conn
+        .request(crate::protocol::Request::CachePut(
+            crate::protocol::CachePutRequest {
+                key: "test-key-bad".into(),
+                output_paths: vec![crate::cache::FileObjectSource {
+                    key: "obj".into(),
+                    path: std::env::temp_dir().join("..").join("etc").join("passwd"),
+                    optional: false,
+                }],
+                stdout: vec![],
+                stderr: vec![],
+            },
+        ))
+        .unwrap();
+    match resp {
+        crate::protocol::Response::CachePut(crate::protocol::CachePutResponse::Error(msg)) => {
+            assert!(msg.contains("'..'"), "unexpected error message: {msg}");
+        }
+        other => panic!("expected CachePut Error for dotdot path, got: {other:?}"),
+    }
+
+    drop(conn);
+    sender.send(ServerMessage::Shutdown).ok().unwrap();
+    child.join().unwrap();
+}
+
+/// CachePut when the output file doesn't exist should return an error, not panic.
+#[test]
+#[serial]
+fn test_cache_put_missing_file() {
+    let f = TestFixture::new();
+    let (addr, sender, _server_creator, child) = run_server_thread(f.tempdir.path(), None);
+
+    let mut conn = connect_to_server(&addr).unwrap();
+    let resp = conn
+        .request(crate::protocol::Request::CachePut(
+            crate::protocol::CachePutRequest {
+                key: "test-key-missing".into(),
+                output_paths: vec![crate::cache::FileObjectSource {
+                    key: "obj".into(),
+                    path: f.tempdir.path().join("nonexistent.o"),
+                    optional: false,
+                }],
+                stdout: vec![],
+                stderr: vec![],
+            },
+        ))
+        .unwrap();
+    match resp {
+        crate::protocol::Response::CachePut(crate::protocol::CachePutResponse::Error(msg)) => {
+            assert!(
+                msg.contains("failed to read output files"),
+                "unexpected error message: {msg}"
+            );
+        }
+        other => panic!("expected CachePut Error for missing file, got: {other:?}"),
+    }
+
+    drop(conn);
+    sender.send(ServerMessage::Shutdown).ok().unwrap();
+    child.join().unwrap();
+}
+
 #[test]
 #[serial]
 // test fails intermittently on macos:

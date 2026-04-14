@@ -2540,6 +2540,121 @@ mod tests {
         assert!(output.contains("Cache hits rate (rust)             33.33 %"));
     }
 
+    /// Return a cross-platform absolute path for use in tests.
+    fn abs_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(name)
+    }
+
+    /// Return an absolute path that contains a `..` component.
+    fn abs_path_with_dotdot() -> PathBuf {
+        // temp_dir is absolute on all platforms; appending `../x` keeps it absolute
+        // while introducing the forbidden component.
+        std::env::temp_dir().join("..").join("etc").join("passwd")
+    }
+
+    #[test]
+    fn test_validate_output_paths_absolute_ok() {
+        use crate::cache::FileObjectSource;
+        let paths = vec![FileObjectSource {
+            key: "obj".into(),
+            path: abs_path("file.o"),
+            optional: false,
+        }];
+        assert!(validate_output_paths(&paths).is_ok());
+    }
+
+    #[test]
+    fn test_validate_output_paths_relative_rejected() {
+        use crate::cache::FileObjectSource;
+        let paths = vec![FileObjectSource {
+            key: "obj".into(),
+            path: PathBuf::from("relative/file.o"),
+            optional: false,
+        }];
+        let err = validate_output_paths(&paths).unwrap_err();
+        assert!(
+            err.to_string().contains("must be absolute"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_output_paths_dotdot_rejected() {
+        use crate::cache::FileObjectSource;
+        let paths = vec![FileObjectSource {
+            key: "obj".into(),
+            path: abs_path_with_dotdot(),
+            optional: false,
+        }];
+        let err = validate_output_paths(&paths).unwrap_err();
+        assert!(err.to_string().contains("'..'"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn test_validate_output_paths_empty_ok() {
+        assert!(validate_output_paths(&[]).is_ok());
+    }
+
+    #[test]
+    fn test_validate_output_paths_multiple() {
+        use crate::cache::FileObjectSource;
+        let paths = vec![
+            FileObjectSource {
+                key: "obj".into(),
+                path: abs_path("file.o"),
+                optional: false,
+            },
+            FileObjectSource {
+                key: "dwo".into(),
+                path: abs_path("file.dwo"),
+                optional: false,
+            },
+        ];
+        assert!(validate_output_paths(&paths).is_ok());
+
+        // Second path is relative
+        let paths = vec![
+            FileObjectSource {
+                key: "obj".into(),
+                path: abs_path("file.o"),
+                optional: false,
+            },
+            FileObjectSource {
+                key: "bad".into(),
+                path: PathBuf::from("relative.o"),
+                optional: false,
+            },
+        ];
+        assert!(validate_output_paths(&paths).is_err());
+    }
+
+    #[test]
+    fn test_print_client_side_stats() {
+        let stats = ServerStats {
+            client_side_cache_hits: 5,
+            client_side_cache_misses: 3,
+            client_side_cache_errors: 1,
+            ..Default::default()
+        };
+
+        let mut writer = StringWriter::new();
+        stats.print(&mut writer, false);
+
+        let output = writer.get_output();
+        assert!(
+            output.contains("Client-side cache hits"),
+            "missing client-side hits in output:\n{output}"
+        );
+        assert!(
+            output.contains("Client-side cache misses"),
+            "missing client-side misses in output:\n{output}"
+        );
+        assert!(
+            output.contains("Client-side cache errors"),
+            "missing client-side errors in output:\n{output}"
+        );
+    }
+
     // Test that 2 servers with the same hits will always be printed in the same order.
     // This test will **randomly** (not consistently) fail in case of a regression, due to HashMap iteration behaviour.
     #[test]
