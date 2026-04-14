@@ -16,6 +16,7 @@ use crate::cache::{Cache, CacheMode, CacheRead, CacheWrite, Storage};
 use crate::compiler::PreprocessorCacheEntry;
 use crate::lru_disk_cache::{Error as LruError, ReadSeek};
 use async_trait::async_trait;
+use bytes::Bytes;
 use std::ffi::OsStr;
 use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
@@ -102,7 +103,7 @@ impl Storage for DiskCache {
             .await?
     }
 
-    async fn get_raw(&self, key: &str) -> Result<Option<Vec<u8>>> {
+    async fn get_raw(&self, key: &str) -> Result<Option<Bytes>> {
         trace!("DiskCache::get_raw({})", key);
         let path = make_key_path(key);
         let lru = self.lru.clone();
@@ -115,7 +116,7 @@ impl Storage for DiskCache {
                         let mut data = Vec::new();
                         io.read_to_end(&mut data)?;
                         trace!("DiskCache::get_raw({}): Found {} bytes", key, data.len());
-                        Ok(Some(data))
+                        Ok(Some(Bytes::from(data)))
                     }
                     Err(LruError::FileNotInCache) => {
                         trace!("DiskCache::get_raw({}): FileNotInCache", key);
@@ -135,10 +136,10 @@ impl Storage for DiskCache {
         trace!("DiskCache::put({})", key);
         // Delegate to put_raw after serializing the entry
         let data = entry.finish()?;
-        self.put_raw(key, data).await
+        self.put_raw(key, data.into()).await
     }
 
-    async fn put_raw(&self, key: &str, data: Vec<u8>) -> Result<Duration> {
+    async fn put_raw(&self, key: &str, data: Bytes) -> Result<Duration> {
         trace!("DiskCache::put_raw({}, {} bytes)", key, data.len());
 
         if self.rw_mode == CacheMode::ReadOnly {

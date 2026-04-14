@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use bytes::Bytes;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -519,15 +520,15 @@ impl MultiLevelStorage {
     async fn write_entry_from_bytes(
         level: &Arc<dyn Storage>,
         key: &str,
-        data: &Arc<Vec<u8>>,
+        data: &Bytes,
     ) -> Result<()> {
-        // Try to use put_raw for direct bytes write (most efficient)
-        level.put_raw(key, (**data).clone()).await?;
+        // Bytes::clone() is a cheap ref-count bump, no data copy
+        level.put_raw(key, data.clone()).await?;
         Ok(())
     }
 
     /// Write to levels starting from `start_idx` asynchronously
-    async fn write_remaining_levels_async(&self, key: &str, data: &Arc<Vec<u8>>, start_idx: usize) {
+    async fn write_remaining_levels_async(&self, key: &str, data: &Bytes, start_idx: usize) {
         for (idx, level) in self.levels.iter().enumerate().skip(start_idx) {
             // Check if level is read-only before spawning task
             if matches!(level.check().await, Ok(CacheMode::ReadOnly)) {
@@ -535,7 +536,7 @@ impl MultiLevelStorage {
                 continue;
             }
 
-            let data = Arc::clone(data);
+            let data = data.clone();
             let key = key.to_string();
             let level = Arc::clone(level);
             let stats_arc = self.atomic_stats.get(idx).map(Arc::clone);
@@ -597,8 +598,6 @@ impl Storage for MultiLevelStorage {
                         // Try to get raw bytes for backfilling
                         match level.get_raw(key).await {
                             Ok(Some(raw_bytes)) => {
-                                let raw_bytes = Arc::new(raw_bytes);
-
                                 // Update backfill stats
                                 if let Some(stats) = self.atomic_stats.get(hit_level) {
                                     stats
@@ -610,7 +609,7 @@ impl Storage for MultiLevelStorage {
                                 // Iterate slice directly instead of creating Vec
                                 for backfill_idx in 0..idx {
                                     let key_bf = key_str.clone();
-                                    let bytes_bf = Arc::clone(&raw_bytes);
+                                    let bytes_bf = raw_bytes.clone();
                                     let level_bf = Arc::clone(&self.levels[backfill_idx]);
                                     let stats_arc =
                                         self.atomic_stats.get(backfill_idx).map(Arc::clone);
@@ -694,7 +693,7 @@ impl Storage for MultiLevelStorage {
         }
 
         // Serialize cache entry once
-        let data = Arc::new(entry.finish()?);
+        let data: Bytes = entry.finish()?.into();
         let key_str = key.to_string();
 
         match self.write_policy {
@@ -738,7 +737,7 @@ impl Storage for MultiLevelStorage {
                 let (tx, mut rx) = mpsc::channel(self.levels.len());
 
                 for (idx, level) in self.levels.iter().enumerate() {
-                    let data = Arc::clone(&data);
+                    let data = data.clone();
                     let key_str = key_str.clone();
                     let level = Arc::clone(level);
                     let tx = tx.clone();

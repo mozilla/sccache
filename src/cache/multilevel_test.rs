@@ -18,6 +18,7 @@ use crate::cache::disk::DiskCache;
 use crate::cache::readonly::ReadOnlyStorage;
 use crate::config::Config;
 use crate::config::PreprocessorCacheModeConfig;
+use bytes::Bytes;
 use std::collections::HashMap;
 use std::env;
 use std::fs;
@@ -256,13 +257,16 @@ impl Storage for InMemoryStorage {
     /// Implement get_raw() to enable backfill testing with remote-like backends.
     /// This simulates the behavior of real remote backends (S3, Redis, etc.) that
     /// can efficiently return raw serialized cache entries for backfilling.
-    async fn get_raw(&self, key: &str) -> Result<Option<Vec<u8>>> {
-        Ok(self.data.lock().await.get(key).cloned())
+    async fn get_raw(&self, key: &str) -> Result<Option<Bytes>> {
+        Ok(self.data.lock().await.get(key).cloned().map(Bytes::from))
     }
 
     /// Implement put_raw() to enable backfill writes during testing.
-    async fn put_raw(&self, key: &str, data: Vec<u8>) -> Result<Duration> {
-        self.data.lock().await.insert(key.to_string(), data);
+    async fn put_raw(&self, key: &str, data: Bytes) -> Result<Duration> {
+        self.data
+            .lock()
+            .await
+            .insert(key.to_string(), data.to_vec());
         Ok(Duration::ZERO)
     }
 }
@@ -1087,7 +1091,7 @@ impl Storage for FailingStorage {
         Err(anyhow!("Intentional failure for testing"))
     }
 
-    async fn put_raw(&self, _key: &str, _entry: Vec<u8>) -> Result<Duration> {
+    async fn put_raw(&self, _key: &str, _entry: Bytes) -> Result<Duration> {
         Err(anyhow!("Intentional failure for testing"))
     }
 

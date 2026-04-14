@@ -49,6 +49,7 @@ use crate::compiler::PreprocessorCacheEntry;
 use crate::config::Config;
 use crate::config::{self, CacheType, PreprocessorCacheModeConfig};
 use async_trait::async_trait;
+use bytes::Bytes;
 
 use std::io;
 use std::sync::Arc;
@@ -77,14 +78,14 @@ pub trait Storage: Send + Sync {
     /// Get raw serialized cache entry bytes by `key` (for multi-level backfill).
     /// Returns `None` if the entry is not found, or if the implementation doesn't support raw access.
     /// This is used by multi-level caches to backfill faster levels.
-    async fn get_raw(&self, _key: &str) -> Result<Option<Vec<u8>>> {
+    async fn get_raw(&self, _key: &str) -> Result<Option<Bytes>> {
         Ok(None)
     }
 
     /// Put raw serialized cache entry bytes under `key` (for multi-level backfill).
     /// Returns an error if the implementation doesn't support raw access.
     /// This is used by multi-level caches to backfill faster levels.
-    async fn put_raw(&self, _key: &str, _data: Vec<u8>) -> Result<Duration> {
+    async fn put_raw(&self, _key: &str, _data: Bytes) -> Result<Duration> {
         Err(anyhow!("put_raw not implemented for this storage backend"))
     }
 
@@ -220,7 +221,7 @@ impl Storage for RemoteStorage {
         trace!("RemoteStorage::put({})", key);
         // Delegate to put_raw after serializing the entry
         let data = entry.finish()?;
-        self.put_raw(key, data).await
+        self.put_raw(key, data.into()).await
     }
 
     async fn check(&self) -> Result<CacheMode> {
@@ -297,18 +298,17 @@ impl Storage for RemoteStorage {
         &self.basedirs
     }
 
-    /// Get raw bytes from remote storage without any transformations.
+    /// Get raw bytes from remote storage for multi-level backfill.
     ///
-    /// Uses `to_vec()` instead of `to_bytes()` to preserve raw data unchanged.
-    /// This is critical for multi-level caching: when backfilling from remote to local,
-    /// we need the exact bytes without OpenDAL layer transformations (e.g., decompression).
-    /// If compression layers are configured, `to_bytes()` would decompress the data,
-    /// which would corrupt the cache entry when written to another level.
-    async fn get_raw(&self, key: &str) -> Result<Option<Vec<u8>>> {
+    /// Unlike `get()` which parses bytes into `CacheRead` (a `ZipArchive<Box<dyn ReadSeek>>`),
+    /// this returns the raw bytes without parsing. `CacheRead` is a one-way transformation —
+    /// there is no way to extract the original bytes back from the parsed ZIP archive.
+    /// For backfill we need the raw bytes to write directly to another cache level.
+    async fn get_raw(&self, key: &str) -> Result<Option<Bytes>> {
         trace!("opendal::Operator::get_raw({})", key);
         match self.operator.read(&normalize_key(key)).await {
             Ok(res) => {
-                let data = res.to_vec();
+                let data = res.to_bytes();
                 trace!(
                     "opendal::Operator::get_raw({}): Found {} bytes",
                     key,
@@ -328,12 +328,12 @@ impl Storage for RemoteStorage {
         }
     }
 
-    /// Write raw bytes to remote storage.
+    /// Write raw bytes to remote storage for multi-level backfill.
     ///
-    /// This is the primitive write operation used by both `put()` and multi-level backfill.
-    /// For backfill operations, raw bytes are passed directly from one cache level to another
-    /// to preserve the exact data format (including any compression applied by OpenDAL layers).
-    async fn put_raw(&self, key: &str, data: Vec<u8>) -> Result<Duration> {
+    /// Unlike `put()` which takes a `CacheWrite` and serializes it, this writes
+    /// pre-serialized bytes directly. Paired with `get_raw()` for efficient
+    /// level-to-level data transfer without a deserialize/reserialize round-trip.
+    async fn put_raw(&self, key: &str, data: Bytes) -> Result<Duration> {
         trace!("opendal::Operator::put_raw({}, {} bytes)", key, data.len());
         let start = std::time::Instant::now();
 
