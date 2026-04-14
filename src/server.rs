@@ -1788,6 +1788,12 @@ pub struct ServerStats {
     pub dist_compiles: HashMap<String, usize>,
     /// The count of compilations that were distributed but failed and had to be re-run locally
     pub dist_errors: u64,
+    /// The count of client-side cache hits (via CacheGet).
+    pub client_side_cache_hits: u64,
+    /// The count of client-side cache misses (via CacheGet).
+    pub client_side_cache_misses: u64,
+    /// The count of client-side cache errors (via CacheGet).
+    pub client_side_cache_errors: u64,
 }
 
 /// Info and stats about the server.
@@ -1837,6 +1843,9 @@ impl Default for ServerStats {
             not_cached: HashMap::new(),
             dist_compiles: HashMap::new(),
             dist_errors: u64::default(),
+            client_side_cache_hits: u64::default(),
+            client_side_cache_misses: u64::default(),
+            client_side_cache_errors: u64::default(),
         }
     }
 }
@@ -1926,6 +1935,21 @@ impl ServerStats {
             set_lang_stat!(stats_vec, self.cache_errors, "Cache errors");
         }
 
+        set_stat!(
+            stats_vec,
+            self.client_side_cache_hits,
+            "Client-side cache hits"
+        );
+        set_stat!(
+            stats_vec,
+            self.client_side_cache_misses,
+            "Client-side cache misses"
+        );
+        set_stat!(
+            stats_vec,
+            self.client_side_cache_errors,
+            "Client-side cache errors"
+        );
         set_stat!(stats_vec, self.compilations, "Compilations");
         set_stat!(stats_vec, self.compile_fails, "Compilation failures");
 
