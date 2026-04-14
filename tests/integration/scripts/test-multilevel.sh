@@ -91,15 +91,22 @@ test_multilevel_backend() {
     fi
     echo "Multi-level cache detected"
 
-    # Verify both disk and remote backend are in the configuration
-    if ! echo "$CACHE_LOCATION" | grep -qi "disk"; then
+    # Verify both disk and remote backend are in the per-level stats
+    LEVEL_NAMES=$(echo "$STATS_JSON" | python3 -c "
+import sys, json
+levels = json.load(sys.stdin).get('stats', {}).get('multi_level', [])
+for l in levels:
+    print(l.get('name', ''))
+")
+
+    if ! echo "$LEVEL_NAMES" | grep -qi "disk"; then
         echo "FAIL: Disk not found in multi-level configuration"
         echo "$STATS_JSON" | python3 -m json.tool
         exit 1
     fi
     echo "Disk level detected"
 
-    if ! echo "$CACHE_LOCATION" | grep -qi "$backend_name"; then
+    if ! echo "$LEVEL_NAMES" | grep -qi "$backend_name"; then
         echo "FAIL: $backend_name not found in multi-level configuration"
         echo "$STATS_JSON" | python3 -m json.tool
         exit 1

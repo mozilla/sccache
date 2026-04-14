@@ -1989,6 +1989,16 @@ impl ServerInfo {
             self.cache_location,
             name_width = name_width
         );
+        if let Some(ref ml_stats) = self.stats.multi_level {
+            for level in &ml_stats.0 {
+                println!(
+                    "{:<name_width$} {}",
+                    format!("  {}", level.name),
+                    level.location,
+                    name_width = name_width
+                );
+            }
+        }
         println!(
             "{:<name_width$} {}",
             "Base directories",

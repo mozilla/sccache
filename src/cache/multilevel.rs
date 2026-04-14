@@ -53,6 +53,7 @@ use crate::errors::*;
 /// Stored directly in MultiLevelStorage to avoid mutex contention.
 struct AtomicLevelStats {
     name: String,
+    location: String,
     hits: AtomicU64,
     misses: AtomicU64,
     writes: AtomicU64,
@@ -64,9 +65,10 @@ struct AtomicLevelStats {
 }
 
 impl AtomicLevelStats {
-    fn new(name: String) -> Self {
+    fn new(name: String, location: String) -> Self {
         Self {
             name,
+            location,
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
             writes: AtomicU64::new(0),
@@ -80,7 +82,10 @@ impl AtomicLevelStats {
 
     /// Create atomic stats for a specific cache level with formatted name
     fn for_level(idx: usize, storage: &Arc<dyn Storage>) -> Self {
-        Self::new(format!("L{} ({})", idx, storage.cache_type_name()))
+        Self::new(
+            format!("L{} ({})", idx, storage.cache_type_name()),
+            storage.location(),
+        )
     }
 
     /// Create a Vec of atomic stats from a slice of storage backends
@@ -96,6 +101,7 @@ impl AtomicLevelStats {
     fn snapshot(&self) -> LevelStats {
         LevelStats {
             name: self.name.clone(),
+            location: self.location.clone(),
             hits: self.hits.load(Ordering::Relaxed),
             misses: self.misses.load(Ordering::Relaxed),
             writes: self.writes.load(Ordering::Relaxed),
@@ -113,6 +119,8 @@ impl AtomicLevelStats {
 pub struct LevelStats {
     /// Human-readable name of this level (e.g., "L0 (disk)")
     pub name: String,
+    /// Detailed location string (e.g., "Local disk: \"/path\"" or "s3, name: bucket, prefix: /p/")
+    pub location: String,
     /// Number of cache hits at this level
     pub hits: u64,
     /// Number of cache misses (checked but not found) at this level
@@ -131,11 +139,27 @@ pub struct LevelStats {
     pub write_duration: Duration,
 }
 
-/// Statistics for multi-level cache operation.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct MultiLevelStats {
-    /// Per-level statistics
-    pub levels: Vec<LevelStats>,
+/// Per-level statistics for multi-level cache operation.
+///
+/// Serializes as a flat JSON array of level stats (no wrapper object).
+#[derive(Debug, Clone, Default)]
+pub struct MultiLevelStats(pub Vec<LevelStats>);
+
+impl Serialize for MultiLevelStats {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for MultiLevelStats {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        Vec::<LevelStats>::deserialize(deserializer).map(MultiLevelStats)
+    }
 }
 
 impl LevelStats {
@@ -245,25 +269,24 @@ impl LevelStats {
 }
 
 impl MultiLevelStats {
-    /// Format all stats for human-readable display
-    /// Returns a vector of (label, value, suffix_type) tuples
-    /// suffix_type: 0=none, 1=%, 2=ms
+    /// Format all stats for human-readable display.
+    /// Returns a vector of (label, value, suffix_type) tuples.
     pub fn format_stats(&self) -> Vec<(String, String, usize)> {
         let mut result = vec![];
 
-        if self.levels.is_empty() {
+        if self.0.is_empty() {
             return result;
         }
 
         // Global stats
         result.push((
             "Multi-level cache levels".to_string(),
-            self.levels.len().to_string(),
+            self.0.len().to_string(),
             0,
         ));
 
         // Per-level stats
-        for level_stats in &self.levels {
+        for level_stats in &self.0 {
             result.extend(level_stats.format_stats());
         }
 
@@ -327,9 +350,7 @@ impl MultiLevelStorage {
 
     /// Get a snapshot of current multi-level cache statistics.
     pub fn stats(&self) -> MultiLevelStats {
-        MultiLevelStats {
-            levels: self.atomic_stats.iter().map(|s| s.snapshot()).collect(),
-        }
+        MultiLevelStats(self.atomic_stats.iter().map(|s| s.snapshot()).collect())
     }
 
     /// Record a successful write to a level
@@ -805,16 +826,7 @@ impl Storage for MultiLevelStorage {
     }
 
     fn location(&self) -> String {
-        format!(
-            "Multi-level ({} levels): {}",
-            self.levels.len(),
-            self.levels
-                .iter()
-                .enumerate()
-                .map(|(idx, level)| format!("L{}: {}", idx, level.location()))
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
+        format!("Multi-level ({} levels)", self.levels.len())
     }
 
     async fn current_size(&self) -> Result<Option<u64>> {
