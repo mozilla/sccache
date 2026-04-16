@@ -1941,12 +1941,13 @@ fn set_percentage_stat(
 }
 
 impl ServerInfo {
-    pub async fn new(mut stats: ServerStats, storage: Option<&dyn Storage>) -> Result<Self> {
+    pub async fn new(stats: ServerStats, storage: Option<&dyn Storage>) -> Result<Self> {
         let cache_location;
         let use_preprocessor_cache_mode;
         let cache_size;
         let max_cache_size;
         let basedirs;
+        let multi_level;
         if let Some(storage) = storage {
             cache_location = storage.location();
             use_preprocessor_cache_mode = storage
@@ -1959,18 +1960,21 @@ impl ServerInfo {
                 .iter()
                 .map(|p| String::from_utf8_lossy(p).to_string())
                 .collect();
-            // Get multi-level stats if available
-            stats.multi_level = storage.multilevel_stats();
+            multi_level = storage.multilevel_stats();
         } else {
             cache_location = String::new();
             use_preprocessor_cache_mode = false;
             cache_size = None;
             max_cache_size = None;
             basedirs = Vec::new();
+            multi_level = None;
         }
         let version = env!("CARGO_PKG_VERSION").to_string();
         Ok(ServerInfo {
-            stats,
+            stats: ServerStats {
+                multi_level,
+                ..stats
+            },
             cache_location,
             cache_size,
             max_cache_size,
