@@ -50,6 +50,16 @@ use crate::config::CacheType;
 use crate::config::{Config, PreprocessorCacheModeConfig, WriteErrorPolicy};
 use crate::errors::*;
 
+/// Increment an atomic stats counter, handling the Option check.
+/// Usage: `inc_stat!(optional_stats, field_name, value)`
+macro_rules! inc_stat {
+    ($stats:expr, $field:ident, $value:expr) => {
+        if let Some(s) = $stats {
+            s.$field.fetch_add($value, Ordering::Relaxed);
+        }
+    };
+}
+
 /// Lock-free atomic counters for multi-level cache statistics.
 /// Stored directly in MultiLevelStorage to avoid mutex contention.
 struct AtomicLevelStats {
@@ -357,23 +367,6 @@ impl MultiLevelStorage {
         MultiLevelStats(self.atomic_stats.iter().map(|s| s.snapshot()).collect())
     }
 
-    /// Record a successful write to a level
-    fn record_write_success(&self, idx: usize, duration: Duration) {
-        if let Some(stats) = self.atomic_stats.get(idx) {
-            stats.writes.fetch_add(1, Ordering::Relaxed);
-            stats
-                .write_duration_nanos
-                .fetch_add(duration.as_nanos() as u64, Ordering::Relaxed);
-        }
-    }
-
-    /// Record a failed write to a level
-    fn record_write_failure(&self, idx: usize) {
-        if let Some(stats) = self.atomic_stats.get(idx) {
-            stats.write_failures.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
     /// Create a multi-level storage from configuration.
     ///
     /// Returns None if no levels are configured (SCCACHE_MULTILEVEL_CHAIN not set).
@@ -550,18 +543,16 @@ impl MultiLevelStorage {
                     Ok(_) => {
                         let duration = start.elapsed();
                         trace!("Backfilled cache level {} on write in {:?}", idx, duration);
-                        if let Some(stats) = stats_arc {
-                            stats.writes.fetch_add(1, Ordering::Relaxed);
-                            stats
-                                .write_duration_nanos
-                                .fetch_add(duration.as_nanos() as u64, Ordering::Relaxed);
-                        }
+                        inc_stat!(stats_arc.as_deref(), writes, 1);
+                        inc_stat!(
+                            stats_arc.as_deref(),
+                            write_duration_nanos,
+                            duration.as_nanos() as u64
+                        );
                     }
                     Err(e) => {
                         debug!("Background write to level {} failed: {}", idx, e);
-                        if let Some(stats) = stats_arc {
-                            stats.write_failures.fetch_add(1, Ordering::Relaxed);
-                        }
+                        inc_stat!(stats_arc.as_deref(), write_failures, 1);
                     }
                 }
             });
@@ -580,17 +571,15 @@ impl Storage for MultiLevelStorage {
                     debug!("Cache hit at level {} in {:?}", idx, duration);
 
                     // Update stats
-                    if let Some(stats) = self.atomic_stats.get(idx) {
-                        stats.hits.fetch_add(1, Ordering::Relaxed);
-                        stats
-                            .hit_duration_nanos
-                            .fetch_add(duration.as_nanos() as u64, Ordering::Relaxed);
-                    }
+                    inc_stat!(self.atomic_stats.get(idx), hits, 1);
+                    inc_stat!(
+                        self.atomic_stats.get(idx),
+                        hit_duration_nanos,
+                        duration.as_nanos() as u64
+                    );
                     // Mark misses for all levels checked before this hit
                     for miss_idx in 0..idx {
-                        if let Some(stats) = self.atomic_stats.get(miss_idx) {
-                            stats.misses.fetch_add(1, Ordering::Relaxed);
-                        }
+                        inc_stat!(self.atomic_stats.get(miss_idx), misses, 1);
                     }
 
                     // If hit at level > 0, backfill to faster levels (L0 to L(idx-1))
@@ -602,11 +591,11 @@ impl Storage for MultiLevelStorage {
                         match level.get_raw(key).await {
                             Ok(Some(raw_bytes)) => {
                                 // Update backfill stats
-                                if let Some(stats) = self.atomic_stats.get(hit_level) {
-                                    stats
-                                        .backfills_from
-                                        .fetch_add(idx as u64, Ordering::Relaxed);
-                                }
+                                inc_stat!(
+                                    self.atomic_stats.get(hit_level),
+                                    backfills_from,
+                                    idx as u64
+                                );
 
                                 // Spawn background backfill tasks for each faster level
                                 // Iterate slice directly instead of creating Vec
@@ -629,11 +618,7 @@ impl Storage for MultiLevelStorage {
                                                     backfill_idx, hit_level
                                                 );
                                                 // Update backfill_to stats
-                                                if let Some(stats) = stats_arc {
-                                                    stats
-                                                        .backfills_to
-                                                        .fetch_add(1, Ordering::Relaxed);
-                                                }
+                                                inc_stat!(stats_arc.as_deref(), backfills_to, 1);
                                             }
                                             Err(e) => {
                                                 debug!(
@@ -682,9 +667,7 @@ impl Storage for MultiLevelStorage {
 
         // Mark final miss for all checked levels
         for idx in 0..self.levels.len() {
-            if let Some(stats) = self.atomic_stats.get(idx) {
-                stats.misses.fetch_add(1, Ordering::Relaxed);
-            }
+            inc_stat!(self.atomic_stats.get(idx), misses, 1);
         }
 
         Ok(Cache::Miss)
@@ -719,10 +702,15 @@ impl Storage for MultiLevelStorage {
                             Ok(_) => {
                                 let duration = start.elapsed();
                                 trace!("Stored in cache level 0 in {:?}", duration);
-                                self.record_write_success(0, duration);
+                                inc_stat!(self.atomic_stats.first(), writes, 1);
+                                inc_stat!(
+                                    self.atomic_stats.first(),
+                                    write_duration_nanos,
+                                    duration.as_nanos() as u64
+                                );
                             }
                             Err(e) => {
-                                self.record_write_failure(0);
+                                inc_stat!(self.atomic_stats.first(), write_failures, 1);
                                 return Err(e);
                             }
                         }
@@ -759,20 +747,20 @@ impl Storage for MultiLevelStorage {
                         if let Err(e) = result {
                             // Check if read-only before failing
                             if !matches!(level.check().await, Ok(CacheMode::ReadOnly)) {
-                                if let Some(stats) = stats_arc {
-                                    stats.write_failures.fetch_add(1, Ordering::Relaxed);
-                                }
+                                inc_stat!(stats_arc.as_deref(), write_failures, 1);
                                 return Err(anyhow!(
                                     "Failed to write to cache level {}: {}",
                                     idx,
                                     e
                                 ));
                             }
-                        } else if let Some(stats) = stats_arc {
-                            stats.writes.fetch_add(1, Ordering::Relaxed);
-                            stats
-                                .write_duration_nanos
-                                .fetch_add(duration.as_nanos() as u64, Ordering::Relaxed);
+                        } else {
+                            inc_stat!(stats_arc.as_deref(), writes, 1);
+                            inc_stat!(
+                                stats_arc.as_deref(),
+                                write_duration_nanos,
+                                duration.as_nanos() as u64
+                            );
                         }
                     } else {
                         // L1+ async
@@ -789,16 +777,16 @@ impl Storage for MultiLevelStorage {
                     if let Err(e) = result {
                         // Check if read-only before failing
                         if !matches!(level.check().await, Ok(CacheMode::ReadOnly)) {
-                            if let Some(stats) = stats_arc {
-                                stats.write_failures.fetch_add(1, Ordering::Relaxed);
-                            }
+                            inc_stat!(stats_arc.as_deref(), write_failures, 1);
                             return Err(anyhow!("Failed to write to cache level {}: {}", idx, e));
                         }
-                    } else if let Some(stats) = stats_arc {
-                        stats.writes.fetch_add(1, Ordering::Relaxed);
-                        stats
-                            .write_duration_nanos
-                            .fetch_add(duration.as_nanos() as u64, Ordering::Relaxed);
+                    } else {
+                        inc_stat!(stats_arc.as_deref(), writes, 1);
+                        inc_stat!(
+                            stats_arc.as_deref(),
+                            write_duration_nanos,
+                            duration.as_nanos() as u64
+                        );
                     }
                 }
 
