@@ -2212,7 +2212,10 @@ struct RustToolchainPackager {
 }
 
 #[cfg(feature = "dist-client")]
-#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 impl pkg::ToolchainPackager for RustToolchainPackager {
     fn write_pkg(self: Box<Self>, f: fs::File) -> Result<()> {
         info!(
