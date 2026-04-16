@@ -229,7 +229,7 @@ impl Default for PreprocessorCacheModeConfig {
     fn default() -> Self {
         Self {
             use_preprocessor_cache_mode: false,
-            file_stat_matches: false,
+            file_stat_matches: true,
             use_ctime_for_stat: true,
             ignore_time_macros: false,
             skip_system_headers: false,
