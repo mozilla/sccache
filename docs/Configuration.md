@@ -45,7 +45,7 @@ token = "secrettoken"
 # See docs/MultiLevel.md for details.
 [cache.multilevel]
 chain = ["disk", "redis", "s3"]
-write_policy = "l0"  # Optional: ignore, l0 (default), or all
+write_error_policy = "l0"  # Optional: ignore, l0 (default), or all
 
 #[cache.azure]
 # Azure Storage connection string (see <https://docs.azure.cn/en-us/storage/common/storage-configure-connection-string>)
@@ -192,7 +192,7 @@ Multi-level caching enables hierarchical cache storage with automatic backfill. 
   - Valid names: `disk`, `redis`, `memcached`, `s3`, `gcs`, `azure`, `gha`, `webdav`, `oss`, `cos`
   - Each level must be separately configured with its own environment variables
   - If not set, sccache uses single-level mode (legacy behavior)
-* `SCCACHE_MULTILEVEL_WRITE_POLICY` controls error handling on cache writes (default: `l0`)
+* `SCCACHE_MULTILEVEL_WRITE_ERROR_POLICY` controls error handling on cache writes (default: `l0`)
   - `ignore` - never fail on write errors, log warnings only (most permissive)
   - `l0` - fail only if L0 (first level) write fails (default, balances reliability and performance)
   - `all` - fail if any read-write level fails (most strict)
@@ -209,13 +209,13 @@ export SCCACHE_BUCKET="my-bucket"            # for s3 level
 **Write policy examples**:
 ```bash
 # Default: Fail only if disk write fails
-export SCCACHE_MULTILEVEL_WRITE_POLICY="l0"
+export SCCACHE_MULTILEVEL_WRITE_ERROR_POLICY="l0"
 
 # Best effort: Never fail on cache writes
-export SCCACHE_MULTILEVEL_WRITE_POLICY="ignore"
+export SCCACHE_MULTILEVEL_WRITE_ERROR_POLICY="ignore"
 
 # Strict: Fail if any level write fails
-export SCCACHE_MULTILEVEL_WRITE_POLICY="all"
+export SCCACHE_MULTILEVEL_WRITE_ERROR_POLICY="all"
 ```
 
 #### disk (local)

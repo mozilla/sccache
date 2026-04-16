@@ -130,9 +130,9 @@ export SCCACHE_MULTILEVEL_CHAIN="disk,redis,s3"
 **Order**: Left-to-right is fast-to-slow (L0, L1, L2, ...)
 **Valid names**: `disk`, `redis`, `memcached`, `s3`, `gcs`, `azure`, `gha`, `webdav`, `oss`, `cos`
 
-### Write Policy Configuration
+### Write Error Policy Configuration
 
-Control how sccache handles write failures across cache levels using `SCCACHE_MULTILEVEL_WRITE_POLICY`:
+Control how sccache handles write failures across cache levels using `SCCACHE_MULTILEVEL_WRITE_ERROR_POLICY`:
 
 **Available policies**:
 - **`ignore`** - Never fail on write errors, log warnings only (most permissive)
@@ -141,26 +141,26 @@ Control how sccache handles write failures across cache levels using `SCCACHE_MU
 
 **Note**: Read-only levels are always skipped during writes and never cause failures.
 
-#### Write Policy Examples
+#### Write Error Policy Examples
 
 **Example 1: Default Behavior (l0 policy)**
 ```bash
 export SCCACHE_MULTILEVEL_CHAIN="disk,redis,s3"
-export SCCACHE_MULTILEVEL_WRITE_POLICY="l0"  # or omit, it's the default
+export SCCACHE_MULTILEVEL_WRITE_ERROR_POLICY="l0"  # or omit, it's the default
 ```
 Compilation succeeds if disk write succeeds. Redis/S3 failures are logged but don't block compilation. Ensures local cache is always populated. **Best for most use cases.**
 
 **Example 2: Best Effort (ignore policy)**
 ```bash
 export SCCACHE_MULTILEVEL_CHAIN="disk,redis,s3"
-export SCCACHE_MULTILEVEL_WRITE_POLICY="ignore"
+export SCCACHE_MULTILEVEL_WRITE_ERROR_POLICY="ignore"
 ```
 Compilation always succeeds, even if all writes fail. Write failures are logged as warnings. **Best for unstable cache backends** where you don't want cache issues blocking builds.
 
 **Example 3: Strict Consistency (all policy)**
 ```bash
 export SCCACHE_MULTILEVEL_CHAIN="disk,redis,s3"
-export SCCACHE_MULTILEVEL_WRITE_POLICY="all"
+export SCCACHE_MULTILEVEL_WRITE_ERROR_POLICY="all"
 ```
 Compilation succeeds only if all read-write levels succeed. Any write failure fails the compilation. **Best for critical environments** where cache consistency is mandatory.
 
@@ -170,7 +170,7 @@ Any level configured as read-only (e.g., `SCCACHE_LOCAL_RW_MODE=READ_ONLY`) is a
 
 ```bash
 export SCCACHE_MULTILEVEL_CHAIN="disk,redis"
-export SCCACHE_MULTILEVEL_WRITE_POLICY="all"
+export SCCACHE_MULTILEVEL_WRITE_ERROR_POLICY="all"
 export SCCACHE_LOCAL_RW_MODE="READ_ONLY"  # Disk is read-only
 # Compilation succeeds if Redis write succeeds (disk is skipped)
 ```
@@ -180,7 +180,7 @@ export SCCACHE_LOCAL_RW_MODE="READ_ONLY"  # Disk is read-only
 ```bash
 # Multi-level configuration
 export SCCACHE_MULTILEVEL_CHAIN="disk,redis,s3"
-export SCCACHE_MULTILEVEL_WRITE_POLICY="l0"  # Default: fail only if disk fails
+export SCCACHE_MULTILEVEL_WRITE_ERROR_POLICY="l0"  # Default: fail only if disk fails
 
 # Level 0: Disk cache
 export SCCACHE_DIR="/var/cache/sccache"
@@ -202,7 +202,7 @@ export SCCACHE_S3_USE_SSL="true"
 # ~/.config/sccache/config
 [cache.multilevel]
 chain = ["disk", "redis", "s3"]
-write_policy = "l0"  # Optional: ignore, l0 (default), or all
+write_error_policy = "l0"  # Optional: ignore, l0 (default), or all
 
 [cache.disk]
 dir = "/var/cache/sccache"

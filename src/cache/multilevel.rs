@@ -47,7 +47,7 @@ use crate::compiler::PreprocessorCacheEntry;
     feature = "cos"
 ))]
 use crate::config::CacheType;
-use crate::config::{Config, PreprocessorCacheModeConfig, WritePolicy};
+use crate::config::{Config, PreprocessorCacheModeConfig, WriteErrorPolicy};
 use crate::errors::*;
 
 /// Lock-free atomic counters for multi-level cache statistics.
@@ -307,7 +307,7 @@ impl MultiLevelStats {
 /// See docs/MultiLevel.md for details.
 pub struct MultiLevelStorage {
     levels: Vec<Arc<dyn Storage>>,
-    write_policy: WritePolicy,
+    write_error_policy: WriteErrorPolicy,
     /// Lock-free atomic statistics per level
     atomic_stats: Vec<Arc<AtomicLevelStats>>,
     /// Base directories for path normalization, propagated to compiler pipeline
@@ -333,17 +333,20 @@ impl MultiLevelStorage {
     /// Levels are checked in order (L0, L1, L2, ...) during reads.
     /// All levels receive writes in parallel.
     pub fn new(levels: Vec<Arc<dyn Storage>>) -> Self {
-        Self::with_write_policy(levels, WritePolicy::default())
+        Self::with_write_error_policy(levels, WriteErrorPolicy::default())
     }
 
-    /// Create a new multi-level storage with explicit write policy.
-    pub fn with_write_policy(levels: Vec<Arc<dyn Storage>>, write_policy: WritePolicy) -> Self {
+    /// Create a new multi-level storage with explicit write error policy.
+    pub fn with_write_error_policy(
+        levels: Vec<Arc<dyn Storage>>,
+        write_error_policy: WriteErrorPolicy,
+    ) -> Self {
         let atomic_stats = AtomicLevelStats::from_levels(&levels);
         let basedirs = Self::collect_basedirs(&levels);
 
         MultiLevelStorage {
             levels,
-            write_policy,
+            write_error_policy,
             atomic_stats,
             basedirs,
         }
@@ -391,7 +394,7 @@ impl MultiLevelStorage {
         );
 
         let levels = &ml_config.chain;
-        let write_policy = ml_config.write_policy;
+        let write_error_policy = ml_config.write_error_policy;
 
         let mut storages: Vec<Arc<dyn Storage>> = Vec::new();
 
@@ -508,9 +511,9 @@ impl MultiLevelStorage {
             storages.len()
         );
 
-        Ok(Some(MultiLevelStorage::with_write_policy(
+        Ok(Some(MultiLevelStorage::with_write_error_policy(
             storages,
-            write_policy,
+            write_error_policy,
         )))
     }
 
@@ -696,14 +699,14 @@ impl Storage for MultiLevelStorage {
         let data: Bytes = entry.finish()?.into();
         let key_str = key.to_string();
 
-        match self.write_policy {
-            WritePolicy::Ignore => {
+        match self.write_error_policy {
+            WriteErrorPolicy::Ignore => {
                 // Never fail, log warnings only
                 self.write_remaining_levels_async(&key_str, &data, 0).await;
                 Ok(Duration::ZERO)
             }
 
-            WritePolicy::L0 => {
+            WriteErrorPolicy::L0 => {
                 // Fail only if L0 write fails (unless L0 is read-only)
                 if let Some(l0) = self.levels.first() {
                     // Check if L0 is read-only before attempting write
@@ -731,7 +734,7 @@ impl Storage for MultiLevelStorage {
                 Ok(Duration::ZERO)
             }
 
-            WritePolicy::All => {
+            WriteErrorPolicy::All => {
                 // Fail if any RW level fails
                 use tokio::sync::mpsc;
                 let (tx, mut rx) = mpsc::channel(self.levels.len());

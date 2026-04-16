@@ -1143,9 +1143,9 @@ fn test_put_mode_ignore() {
     let cache_l0 = Arc::new(FailingStorage);
     let cache_l1 = Arc::new(FailingStorage);
 
-    let storage = MultiLevelStorage::with_write_policy(
+    let storage = MultiLevelStorage::with_write_error_policy(
         vec![cache_l0 as Arc<dyn Storage>, cache_l1 as Arc<dyn Storage>],
-        WritePolicy::Ignore,
+        WriteErrorPolicy::Ignore,
     );
 
     runtime.block_on(async {
@@ -1154,7 +1154,7 @@ fn test_put_mode_ignore() {
 
         assert!(
             result.is_ok(),
-            "WritePolicy::Ignore should never fail, even when all levels error"
+            "WriteErrorPolicy::Ignore should never fail, even when all levels error"
         );
     });
 }
@@ -1171,9 +1171,9 @@ fn test_put_mode_l0_fails_on_error() {
     let cache_l0 = Arc::new(FailingStorage);
     let cache_l1 = Arc::new(InMemoryStorage::new());
 
-    let storage = MultiLevelStorage::with_write_policy(
+    let storage = MultiLevelStorage::with_write_error_policy(
         vec![cache_l0 as Arc<dyn Storage>, cache_l1 as Arc<dyn Storage>],
-        WritePolicy::L0,
+        WriteErrorPolicy::L0,
     );
 
     runtime.block_on(async {
@@ -1182,7 +1182,7 @@ fn test_put_mode_l0_fails_on_error() {
 
         assert!(
             result.is_err(),
-            "WritePolicy::L0 should fail when L0 write fails"
+            "WriteErrorPolicy::L0 should fail when L0 write fails"
         );
         let err_msg = result.unwrap_err().to_string();
         assert!(
@@ -1205,9 +1205,9 @@ fn test_put_mode_l0_succeeds_if_l0_ok() {
     let cache_l0 = Arc::new(InMemoryStorage::new());
     let cache_l1 = Arc::new(FailingStorage);
 
-    let storage = MultiLevelStorage::with_write_policy(
+    let storage = MultiLevelStorage::with_write_error_policy(
         vec![cache_l0 as Arc<dyn Storage>, cache_l1 as Arc<dyn Storage>],
-        WritePolicy::L0,
+        WriteErrorPolicy::L0,
     );
 
     runtime.block_on(async {
@@ -1216,7 +1216,7 @@ fn test_put_mode_l0_succeeds_if_l0_ok() {
 
         assert!(
             result.is_ok(),
-            "WritePolicy::L0 should succeed when L0 succeeds, even if L1+ fails"
+            "WriteErrorPolicy::L0 should succeed when L0 succeeds, even if L1+ fails"
         );
     });
 }
@@ -1233,9 +1233,9 @@ fn test_put_mode_all_fails_on_any_error() {
     let cache_l0 = Arc::new(InMemoryStorage::new());
     let cache_l1 = Arc::new(FailingStorage);
 
-    let storage = MultiLevelStorage::with_write_policy(
+    let storage = MultiLevelStorage::with_write_error_policy(
         vec![cache_l0 as Arc<dyn Storage>, cache_l1 as Arc<dyn Storage>],
-        WritePolicy::All,
+        WriteErrorPolicy::All,
     );
 
     runtime.block_on(async {
@@ -1247,7 +1247,7 @@ fn test_put_mode_all_fails_on_any_error() {
 
         assert!(
             result.is_err(),
-            "WritePolicy::All should fail when any RW level fails"
+            "WriteErrorPolicy::All should fail when any RW level fails"
         );
     });
 }
@@ -1264,12 +1264,12 @@ fn test_put_mode_all_succeeds_when_all_ok() {
     let cache_l0 = Arc::new(InMemoryStorage::new());
     let cache_l1 = Arc::new(InMemoryStorage::new());
 
-    let storage = MultiLevelStorage::with_write_policy(
+    let storage = MultiLevelStorage::with_write_error_policy(
         vec![
             cache_l0.clone() as Arc<dyn Storage>,
             cache_l1.clone() as Arc<dyn Storage>,
         ],
-        WritePolicy::All,
+        WriteErrorPolicy::All,
     );
 
     runtime.block_on(async {
@@ -1281,7 +1281,7 @@ fn test_put_mode_all_succeeds_when_all_ok() {
 
         assert!(
             result.is_ok(),
-            "WritePolicy::All should succeed when all levels succeed"
+            "WriteErrorPolicy::All should succeed when all levels succeed"
         );
 
         // Verify both levels have the data
@@ -1309,13 +1309,13 @@ fn test_put_mode_all_skips_readonly() {
     let cache_l1 = Arc::new(ReadOnlyStorage(Arc::new(InMemoryStorage::new())));
     let cache_l2 = Arc::new(InMemoryStorage::new());
 
-    let storage = MultiLevelStorage::with_write_policy(
+    let storage = MultiLevelStorage::with_write_error_policy(
         vec![
             cache_l0.clone() as Arc<dyn Storage>,
             cache_l1 as Arc<dyn Storage>,
             cache_l2.clone() as Arc<dyn Storage>,
         ],
-        WritePolicy::All,
+        WriteErrorPolicy::All,
     );
 
     runtime.block_on(async {
@@ -1327,7 +1327,7 @@ fn test_put_mode_all_skips_readonly() {
 
         assert!(
             result.is_ok(),
-            "WritePolicy::All should succeed when read-only levels are skipped"
+            "WriteErrorPolicy::All should succeed when read-only levels are skipped"
         );
 
         // Verify writable levels have the data

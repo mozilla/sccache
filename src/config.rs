@@ -40,7 +40,7 @@ use crate::errors::*;
 /// Defines how the multi-level cache handles write failures.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum WritePolicy {
+pub enum WriteErrorPolicy {
     /// Never fail on write errors - log warnings only (most permissive)
     Ignore,
     /// Fail only if L0 write fails (default - balances reliability and performance)
@@ -50,14 +50,14 @@ pub enum WritePolicy {
     All,
 }
 
-impl FromStr for WritePolicy {
+impl FromStr for WriteErrorPolicy {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self> {
         match s.to_lowercase().as_str() {
-            "ignore" => Ok(WritePolicy::Ignore),
-            "l0" => Ok(WritePolicy::L0),
-            "all" => Ok(WritePolicy::All),
+            "ignore" => Ok(WriteErrorPolicy::Ignore),
+            "l0" => Ok(WriteErrorPolicy::L0),
+            "all" => Ok(WriteErrorPolicy::All),
             _ => Err(anyhow!(
                 "Invalid write policy '{}'. Valid values: ignore, l0, all",
                 s
@@ -66,12 +66,12 @@ impl FromStr for WritePolicy {
     }
 }
 
-impl fmt::Display for WritePolicy {
+impl fmt::Display for WriteErrorPolicy {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            WritePolicy::Ignore => write!(f, "ignore"),
-            WritePolicy::L0 => write!(f, "l0"),
-            WritePolicy::All => write!(f, "all"),
+            WriteErrorPolicy::Ignore => write!(f, "ignore"),
+            WriteErrorPolicy::L0 => write!(f, "l0"),
+            WriteErrorPolicy::All => write!(f, "all"),
         }
     }
 }
@@ -84,7 +84,7 @@ pub struct MultiLevelConfig {
     pub chain: Vec<String>,
     /// Write failure handling policy
     #[serde(default)]
-    pub write_policy: WritePolicy,
+    pub write_error_policy: WriteErrorPolicy,
 }
 
 static CACHED_CONFIG_PATH: LazyLock<PathBuf> = LazyLock::new(CachedConfig::file_config_path);
@@ -1138,14 +1138,14 @@ fn config_from_env() -> Result<EnvConfig> {
     let multilevel = if let Ok(chain_str) = env::var("SCCACHE_MULTILEVEL_CHAIN") {
         let chain: Vec<String> = chain_str.split(',').map(|s| s.trim().to_string()).collect();
 
-        let write_policy = env::var("SCCACHE_MULTILEVEL_WRITE_POLICY")
+        let write_error_policy = env::var("SCCACHE_MULTILEVEL_WRITE_ERROR_POLICY")
             .ok()
-            .and_then(|s| s.parse::<WritePolicy>().ok())
+            .and_then(|s| s.parse::<WriteErrorPolicy>().ok())
             .unwrap_or_default();
 
         Some(MultiLevelConfig {
             chain,
-            write_policy,
+            write_error_policy,
         })
     } else {
         None
@@ -2831,7 +2831,7 @@ fn test_get_cache_levels_invalid_level() {
     let configs = CacheConfigs {
         multilevel: Some(MultiLevelConfig {
             chain: vec!["unknown_cache".to_string()],
-            write_policy: WritePolicy::default(),
+            write_error_policy: WriteErrorPolicy::default(),
         }),
         ..Default::default()
     };
@@ -2851,7 +2851,7 @@ fn test_get_cache_levels_missing_config() {
     let configs = CacheConfigs {
         multilevel: Some(MultiLevelConfig {
             chain: vec!["s3".to_string()],
-            write_policy: WritePolicy::default(),
+            write_error_policy: WriteErrorPolicy::default(),
         }),
         ..Default::default()
     };
