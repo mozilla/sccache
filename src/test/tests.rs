@@ -24,7 +24,6 @@ use crate::test::utils::*;
 use fs::File;
 use fs_err as fs;
 use futures::channel::oneshot::{self, Sender};
-#[cfg(not(target_os = "macos"))]
 use serial_test::serial;
 use std::io::{Cursor, Write};
 #[cfg(not(target_os = "macos"))]
@@ -173,104 +172,36 @@ fn test_server_stats() {
 }
 
 #[test]
+#[serial]
 fn test_server_unsupported_compiler() {
-    let f = TestFixture::new();
-    let (addr, sender, server_creator, child) = run_server_thread(f.tempdir.path(), None);
-    // Connect to the server.
-    let conn = connect_to_server(&addr).unwrap();
-    {
-        let mut c = server_creator.lock().unwrap();
-        // fail rust driver check
-        c.next_command_spawns(Ok(MockChild::new(exit_status(1), "hello", "error")));
-        // The server will check the compiler, so pretend to be an unsupported
-        // compiler.
-        c.next_command_spawns(Ok(MockChild::new(exit_status(0), "hello", "error")));
-    }
-    // Ask the server to compile something.
-    //TODO: MockCommand should validate these!
-    let exe = &f.bins[0];
-    let cmdline = vec!["-c".into(), "file.c".into(), "-o".into(), "file.o".into()];
-    let cwd = f.tempdir.path();
-    // This creator shouldn't create any processes. It will assert if
-    // it tries to.
-    let client_creator = new_creator();
-    let mut stdout = Cursor::new(Vec::new());
-    let mut stderr = Cursor::new(Vec::new());
-    let path = Some(f.paths);
-    let mut runtime = Runtime::new().unwrap();
-    let res = do_compile(
-        client_creator,
-        &mut runtime,
-        conn,
-        exe,
-        cmdline,
-        cwd,
-        path,
-        vec![],
-        &mut stdout,
-        &mut stderr,
-    );
-    match res {
-        Ok(_) => panic!("do_compile should have failed!"),
-        Err(e) => assert_eq!("Compiler not supported: \"error\"", e.to_string()),
-    }
-    // Make sure we ran the mock processes.
-    assert_eq!(0, server_creator.lock().unwrap().children.len());
-    // Shut down the server.
-    sender.send(ServerMessage::Shutdown).ok().unwrap();
-    // Ensure that it shuts down.
-    child.join().unwrap();
-}
-
-#[test]
-fn test_server_compile() {
-    let _ = env_logger::try_init();
-    let f = TestFixture::new();
-    let gcc = f.mk_bin("gcc").unwrap();
-    let (addr, sender, server_creator, child) = run_server_thread(f.tempdir.path(), None);
-    // Connect to the server.
-    const PREPROCESSOR_STDOUT: &[u8] = b"preprocessor stdout";
-    const PREPROCESSOR_STDERR: &[u8] = b"preprocessor stderr";
-    const STDOUT: &[u8] = b"some stdout";
-    const STDERR: &[u8] = b"some stderr";
-    let conn = connect_to_server(&addr).unwrap();
-    // Write a dummy input file so the preprocessor cache mode can work
-    std::fs::write(f.tempdir.path().join("file.c"), "whatever").unwrap();
-    {
-        let mut c = server_creator.lock().unwrap();
-        // The server will check the compiler. Pretend it's GCC.
-        c.next_command_spawns(Ok(MockChild::new(exit_status(0), "compiler_id=gcc", "")));
-        // Preprocessor invocation.
-        c.next_command_spawns(Ok(MockChild::new(
-            exit_status(0),
-            PREPROCESSOR_STDOUT,
-            PREPROCESSOR_STDERR,
-        )));
-        // Compiler invocation.
-        //TODO: wire up a way to get data written to stdin.
-        let obj = f.tempdir.path().join("file.o");
-        c.next_command_calls(move |_| {
-            // Pretend to compile something.
-            let mut f = File::create(&obj)?;
-            f.write_all(b"file contents")?;
-            Ok(MockChild::new(exit_status(0), STDOUT, STDERR))
-        });
-    }
-    // Ask the server to compile something.
-    //TODO: MockCommand should validate these!
-    let exe = &gcc;
-    let cmdline = vec!["-c".into(), "file.c".into(), "-o".into(), "file.o".into()];
-    let cwd = f.tempdir.path();
-    // This creator shouldn't create any processes. It will assert if
-    // it tries to.
-    let client_creator = new_creator();
-    let mut stdout = Cursor::new(Vec::new());
-    let mut stderr = Cursor::new(Vec::new());
-    let path = Some(f.paths);
-    let mut runtime = Runtime::new().unwrap();
-    assert_eq!(
-        0,
-        do_compile(
+    // This test exercises server-side compilation; disable client-side mode.
+    // Use temp_env + #[serial] to avoid races and ensure the var is restored.
+    temp_env::with_var("SCCACHE_CLIENT_SIDE_COMPILE", Some("0"), || {
+        let f = TestFixture::new();
+        let (addr, sender, server_creator, child) = run_server_thread(f.tempdir.path(), None);
+        // Connect to the server.
+        let conn = connect_to_server(&addr).unwrap();
+        {
+            let mut c = server_creator.lock().unwrap();
+            // fail rust driver check
+            c.next_command_spawns(Ok(MockChild::new(exit_status(1), "hello", "error")));
+            // The server will check the compiler, so pretend to be an unsupported
+            // compiler.
+            c.next_command_spawns(Ok(MockChild::new(exit_status(0), "hello", "error")));
+        }
+        // Ask the server to compile something.
+        //TODO: MockCommand should validate these!
+        let exe = &f.bins[0];
+        let cmdline = vec!["-c".into(), "file.c".into(), "-o".into(), "file.o".into()];
+        let cwd = f.tempdir.path();
+        // This creator shouldn't create any processes. It will assert if
+        // it tries to.
+        let client_creator = new_creator();
+        let mut stdout = Cursor::new(Vec::new());
+        let mut stderr = Cursor::new(Vec::new());
+        let path = Some(f.paths);
+        let mut runtime = Runtime::new().unwrap();
+        let res = do_compile(
             client_creator,
             &mut runtime,
             conn,
@@ -280,17 +211,303 @@ fn test_server_compile() {
             path,
             vec![],
             &mut stdout,
-            &mut stderr
-        )
-        .unwrap()
+            &mut stderr,
+        );
+        match res {
+            Ok(_) => panic!("do_compile should have failed!"),
+            Err(e) => assert_eq!("Compiler not supported: \"error\"", e.to_string()),
+        }
+        // Make sure we ran the mock processes.
+        assert_eq!(0, server_creator.lock().unwrap().children.len());
+        // Shut down the server.
+        sender.send(ServerMessage::Shutdown).ok().unwrap();
+        // Ensure that it shuts down.
+        child.join().unwrap();
+    });
+}
+
+#[test]
+#[serial]
+fn test_server_compile() {
+    // This test exercises server-side compilation; disable client-side mode.
+    // Use temp_env + #[serial] to avoid races and ensure the var is restored.
+    temp_env::with_var("SCCACHE_CLIENT_SIDE_COMPILE", Some("0"), || {
+        let _ = env_logger::try_init();
+        let f = TestFixture::new();
+        let gcc = f.mk_bin("gcc").unwrap();
+        let (addr, sender, server_creator, child) = run_server_thread(f.tempdir.path(), None);
+        // Connect to the server.
+        const PREPROCESSOR_STDOUT: &[u8] = b"preprocessor stdout";
+        const PREPROCESSOR_STDERR: &[u8] = b"preprocessor stderr";
+        const STDOUT: &[u8] = b"some stdout";
+        const STDERR: &[u8] = b"some stderr";
+        let conn = connect_to_server(&addr).unwrap();
+        // Write a dummy input file so the preprocessor cache mode can work
+        std::fs::write(f.tempdir.path().join("file.c"), "whatever").unwrap();
+        {
+            let mut c = server_creator.lock().unwrap();
+            // The server will check the compiler. Pretend it's GCC.
+            c.next_command_spawns(Ok(MockChild::new(exit_status(0), "compiler_id=gcc", "")));
+            // Preprocessor invocation.
+            c.next_command_spawns(Ok(MockChild::new(
+                exit_status(0),
+                PREPROCESSOR_STDOUT,
+                PREPROCESSOR_STDERR,
+            )));
+            // Compiler invocation.
+            //TODO: wire up a way to get data written to stdin.
+            let obj = f.tempdir.path().join("file.o");
+            c.next_command_calls(move |_| {
+                // Pretend to compile something.
+                let mut f = File::create(&obj)?;
+                f.write_all(b"file contents")?;
+                Ok(MockChild::new(exit_status(0), STDOUT, STDERR))
+            });
+        }
+        // Ask the server to compile something.
+        //TODO: MockCommand should validate these!
+        let exe = &gcc;
+        let cmdline = vec!["-c".into(), "file.c".into(), "-o".into(), "file.o".into()];
+        let cwd = f.tempdir.path();
+        // This creator shouldn't create any processes. It will assert if
+        // it tries to.
+        let client_creator = new_creator();
+        let mut stdout = Cursor::new(Vec::new());
+        let mut stderr = Cursor::new(Vec::new());
+        let path = Some(f.paths);
+        let mut runtime = Runtime::new().unwrap();
+        assert_eq!(
+            0,
+            do_compile(
+                client_creator,
+                &mut runtime,
+                conn,
+                exe,
+                cmdline,
+                cwd,
+                path,
+                vec![],
+                &mut stdout,
+                &mut stderr
+            )
+            .unwrap()
+        );
+        // Make sure we ran the mock processes.
+        assert_eq!(0, server_creator.lock().unwrap().children.len());
+        assert_eq!(STDOUT, stdout.into_inner().as_slice());
+        assert_eq!(STDERR, stderr.into_inner().as_slice());
+        // Shut down the server.
+        sender.send(ServerMessage::Shutdown).ok().unwrap();
+        // Ensure that it shuts down.
+        child.join().unwrap();
+    });
+}
+
+/// Test the CacheGet → Miss → CachePut → CacheGet → Hit round-trip at the
+/// protocol level.  This exercises `handle_cache_get` and `handle_cache_put`
+/// in `server.rs` without going through `do_compile_client_side`.
+#[test]
+#[serial]
+fn test_cache_get_put_round_trip() {
+    let f = TestFixture::new();
+    let (addr, sender, _server_creator, child) = run_server_thread(f.tempdir.path(), None);
+
+    // --- CacheGet on a key that doesn't exist → Miss -------------------------
+    let mut conn = connect_to_server(&addr).unwrap();
+    let output_path = f.tempdir.path().join("output.o");
+    let output_paths = vec![crate::cache::FileObjectSource {
+        key: "obj".into(),
+        path: output_path.clone(),
+        optional: false,
+    }];
+    let resp = conn
+        .request(crate::protocol::Request::CacheGet(
+            crate::protocol::CacheGetRequest {
+                key: "test-key-1".into(),
+                output_paths: output_paths.clone(),
+            },
+        ))
+        .unwrap();
+    assert!(
+        matches!(
+            resp,
+            crate::protocol::Response::CacheGet(crate::protocol::CacheGetResponse::Miss)
+        ),
+        "expected CacheGet Miss, got: {resp:?}"
     );
-    // Make sure we ran the mock processes.
-    assert_eq!(0, server_creator.lock().unwrap().children.len());
-    assert_eq!(STDOUT, stdout.into_inner().as_slice());
-    assert_eq!(STDERR, stderr.into_inner().as_slice());
-    // Shut down the server.
+
+    // --- CachePut: write an artifact file and store it -----------------------
+    fs::write(&output_path, b"object file contents").unwrap();
+    let resp = conn
+        .request(crate::protocol::Request::CachePut(
+            crate::protocol::CachePutRequest {
+                key: "test-key-1".into(),
+                output_paths: output_paths.clone(),
+                stdout: b"compile stdout".to_vec(),
+                stderr: b"compile stderr".to_vec(),
+            },
+        ))
+        .unwrap();
+    assert!(
+        matches!(
+            resp,
+            crate::protocol::Response::CachePut(crate::protocol::CachePutResponse::Success)
+        ),
+        "expected CachePut Success, got: {resp:?}"
+    );
+
+    // Remove the artifact so we can verify CacheGet recreates it.
+    fs::remove_file(&output_path).unwrap();
+    assert!(!output_path.exists());
+
+    // --- CacheGet on the same key → Hit, artifacts extracted ------------------
+    let resp = conn
+        .request(crate::protocol::Request::CacheGet(
+            crate::protocol::CacheGetRequest {
+                key: "test-key-1".into(),
+                output_paths: output_paths.clone(),
+            },
+        ))
+        .unwrap();
+    match resp {
+        crate::protocol::Response::CacheGet(crate::protocol::CacheGetResponse::Hit {
+            stdout,
+            stderr,
+        }) => {
+            assert_eq!(stdout, b"compile stdout");
+            assert_eq!(stderr, b"compile stderr");
+        }
+        other => panic!("expected CacheGet Hit, got: {other:?}"),
+    }
+    // The artifact should have been extracted back to disk.
+    assert!(output_path.exists(), "artifact was not extracted to disk");
+    assert_eq!(fs::read(&output_path).unwrap(), b"object file contents");
+
+    // Drop the connection so the server can shut down cleanly.
+    drop(conn);
+
+    // --- Check stats reflect the operations ----------------------------------
+    // request_stats consumes the connection, so it will be dropped.
+    let stats_conn = connect_to_server(&addr).unwrap();
+    let info = request_stats(stats_conn).unwrap();
+    assert_eq!(
+        info.stats.client_side_cache_misses, 1,
+        "expected 1 client-side cache miss"
+    );
+    assert_eq!(
+        info.stats.client_side_cache_hits, 1,
+        "expected 1 client-side cache hit"
+    );
+    assert_eq!(info.stats.cache_writes, 1, "expected 1 cache write");
+
+    // Shut down.
     sender.send(ServerMessage::Shutdown).ok().unwrap();
-    // Ensure that it shuts down.
+    child.join().unwrap();
+}
+
+/// CacheGet with a relative path should return an error, not extract anything.
+#[test]
+#[serial]
+fn test_cache_get_rejects_relative_path() {
+    let f = TestFixture::new();
+    let (addr, sender, _server_creator, child) = run_server_thread(f.tempdir.path(), None);
+
+    let mut conn = connect_to_server(&addr).unwrap();
+    let resp = conn
+        .request(crate::protocol::Request::CacheGet(
+            crate::protocol::CacheGetRequest {
+                key: "test-key-bad".into(),
+                output_paths: vec![crate::cache::FileObjectSource {
+                    key: "obj".into(),
+                    path: "relative/file.o".into(),
+                    optional: false,
+                }],
+            },
+        ))
+        .unwrap();
+    match resp {
+        crate::protocol::Response::CacheGet(crate::protocol::CacheGetResponse::Error(msg)) => {
+            assert!(
+                msg.contains("must be absolute"),
+                "unexpected error message: {msg}"
+            );
+        }
+        other => panic!("expected CacheGet Error for relative path, got: {other:?}"),
+    }
+
+    drop(conn);
+    sender.send(ServerMessage::Shutdown).ok().unwrap();
+    child.join().unwrap();
+}
+
+/// CachePut with a path containing '..' should return an error.
+#[test]
+#[serial]
+fn test_cache_put_rejects_dotdot_path() {
+    let f = TestFixture::new();
+    let (addr, sender, _server_creator, child) = run_server_thread(f.tempdir.path(), None);
+
+    let mut conn = connect_to_server(&addr).unwrap();
+    let resp = conn
+        .request(crate::protocol::Request::CachePut(
+            crate::protocol::CachePutRequest {
+                key: "test-key-bad".into(),
+                output_paths: vec![crate::cache::FileObjectSource {
+                    key: "obj".into(),
+                    path: std::env::temp_dir().join("..").join("etc").join("passwd"),
+                    optional: false,
+                }],
+                stdout: vec![],
+                stderr: vec![],
+            },
+        ))
+        .unwrap();
+    match resp {
+        crate::protocol::Response::CachePut(crate::protocol::CachePutResponse::Error(msg)) => {
+            assert!(msg.contains("'..'"), "unexpected error message: {msg}");
+        }
+        other => panic!("expected CachePut Error for dotdot path, got: {other:?}"),
+    }
+
+    drop(conn);
+    sender.send(ServerMessage::Shutdown).ok().unwrap();
+    child.join().unwrap();
+}
+
+/// CachePut when the output file doesn't exist should return an error, not panic.
+#[test]
+#[serial]
+fn test_cache_put_missing_file() {
+    let f = TestFixture::new();
+    let (addr, sender, _server_creator, child) = run_server_thread(f.tempdir.path(), None);
+
+    let mut conn = connect_to_server(&addr).unwrap();
+    let resp = conn
+        .request(crate::protocol::Request::CachePut(
+            crate::protocol::CachePutRequest {
+                key: "test-key-missing".into(),
+                output_paths: vec![crate::cache::FileObjectSource {
+                    key: "obj".into(),
+                    path: f.tempdir.path().join("nonexistent.o"),
+                    optional: false,
+                }],
+                stdout: vec![],
+                stderr: vec![],
+            },
+        ))
+        .unwrap();
+    match resp {
+        crate::protocol::Response::CachePut(crate::protocol::CachePutResponse::Error(msg)) => {
+            assert!(
+                msg.contains("failed to read output files"),
+                "unexpected error message: {msg}"
+            );
+        }
+        other => panic!("expected CachePut Error for missing file, got: {other:?}"),
+    }
+
+    drop(conn);
+    sender.send(ServerMessage::Shutdown).ok().unwrap();
     child.join().unwrap();
 }
 
