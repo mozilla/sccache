@@ -259,22 +259,36 @@ pub struct DistSystem {
 #[cfg(feature = "dist-server")]
 impl DistSystem {
     pub fn new(sccache_dist: &Path, tmpdir: &Path) -> Self {
-        // Make sure the docker image is available, building it if necessary
-        let mut child = Command::new("docker")
-            .args(["build", "-q", "-t", DIST_IMAGE, "-"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        child
-            .stdin
-            .as_mut()
-            .unwrap()
-            .write_all(DIST_DOCKERFILE.as_bytes())
-            .unwrap();
-        let output = child.wait_with_output().unwrap();
-        check_output(&output);
+        // Make sure the docker image is available, building it if necessary.
+        // Retry up to 3 times to handle transient apt-get failures in CI.
+        let mut last_output = None;
+        for attempt in 1..=3 {
+            let mut child = Command::new("docker")
+                .args(["build", "-q", "-t", DIST_IMAGE, "-"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            child
+                .stdin
+                .as_mut()
+                .unwrap()
+                .write_all(DIST_DOCKERFILE.as_bytes())
+                .unwrap();
+            let output = child.wait_with_output().unwrap();
+            if output.status.success() {
+                last_output = Some(output);
+                break;
+            }
+            eprintln!(
+                "docker build attempt {}/3 failed (exit {}), retrying...",
+                attempt, output.status
+            );
+            last_output = Some(output);
+            std::thread::sleep(Duration::from_secs(5 * attempt as u64));
+        }
+        check_output(&last_output.unwrap());
 
         let tmpdir = tmpdir.join("distsystem");
         fs::create_dir(&tmpdir).unwrap();
