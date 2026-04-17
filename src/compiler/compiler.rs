@@ -615,7 +615,7 @@ where
                     // In this mode, cache entries are exclusively distinguished by their preprocessed
                     // source contents. But two files may differ in their names and / or the names of
                     // included files while still producing the same preprocessed output, so they get the
-                    // same cache entry. That entry will have wrong (file names) dependency informaton in
+                    // same cache entry. That entry will have wrong (file names) dependency information in
                     // the dependency file except for the compilation unit that originally produced it.
                     // Since we did local preprocessing, that should already have produced the dependency
                     // file - just leave that one alone and don't overwrite it from the cache.

@@ -699,23 +699,27 @@ where
         );
         profile_generate = true;
     }
-    if need_explicit_dep_target {
-        dependency_args.push(dep_flag);
-        dependency_args.push(dep_target.unwrap_or_else(|| output.clone().into_os_string()));
-    }
-    if let DepArgumentRequirePath::Missing = need_explicit_dep_argument_path {
-        dependency_args.push(OsString::from("-MF"));
-        dependency_args.push(Path::new(&output).with_extension("d").into_os_string());
-    }
 
-    if let Some(path) = dep_path {
-        outputs.insert(
-            "d",
-            ArtifactDescriptor {
-                path: path.clone(),
-                optional: false,
-            },
-        );
+    // If the language doesn't need preprocessing, it doesn't generate a dependency file. See issue #2664
+    if language.needs_c_preprocessing() {
+        if need_explicit_dep_target {
+            dependency_args.push(dep_flag);
+            dependency_args.push(dep_target.unwrap_or_else(|| output.clone().into_os_string()));
+        }
+        if let DepArgumentRequirePath::Missing = need_explicit_dep_argument_path {
+            dependency_args.push(OsString::from("-MF"));
+            dependency_args.push(Path::new(&output).with_extension("d").into_os_string());
+        }
+
+        if let Some(path) = dep_path {
+            outputs.insert(
+                "d",
+                ArtifactDescriptor {
+                    path: path.clone(),
+                    optional: false,
+                },
+            );
+        }
     }
 
     if let Some(path) = serialize_diagnostics {
@@ -1122,6 +1126,7 @@ impl Iterator for ExpandIncludeFile<'_> {
 #[cfg(test)]
 mod test {
     use fs::File;
+    use itertools::assert_equal;
     use std::io::Write;
 
     use super::*;
@@ -1402,6 +1407,62 @@ mod test {
         assert_eq!(ovec!["--coverage"], common_args);
         assert!(!msvc_show_includes);
         assert!(profile_generate);
+    }
+
+    #[test]
+    fn test_parse_arguments_depfile_for_raw_assembly_gcc() {
+        let args = stringvec!["-c", "foo.s", "-o", "foo.o", "-MD", "-MF", "foo.d"];
+        let ParsedArguments {
+            input,
+            language,
+            outputs,
+            preprocessor_args,
+            ..
+        } = match parse_arguments_(args, false) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(Some("foo.s"), input.to_str());
+        assert_eq!(Language::Assembler, language);
+        assert_equal(
+            outputs,
+            vec![(
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false,
+                },
+            )],
+        );
+        assert!(preprocessor_args.is_empty());
+    }
+
+    #[test]
+    fn test_parse_arguments_depfile_for_preprocessed_c_clang() {
+        let args = stringvec!["-c", "foo.i", "-o", "foo.o", "-MD", "-MF", "foo.d"];
+        let ParsedArguments {
+            input,
+            language,
+            outputs,
+            preprocessor_args,
+            ..
+        } = match parse_arguments_clang(args, false) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(Some("foo.i"), input.to_str());
+        assert_eq!(Language::CPreprocessed, language);
+        assert_equal(
+            outputs,
+            vec![(
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false,
+                },
+            )],
+        );
+        assert!(preprocessor_args.is_empty());
     }
 
     #[test]
