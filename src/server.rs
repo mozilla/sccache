@@ -1794,6 +1794,8 @@ pub struct ServerStats {
     pub client_side_cache_misses: u64,
     /// The count of client-side cache errors (via CacheGet).
     pub client_side_cache_errors: u64,
+    /// Multi-level cache statistics (if multi-level caching is enabled)
+    pub multi_level: Option<crate::cache::multilevel::MultiLevelStats>,
 }
 
 /// Info and stats about the server.
@@ -1846,6 +1848,7 @@ impl Default for ServerStats {
             client_side_cache_hits: u64::default(),
             client_side_cache_misses: u64::default(),
             client_side_cache_errors: u64::default(),
+            multi_level: None,
         }
     }
 }
@@ -1996,6 +1999,14 @@ impl ServerStats {
             self.dist_errors,
             "Failed distributed compilations"
         );
+
+        // Add multi-level cache statistics if available
+        if let Some(ref ml_stats) = self.multi_level {
+            for (name, value, suffix_type) in ml_stats.format_stats() {
+                stats_vec.push((name, value, suffix_type));
+            }
+        }
+
         let name_width = stats_vec.iter().map(|(n, _, _)| n.len()).max().unwrap();
         let stat_width = stats_vec.iter().map(|(_, s, _)| s.len()).max().unwrap();
         for (name, stat, suffix_len) in stats_vec {
@@ -2121,6 +2132,7 @@ impl ServerInfo {
         let cache_size;
         let max_cache_size;
         let basedirs;
+        let multi_level;
         if let Some(storage) = storage {
             cache_location = storage.location();
             use_preprocessor_cache_mode = storage
@@ -2133,16 +2145,21 @@ impl ServerInfo {
                 .iter()
                 .map(|p| String::from_utf8_lossy(p).to_string())
                 .collect();
+            multi_level = storage.multilevel_stats();
         } else {
             cache_location = String::new();
             use_preprocessor_cache_mode = false;
             cache_size = None;
             max_cache_size = None;
             basedirs = Vec::new();
+            multi_level = None;
         }
         let version = env!("CARGO_PKG_VERSION").to_string();
         Ok(ServerInfo {
-            stats,
+            stats: ServerStats {
+                multi_level,
+                ..stats
+            },
             cache_location,
             cache_size,
             max_cache_size,
@@ -2161,6 +2178,16 @@ impl ServerInfo {
             self.cache_location,
             name_width = name_width
         );
+        if let Some(ref ml_stats) = self.stats.multi_level {
+            for level in &ml_stats.0 {
+                println!(
+                    "{:<name_width$} {}",
+                    format!("  {}", level.name),
+                    level.location,
+                    name_width = name_width
+                );
+            }
+        }
         println!(
             "{:<name_width$} {}",
             "Base directories",
