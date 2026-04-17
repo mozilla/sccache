@@ -19,6 +19,7 @@ use crate::cache::{Cache, CacheMode, CacheWrite, Storage};
 use crate::compiler::PreprocessorCacheEntry;
 use crate::config::PreprocessorCacheModeConfig;
 use crate::errors::*;
+use bytes::Bytes;
 
 pub struct ReadOnlyStorage(pub Arc<dyn Storage>);
 
@@ -92,6 +93,11 @@ impl Storage for ReadOnlyStorage {
         _preprocessor_cache_entry: PreprocessorCacheEntry,
     ) -> Result<()> {
         Err(anyhow!("Cannot write to read-only storage"))
+    }
+
+    /// Get raw serialized cache entry bytes (forwarded to inner storage)
+    async fn get_raw(&self, key: &str) -> Result<Option<Bytes>> {
+        self.0.get_raw(key).await
     }
 }
 
