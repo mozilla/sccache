@@ -68,7 +68,7 @@ impl Digest {
     /// Calculate the BLAKE3 digest of the contents read from `reader`, calling
     /// `each` before each time the digest is updated.
     pub fn reader_sync_with<R: Read, F: FnMut(&[u8])>(mut reader: R, mut each: F) -> Result<Self> {
-        let mut m = Digest::new();
+        let mut m = Digest::default();
         // A buffer of 128KB should give us the best performance.
         // See https://eklitzke.org/efficient-file-copying-on-linux.
         let mut buffer = [0; HASH_BUFFER_SIZE];
@@ -101,16 +101,15 @@ impl Digest {
         pool.spawn_blocking(move || {
             let mut digest = Digest::new();
             if path.is_dir() {
-                // For directories (e.g., from proc_macro::tracked_path::path()),
-                // recursively hash all file contents in sorted order, with the
-                // relative path mixed in as a delimiter so tree shape matters.
+                // For directories (e.g., from
+                // proc_macro::tracked_path::path()), recursively hash all file
+                // names and contents in sorted order.
                 let mut entries = Vec::new();
                 Self::collect_dir_entries(&path, &mut entries)?;
                 entries.sort();
                 for entry in &entries {
                     let rel = entry.strip_prefix(&path).unwrap_or(entry);
-                    digest.update(rel.to_string_lossy().as_bytes());
-                    digest.update(b"\0");
+                    digest.delimiter(rel.to_string_lossy().as_bytes());
                     digest.update_from_file(entry)?;
                 }
             } else {
