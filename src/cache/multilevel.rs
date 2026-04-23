@@ -25,8 +25,6 @@ use crate::cache::build_single_cache;
 use crate::cache::disk::DiskCache;
 use crate::cache::{Cache, CacheMode, CacheWrite, Storage};
 use crate::compiler::PreprocessorCacheEntry;
-#[cfg(any_cache_remote)]
-use crate::config::CacheType;
 use crate::config::{Config, PreprocessorCacheModeConfig, WriteErrorPolicy};
 use crate::errors::*;
 
@@ -427,89 +425,21 @@ impl MultiLevelStorage {
                 // Build remote cache - get the appropriate CacheType
                 #[cfg(any_cache_remote)]
                 {
-                    let cache_type = match level_name.to_lowercase().as_str() {
-                        #[cfg(feature = "s3")]
-                        "s3" => config.cache_configs.s3.clone().map(CacheType::S3),
-                        #[cfg(not(feature = "s3"))]
-                        "s3" => return Err(anyhow!("Cache level 's3' requires the 's3' feature")),
-                        #[cfg(feature = "redis")]
-                        "redis" => config.cache_configs.redis.clone().map(CacheType::Redis),
-                        #[cfg(not(feature = "redis"))]
-                        "redis" => {
-                            return Err(anyhow!(
-                                "Cache level 'redis' requires the 'redis' feature"
-                            ));
-                        }
-                        #[cfg(feature = "memcached")]
-                        "memcached" => config
-                            .cache_configs
-                            .memcached
-                            .clone()
-                            .map(CacheType::Memcached),
-                        #[cfg(not(feature = "memcached"))]
-                        "memcached" => {
-                            return Err(anyhow!(
-                                "Cache level 'memcached' requires the 'memcached' feature"
-                            ));
-                        }
-                        #[cfg(feature = "gcs")]
-                        "gcs" => config.cache_configs.gcs.clone().map(CacheType::GCS),
-                        #[cfg(not(feature = "gcs"))]
-                        "gcs" => {
-                            return Err(anyhow!("Cache level 'gcs' requires the 'gcs' feature"));
-                        }
-                        #[cfg(feature = "gha")]
-                        "gha" => config.cache_configs.gha.clone().map(CacheType::GHA),
-                        #[cfg(not(feature = "gha"))]
-                        "gha" => {
-                            return Err(anyhow!("Cache level 'gha' requires the 'gha' feature"));
-                        }
-                        #[cfg(feature = "azure")]
-                        "azure" => config.cache_configs.azure.clone().map(CacheType::Azure),
-                        #[cfg(not(feature = "azure"))]
-                        "azure" => {
-                            return Err(anyhow!(
-                                "Cache level 'azure' requires the 'azure' feature"
-                            ));
-                        }
-                        #[cfg(feature = "webdav")]
-                        "webdav" => config.cache_configs.webdav.clone().map(CacheType::Webdav),
-                        #[cfg(not(feature = "webdav"))]
-                        "webdav" => {
-                            return Err(anyhow!(
-                                "Cache level 'webdav' requires the 'webdav' feature"
-                            ));
-                        }
-                        #[cfg(feature = "oss")]
-                        "oss" => config.cache_configs.oss.clone().map(CacheType::OSS),
-                        #[cfg(not(feature = "oss"))]
-                        "oss" => {
-                            return Err(anyhow!("Cache level 'oss' requires the 'oss' feature"));
-                        }
-                        #[cfg(feature = "cos")]
-                        "cos" => config.cache_configs.cos.clone().map(CacheType::COS),
-                        #[cfg(not(feature = "cos"))]
-                        "cos" => {
-                            return Err(anyhow!("Cache level 'cos' requires the 'cos' feature"));
-                        }
-                        _ => {
-                            return Err(anyhow!("Unknown cache level: '{}'", level_name));
-                        }
-                    };
-
-                    if let Some(cache_type) = cache_type {
-                        let storage = build_single_cache(&cache_type, &config.basedirs, pool)
-                            .with_context(|| {
-                                format!("Failed to build cache for level '{}'", level_name)
-                            })?;
-                        storages.push(storage);
-                        trace!("Added cache level: {}", level_name);
-                    } else {
-                        return Err(anyhow!(
+                    let level_lower = level_name.to_lowercase();
+                    let (_display_name, cache_type) =
+                        config.cache_configs.cache_type_by_name(&level_lower)?;
+                    let cache_type = cache_type.ok_or_else(|| {
+                        anyhow!(
                             "Cache level '{}' specified in SCCACHE_MULTILEVEL_CHAIN but not configured (missing environment variables)",
                             level_name
-                        ));
-                    }
+                        )
+                    })?;
+                    let storage = build_single_cache(&cache_type, &config.basedirs, pool)
+                        .with_context(|| {
+                            format!("Failed to build cache for level '{}'", level_name)
+                        })?;
+                    storages.push(storage);
+                    trace!("Added cache level: {}", level_name);
                 }
                 #[cfg(not(any_cache_remote))]
                 {
