@@ -20,32 +20,12 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-#[cfg(any(
-    feature = "azure",
-    feature = "gcs",
-    feature = "gha",
-    feature = "memcached",
-    feature = "redis",
-    feature = "s3",
-    feature = "webdav",
-    feature = "oss",
-    feature = "cos"
-))]
+#[cfg(any_cache_remote)]
 use crate::cache::build_single_cache;
 use crate::cache::disk::DiskCache;
 use crate::cache::{Cache, CacheMode, CacheWrite, Storage};
 use crate::compiler::PreprocessorCacheEntry;
-#[cfg(any(
-    feature = "azure",
-    feature = "gcs",
-    feature = "gha",
-    feature = "memcached",
-    feature = "redis",
-    feature = "s3",
-    feature = "webdav",
-    feature = "oss",
-    feature = "cos"
-))]
+#[cfg(any_cache_remote)]
 use crate::config::CacheType;
 use crate::config::{Config, PreprocessorCacheModeConfig, WriteErrorPolicy};
 use crate::errors::*;
@@ -418,17 +398,7 @@ impl MultiLevelStorage {
                 trace!("Added disk cache level");
             } else {
                 // Build remote cache - get the appropriate CacheType
-                #[cfg(any(
-                    feature = "azure",
-                    feature = "gcs",
-                    feature = "gha",
-                    feature = "memcached",
-                    feature = "redis",
-                    feature = "s3",
-                    feature = "webdav",
-                    feature = "oss",
-                    feature = "cos"
-                ))]
+                #[cfg(any_cache_remote)]
                 {
                     let cache_type = match level_name.to_lowercase().as_str() {
                         #[cfg(feature = "s3")]
@@ -472,17 +442,7 @@ impl MultiLevelStorage {
                         ));
                     }
                 }
-                #[cfg(not(any(
-                    feature = "azure",
-                    feature = "gcs",
-                    feature = "gha",
-                    feature = "memcached",
-                    feature = "redis",
-                    feature = "s3",
-                    feature = "webdav",
-                    feature = "oss",
-                    feature = "cos"
-                )))]
+                #[cfg(not(any_cache_remote))]
                 {
                     return Err(anyhow!(
                         "Cache level '{}' requires a backend feature to be enabled (e.g., --features redis,s3)",
