@@ -268,7 +268,7 @@ jobs:
           - os: ubuntu-22.04
             target: riscv64gc-unknown-linux-musl
             container: '{"image": "messense/rust-musl-cross:riscv64gc-musl"}'
-            lto: "false"
+            rustflags: -Ctarget-feature=+crt-static
           - os: ubuntu-22.04
             target: loongarch64-unknown-linux-musl
             container: '{"image": "messense/rust-musl-cross:loongarch64-musl"}'
