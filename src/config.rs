@@ -2874,3 +2874,26 @@ fn test_get_cache_levels_missing_config() {
         "unexpected error: {err}"
     );
 }
+
+#[test]
+#[cfg(not(any_cache_remote))]
+fn test_cache_type_by_name_all_unknown_without_features() {
+    let configs = CacheConfigs::default();
+    for name in [
+        "s3",
+        "redis",
+        "memcached",
+        "gcs",
+        "gha",
+        "azure",
+        "webdav",
+        "oss",
+        "cos",
+    ] {
+        let err = configs.cache_type_by_name(name).unwrap_err().to_string();
+        assert!(
+            err.contains("Unknown cache level") && err.contains("--features"),
+            "expected feature hint for '{name}': {err}"
+        );
+    }
+}
