@@ -507,6 +507,26 @@ pub struct COSCacheConfig {
     pub rw_mode: CacheModeConfig,
 }
 
+macro_rules! remote_caches {
+    ($($name:literal),* $(,)?) => {
+        /// Remote cache names, each equal to the cargo feature enabling it.
+        #[deny(unexpected_cfgs)]
+        const REMOTE_CACHES: &[(&str, bool)] = &[$(($name, cfg!(feature = $name))),*];
+    };
+}
+
+remote_caches![
+    "s3",
+    "redis",
+    "memcached",
+    "gcs",
+    "gha",
+    "azure",
+    "webdav",
+    "oss",
+    "cos"
+];
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CacheType {
     Azure(AzureCacheConfig),
@@ -571,6 +591,35 @@ impl CacheConfigs {
         (cache_type, fallback)
     }
 
+    /// `Ok(None)` if the cache isn't configured, `Err` if the name is unknown
+    /// or its feature is disabled.
+    pub fn cache_type_by_name(&self, name: &str) -> Result<Option<CacheType>> {
+        match name {
+            #[cfg(feature = "s3")]
+            "s3" => Ok(self.s3.clone().map(CacheType::S3)),
+            #[cfg(feature = "redis")]
+            "redis" => Ok(self.redis.clone().map(CacheType::Redis)),
+            #[cfg(feature = "memcached")]
+            "memcached" => Ok(self.memcached.clone().map(CacheType::Memcached)),
+            #[cfg(feature = "gcs")]
+            "gcs" => Ok(self.gcs.clone().map(CacheType::GCS)),
+            #[cfg(feature = "gha")]
+            "gha" => Ok(self.gha.clone().map(CacheType::GHA)),
+            #[cfg(feature = "azure")]
+            "azure" => Ok(self.azure.clone().map(CacheType::Azure)),
+            #[cfg(feature = "webdav")]
+            "webdav" => Ok(self.webdav.clone().map(CacheType::Webdav)),
+            #[cfg(feature = "oss")]
+            "oss" => Ok(self.oss.clone().map(CacheType::OSS)),
+            #[cfg(feature = "cos")]
+            "cos" => Ok(self.cos.clone().map(CacheType::COS)),
+            _ if REMOTE_CACHES.contains(&(name, false)) => {
+                bail!("Cache level '{name}' requires the '{name}' feature")
+            }
+            _ => bail!("Unknown cache level: '{name}'"),
+        }
+    }
+
     /// Get ordered list of cache types based on configured levels.
     /// If levels are specified, returns them in order with validation.
     /// If no levels specified and single remote cache, returns that single cache.
@@ -581,42 +630,13 @@ impl CacheConfigs {
             let mut caches = Vec::new();
             for level_name in &ml_config.chain {
                 let level_name = level_name.trim();
-                let cache_type = match level_name {
-                    "s3" => self.s3.clone().map(CacheType::S3).ok_or_else(|| {
-                        anyhow!("S3 cache not configured but specified in levels")
-                    })?,
-                    "redis" => self.redis.clone().map(CacheType::Redis).ok_or_else(|| {
-                        anyhow!("Redis cache not configured but specified in levels")
-                    })?,
-                    "memcached" => self
-                        .memcached
-                        .clone()
-                        .map(CacheType::Memcached)
-                        .ok_or_else(|| {
-                            anyhow!("Memcached cache not configured but specified in levels")
-                        })?,
-                    "gcs" => self.gcs.clone().map(CacheType::GCS).ok_or_else(|| {
-                        anyhow!("GCS cache not configured but specified in levels")
-                    })?,
-                    "gha" => self.gha.clone().map(CacheType::GHA).ok_or_else(|| {
-                        anyhow!("GHA cache not configured but specified in levels")
-                    })?,
-                    "azure" => self.azure.clone().map(CacheType::Azure).ok_or_else(|| {
-                        anyhow!("Azure cache not configured but specified in levels")
-                    })?,
-                    "webdav" => self.webdav.clone().map(CacheType::Webdav).ok_or_else(|| {
-                        anyhow!("Webdav cache not configured but specified in levels")
-                    })?,
-                    "oss" => self.oss.clone().map(CacheType::OSS).ok_or_else(|| {
-                        anyhow!("OSS cache not configured but specified in levels")
-                    })?,
-                    "disk" => {
-                        // Disk cache is handled separately in MultiLevelStorage::from_config
-                        // Mark it by continuing - it will be added to the storage list there
-                        continue;
-                    }
-                    _ => bail!("Unknown cache level: {}", level_name),
-                };
+                if level_name == "disk" {
+                    // Disk cache is handled separately in MultiLevelStorage::from_config
+                    continue;
+                }
+                let cache_type = self.cache_type_by_name(level_name)?.ok_or_else(|| {
+                    anyhow!("Cache level '{level_name}' not configured but specified in levels")
+                })?;
                 caches.push(cache_type);
             }
             Ok(caches)
@@ -3559,14 +3579,8 @@ fn test_get_cache_levels_invalid_level() {
         ..Default::default()
     };
 
-    let result = configs.get_cache_levels();
-    assert!(result.is_err());
-    assert!(
-        result
-            .unwrap_err()
-            .to_string()
-            .contains("Unknown cache level")
-    );
+    let err = configs.get_cache_levels().unwrap_err().to_string();
+    assert_eq!(err, "Unknown cache level: 'unknown_cache'");
 }
 
 #[test]
@@ -3579,12 +3593,52 @@ fn test_get_cache_levels_missing_config() {
         ..Default::default()
     };
 
-    let result = configs.get_cache_levels();
-    assert!(result.is_err());
-    assert!(
-        result
-            .unwrap_err()
-            .to_string()
-            .contains("S3 cache not configured")
+    let err = configs.get_cache_levels().unwrap_err().to_string();
+    #[cfg(feature = "s3")]
+    assert_eq!(
+        err,
+        "Cache level 's3' not configured but specified in levels"
     );
+    #[cfg(not(feature = "s3"))]
+    assert_eq!(err, "Cache level 's3' requires the 's3' feature");
+}
+
+#[test]
+#[cfg(feature = "cos")]
+fn test_get_cache_levels_cos() {
+    let cos = COSCacheConfig {
+        bucket: "name".to_owned(),
+        endpoint: None,
+        key_prefix: String::new(),
+        rw_mode: CacheModeConfig::ReadWrite,
+    };
+    let configs = CacheConfigs {
+        cos: Some(cos.clone()),
+        multilevel: Some(MultiLevelConfig {
+            chain: vec!["disk".to_string(), "cos".to_string()],
+            write_error_policy: WriteErrorPolicy::default(),
+        }),
+        ..Default::default()
+    };
+
+    assert_eq!(
+        configs.get_cache_levels().unwrap(),
+        vec![CacheType::COS(cos)]
+    );
+}
+
+#[test]
+fn test_cache_type_by_name_matches_features() {
+    let configs = CacheConfigs::default();
+    for &(name, enabled) in REMOTE_CACHES {
+        let result = configs.cache_type_by_name(name);
+        if enabled {
+            assert!(matches!(result, Ok(None)), "'{name}': {result:?}");
+        } else {
+            assert_eq!(
+                result.unwrap_err().to_string(),
+                format!("Cache level '{name}' requires the '{name}' feature")
+            );
+        }
+    }
 }

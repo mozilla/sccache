@@ -591,12 +591,11 @@ fn test_config_validation_invalid_level_name() {
     let config = Config::load().unwrap();
     let result = MultiLevelStorage::from_config(&config, runtime.handle());
 
-    // Should error with unknown cache level
-    assert!(result.is_err());
-    if let Err(e) = result {
-        let err_msg = format!("{}", e);
-        assert!(err_msg.contains("Unknown cache level") || err_msg.contains("invalid_backend"));
-    }
+    let err = result
+        .err()
+        .expect("invalid level must be rejected")
+        .to_string();
+    assert_eq!(err, "Unknown cache level: 'invalid_backend'");
 
     unsafe {
         env::remove_var("SCCACHE_MULTILEVEL_CHAIN");
@@ -673,18 +672,17 @@ fn test_config_level_not_configured() {
     let config = Config::load().unwrap();
     let result = MultiLevelStorage::from_config(&config, runtime.handle());
 
-    // Should error with "not configured" or "requires" (when feature disabled)
-    assert!(result.is_err());
-    if let Err(e) = result {
-        let err_msg = format!("{}", e);
-        assert!(
-            err_msg.contains("not configured")
-                || err_msg.contains("missing")
-                || err_msg.contains("requires"),
-            "Expected error about missing config or feature, got: {}",
-            err_msg
-        );
-    }
+    let err = result
+        .err()
+        .expect("unconfigured level must be rejected")
+        .to_string();
+    #[cfg(feature = "redis")]
+    assert_eq!(
+        err,
+        "Cache level 'redis' specified in SCCACHE_MULTILEVEL_CHAIN but not configured (missing environment variables)"
+    );
+    #[cfg(not(feature = "redis"))]
+    assert_eq!(err, "Cache level 'redis' requires the 'redis' feature");
 
     unsafe {
         env::remove_var("SCCACHE_MULTILEVEL_CHAIN");
