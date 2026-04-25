@@ -195,7 +195,11 @@ const INPUT_FOR_HIP_A: &str = "test_a.hip";
 const INPUT_FOR_HIP_B: &str = "test_b.hip";
 const INPUT_FOR_HIP_C: &str = "test_c.hip";
 const OUTPUT: &str = "test.o";
-const DEV_NULL: &str = "/dev/null";
+#[cfg(unix)]
+const NULL_PATH: &str = "/dev/null";
+#[cfg(windows)]
+const NULL_PATH: &str = "NUL";
+#[cfg(unix)]
 const DEV_STDOUT: &str = "/dev/stdout";
 
 // Copy the source files into the tempdir so we can compile with relative paths, since the commandline winds up in the hash key.
@@ -267,7 +271,7 @@ fn test_basic_compile(compiler: Compiler, tempdir: &Path) {
     });
 }
 
-fn test_basic_compile_into_dev_null(compiler: Compiler, tempdir: &Path) {
+fn test_basic_compile_into_null(compiler: Compiler, tempdir: &Path) {
     let Compiler {
         name,
         exe,
@@ -280,7 +284,7 @@ fn test_basic_compile_into_dev_null(compiler: Compiler, tempdir: &Path) {
 
     trace!("compile");
     sccache_command()
-        .args(compile_cmdline(name, &exe, INPUT, DEV_NULL, Vec::new()))
+        .args(compile_cmdline(name, &exe, INPUT, NULL_PATH, Vec::new()))
         .current_dir(tempdir)
         .envs(env_vars.clone())
         .assert()
@@ -297,7 +301,7 @@ fn test_basic_compile_into_dev_null(compiler: Compiler, tempdir: &Path) {
     });
     trace!("compile");
     sccache_command()
-        .args(compile_cmdline(name, &exe, INPUT, DEV_NULL, Vec::new()))
+        .args(compile_cmdline(name, &exe, INPUT, NULL_PATH, Vec::new()))
         .current_dir(tempdir)
         .envs(env_vars)
         .assert()
@@ -735,7 +739,7 @@ fn test_gcc_clang_depfile(compiler: Compiler, tempdir: &Path) {
 fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path, preprocessor_cache_mode: bool) {
     if compiler.name != "clang++" {
         test_basic_compile(compiler.clone(), tempdir);
-        test_basic_compile_into_dev_null(compiler.clone(), tempdir);
+        test_basic_compile_into_null(compiler.clone(), tempdir);
         test_basic_compile_into_dev_stdout(compiler.clone(), tempdir);
     }
     test_compile_with_define(compiler.clone(), tempdir);
