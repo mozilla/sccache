@@ -143,14 +143,8 @@ impl CacheRead {
                 optional,
             } in objects
             {
-                #[cfg(unix)]
-                if path == Path::new("/dev/null") {
-                    debug!("Skipping output to /dev/null");
-                    continue;
-                }
-                #[cfg(windows)]
-                if path == Path::new("NUL") {
-                    debug!("Skipping output to NUL");
+                if path == null_path() {
+                    debug!("Skipping output to {}", path.display());
                     continue;
                 }
                 let dir = match path.parent() {
@@ -197,6 +191,15 @@ impl CacheRead {
         })
         .await?
     }
+}
+
+#[cfg(unix)]
+fn null_path() -> &'static Path {
+    Path::new("/dev/null")
+}
+#[cfg(windows)]
+fn null_path() -> &'static Path {
+    Path::new("NUL")
 }
 
 /// Data to be stored in the compiler cache.
