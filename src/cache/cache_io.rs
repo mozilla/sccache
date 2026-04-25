@@ -143,7 +143,15 @@ impl CacheRead {
                 optional,
             } in objects
             {
-                if path == null_path() {
+                if is_path_null(&path) {
+                    // For unix, this is just a fast path to discard such outputs,
+                    // so it is not an issue if `is_path_null` has false-negatives.
+                    // But for Windows, since `NUL` looks like a relative path, the
+                    // temporary file creation logic would happily succeed, creating
+                    // a temp file in the CWD, but then the subsequent `persist`
+                    // would fail with `ERROR_ALREADY_EXISTS`, since `NUL` always
+                    // exists and cannot be `replaced`, so we really need to
+                    // short-circuit more of such cases on Windows.
                     debug!("Skipping output to {}", path.display());
                     continue;
                 }
@@ -194,12 +202,20 @@ impl CacheRead {
 }
 
 #[cfg(unix)]
-fn null_path() -> &'static Path {
-    Path::new("/dev/null")
+fn is_path_null(path: &Path) -> bool {
+    path == Path::new("/dev/null")
 }
+
 #[cfg(windows)]
-fn null_path() -> &'static Path {
-    Path::new("NUL")
+fn is_path_null(path: &Path) -> bool {
+    // For Windows, it appears that `NUL` with whatever extension is also a blackhole
+    // (at least for `CreateFileX`), so it does not suffice to check for an exact match
+    // Also note that gcc, cl.exe, et al. append a correct extension automatically even
+    // if the user asks for output to `NUL`.
+    let Some(stem) = path.file_stem() else {
+        return false;
+    };
+    stem.eq_ignore_ascii_case("NUL")
 }
 
 /// Data to be stored in the compiler cache.
