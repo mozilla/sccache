@@ -152,13 +152,11 @@ impl Storage for DiskCache {
         self.pool
             .spawn_blocking(move || {
                 let start = Instant::now();
-                let mut f = lru
-                    .lock()
-                    .unwrap()
-                    .get_or_init()?
-                    .prepare_add(key, data.len() as u64)?;
+                let mut lru_guard = lru.lock().unwrap();
+                let cache = lru_guard.get_or_init()?;
+                let mut f = cache.prepare_add(key, data.len() as u64)?;
                 f.as_file_mut().write_all(&data)?;
-                lru.lock().unwrap().get().unwrap().commit(f)?;
+                cache.commit(f)?;
                 Ok(start.elapsed())
             })
             .await?
