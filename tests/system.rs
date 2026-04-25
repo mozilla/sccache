@@ -368,7 +368,7 @@ fn test_basic_compile_into_dev_stdout(compiler: Compiler, tempdir: &Path) {
 
 #[cfg(not(unix))]
 fn test_basic_compile_into_dev_stdout(_: Compiler, _: &Path) {
-    warn!("Not unix, skipping tests with /dev/stdout");
+    info!("Not unix, skipping tests with /dev/stdout");
 }
 
 fn test_noncacheable_stats(compiler: Compiler, tempdir: &Path) {
