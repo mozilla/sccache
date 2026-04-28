@@ -188,8 +188,7 @@ impl LruDiskCache {
         for (file, size) in get_all_files(&self.root) {
             if file
                 .file_name()
-                .expect("Bad path?")
-                .starts_with(TEMPFILE_PREFIX)
+                .is_some_and(|name| name.starts_with(TEMPFILE_PREFIX))
             {
                 fs::remove_file(&file).unwrap_or_else(|e| {
                     error!("Error removing temporary file `{}`: {}", file.display(), e);
