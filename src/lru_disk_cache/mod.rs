@@ -220,7 +220,7 @@ impl LruDiskCache {
         }
         //TODO: ideally LRUCache::insert would give us back the entries it had to remove.
         while self.size() + size > self.capacity() {
-            let (rel_path, _) = self.lru.remove_lru().expect("Unexpectedly empty cache!");
+            let (rel_path, _) = self.lru.remove_lru().ok_or(Error::FileTooLarge)?;
             let remove_path = self.rel_to_abs_path(rel_path);
             //TODO: check that files are removable during `init`, so that this is only
             // due to outside interference.
@@ -332,13 +332,12 @@ impl LruDiskCache {
         // Ensure we have enough space for the advertized space.
         self.make_space(size)?;
         let key = key.as_ref().to_owned();
+        let file = tempfile::Builder::new()
+            .prefix(TEMPFILE_PREFIX)
+            .tempfile_in(&self.root)?;
         self.pending.push(key.clone());
         self.pending_size += size;
-        tempfile::Builder::new()
-            .prefix(TEMPFILE_PREFIX)
-            .tempfile_in(&self.root)
-            .map(|file| LruDiskCacheAddEntry { file, key, size })
-            .map_err(Into::into)
+        Ok(LruDiskCacheAddEntry { file, key, size })
     }
 
     /// Commit an entry coming from `LruDiskCache::prepare_add`.
