@@ -1080,7 +1080,9 @@ mod client {
     use flate2::write::ZlibEncoder as ZlibWriteEncoder;
     use futures::TryFutureExt;
     use reqwest::Body;
+    use std::cell::LazyCell;
     use std::collections::HashMap;
+    use std::env;
     use std::io::Write;
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
@@ -1093,8 +1095,21 @@ mod client {
     use super::urls;
     use crate::errors::*;
 
-    const REQUEST_TIMEOUT_SECS: u64 = 1200;
-    const CONNECT_TIMEOUT_SECS: u64 = 5;
+    const REQUEST_TIMEOUT_SECS: LazyCell<Duration> = LazyCell::new(|| {
+        let timeout_env: u64 = env::var("SCCACHE_REQUEST_TIMEOUT_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(1200);
+        Duration::new(timeout_env, 0)
+    });
+
+    const CONNECT_TIMEOUT_SECS: LazyCell<Duration> = LazyCell::new(|| {
+        let connect_timeout_env: u64 = env::var("SCCACHE_CONNECT_TIMEOUT_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(5);
+        Duration::new(connect_timeout_env, 0)
+    });
 
     pub struct Client {
         auth_token: String,
@@ -1117,11 +1132,9 @@ mod client {
             auth_token: String,
             rewrite_includes_only: bool,
         ) -> Result<Self> {
-            let timeout = Duration::new(REQUEST_TIMEOUT_SECS, 0);
-            let connect_timeout = Duration::new(CONNECT_TIMEOUT_SECS, 0);
             let client = reqwest::ClientBuilder::new()
-                .timeout(timeout)
-                .connect_timeout(connect_timeout)
+                .timeout(*REQUEST_TIMEOUT_SECS)
+                .connect_timeout(*CONNECT_TIMEOUT_SECS)
                 // Disable connection pool to avoid broken connection
                 // between runtime
                 .pool_max_idle_per_host(0)
@@ -1159,9 +1172,9 @@ mod client {
                 );
             }
             // Finish the client
-            let timeout = Duration::new(REQUEST_TIMEOUT_SECS, 0);
             let new_client_async = client_async_builder
-                .timeout(timeout)
+                .timeout(*REQUEST_TIMEOUT_SECS)
+                .connect_timeout(*CONNECT_TIMEOUT_SECS)
                 // Disable keep-alive
                 .pool_max_idle_per_host(0)
                 .build()

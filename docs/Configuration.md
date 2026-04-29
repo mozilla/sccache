@@ -180,6 +180,8 @@ Note that some env variables may need sccache server restart to take effect.
 * `SCCACHE_LOG_MILLIS` when set (to any value), enables millisecond precision timestamps in log output instead of the default second precision.
 * `SCCACHE_ERROR_LOG` path to a file where sccache will log errors
 * `SCCACHE_LOG` log level, accepting standard env_logger values, see [env_logger documentation](https://docs.rs/env_logger/latest/env_logger/#enabling-logging) for details
+* `SCCACHE_REQUEST_TIMEOUT_SECS` configurable timeout for requests sent by the Http Client.
+* `SCCACHE_CONNECT_TIMEOUT_SECS` configurable timeout for how long a Http Client will try to connect.
 
 ### cache configs
 
