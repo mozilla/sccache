@@ -250,7 +250,7 @@ impl Language {
     pub fn from_file_name(file: &Path) -> Option<Self> {
         match file.extension().and_then(|e| e.to_str()) {
             // gcc: https://gcc.gnu.org/onlinedocs/gcc/Overall-Options.html
-            Some("s") => Some(Language::AssemblerToPreprocess),
+            Some("s") => Some(Language::Assembler),
             Some("S") | Some("sx") => Some(Language::AssemblerToPreprocess),
             Some("c") => Some(Language::C),
             // Could be C or C++

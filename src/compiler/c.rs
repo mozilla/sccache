@@ -1770,11 +1770,7 @@ mod test {
             assert_eq!(actual, Some(expected));
         }
 
-        // .s, .S, .sx all map to AssemblerToPreprocess. GCC's documented
-        // convention is .s = preprocessed, .S = needs CPP, but real-world
-        // .s sources commonly contain #include and #ifdef and rely on the
-        // driver to preprocess. See test_dot_s_extension_preprocesses.
-        t("s", Language::AssemblerToPreprocess);
+        t("s", Language::Assembler);
         t("S", Language::AssemblerToPreprocess);
         t("sx", Language::AssemblerToPreprocess);
 
@@ -1833,31 +1829,6 @@ mod test {
         t("Hpp");
         t("Mm");
         t("Cu");
-    }
-
-    /// Regression: classifying `.s` as `Language::Assembler` made sccache
-    /// inject `-x assembler` into the compile command, which causes clang
-    /// to skip the C preprocessor. Real-world `.s` sources (NSPR's
-    /// nsprpub/pr/src/md/unix/os_Darwin.s, glibc, CPython) use `#include`
-    /// and `#ifdef` and rely on the driver to preprocess; without it the
-    /// emitted object is empty of symbols.
-    ///
-    /// This test pins the four invariants the fix depends on:
-    ///   1. `.s` classifies as `AssemblerToPreprocess` (not `Assembler`).
-    ///   2. The emitted `-x` arg is `assembler-with-cpp` for both gcc and
-    ///      clang front-ends.
-    ///   3. `needs_c_preprocessing()` is true, so the cache key is
-    ///      computed over the post-CPP source.
-    ///   4. `to_c_preprocessed_language()` resolves to `Assembler`, so the
-    ///      preprocessed-form variant is well-defined.
-    #[test]
-    fn test_dot_s_extension_preprocesses() {
-        let lang = Language::from_file_name(Path::new("input.s")).unwrap();
-        assert_eq!(lang, Language::AssemblerToPreprocess);
-        assert_eq!(lang.to_gcc_arg(), Some("assembler-with-cpp"));
-        assert_eq!(lang.to_clang_arg(), Some("assembler-with-cpp"));
-        assert!(lang.needs_c_preprocessing());
-        assert_eq!(lang.to_c_preprocessed_language(), Some(Language::Assembler));
     }
 
     #[test]
