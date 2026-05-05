@@ -13,6 +13,7 @@
 use super::utils::{get_file_mode, set_file_mode};
 use crate::errors::*;
 use fs_err as fs;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::io::{Cursor, Read, Seek, Write};
 use std::path::PathBuf;
@@ -21,7 +22,7 @@ use zip::write::FileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 /// Cache object sourced by a file.
-#[derive(Clone)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FileObjectSource {
     /// Identifier for this object. Should be unique within a compilation unit.
     /// Note that a compilation unit is a single source file in C/C++ and a crate in Rust.
