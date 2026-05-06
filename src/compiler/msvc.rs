@@ -401,6 +401,9 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_take_arg!("Wv:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_flag!("X", PassThrough),
     msvc_take_arg!("Xclang", OsString, Separated, XClang),
+    msvc_flag!("Y-", PassThrough), // Disable another PCH options
+    msvc_take_arg!("YI", OsString, Concatenated, PassThroughWithSuffix), // Has no effect without /Yc
+    msvc_flag!("YI-", PassThrough), // Has no effect without /Yc
     msvc_take_arg!("Yc", PathBuf, Concatenated, TooHardPath), // Compile PCH - not yet supported.
     msvc_flag!("Yd", PassThrough),
     msvc_flag!("Z7", PassThrough), // Add debug info to .obj files.
@@ -410,6 +413,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("Za", PassThrough),
     msvc_take_arg!("Zc:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_flag!("Ze", PassThrough),
+    msvc_flag!("Zf", PassThrough),
     msvc_flag!("Zi", DebugInfo),
     msvc_take_arg!("Zm", OsString, Concatenated, PassThroughWithSuffix),
     msvc_flag!("Zo", PassThrough),
@@ -512,7 +516,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     take_arg!("@", PathBuf, Concatenated, TooHardPath),
 ]);
 
-// TODO: what to do with precompiled header flags? eg: /Y-, /Yc, /YI, /Yu, /Zf, /Zm
+// TODO: what to do with precompiled header flags? eg: /Yc, /YI, /Yu
 
 pub fn parse_arguments(
     arguments: &[OsString],
@@ -844,13 +848,24 @@ pub fn parse_arguments(
     // Clang is currently unable to generate PDB files
     if debug_info && !is_clang {
         match pdb {
-            Some(p) => outputs.insert(
-                "pdb",
-                ArtifactDescriptor {
-                    path: p,
-                    optional: false,
-                },
-            ),
+            Some(p) => {
+                // Append the default .pdb prefix if none was given, like how MSVC does.
+                let path = if p.extension().is_none() {
+                    let mut path = p;
+                    path.set_extension("pdb");
+                    path
+                } else {
+                    p
+                };
+
+                outputs.insert(
+                    "pdb",
+                    ArtifactDescriptor {
+                        path,
+                        optional: false,
+                    },
+                )
+            }
             None => {
                 // -Zi and -ZI without -Fd defaults to vcxxx.pdb (where xxx depends on the
                 // MSVC version), and that's used for all compilations with the same
@@ -2000,6 +2015,166 @@ mod test {
     }
 
     #[test]
+    fn test_parse_arguments_pdb_no_extension() {
+        // Test that .pdb extension is appended when /Fd argument lacks an extension
+        let args = ovec!["-c", "foo.c", "-Zi", "-Fdfoo", "-Fofoo.obj"];
+        let ParsedArguments {
+            input,
+            language,
+            outputs,
+            preprocessor_args,
+            msvc_show_includes,
+            common_args,
+            ..
+        } = match parse_arguments(args) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(Some("foo.c"), input.to_str());
+        assert_eq!(Language::C, language);
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.obj"),
+                    optional: false
+                }
+            ),
+            (
+                "pdb",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.pdb"),
+                    optional: false
+                }
+            )
+        );
+        assert!(preprocessor_args.is_empty());
+        assert_eq!(common_args, ovec!["-Zi", "-Fdfoo"]);
+        assert!(!msvc_show_includes);
+    }
+
+    #[test]
+    fn test_parse_arguments_pdb_with_extension() {
+        // Test that .pdb extension is NOT duplicated when already present
+        let args = ovec!["-c", "foo.c", "-Zi", "-Fdfoo.pdb", "-Fofoo.obj"];
+        let ParsedArguments {
+            input,
+            language,
+            outputs,
+            preprocessor_args,
+            msvc_show_includes,
+            common_args,
+            ..
+        } = match parse_arguments(args) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(Some("foo.c"), input.to_str());
+        assert_eq!(Language::C, language);
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.obj"),
+                    optional: false
+                }
+            ),
+            (
+                "pdb",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.pdb"),
+                    optional: false
+                }
+            )
+        );
+        assert!(preprocessor_args.is_empty());
+        assert_eq!(common_args, ovec!["-Zi", "-Fdfoo.pdb"]);
+        assert!(!msvc_show_includes);
+    }
+
+    #[test]
+    fn test_parse_arguments_pdb_custom_extension() {
+        // Test that custom extensions are preserved
+        let args = ovec!["-c", "foo.c", "-Zi", "-Fdfoo.db", "-Fofoo.obj"];
+        let ParsedArguments {
+            input,
+            language,
+            outputs,
+            preprocessor_args,
+            msvc_show_includes,
+            common_args,
+            ..
+        } = match parse_arguments(args) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(Some("foo.c"), input.to_str());
+        assert_eq!(Language::C, language);
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.obj"),
+                    optional: false
+                }
+            ),
+            (
+                "pdb",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.db"),
+                    optional: false
+                }
+            )
+        );
+        assert!(preprocessor_args.is_empty());
+        assert_eq!(common_args, ovec!["-Zi", "-Fdfoo.db"]);
+        assert!(!msvc_show_includes);
+    }
+
+    #[test]
+    fn test_parse_arguments_pdb_path_with_extension() {
+        // Test that .pdb is appended only to the filename when path is given
+        let args = ovec!["-c", "foo.c", "-Zi", "-Fdoutput/foo", "-Fofoo.obj"];
+        let ParsedArguments {
+            input,
+            language,
+            outputs,
+            preprocessor_args,
+            msvc_show_includes,
+            common_args,
+            ..
+        } = match parse_arguments(args) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(Some("foo.c"), input.to_str());
+        assert_eq!(Language::C, language);
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.obj"),
+                    optional: false
+                }
+            ),
+            (
+                "pdb",
+                ArtifactDescriptor {
+                    path: PathBuf::from("output/foo.pdb"),
+                    optional: false
+                }
+            )
+        );
+        assert!(preprocessor_args.is_empty());
+        assert_eq!(common_args, ovec!["-Zi", "-Fdoutput/foo"]);
+        assert!(!msvc_show_includes);
+    }
+
+    #[test]
     fn test_parse_arguments_external_include() {
         // Parsing -external:I relies on -experimental:external being parsed
         // and placed into common_args.
@@ -2119,6 +2294,10 @@ mod test {
             "/d1nodatetime",
             "-EHa",
             "-await:strict",
+            "/YI",
+            "-Y-",
+            "/YI-",
+            "-Zf",
             "-Fmdictionary-map",
             "-c",
             "-Fohost_dictionary.obj",
@@ -2148,6 +2327,10 @@ mod test {
                 "/d1nodatetime",
                 "-EHa",
                 "-await:strict",
+                "/YI",
+                "-Y-",
+                "/YI-",
+                "-Zf",
                 "-Fmdictionary-map"
             )
         );

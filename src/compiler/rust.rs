@@ -1523,9 +1523,11 @@ where
             // Registry override config doesn't need to be hashed, because deps' package IDs
             // already uniquely identify the relevant registries.
             // CARGO_BUILD_JOBS only affects Cargo's parallelism, not rustc output.
+            // CARGO_ENCODED_RUSTFLAGS is already cached in argument list
             if var == "CARGO_MAKEFLAGS"
                 || var.starts_with("CARGO_REGISTRIES_")
                 || var == "CARGO_BUILD_JOBS"
+                || var == "CARGO_ENCODED_RUSTFLAGS"
             {
                 continue;
             }

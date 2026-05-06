@@ -3,7 +3,7 @@
 edition = "2024"
 name = "sccache"
 rust-version = "1.85.0"
-version = "0.14.0"
+version = "0.15.0"
 
 categories = ["command-line-utilities", "development-tools::build-utils"]
 description = "Sccache is a ccache-like tool. It is used as a compiler wrapper and avoids compilation when possible. Sccache has the capability to utilize caching in remote storage environments, including various cloud storage options, or alternatively, in local storage."
@@ -11,6 +11,17 @@ keywords = ["ccache"]
 license = "Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/mozilla/sccache/"
+
+[package.metadata.binstall]
+bin-dir = "sccache-v{ version }-{ target }/{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+pkg-url = "{ repo }/releases/download/v{ version }/sccache-v{ version }-{ target }{ archive-suffix }"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
+
+[package.metadata.binstall.overrides.aarch64-pc-windows-msvc]
+pkg-fmt = "zip"
 
 [[bin]]
 name = "sccache"
@@ -151,6 +162,7 @@ features = [
   "Win32_Storage_FileSystem",
   "Win32_System_Threading",
   "Win32_System_Console",
+  "Win32_Security",
 ]
 version = "0.52"
 
@@ -230,6 +242,7 @@ workspace = true
 cloned_instead_of_copied = "warn"
 cloned_ref_to_slice_refs = "warn"
 explicit_into_iter_loop = "warn"
+from_iter_instead_of_collect = "warn"
 implicit_clone = "warn"
 manual_string_new = "warn"
 ptr_as_ptr = "warn"

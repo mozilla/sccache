@@ -24,6 +24,7 @@ use crate::cache::gcs::GCSCache;
 use crate::cache::gha::GHACache;
 #[cfg(feature = "memcached")]
 use crate::cache::memcached::MemcachedCache;
+use crate::cache::multilevel::{MultiLevelStats, MultiLevelStorage};
 #[cfg(feature = "oss")]
 use crate::cache::oss::OSSCache;
 #[cfg(feature = "redis")]
@@ -48,6 +49,7 @@ use crate::compiler::PreprocessorCacheEntry;
 use crate::config::Config;
 use crate::config::{self, CacheType, PreprocessorCacheModeConfig};
 use async_trait::async_trait;
+use bytes::Bytes;
 
 use std::io;
 use std::sync::Arc;
@@ -72,6 +74,20 @@ pub trait Storage: Send + Sync {
     /// Returns a `Future` that will provide the result or error when the put is
     /// finished.
     async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration>;
+
+    /// Get raw serialized cache entry bytes by `key` (for multi-level backfill).
+    /// Returns `None` if the entry is not found, or if the implementation doesn't support raw access.
+    /// This is used by multi-level caches to backfill faster levels.
+    async fn get_raw(&self, _key: &str) -> Result<Option<Bytes>> {
+        Ok(None)
+    }
+
+    /// Put raw serialized cache entry bytes under `key` (for multi-level backfill).
+    /// Returns an error if the implementation doesn't support raw access.
+    /// This is used by multi-level caches to backfill faster levels.
+    async fn put_raw(&self, _key: &str, _data: Bytes) -> Result<Duration> {
+        Err(anyhow!("put_raw not implemented for this storage backend"))
+    }
 
     /// Check the cache capability.
     ///
@@ -103,6 +119,11 @@ pub trait Storage: Send + Sync {
 
     /// Get the maximum storage size, if applicable.
     async fn max_size(&self) -> Result<Option<u64>>;
+
+    /// Get multi-level cache statistics, if this is a multi-level storage.
+    fn multilevel_stats(&self) -> Option<MultiLevelStats> {
+        None
+    }
 
     /// Return the config for preprocessor cache mode if applicable
     fn preprocessor_cache_mode_config(&self) -> PreprocessorCacheModeConfig {
@@ -197,13 +218,10 @@ impl Storage for RemoteStorage {
     }
 
     async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration> {
-        let start = std::time::Instant::now();
-
-        self.operator
-            .write(&normalize_key(key), entry.finish()?)
-            .await?;
-
-        Ok(start.elapsed())
+        trace!("RemoteStorage::put({})", key);
+        // Delegate to put_raw after serializing the entry
+        let data = entry.finish()?;
+        self.put_raw(key, data.into()).await
     }
 
     async fn check(&self) -> Result<CacheMode> {
@@ -278,6 +296,50 @@ impl Storage for RemoteStorage {
 
     fn basedirs(&self) -> &[Vec<u8>] {
         &self.basedirs
+    }
+
+    /// Get raw bytes from remote storage for multi-level backfill.
+    ///
+    /// Unlike `get()` which parses bytes into `CacheRead` (a `ZipArchive<Box<dyn ReadSeek>>`),
+    /// this returns the raw bytes without parsing. `CacheRead` is a one-way transformation —
+    /// there is no way to extract the original bytes back from the parsed ZIP archive.
+    /// For backfill we need the raw bytes to write directly to another cache level.
+    async fn get_raw(&self, key: &str) -> Result<Option<Bytes>> {
+        trace!("opendal::Operator::get_raw({})", key);
+        match self.operator.read(&normalize_key(key)).await {
+            Ok(res) => {
+                let data = res.to_bytes();
+                trace!(
+                    "opendal::Operator::get_raw({}): Found {} bytes",
+                    key,
+                    data.len()
+                );
+                Ok(Some(data))
+            }
+            Err(e) if e.kind() == opendal::ErrorKind::NotFound => {
+                trace!("opendal::Operator::get_raw({}): NotFound", key);
+                Ok(None)
+            }
+            Err(e) => {
+                warn!("opendal::Operator::get_raw({}): Error: {:?}", key, e);
+                // Return error instead of silently returning None
+                Err(anyhow!("Failed to read raw bytes: {:?}", e))
+            }
+        }
+    }
+
+    /// Write raw bytes to remote storage for multi-level backfill.
+    ///
+    /// Unlike `put()` which takes a `CacheWrite` and serializes it, this writes
+    /// pre-serialized bytes directly. Paired with `get_raw()` for efficient
+    /// level-to-level data transfer without a deserialize/reserialize round-trip.
+    async fn put_raw(&self, key: &str, data: Bytes) -> Result<Duration> {
+        trace!("opendal::Operator::put_raw({}, {} bytes)", key, data.len());
+        let start = std::time::Instant::now();
+
+        self.operator.write(&normalize_key(key), data).await?;
+
+        Ok(start.elapsed())
     }
 }
 
@@ -495,6 +557,12 @@ pub fn storage_from_config(
     config: &Config,
     pool: &tokio::runtime::Handle,
 ) -> Result<Arc<dyn Storage>> {
+    // Check for multi-level cache configuration
+    if let Some(multilevel) = MultiLevelStorage::from_config(config, pool)? {
+        return Ok(Arc::new(multilevel));
+    }
+
+    // Single cache or fallback to disk (backward compatible path)
     #[cfg(any(
         feature = "azure",
         feature = "gcs",
@@ -516,7 +584,6 @@ pub fn storage_from_config(
     let preprocessor_cache_mode_config = config.fallback_cache.preprocessor_cache_mode;
     let rw_mode = config.fallback_cache.rw_mode.into();
     debug!("Init disk cache with dir {:?}, size {}", dir, size);
-
     Ok(Arc::new(DiskCache::new(
         dir,
         size,

@@ -268,7 +268,11 @@ jobs:
           - os: ubuntu-22.04
             target: riscv64gc-unknown-linux-musl
             container: '{"image": "messense/rust-musl-cross:riscv64gc-musl"}'
-            lto: "false"
+            rustflags: -Ctarget-feature=+crt-static
+          - os: ubuntu-22.04
+            target: loongarch64-unknown-linux-musl
+            container: '{"image": "messense/rust-musl-cross:loongarch64-musl"}'
+            rustflags: -Ctarget-feature=+crt-static
           - os: ubuntu-22.04
             binary: sccache-dist
             extra_args: --no-default-features --features="dist-server"
@@ -365,7 +369,7 @@ jobs:
           ID: ${{ startsWith(github.ref, 'refs/tags/') && github.ref || github.sha }}
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.binary || 'sccache' }}-${{ steps.id.outputs.id }}-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/${{ matrix.binary || 'sccache' }}${{ endsWith(matrix.target, '-msvc') && '.exe' || '' }}
@@ -454,7 +458,7 @@ jobs:
           fi
 
       - name: Get artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
 
       - name: Create release assets
         run: |

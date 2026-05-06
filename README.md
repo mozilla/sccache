@@ -10,7 +10,7 @@
 sccache - Shared Compilation Cache
 ==================================
 
-sccache is a [ccache](https://ccache.dev/)-like compiler caching tool. It is used as a compiler wrapper and avoids compilation when possible, storing cached results either on [local disk](docs/Local.md) or in one of [several cloud storage backends](#storage-options).
+sccache is a [ccache](https://ccache.dev/)-like compiler caching tool. It is used as a compiler wrapper and avoids compilation when possible, storing cached results either on [local disk](docs/Local.md) or in one of [several cloud storage backends](#storage-options). Multi-level caching with automatic backfill is supported for hierarchical cache architectures (see [Multi-Level Cache](docs/MultiLevel.md)).
 
 sccache includes support for caching the compilation of Assembler, C/C++ code, [Rust](docs/Rust.md), as well as NVIDIA's CUDA using [nvcc](https://docs.nvidia.com/cuda/cuda-compiler-driver-nvcc/index.html), and [clang](https://llvm.org/docs/CompileCudaWithLLVM.html), [AMD's ROCm HIP](https://rocm.docs.amd.com/projects/HIP/en/latest/index.html).
 
@@ -33,6 +33,7 @@ Table of Contents (ToC)
 * [Interaction with GNU `make` jobserver](#interaction-with-gnu-make-jobserver)
 * [Known Caveats](#known-caveats)
 * [Storage Options](#storage-options)
+  * [Multi-Level (Hierarchical Caching)](docs/MultiLevel.md)
   * [Local](docs/Local.md)
   * [S3](docs/S3.md)
   * [R2](docs/S3.md#R2)
@@ -82,9 +83,14 @@ winget install Mozilla.sccache
 
 If you have a Rust toolchain installed you can install sccache using cargo. **Note that this will compile sccache from source which is fairly resource-intensive. For CI purposes you should use prebuilt binary packages.**
 
-
 ```bash
 cargo install sccache --locked
+```
+
+Or, using [cargo-binstall](https://github.com/cargo-bins/cargo-binstall) to install a prebuilt binary:
+
+```bash
+cargo binstall sccache
 ```
 
 ### With Nix

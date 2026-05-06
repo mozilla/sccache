@@ -6,7 +6,6 @@ export GID := $(shell id -g)
 PROJECT_ROOT := $(shell git rev-parse --show-toplevel)
 SCCACHE_BIN := $(PROJECT_ROOT)/target/debug/sccache
 
-
 # Coverage support via WITH_COVERAGE=1
 COVERAGE_DIR := $(PROJECT_ROOT)/target/integration-coverage
 
@@ -22,8 +21,17 @@ else
 export SCCACHE_PATH := /sccache/target/debug/sccache
 endif
 
-BACKENDS := redis redis-deprecated memcached memcached-deprecated s3 azblob webdav basedirs
-TOOLS := gcc clang cmake autotools coverage zstd
+# CI grouping helpers (GitHub Actions folding)
+ifdef CI
+group = @echo '::group::$(1)'
+endgroup = @echo '::endgroup::'
+else
+group =
+endgroup =
+endif
+
+BACKENDS := redis redis-deprecated memcached memcached-deprecated s3 azblob webdav basedirs multilevel multilevel-chain
+TOOLS := gcc clang cmake cmake-modules cmake-modules-v4 autotools coverage zstd
 
 # Map backends to their compose profiles
 PROFILES_autotools := autotools
@@ -31,10 +39,14 @@ PROFILES_azblob := azblob
 PROFILES_basedirs := basedirs redis memcached s3 azblob webdav
 PROFILES_clang := clang
 PROFILES_cmake := cmake
+PROFILES_cmake-modules := cmake-modules
+PROFILES_cmake-modules-v4 := cmake-modules-v4
 PROFILES_coverage := coverage
 PROFILES_gcc := gcc
 PROFILES_memcached := memcached
 PROFILES_memcached-deprecated := memcached
+PROFILES_multilevel := multilevel redis memcached s3 azblob webdav
+PROFILES_multilevel-chain := multilevel-chain redis memcached s3
 PROFILES_redis := redis
 PROFILES_redis-deprecated := redis
 PROFILES_s3 := s3
@@ -47,10 +59,14 @@ SERVICES_azblob := azurite azurite-setup
 SERVICES_basedirs := redis memcached minio minio-setup azurite azurite-setup webdav
 SERVICES_clang :=
 SERVICES_cmake :=
+SERVICES_cmake-modules :=
+SERVICES_cmake-modules-v4 :=
 SERVICES_coverage :=
 SERVICES_gcc :=
 SERVICES_memcached := memcached
 SERVICES_memcached-deprecated := memcached
+SERVICES_multilevel := redis memcached minio minio-setup azurite azurite-setup webdav
+SERVICES_multilevel-chain := redis memcached minio minio-setup
 SERVICES_redis := redis
 SERVICES_redis-deprecated := redis
 SERVICES_s3 := minio minio-setup
@@ -78,12 +94,16 @@ help:
 	@echo ""
 	@echo "Build System Tests:"
 	@echo "  make test-cmake              Run CMake integration test"
+	@echo "  make test-cmake-modules      Run CMake C++20 modules test"
+	@echo "  make test-cmake-modules-v4   Run CMake 4.x C++20 modules test (xfail)"
 	@echo "  make test-autotools          Run Autotools integration test"
 	@echo ""
 	@echo "Advanced Tests:"
 	@echo "  make test-coverage           Run Rust coverage instrumentation test"
 	@echo "  make test-zstd               Run ZSTD compression levels test"
 	@echo "  make test-basedirs           Run basedirs test across all backends"
+	@echo "  make test-multilevel         Run multi-level cache test across all backends"
+	@echo "  make test-multilevel-chain   Run multi-level backfill chain test (4 levels)"
 	@echo ""
 	@echo "  make test-backends           Run all backend tests"
 	@echo "  make clean                   Stop all services and clean up"
@@ -106,6 +126,7 @@ $(COVERAGE_DIR)/profraw:
 	@mkdir -p $@
 
 $(SCCACHE_BIN): $(PROJECT_ROOT)/Cargo.toml $(PROJECT_ROOT)/Cargo.lock
+	$(call group,Building $*)
 ifdef WITH_COVERAGE
 	@echo "Building sccache with coverage instrumentation in Docker..."
 else
@@ -123,6 +144,7 @@ endif
 		         chown -R $(UID):$(GID) target"
 	@echo "Binary built: $(SCCACHE_BIN)"
 	@ls -lh $(SCCACHE_BIN)
+	$(call endgroup)
 
 define profiles
 $(foreach profile,$(PROFILES_$(1)),--profile $(profile))
@@ -134,11 +156,13 @@ clean-%:
 
 # Pattern rule for testing backends
 test-%: build clean-%
-	@echo "Testing $* backend..."
+	$(call group,Testing $*)
+	@echo "Testing $*..."
 	@docker compose $(call profiles,$*) up --quiet-pull -d $(SERVICES_$*)
 	@docker compose $(call profiles,$*) run --quiet-pull --rm test-$*
 	@docker compose $(call profiles,$*) down
 	@echo "$* test completed"
+	$(call endgroup)
 
 test-backends: $(addprefix test-,$(BACKENDS))
 	@echo "All backend tests completed"
@@ -161,6 +185,7 @@ coverage-report:
 		echo "Run tests with: WITH_COVERAGE=1 make test-<name>"; \
 		exit 1; \
 	fi
+	$(call group,Generating coverage report)
 	@echo "Generating coverage report..."
 	@docker run --rm \
 		-v $(PROJECT_ROOT):/sccache \
@@ -183,6 +208,7 @@ coverage-report:
 		           --ignore 'build.rs' \
 		           --excl-br-line '^\s*((debug_)?assert(_eq|_ne)?!|#\[derive\()' && \
 		         chown -R $(UID):$(GID) target/integration-coverage"
+	$(call endgroup)
 	@echo ""
 	@echo "Coverage report generated:"
 	@echo "  $(PROJECT_ROOT)/target/integration-coverage/reports/lcov.info"
