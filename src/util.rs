@@ -1304,7 +1304,9 @@ mod tests {
         // Create a PATH with ccache directories
         let path_with_ccache = env::join_paths([
             "/usr/lib64/ccache",
+            "/usr/lib64/ccache/bin",
             "/usr/lib/ccache",
+            "/usr/lib/ccache/bin",
             "/usr/bin",
             "/usr/local/bin",
             "/home/user/bin",
