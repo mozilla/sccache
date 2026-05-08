@@ -728,4 +728,54 @@ mod tests {
         assert!(!f.tmp().join("cache").join("file2").exists());
         assert!(!p4.exists());
     }
+
+    /// Regression test for #2688: ensure init() does not panic when the
+    /// cache directory contains a leftover tempfile (file_name() should
+    /// be handled safely without expect()).
+    #[test]
+    fn test_init_with_leftover_tempfile_does_not_panic() {
+        let f = TestFixture::new();
+        let cache_dir = f.tmp().join("cache");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+
+        // Drop a file matching TEMPFILE_PREFIX into the cache root - this
+        // simulates a stale tempfile from a previous crashed sccache run.
+        let leftover = cache_dir.join(format!("{}leftover", TEMPFILE_PREFIX));
+        std::fs::write(&leftover, b"stale").unwrap();
+        assert!(leftover.exists());
+
+        // Before the fix this could panic with "Bad path?" if file_name()
+        // returned None on some path. After the fix we use is_some_and()
+        // which gracefully returns false. Either way, the leftover tempfile
+        // matching TEMPFILE_PREFIX must be cleaned up by init().
+        let _c = LruDiskCache::new(&cache_dir, 1024).unwrap();
+        assert!(!leftover.exists(), "init() must remove stale tempfiles");
+    }
+
+    /// Regression test for #2688: explicit assertion that init() succeeds
+    /// when the cache contains a mix of regular files and tempfile prefix
+    /// files, exercising the full file_name() check branch.
+    #[test]
+    fn test_init_mixed_files_no_panic() {
+        let f = TestFixture::new();
+        let cache_dir = f.tmp().join("cache");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+
+        // Regular cache file (should be kept)
+        let regular = cache_dir.join("a/b/c");
+        std::fs::create_dir_all(regular.parent().unwrap()).unwrap();
+        std::fs::write(&regular, vec![0u8; 8]).unwrap();
+
+        // Tempfile prefix file (should be removed)
+        let tmp1 = cache_dir.join(format!("{}tmp1", TEMPFILE_PREFIX));
+        std::fs::write(&tmp1, b"x").unwrap();
+        let tmp2 = cache_dir.join(format!("{}tmp2", TEMPFILE_PREFIX));
+        std::fs::write(&tmp2, b"y").unwrap();
+
+        let c = LruDiskCache::new(&cache_dir, 1024).unwrap();
+        assert!(!tmp1.exists(), "tempfile {tmp1:?} should be removed");
+        assert!(!tmp2.exists(), "tempfile {tmp2:?} should be removed");
+        assert!(regular.exists(), "regular cache file must be preserved");
+        assert!(c.contains_key("a/b/c"));
+    }
 }
