@@ -56,7 +56,7 @@ jobs:
           ls ../../target/integration-coverage/reports/lcov.info -l
 
       - name: Upload coverage results (to Codecov.io)
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v6
         with:
           files: target/integration-coverage/reports/lcov.info
           name: codecov-umbrella-integration-${{ matrix.type }}
