@@ -11,7 +11,6 @@ use std::io;
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::mpsc;
 use std::time::Duration;
-use tokio::runtime::Runtime;
 use url::Url;
 use uuid::Uuid;
 
@@ -537,7 +536,14 @@ pub fn get_token_oauth2_code_grant_pkce(
     mut auth_url: Url,
     token_url: &str,
 ) -> Result<String> {
-    let runtime = Runtime::new()?;
+    // We don't need to create multi-threaded runtime here:
+    // every client will create it's own NUM_THREADS,
+    // and with 96-core server we will have 96 x 96 = 9216 threads
+    // with short live time with default tokio runtime instead of 96 one
+    // with the single-threaded one
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
     let mut server = runtime.block_on(async move { try_bind().await })?;
     let port = server.local_addr().port();
 
@@ -591,7 +597,9 @@ pub fn get_token_oauth2_code_grant_pkce(
 
 // https://auth0.com/docs/api-auth/tutorials/implicit-grant
 pub fn get_token_oauth2_implicit(client_id: &str, mut auth_url: Url) -> Result<String> {
-    let runtime = Runtime::new()?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
     let mut server = runtime.block_on(async move { try_bind().await })?;
     let port = server.local_addr().port();
     let _guard = runtime.enter();
