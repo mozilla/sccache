@@ -986,6 +986,24 @@ where
     let has_verbose_flag = arguments.contains(&OsString::from("-v"))
         || arguments.contains(&OsString::from("--verbose"));
 
+    #[cfg(feature = "dist-client")]
+    let assembler_has_incbin = match Language::from_file_name(parsed_args.input.clone().as_path()) {
+        Some(Language::AssemblerToPreprocess) => {
+            let mut contents = String::new();
+            let res = File::open(parsed_args.input.clone())
+                .and_then(|mut f| f.read_to_string(&mut contents));
+            if res.is_err() {
+                false
+            } else {
+                contents.contains(".incbin")
+            }
+        }
+        _ => false,
+    };
+
+    #[cfg(not(feature = "dist-client"))]
+    let assembler_has_incbin = false;
+
     let command = SingleCompileCommand {
         executable: executable.to_owned(),
         arguments,
@@ -1000,7 +1018,11 @@ where
     //    output is parsed by tools like CMake and must reflect the local toolchain
     // 2. ClangCUDA cannot be dist-compiled because Clang has separate host and
     //    device preprocessor outputs and cannot compile preprocessed CUDA files.
-    let dist_command = if has_verbose_flag || parsed_args.language == Language::Cuda {
+    // 3. Assembler with incbin will fail, forcing local build
+    let dist_command = if has_verbose_flag
+        || parsed_args.language == Language::Cuda
+        || assembler_has_incbin
+    {
         None
     } else {
         (|| {
@@ -2758,5 +2780,73 @@ mod test {
             parsed_args.too_hard_for_preprocessor_cache_mode,
             Some("-Wp".into())
         );
+    }
+
+    #[test]
+    fn test_compile_assembler_incbin() {
+        use crate::test::utils::create_file;
+        let creator = new_creator();
+        let f = TestFixture::new();
+        let tempdir = tempfile::Builder::new()
+            .prefix("sccache_test")
+            .tempdir()
+            .unwrap();
+        let tempdir = tempdir.path();
+        let incbin_file = create_file(tempdir, "foo_incbin.S", |mut f| {
+            f.write_all(
+                b"\
+        .section .rodata\n\
+        .incbin \"some_file.bin\"\n\
+    ",
+            )
+        })
+        .unwrap();
+        let parsed_args = ParsedArguments {
+            input: incbin_file,
+            double_dash_input: false,
+            language: Language::AssemblerToPreprocess,
+            compilation_flag: "-c".into(),
+            depfile: None,
+            outputs: vec![(
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false,
+                },
+            )]
+            .into_iter()
+            .collect(),
+            dependency_args: vec![],
+            preprocessor_args: vec![],
+            common_args: vec![],
+            arch_args: vec![],
+            unhashed_args: vec![],
+            extra_dist_files: vec![],
+            extra_hash_files: vec![],
+            msvc_show_includes: false,
+            profile_generate: false,
+            color_mode: ColorMode::Auto,
+            suppress_rewrite_includes_only: false,
+            too_hard_for_preprocessor_cache_mode: None,
+        };
+        let compiler = &f.bins[0];
+        // Compiler invocation.
+        next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
+        let mut path_transformer = dist::PathTransformer::new();
+        let (_command, dist_command, _cacheable) = generate_compile_commands(
+            &mut path_transformer,
+            compiler,
+            &parsed_args,
+            f.tempdir.path(),
+            &[],
+            CCompilerKind::Gcc,
+            false,
+            language_to_gcc_arg,
+        )
+        .unwrap();
+        #[cfg(feature = "dist-client")]
+        assert!(dist_command.is_none());
+        #[cfg(not(feature = "dist-client"))]
+        assert!(dist_command.is_some());
     }
 }
