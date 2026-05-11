@@ -10,3 +10,5 @@ Set `SCCACHE_MEMCACHED_EXPIRATION` to the default expiration seconds of memcache
 
 Set `SCCACHE_MEMCACHED_KEY_PREFIX` if you want to prefix all cache keys. This can be
 useful when sharing a Memcached instance with another application or cache.
+
+The `SCCACHE_MEMCACHED_RW_MODE` environment variable can be set to `READ_ONLY` to make the server read-only. The default is `READ_WRITE`.

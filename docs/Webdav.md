@@ -10,6 +10,8 @@ The following services all expose a WebDAV interface and can be used as a backen
 Set `SCCACHE_WEBDAV_ENDPOINT` to an appropriate webdav service endpoint to enable remote caching.
 Set `SCCACHE_WEBDAV_KEY_PREFIX` to specify the key prefix of cache.
 
+The `SCCACHE_WEBDAV_RW_MODE` environment variable can be set to `READ_ONLY` to make the server read-only. The default is `READ_WRITE`.
+
 ## Credentials
 
 Sccache is able to load credentials from the following sources:

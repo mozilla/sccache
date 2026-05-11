@@ -6,6 +6,8 @@ You **must** specify the endpoint URL using the `SCCACHE_OSS_ENDPOINT` environme
 
 You can also define a prefix that will be prepended to the keys of all cache objects created and read within the OSS bucket, effectively creating a scope. To do that use the `SCCACHE_OSS_KEY_PREFIX` environment variable. This can be useful when sharing a bucket with another application.
 
+The `SCCACHE_OSS_RW_MODE` environment variable can be set to `READ_ONLY` to make the server read-only. The default is `READ_WRITE`.
+
 ## Credentials
 
 Sccache is able to load credentials from environment variables: `ALIBABA_CLOUD_ACCESS_KEY_ID` and `ALIBABA_CLOUD_ACCESS_KEY_SECRET`.

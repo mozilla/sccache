@@ -15,6 +15,8 @@ This cache type will need tokens like `ACTIONS_RESULTS_URL` and `ACTIONS_RUNTIME
       core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
 ```
 
+The `SCCACHE_GHA_RW_MODE` environment variable can be set to `READ_ONLY` to make the server read-only. The default is `READ_WRITE`.
+
 ## Behavior
 
 In case sccache reaches the rate limit of the service, the build will continue, but the storage might not be performed.

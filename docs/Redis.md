@@ -26,6 +26,8 @@ useful when sharing a Redis instance with another application or cache.
 `SCCACHE_REDIS` is deprecated for security reasons, use `SCCACHE_REDIS_ENDPOINT` instead. See mozilla/sccache#2083 for details.
 If you really want to use `SCCACHE_REDIS`, you should URL in format `redis://[[<username>]:<passwd>@]<hostname>[:port][/?db=<db>]`.
 
+The `SCCACHE_REDIS_RW_MODE` environment variable can be set to `READ_ONLY` to make the server read-only. The default is `READ_WRITE`.
+
 ## Deprecated API Examples
 
 Use the local Redis instance with no password:
