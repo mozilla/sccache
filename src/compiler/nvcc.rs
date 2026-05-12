@@ -1417,6 +1417,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("--generate-code", OsString, CanBeSeparated(b'='), PassThrough),
     flag!("--generate-dependencies-with-compile", NeedDepTarget),
     flag!("--generate-nonsystem-dependencies-with-compile", NeedDepTarget),
+    take_arg!("--dependency-output", PathBuf, Separated, DepArgumentPath),
     take_arg!("--gpu-architecture", OsString, CanBeSeparated(b'='), PassThrough),
     take_arg!("--gpu-code", OsString, CanBeSeparated(b'='), PassThrough),
     take_arg!("--include-path", PathBuf, CanBeSeparated(b'='), PreprocessorArgumentPath),
@@ -1648,6 +1649,16 @@ mod test {
         );
         assert!(a.preprocessor_args.is_empty());
         assert_eq!(ovec!["-ccbin", "/usr/bin/", "-c"], a.common_args);
+    }
+
+    // Without --dependency-output in nvcc::ARGS, its value (foo.o.d) is treated as an input file
+    // and the real .cu becomes a second input file, triggering "multiple input files".
+    // -c is required so gcc parser recognizes this as compilation (not NotCompilation).
+    #[test]
+    fn test_parse_arguments_dependency_output() {
+        let a = parses!("--dependency-output", "foo.o.d", "-c", "foo.cu");
+        assert_eq!(Some("foo.cu"), a.input.to_str()); // not foo.o.d
+        assert_eq!(ovec!["--dependency-output", "foo.o.d"], a.dependency_args);
     }
 
     #[test]

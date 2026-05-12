@@ -470,6 +470,7 @@ where
                     }
                 }
                 Argument::Raw(ref val) => {
+                    println!("Saw raw argument: {:?}", val);
                     if input_arg.is_some() {
                         multiple_input = true;
                         multiple_input_files.push(val.clone());
