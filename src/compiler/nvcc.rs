@@ -1654,7 +1654,7 @@ mod test {
     #[test]
     fn test_parse_arguments_dependency_output() {
         let a = parses!("--dependency-output", "foo.o.d", "-c", "foo.cu");
-        assert_eq!(Some("foo.cu"), a.input.to_str()); // not foo.o.d
+        assert_eq!(Some("foo.cu"), a.input.to_str());
         assert_eq!(ovec!["--dependency-output", "foo.o.d"], a.dependency_args);
     }
 
