@@ -1444,6 +1444,12 @@ pub mod scheduler {
         pub public_addr: SocketAddr,
         pub client_auth: ClientAuth,
         pub server_auth: ServerAuth,
+        #[serde(default = "default_check_server_ip")]
+        pub check_server_ip: bool,
+    }
+
+    fn default_check_server_ip() -> bool {
+        true
     }
 
     pub fn from_path(conf_path: &Path) -> Result<Option<Config>> {

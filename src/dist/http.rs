@@ -665,6 +665,8 @@ mod server {
         check_client_auth: Box<dyn ClientAuthCheck>,
         // Do we believe the server is who they appear to be?
         check_server_auth: ServerAuthCheck,
+        // Verify the server's IP matches the address in its auth token
+        check_server_ip: bool,
     }
 
     impl<S: dist::SchedulerIncoming + 'static> Scheduler<S> {
@@ -673,12 +675,14 @@ mod server {
             handler: S,
             check_client_auth: Box<dyn ClientAuthCheck>,
             check_server_auth: ServerAuthCheck,
+            check_server_ip: bool,
         ) -> Self {
             Self {
                 public_addr,
                 handler,
                 check_client_auth,
                 check_server_auth,
+                check_server_ip,
             }
         }
 
@@ -688,6 +692,7 @@ mod server {
                 handler,
                 check_client_auth,
                 check_server_auth,
+                check_server_ip,
             } = self;
             let requester = SchedulerRequester {
                 client: Mutex::new(new_reqwest_blocking_client()),
@@ -697,28 +702,29 @@ mod server {
                 ($request:ident) => {{
                     match bearer_http_auth($request).and_then(&*check_server_auth) {
                         Some(server_id) => {
-                            let origin_ip = if let Some(header_val) = $request.header("X-Real-IP") {
-                                trace!("X-Real-IP: {:?}", header_val);
-                                match header_val.parse() {
-                                    Ok(ip) => ip,
-                                    Err(err) => {
-                                        warn!(
-                                            "X-Real-IP value {:?} could not be parsed: {:?}",
-                                            header_val, err
-                                        );
-                                        return rouille::Response::empty_400();
+                            if check_server_ip {
+                                let origin_ip = if let Some(header_val) = $request.header("X-Real-IP") {
+                                    trace!("X-Real-IP: {:?}", header_val);
+                                    match header_val.parse() {
+                                        Ok(ip) => ip,
+                                        Err(err) => {
+                                            warn!(
+                                                "X-Real-IP value {:?} could not be parsed: {:?}",
+                                                header_val, err
+                                            );
+                                            return rouille::Response::empty_400();
+                                        }
                                     }
+                                } else {
+                                    $request.remote_addr().ip()
+                                };
+                                if server_id.addr().ip() != origin_ip {
+                                    trace!("server ip: {:?}", server_id.addr().ip());
+                                    trace!("request ip: {:?}", $request.remote_addr().ip());
+                                    return make_401("invalid_bearer_token_mismatched_address");
                                 }
-                            } else {
-                                $request.remote_addr().ip()
-                            };
-                            if server_id.addr().ip() != origin_ip {
-                                trace!("server ip: {:?}", server_id.addr().ip());
-                                trace!("request ip: {:?}", $request.remote_addr().ip());
-                                return make_401("invalid_bearer_token_mismatched_address");
-                            } else {
-                                server_id
                             }
+                            server_id
                         }
                         None => return make_401("invalid_bearer_token"),
                     }
