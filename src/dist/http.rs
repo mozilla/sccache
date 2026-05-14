@@ -703,7 +703,9 @@ mod server {
                     match bearer_http_auth($request).and_then(&*check_server_auth) {
                         Some(server_id) => {
                             if check_server_ip {
-                                let origin_ip = if let Some(header_val) = $request.header("X-Real-IP") {
+                                let origin_ip = if let Some(header_val) =
+                                    $request.header("X-Real-IP")
+                                {
                                     trace!("X-Real-IP: {:?}", header_val);
                                     match header_val.parse() {
                                         Ok(ip) => ip,
