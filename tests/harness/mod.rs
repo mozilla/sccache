@@ -204,6 +204,7 @@ fn sccache_scheduler_cfg() -> sccache::config::scheduler::Config {
         server_auth: sccache::config::scheduler::ServerAuth::Token {
             token: DIST_SERVER_TOKEN.to_owned(),
         },
+        check_server_ip: true,
     }
 }
 
