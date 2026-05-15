@@ -1339,6 +1339,65 @@ impl pkg::ToolchainPackager for CToolchainPackager {
         info!("Generating toolchain {}", self.executable.display());
         let mut package_builder = pkg::ToolchainPackageBuilder::new();
         package_builder.add_common()?;
+
+        // The way the Nix package manager structures C compilers is a bit different from other systems.
+        // Executables installed in $PATH are thin wrappers over the actual compiler binaries, which
+        // inject the paths to runtime dependencies like libc and the standard library headers.
+        //
+        // The wrapper being a shell script breaks the usual method of finding dependencies.
+        // `ldd` doesn't work on shell scripts, a specific script interpreter is required, and the
+        // script refers to dependencies like `coreutils` by their (unpredictable) Nix store paths.
+        //
+        // Luckily Nix provides a way to query the runtime dependencies of any file in the store,
+        // so we can simply add those to the toolchain package instead of trying to find them ourselves.
+        //
+        // For more information see nixpkgs's `cc-wrapper`:
+        // https://github.com/NixOS/nixpkgs/blob/1345ea31ceb06f9f74417083b2ec2d4e7d911e0b/pkgs/build-support/cc-wrapper/default.nix
+        // https://github.com/NixOS/nixpkgs/blob/1345ea31ceb06f9f74417083b2ec2d4e7d911e0b/pkgs/build-support/cc-wrapper/cc-wrapper.sh
+        let is_likely_nix_toolchain = self
+            .executable
+            .parent()
+            .and_then(|p| p.parent())
+            // If a non-nix toolchain happens to have the same structure `cc-wrapper` generates,
+            // then `nix-store --query` will fail and we'll fall back to regular packaging.
+            .is_some_and(|p| p.join("nix-support").is_dir());
+
+        if is_likely_nix_toolchain {
+            let query_result = process::Command::new("nix-store")
+                .arg("--query")
+                .arg("--requisites")
+                .arg("--readonly-mode")
+                .arg("--include-outputs")
+                .arg("--")
+                .arg(&self.executable)
+                .output();
+
+            match query_result {
+                Ok(query) if query.status.success() => {
+                    // Each output line is a Nix store path, add them to the package.
+                    let output = String::from_utf8_lossy(&query.stdout);
+                    for line in output.lines() {
+                        debug!("Adding {} to toolchain package", line);
+
+                        let path = Path::new(line);
+                        if path.is_dir() {
+                            package_builder.add_dir_contents(path)?;
+                        } else {
+                            package_builder.add_file(path.to_path_buf())?;
+                        }
+                    }
+
+                    return package_builder.into_compressed_tar(f);
+                }
+                Ok(output) => debug!(
+                    "nix-store --query failed with status {:?}: {}",
+                    output.status.code(),
+                    String::from_utf8_lossy(&output.stderr)
+                ),
+                Err(e) => debug!("Failed to execute nix-store --query: {}", e),
+            }
+        }
+
         package_builder.add_executable_and_deps(self.executable.clone())?;
 
         // Helper to use -print-file-name and -print-prog-name to look up
