@@ -18,7 +18,7 @@ use crate::util::normalize_win_path;
 use directories::ProjectDirs;
 use fs::File;
 use fs_err as fs;
-#[cfg(any(feature = "dist-client", feature = "dist-server"))]
+#[cfg(any_dist)]
 use serde::ser::Serializer;
 use serde::{
     Deserialize, Serialize,
@@ -178,10 +178,10 @@ pub fn parse_size(val: &str) -> Option<u64> {
     u64::from_str(val).ok().map(|size| size * multiplier)
 }
 
-#[cfg(any(feature = "dist-client", feature = "dist-server"))]
+#[cfg(any_dist)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HTTPUrl(reqwest::Url);
-#[cfg(any(feature = "dist-client", feature = "dist-server"))]
+#[cfg(any_dist)]
 impl Serialize for HTTPUrl {
     fn serialize<S>(&self, serializer: S) -> StdResult<S::Ok, S::Error>
     where
@@ -190,7 +190,7 @@ impl Serialize for HTTPUrl {
         serializer.serialize_str(self.0.as_str())
     }
 }
-#[cfg(any(feature = "dist-client", feature = "dist-server"))]
+#[cfg(any_dist)]
 impl<'a> Deserialize<'a> for HTTPUrl {
     fn deserialize<D>(deserializer: D) -> StdResult<Self, D::Error>
     where
@@ -202,7 +202,7 @@ impl<'a> Deserialize<'a> for HTTPUrl {
         Ok(HTTPUrl(url))
     }
 }
-#[cfg(any(feature = "dist-client", feature = "dist-server"))]
+#[cfg(any_dist)]
 fn parse_http_url(url: &str) -> Result<reqwest::Url> {
     use std::net::SocketAddr;
     let url = if let Ok(sa) = url.parse::<SocketAddr>() {
@@ -220,7 +220,7 @@ fn parse_http_url(url: &str) -> Result<reqwest::Url> {
     }
     Ok(url)
 }
-#[cfg(any(feature = "dist-client", feature = "dist-server"))]
+#[cfg(any_dist)]
 impl HTTPUrl {
     pub fn from_url(u: reqwest::Url) -> Self {
         HTTPUrl(u)
@@ -537,6 +537,40 @@ impl CacheConfigs {
         (cache_type, fallback)
     }
 
+    /// Look up a remote cache type by name (e.g. "s3", "gha").
+    /// Returns `Ok((display_name, Some(..)))` if the name is known and configured,
+    /// `Ok((display_name, None))` if known but not configured, `Err` if unknown.
+    pub fn cache_type_by_name(&self, name: &str) -> Result<(&'static str, Option<CacheType>)> {
+        match name {
+            #[cfg(feature = "s3")]
+            "s3" => Ok(("S3", self.s3.clone().map(CacheType::S3))),
+            #[cfg(feature = "redis")]
+            "redis" => Ok(("Redis", self.redis.clone().map(CacheType::Redis))),
+            #[cfg(feature = "memcached")]
+            "memcached" => Ok((
+                "Memcached",
+                self.memcached.clone().map(CacheType::Memcached),
+            )),
+            #[cfg(feature = "gcs")]
+            "gcs" => Ok(("GCS", self.gcs.clone().map(CacheType::GCS))),
+            #[cfg(feature = "gha")]
+            "gha" => Ok(("GHA", self.gha.clone().map(CacheType::GHA))),
+            #[cfg(feature = "azure")]
+            "azure" => Ok(("Azure", self.azure.clone().map(CacheType::Azure))),
+            #[cfg(feature = "webdav")]
+            "webdav" => Ok(("WebDAV", self.webdav.clone().map(CacheType::Webdav))),
+            #[cfg(feature = "oss")]
+            "oss" => Ok(("OSS", self.oss.clone().map(CacheType::OSS))),
+            #[cfg(feature = "cos")]
+            "cos" => Ok(("COS", self.cos.clone().map(CacheType::COS))),
+            _ => bail!(
+                "Unknown cache level: '{}' (may require a feature flag, e.g. --features {})",
+                name,
+                name
+            ),
+        }
+    }
+
     /// Get ordered list of cache types based on configured levels.
     /// If levels are specified, returns them in order with validation.
     /// If no levels specified and single remote cache, returns that single cache.
@@ -547,42 +581,17 @@ impl CacheConfigs {
             let mut caches = Vec::new();
             for level_name in &ml_config.chain {
                 let level_name = level_name.trim();
-                let cache_type = match level_name {
-                    "s3" => self.s3.clone().map(CacheType::S3).ok_or_else(|| {
-                        anyhow!("S3 cache not configured but specified in levels")
-                    })?,
-                    "redis" => self.redis.clone().map(CacheType::Redis).ok_or_else(|| {
-                        anyhow!("Redis cache not configured but specified in levels")
-                    })?,
-                    "memcached" => self
-                        .memcached
-                        .clone()
-                        .map(CacheType::Memcached)
-                        .ok_or_else(|| {
-                            anyhow!("Memcached cache not configured but specified in levels")
-                        })?,
-                    "gcs" => self.gcs.clone().map(CacheType::GCS).ok_or_else(|| {
-                        anyhow!("GCS cache not configured but specified in levels")
-                    })?,
-                    "gha" => self.gha.clone().map(CacheType::GHA).ok_or_else(|| {
-                        anyhow!("GHA cache not configured but specified in levels")
-                    })?,
-                    "azure" => self.azure.clone().map(CacheType::Azure).ok_or_else(|| {
-                        anyhow!("Azure cache not configured but specified in levels")
-                    })?,
-                    "webdav" => self.webdav.clone().map(CacheType::Webdav).ok_or_else(|| {
-                        anyhow!("Webdav cache not configured but specified in levels")
-                    })?,
-                    "oss" => self.oss.clone().map(CacheType::OSS).ok_or_else(|| {
-                        anyhow!("OSS cache not configured but specified in levels")
-                    })?,
-                    "disk" => {
-                        // Disk cache is handled separately in MultiLevelStorage::from_config
-                        // Mark it by continuing - it will be added to the storage list there
-                        continue;
-                    }
-                    _ => bail!("Unknown cache level: {}", level_name),
-                };
+                if level_name == "disk" {
+                    // Disk cache is handled separately in MultiLevelStorage::from_config
+                    continue;
+                }
+                let (display_name, cache_type) = self.cache_type_by_name(level_name)?;
+                let cache_type = cache_type.ok_or_else(|| {
+                    anyhow!(
+                        "{} cache not configured but specified in levels",
+                        display_name
+                    )
+                })?;
                 caches.push(cache_type);
             }
             Ok(caches)
@@ -735,9 +744,9 @@ impl Default for DistAuth {
 #[serde(deny_unknown_fields)]
 pub struct DistConfig {
     pub auth: DistAuth,
-    #[cfg(any(feature = "dist-client", feature = "dist-server"))]
+    #[cfg(any_dist)]
     pub scheduler_url: Option<HTTPUrl>,
-    #[cfg(not(any(feature = "dist-client", feature = "dist-server")))]
+    #[cfg(not(any_dist))]
     pub scheduler_url: Option<String>,
     pub cache_dir: PathBuf,
     pub toolchains: Vec<DistToolchainConfig>,
@@ -2368,13 +2377,13 @@ key_prefix = "cosprefix"
                 auth: DistAuth::Token {
                     token: "secrettoken".to_owned()
                 },
-                #[cfg(any(feature = "dist-client", feature = "dist-server"))]
+                #[cfg(any_dist)]
                 scheduler_url: Some(
                     parse_http_url("http://1.2.3.4:10600")
                         .map(|url| { HTTPUrl::from_url(url) })
                         .expect("Scheduler url must be valid url str")
                 ),
-                #[cfg(not(any(feature = "dist-client", feature = "dist-server")))]
+                #[cfg(not(any_dist))]
                 scheduler_url: Some("http://1.2.3.4:10600".to_owned()),
                 cache_dir: PathBuf::from("/home/user/.cache/sccache-dist-client"),
                 toolchains: vec![],
@@ -2858,10 +2867,33 @@ fn test_get_cache_levels_missing_config() {
 
     let result = configs.get_cache_levels();
     assert!(result.is_err());
+    let err = result.unwrap_err().to_string();
+    // With the s3 feature, we get "not configured"; without it, "unknown cache level"
     assert!(
-        result
-            .unwrap_err()
-            .to_string()
-            .contains("S3 cache not configured")
+        err.contains("S3 cache not configured") || err.contains("Unknown cache level"),
+        "unexpected error: {err}"
     );
+}
+
+#[test]
+#[cfg(not(any_cache_remote))]
+fn test_cache_type_by_name_all_unknown_without_features() {
+    let configs = CacheConfigs::default();
+    for name in [
+        "s3",
+        "redis",
+        "memcached",
+        "gcs",
+        "gha",
+        "azure",
+        "webdav",
+        "oss",
+        "cos",
+    ] {
+        let err = configs.cache_type_by_name(name).unwrap_err().to_string();
+        assert!(
+            err.contains("Unknown cache level") && err.contains("--features"),
+            "expected feature hint for '{name}': {err}"
+        );
+    }
 }
