@@ -1445,6 +1445,8 @@ pub mod scheduler {
         pub client_auth: ClientAuth,
         pub server_auth: ServerAuth,
         #[serde(default = "default_check_server_ip")]
+        /// Whether to verify the build server's IP address matches the address
+        /// in its auth token.
         pub check_server_ip: bool,
     }
 
