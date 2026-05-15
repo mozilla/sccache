@@ -392,7 +392,11 @@ pub fn preprocessor_cache_entry_hash_key(
     m.update(&[FORMAT_VERSION]);
     m.update(language.as_str().as_bytes());
     for arg in arguments {
-        arg.hash(&mut HashToDigest { digest: &mut m });
+        let arg_bytes = arg.as_encoded_bytes();
+        let stripped = strip_basedirs(arg_bytes, basedirs);
+        m.update(&stripped);
+        // Separator so adjacent args don't blur together.
+        m.update(&[0u8]);
     }
     for hash in extra_hashes {
         m.update(hash.as_bytes());
@@ -770,6 +774,175 @@ mod test {
         assert_ne!(
             hash1_no_basedirs, hash2_no_basedirs,
             "Hashes should be different without basedirs for files in different directories"
+        );
+    }
+
+    #[test]
+    fn test_preprocessor_cache_entry_hash_key_args_basedirs() {
+        #[cfg(target_os = "windows")]
+        use crate::util::normalize_win_path;
+        use std::fs;
+        use tempfile::TempDir;
+
+        // Two distinct workspace roots simulating two CI workdirs / worktrees.
+        let dir1 = TempDir::new().unwrap();
+        let dir2 = TempDir::new().unwrap();
+
+        let dir_bytes = |p: &Path| -> Vec<u8> {
+            let bytes = p.to_string_lossy().into_owned().into_bytes();
+            #[cfg(target_os = "windows")]
+            {
+                normalize_win_path(&bytes)
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                bytes
+            }
+        };
+
+        let basedirs = vec![dir_bytes(dir1.path()), dir_bytes(dir2.path())];
+
+        // Same source content placed in each workspace at the same relative path.
+        let file1_path = dir1.path().join("test.c");
+        let file2_path = dir2.path().join("test.c");
+        let content = b"int main() { return 0; }";
+        fs::write(&file1_path, content).unwrap();
+        fs::write(&file2_path, content).unwrap();
+
+        // Args that embed the absolute workspace path. We test the
+        // Separated-disposition shape: `["-external:I", "<workspace>/include"]`
+        // — this is the form MSVC system-include flags take after sccache's
+        // arg parser normalizes them, and is the realistic case in CI today.
+        //
+        // (The Concatenated shape — `["-IC:\workspace\include"]` — is NOT
+        //  caught by `strip_basedirs` since its boundary check rejects matches
+        //  where the previous byte is alphanumeric. Real MSVC builds rarely
+        //  hit this in `common_args` because `/I` goes to `preprocessor_args`,
+        //  not `common_args`. Concatenated stripping is a future enhancement.)
+        let inc1_path: OsString = format!("{}/include", dir1.path().display()).into();
+        let inc2_path: OsString = format!("{}/include", dir2.path().display()).into();
+        let out1_path: OsString = format!("{}/build/test.o", dir1.path().display()).into();
+        let out2_path: OsString = format!("{}/build/test.o", dir2.path().display()).into();
+        let args1 = vec![
+            OsString::from("-c"),
+            OsString::from("-external:I"),
+            inc1_path,
+            OsString::from("-o"),
+            out1_path,
+        ];
+        let args2 = vec![
+            OsString::from("-c"),
+            OsString::from("-external:I"),
+            inc2_path,
+            OsString::from("-o"),
+            out2_path,
+        ];
+
+        let config = PreprocessorCacheModeConfig::activated();
+
+        // With basedirs, args carrying different absolute paths hash equal.
+        let h1 = preprocessor_cache_entry_hash_key(
+            "test_digest",
+            Language::C,
+            &args1,
+            &[],
+            &[],
+            &file1_path,
+            false,
+            config,
+            &basedirs,
+        )
+        .unwrap()
+        .unwrap();
+
+        let h2 = preprocessor_cache_entry_hash_key(
+            "test_digest",
+            Language::C,
+            &args2,
+            &[],
+            &[],
+            &file2_path,
+            false,
+            config,
+            &basedirs,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(
+            h1, h2,
+            "Direct-mode hash should be equal across workspaces when args paths are covered by basedirs"
+        );
+
+        // Without basedirs, the same args produce divergent hashes — proves
+        // the args (not just the input_file path) feed into the key.
+        let h1_nb = preprocessor_cache_entry_hash_key(
+            "test_digest",
+            Language::C,
+            &args1,
+            &[],
+            &[],
+            &file1_path,
+            false,
+            config,
+            &[],
+        )
+        .unwrap()
+        .unwrap();
+
+        let h2_nb = preprocessor_cache_entry_hash_key(
+            "test_digest",
+            Language::C,
+            &args2,
+            &[],
+            &[],
+            &file2_path,
+            false,
+            config,
+            &[],
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_ne!(
+            h1_nb, h2_nb,
+            "Direct-mode hash should differ across workspaces when basedirs are not provided"
+        );
+
+        // Sanity: adjacent args don't blur into each other. `["-Ia", "b"]`
+        // must hash differently from `["-I", "ab"]`. Catches a regression
+        // where someone removes the inter-arg separator.
+        let args_a = vec![OsString::from("-Ia"), OsString::from("b")];
+        let args_b = vec![OsString::from("-I"), OsString::from("ab")];
+        let h_a = preprocessor_cache_entry_hash_key(
+            "test_digest",
+            Language::C,
+            &args_a,
+            &[],
+            &[],
+            &file1_path,
+            false,
+            config,
+            &basedirs,
+        )
+        .unwrap()
+        .unwrap();
+        let h_b = preprocessor_cache_entry_hash_key(
+            "test_digest",
+            Language::C,
+            &args_b,
+            &[],
+            &[],
+            &file1_path,
+            false,
+            config,
+            &basedirs,
+        )
+        .unwrap()
+        .unwrap();
+        assert_ne!(
+            h_a, h_b,
+            "Adjacent args must not blur — inter-arg separator missing?"
         );
     }
 }
