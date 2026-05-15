@@ -1448,6 +1448,38 @@ impl pkg::ToolchainPackager for CToolchainPackager {
 /// The cache is versioned by the inputs to `HashKeyParams::compute`.
 pub const CACHE_VERSION: &[u8] = b"12";
 
+/// Collapse `\\` byte pairs into a single `\`.
+#[cfg(any(target_os = "windows", test))]
+fn collapse_escaped_backslashes(input: &[u8]) -> Vec<u8> {
+    let mut iter = input.iter().peekable();
+    std::iter::from_fn(move || {
+        let &b = iter.next()?;
+        if b == b'\\' {
+            iter.next_if_eq(&&b'\\');
+        }
+        Some(b)
+    })
+    .collect()
+}
+
+/// On Windows, collapse C/C++ source-form `\\` escapes in preprocessor output
+/// before basedirs prefix-stripping. MSVC keeps `__FILE__`-style paths in
+/// source form, so `normalize_win_path` would otherwise map each `\\` to
+/// `//` and basedirs (stored as `/...`) would never match.
+#[cfg(target_os = "windows")]
+fn maybe_collapse_escaped_backslashes<'a>(input: &'a [u8], basedirs: &[Vec<u8>]) -> Cow<'a, [u8]> {
+    if basedirs.iter().any(|b| !b.is_empty()) {
+        Cow::Owned(collapse_escaped_backslashes(input))
+    } else {
+        Cow::Borrowed(input)
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn maybe_collapse_escaped_backslashes<'a>(input: &'a [u8], _basedirs: &[Vec<u8>]) -> Cow<'a, [u8]> {
+    Cow::Borrowed(input)
+}
+
 /// Environment variables that are factored into the cache key.
 static CACHED_ENV_VARS: LazyLock<HashSet<&'static OsStr>> = LazyLock::new(|| {
     [
@@ -1584,8 +1616,9 @@ impl<'a> HashKeyParams<'a> {
             }
         }
 
-        // Strip basedirs from preprocessor output if configured
-        let preprocessor_output_to_hash = strip_basedirs(self.preprocessor_output, self.basedirs);
+        let preprocessor_for_strip =
+            maybe_collapse_escaped_backslashes(self.preprocessor_output, self.basedirs);
+        let preprocessor_output_to_hash = strip_basedirs(&preprocessor_for_strip, self.basedirs);
 
         m.update(&preprocessor_output_to_hash);
         m.finish()
@@ -1763,6 +1796,53 @@ mod test {
             b"/home/user1/project".to_vec(), // This should match (longest)
         ];
         assert_eq!(h1, hash_with_basedirs(preprocessed1, &multi_basedirs));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_hash_key_basedirs_windows_escaped_backslash_paths() {
+        // MSVC `__FILE__` stringification produces source-form paths with
+        // doubled backslashes; basedirs are stored already normalised to
+        // forward slashes by `Config::basedir`.
+        let args = ovec!["/c"];
+        let preprocessed1 =
+            b"_wassert(L\"x\", L\"c:\\\\users\\\\user1\\\\work\\\\xyz\\\\file.c\", 42);\n";
+        let preprocessed2 =
+            b"_wassert(L\"x\", L\"d:\\\\actions\\\\runner\\\\hex\\\\repo\\\\file.c\", 42);\n";
+        let basedirs = [
+            b"c:/users/user1/work/xyz".to_vec(),
+            b"d:/actions/runner/hex/repo".to_vec(),
+        ];
+
+        let h1 = HashKeyParams::new("abcd", Language::C, &args, preprocessed1)
+            .with_basedirs(&basedirs)
+            .compute();
+        let h2 = HashKeyParams::new("abcd", Language::C, &args, preprocessed2)
+            .with_basedirs(&basedirs)
+            .compute();
+        assert_eq!(
+            h1, h2,
+            "Hashes should match after collapsing escaped backslashes"
+        );
+    }
+
+    #[test]
+    fn test_collapse_escaped_backslashes() {
+        // Trivial cases
+        assert_eq!(collapse_escaped_backslashes(b""), b"");
+        assert_eq!(collapse_escaped_backslashes(b"abc"), b"abc");
+
+        // The headline case: source-form path emitted by MSVC for __FILE__
+        // inside _wassert macros.
+        assert_eq!(
+            collapse_escaped_backslashes(b"\"c:\\\\users\\\\user1\\\\file.h\""),
+            b"\"c:\\users\\user1\\file.h\""
+        );
+
+        // Odd-length runs collapse pair-by-pair, leftmost first. A lone
+        // trailing backslash (no pair partner) stays untouched.
+        assert_eq!(collapse_escaped_backslashes(b"a\\b"), b"a\\b");
+        assert_eq!(collapse_escaped_backslashes(b"a\\\\\\b"), b"a\\\\b");
     }
 
     #[test]
