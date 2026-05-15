@@ -15,7 +15,6 @@
 use anyhow::{Context, Error, Result, anyhow, bail};
 use flate2::read::GzDecoder;
 use fs_err as fs;
-use libmount::Overlay;
 use sccache::dist::{
     BuildResult, BuilderIncoming, CompileCommand, InputsReader, OutputData, ProcessOutput, TcCache,
     Toolchain,
@@ -23,11 +22,11 @@ use sccache::dist::{
 use sccache::lru_disk_cache::Error as LruError;
 use std::collections::{HashMap, hash_map};
 use std::io;
-use std::iter;
 use std::path::{self, Path, PathBuf};
 use std::process::{ChildStdin, Command, Output, Stdio};
 use std::sync::Mutex;
 use std::time::Instant;
+use sys_mount::Mount;
 use version_compare::Version;
 
 trait CommandExt {
@@ -298,15 +297,16 @@ impl OverlayBuilder {
                     fs::create_dir(&target_dir)
                         .context("Failed to create overlay target directory")?;
 
-                    let () = Overlay::writable(
-                        iter::once(overlay.toolchain_dir.as_path()),
-                        upper_dir,
-                        work_dir,
-                        &target_dir,
-                        // This error is unfortunately not Send+Sync
-                    )
-                    .mount()
-                    .map_err(|e| anyhow!("Failed to mount overlay FS: {}", e.to_string()))?;
+                    Mount::builder()
+                        .fstype("overlay")
+                        .data(&format!(
+                            "lowerdir={},upperdir={},workdir={}",
+                            overlay.toolchain_dir.display(),
+                            upper_dir.display(),
+                            work_dir.display(),
+                        ))
+                        .mount("overlay", &target_dir)
+                        .context("Failed to mount overlay FS")?;
 
                     trace!("copying in inputs");
                     // Note that we don't unpack directly into the upperdir since there overlayfs has some
