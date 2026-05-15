@@ -1566,7 +1566,11 @@ impl<'a> HashKeyParams<'a> {
         m.update(CACHE_VERSION);
         m.update(self.language.as_str().as_bytes());
         for arg in self.arguments {
-            arg.hash(&mut HashToDigest { digest: &mut m });
+            let arg_bytes = arg.as_encoded_bytes();
+            let stripped = strip_basedirs(arg_bytes, self.basedirs);
+            m.update(&stripped);
+            // Separator so adjacent args don't blur together.
+            m.update(&[0u8]);
         }
         for hash in self.extra_hashes {
             m.update(hash.as_bytes());
@@ -1759,6 +1763,64 @@ mod test {
             b"/home/user1/project".to_vec(), // This should match (longest)
         ];
         assert_eq!(h1, hash_with_basedirs(preprocessed1, &multi_basedirs));
+    }
+
+    #[test]
+    fn test_hash_key_args_basedirs() {
+        // Args carry absolute paths into the cache key for any flag whose
+        // disposition ends up in `common_args` with the path on its own
+        // (Separated disposition). On MSVC, `-external:I <path>` is the
+        // canonical case. Verify that basedirs strip neutralises the
+        // per-workspace difference.
+        let basedirs = [
+            b"/home/user1/project".to_vec(),
+            b"/home/user2/project".to_vec(),
+        ];
+        let preprocessed = b"int main() { return 0; }";
+
+        let args1: Vec<OsString> = ovec![
+            "-c",
+            "-external:I",
+            "/home/user1/project/include",
+            "-o",
+            "/home/user1/project/build/main.o"
+        ];
+        let args2: Vec<OsString> = ovec![
+            "-c",
+            "-external:I",
+            "/home/user2/project/include",
+            "-o",
+            "/home/user2/project/build/main.o"
+        ];
+
+        let h1 = HashKeyParams::new("abcd", Language::C, &args1, preprocessed)
+            .with_basedirs(&basedirs)
+            .compute();
+        let h2 = HashKeyParams::new("abcd", Language::C, &args2, preprocessed)
+            .with_basedirs(&basedirs)
+            .compute();
+        assert_eq!(
+            h1, h2,
+            "Args with workspace-relative absolute paths should hash equal under basedirs"
+        );
+
+        // Without basedirs, same args produce divergent hashes — proves args
+        // (not just preprocessor output) feed into the key.
+        let h1_nb = HashKeyParams::new("abcd", Language::C, &args1, preprocessed).compute();
+        let h2_nb = HashKeyParams::new("abcd", Language::C, &args2, preprocessed).compute();
+        assert_neq!(h1_nb, h2_nb);
+
+        // Sanity: adjacent args must not blur — the inter-arg separator
+        // matters. `["-Ia", "b"]` and `["-I", "ab"]` are distinct cmdlines.
+        let args_a: Vec<OsString> = ovec!["-Ia", "b"];
+        let args_b: Vec<OsString> = ovec!["-I", "ab"];
+        let h_a = HashKeyParams::new("abcd", Language::C, &args_a, preprocessed)
+            .with_basedirs(&basedirs)
+            .compute();
+        let h_b = HashKeyParams::new("abcd", Language::C, &args_b, preprocessed)
+            .with_basedirs(&basedirs)
+            .compute();
+        assert_neq!(h_a, h_b);
     }
 
     #[test]
