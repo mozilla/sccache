@@ -1406,6 +1406,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("--compiler-options", OsString, CanBeSeparated(b'='), PreprocessorArgument),
     flag!("--cubin", DoCompilation),
     take_arg!("--default-stream", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("--dependency-output", PathBuf, Separated, DepArgumentPath),
     flag!("--device-c", DoCompilation),
     flag!("--device-w", DoCompilation),
     flag!("--expt-extended-lambda", PreprocessorArgumentFlag),
@@ -1648,6 +1649,13 @@ mod test {
         );
         assert!(a.preprocessor_args.is_empty());
         assert_eq!(ovec!["-ccbin", "/usr/bin/", "-c"], a.common_args);
+    }
+
+    #[test]
+    fn test_parse_arguments_dependency_output() {
+        let a = parses!("--dependency-output", "foo.o.d", "-c", "foo.cu");
+        assert_eq!(Some("foo.cu"), a.input.to_str());
+        assert_eq!(ovec!["--dependency-output", "foo.o.d"], a.dependency_args);
     }
 
     #[test]
