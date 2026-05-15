@@ -775,9 +775,7 @@ mod server {
                     match bearer_http_auth($request).and_then(&*check_server_auth) {
                         Some(server_id) => {
                             if check_server_ip {
-                                if let Err(resp) =
-                                    verify_server_ip(&server_id, $request)
-                                {
+                                if let Err(resp) = verify_server_ip(&server_id, $request) {
                                     return resp;
                                 }
                             }
