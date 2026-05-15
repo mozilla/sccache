@@ -974,7 +974,13 @@ pub fn normalize_path(path: &Path) -> PathBuf {
             }
             Component::CurDir => {}
             Component::ParentDir => {
-                ret.pop();
+                match ret.components().next_back() {
+                    Some(Component::Normal(_)) => {
+                        ret.pop();
+                    }
+                    None | Some(Component::ParentDir) => ret.push(".."),
+                    _ => {}
+                }
             }
             Component::Normal(c) => {
                 ret.push(c);
@@ -1069,7 +1075,7 @@ fn remember_include_file(
     }
     let mut path = decode_path(path).context("failed to decode path")?;
     if path.is_relative() {
-        path = cwd.join(path);
+        path = normalize_path(&cwd.join(path));
     }
     if path != cwd || config.hash_working_directory {
         digest.update(original_path);
@@ -2189,6 +2195,144 @@ mod test {
                 .unwrap(),
             // hash of `b"contents"`
             "a93900c371d997927c5bc568ea538bed59ae5c960021dcfe7b0b369da5267528",
+        );
+    }
+
+    #[test]
+    fn test_normalize_path_preserves_leading_dotdot() {
+        // Relative paths with leading .. must be preserved
+        assert_eq!(
+            normalize_path(Path::new("../../src/config.h")),
+            PathBuf::from("../../src/config.h")
+        );
+        assert_eq!(
+            normalize_path(Path::new("../include/X11/Xlibint.h")),
+            PathBuf::from("../include/X11/Xlibint.h")
+        );
+        // Goes above starting point
+        assert_eq!(
+            normalize_path(Path::new("a/../../c")),
+            PathBuf::from("../c")
+        );
+        // Absolute paths still resolve .. normally
+        assert_eq!(
+            normalize_path(Path::new("/a/b/../c")),
+            PathBuf::from("/a/c")
+        );
+        // Absolute path .. at root is a no-op
+        assert_eq!(
+            normalize_path(Path::new("/../a")),
+            PathBuf::from("/a")
+        );
+        // Relative path with resolvable ..
+        assert_eq!(
+            normalize_path(Path::new("a/b/../c")),
+            PathBuf::from("a/c")
+        );
+        // CurDir components are still removed
+        assert_eq!(
+            normalize_path(Path::new("./a/./b")),
+            PathBuf::from("a/b")
+        );
+    }
+
+    #[test]
+    fn test_process_preprocessor_line_bazel_sandbox_relative_dotdot() {
+        // Regression test for Bazel sandbox include resolution.
+        //
+        // Real failure: sccache tried to stat
+        //   .../libX11.build_tmpdir/src/include/X11/Xlibint.h  (WRONG — extra src/)
+        // but the file actually lives at
+        //   .../libX11.build_tmpdir/include/X11/Xlibint.h      (CORRECT)
+        //
+        // Root cause: normalize_path("../include/X11/Xlibint.h") ate the ".."
+        // producing "include/X11/Xlibint.h", which cwd.join() then placed under
+        // .../src/include/... instead of going up one level to .../libX11.build_tmpdir/include/...
+        env_logger::builder()
+            .is_test(true)
+            .filter_level(log::LevelFilter::Debug)
+            .try_init()
+            .ok();
+
+        let bazel_sandbox = ".cache/bazel/_bazel/50bb42f85dd7221f103d42b8b74c64b0/sandbox/linux-sandbox/63/execroot/_main/bazel-out/k8-fastbuild/bin/third_party/libX11/libX11.build_tmpdir";
+
+        // Xrm.c is compiled from the src/ directory
+        let cwd = PathBuf::from(format!("{}/src", bazel_sandbox));
+        let input_file = Path::new("Xrm.c");
+
+        // The preprocessor finds Xlibint.h via -I../include and outputs "../include/X11/Xlibint.h".
+        // After correct normalization + cwd join, this should resolve to:
+        //   .../libX11.build_tmpdir/include/X11/Xlibint.h
+        // NOT:
+        //   .../libX11.build_tmpdir/src/include/X11/Xlibint.h  (the old buggy path)
+        let correct_path = PathBuf::from(format!("{}/include/X11/Xlibint.h", bazel_sandbox));
+        let wrong_path = PathBuf::from(format!("{}/src/include/X11/Xlibint.h", bazel_sandbox));
+
+        let config = PreprocessorCacheModeConfig {
+            use_preprocessor_cache_mode: true,
+            skip_system_headers: false,
+            ..Default::default()
+        };
+
+        let fs_impl = TestFs {
+            metadata_results: Mutex::new(
+                [(
+                    correct_path.clone(),
+                    PreprocessorFileMetadata {
+                        is_dir: false,
+                        is_file: true,
+                        modified: Some(Timestamp::new(12341234, 0)),
+                        ctime_or_creation: None,
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            ),
+            open_results: Mutex::new(
+                [(
+                    correct_path.clone(),
+                    Box::new(&b"/* Xlibint.h */\n"[..]) as Box<dyn std::io::Read>,
+                )]
+                .into_iter()
+                .collect(),
+            ),
+        };
+
+        // Preprocessor output: # 1 "../include/X11/Xlibint.h" 1 3
+        // (found via -I../include relative to cwd=.../src/)
+        let line = br#"// # 1 "../include/X11/Xlibint.h" 1 3"#;
+        let mut bytes = line.to_vec();
+        let total_len = bytes.len();
+        let mut include_files = HashMap::new();
+
+        let result = process_preprocessor_line(
+            input_file,
+            &cwd,
+            &mut include_files,
+            config,
+            std::time::SystemTime::now(),
+            &mut bytes,
+            0,
+            0,
+            &mut Digest::new(),
+            total_len,
+            &mut HashMap::new(),
+            &fs_impl,
+        )
+        .unwrap();
+
+        assert!(
+            matches!(result, ControlFlow::Continue(_)),
+            "expected Continue, got {:?} — stat likely used wrong path",
+            result
+        );
+        assert_eq!(include_files.len(), 1);
+        assert!(
+            include_files.contains_key(&correct_path),
+            "should stat at {:?} (correct), not {:?} (wrong). Got keys: {:?}",
+            correct_path,
+            wrong_path,
+            include_files.keys().collect::<Vec<_>>()
         );
     }
 }
