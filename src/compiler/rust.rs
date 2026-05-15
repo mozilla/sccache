@@ -1921,6 +1921,8 @@ fn can_trim_this(input_path: &Path) -> bool {
     trace!("can_trim_this: input_path={:?}", input_path);
     let mut ar_path = input_path.to_path_buf();
     ar_path.set_extension("a");
+    let mut rmeta_path = input_path.to_path_buf();
+    rmeta_path.set_extension("rmeta");
     // Check if the input path exists with both a .rlib and a .a, in which case
     // we want to refuse to trim, otherwise triggering
     // https://bugzilla.mozilla.org/show_bug.cgi?id=1760743
@@ -1929,6 +1931,7 @@ fn can_trim_this(input_path: &Path) -> bool {
         .map(|e| e == RLIB_EXTENSION)
         .unwrap_or(false)
         && !ar_path.exists()
+        && rmeta_path.exists() // refuse trim if rustc does not generate an .rmeta file to prevent compilation failures
 }
 
 #[test]
