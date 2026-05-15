@@ -1154,6 +1154,45 @@ pub fn strip_basedirs<'a>(preprocessor_output: &'a [u8], basedirs: &[Vec<u8>]) -
     Cow::Owned(result)
 }
 
+const PREFIX_MAP_FLAGS: &[&[u8]] = &[
+    b"-fdebug-prefix-map=",
+    b"-fmacro-prefix-map=",
+    b"-ffile-prefix-map=",
+];
+
+/// Normalize a `-f{debug,macro,file}-prefix-map=OLD=NEW` compiler argument for cache key
+/// computation by stripping basedir prefixes from the OLD path component.
+///
+/// These flags embed absolute source or object directory paths. Because they are compound
+/// arguments (not standalone paths), `strip_basedirs` cannot reach them via preprocessor-output
+/// normalization. This function handles them explicitly so builds from different directories
+/// can share cache entries when `SCCACHE_BASEDIRS` is configured.
+///
+/// Returns `Cow::Owned` with the normalized argument if a basedir was stripped, or
+/// `Cow::Borrowed` of the original if the argument was not a prefix-map flag or no basedir matched.
+pub fn normalize_prefix_map_arg<'a>(arg: &'a OsStr, basedirs: &[Vec<u8>]) -> Cow<'a, OsStr> {
+    fn try_normalize(bytes: &[u8], basedirs: &[Vec<u8>]) -> Option<Vec<u8>> {
+        let (flag, rest) = PREFIX_MAP_FLAGS
+            .iter()
+            .find_map(|&flag| Some((flag, bytes.strip_prefix(flag)?)))?;
+        // Format is OLD=NEW; split on the first '='
+        let sep = rest.iter().position(|&b| b == b'=')?;
+        let old = &rest[..sep];
+        // Strip the longest matching basedir prefix from OLD
+        let stripped_old = basedirs
+            .iter()
+            .filter(|dir| old.starts_with(dir.as_slice()))
+            .max_by_key(|dir| dir.len())
+            .map(|dir| &old[dir.len()..])?;
+        Some([flag, stripped_old, &rest[sep..]].concat())
+    }
+
+    // SAFETY: result bytes originate from `arg.as_encoded_bytes()`, preserving its encoding
+    try_normalize(arg.as_encoded_bytes(), basedirs)
+        .map(|b| Cow::Owned(unsafe { OsString::from_encoded_bytes_unchecked(b) }))
+        .unwrap_or(Cow::Borrowed(arg))
+}
+
 /// Normalize path for case-insensitive comparison.
 /// On Windows: converts all backslashes to forward slashes;
 ///             lowercases characters for consistency.
@@ -1294,6 +1333,7 @@ pub fn resolve_compiler_avoiding_ccache(
 #[cfg(test)]
 mod tests {
     use super::{Digest, OsStrExt, TimeMacroFinder, resolve_compiler_avoiding_ccache};
+    use std::borrow::Cow;
     use std::ffi::{OsStr, OsString};
     use std::path::Path;
 
@@ -1668,6 +1708,41 @@ mod tests {
             &*output, expected,
             "Failed to strip reverse mixed slash path"
         );
+    }
+
+    #[test]
+    fn test_normalize_prefix_map_arg() {
+        let basedirs = vec![b"/home/user/project/".to_vec()];
+
+        // Each flag variant with matching basedir — OLD is fully stripped, leaving empty OLD
+        for flag in &[
+            "-fdebug-prefix-map",
+            "-fmacro-prefix-map",
+            "-ffile-prefix-map",
+        ] {
+            let arg = OsString::from(format!("{flag}=/home/user/project/=/topsrcdir/"));
+            let result = super::normalize_prefix_map_arg(&arg, &basedirs);
+            assert_eq!(
+                &*result,
+                OsStr::new(&format!("{flag}==/topsrcdir/")),
+                "{flag}"
+            );
+        }
+
+        // Non-matching basedir returns the original (Borrowed)
+        let arg = OsString::from("-fdebug-prefix-map=/other/path/=/topsrcdir/");
+        let result = super::normalize_prefix_map_arg(&arg, &basedirs);
+        assert!(matches!(result, Cow::Borrowed(_)));
+
+        // Non-prefix-map arg returns the original (Borrowed)
+        let arg = OsString::from("-I/home/user/project/include");
+        let result = super::normalize_prefix_map_arg(&arg, &basedirs);
+        assert!(matches!(result, Cow::Borrowed(_)));
+
+        // Empty basedirs returns the original (Borrowed)
+        let arg = OsString::from("-fdebug-prefix-map=/home/user/project/=/topsrcdir/");
+        let result = super::normalize_prefix_map_arg(&arg, &[]);
+        assert!(matches!(result, Cow::Borrowed(_)));
     }
 
     #[test]
