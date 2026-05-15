@@ -433,26 +433,68 @@ impl MultiLevelStorage {
                     let cache_type = match level_name.to_lowercase().as_str() {
                         #[cfg(feature = "s3")]
                         "s3" => config.cache_configs.s3.clone().map(CacheType::S3),
+                        #[cfg(not(feature = "s3"))]
+                        "s3" => return Err(anyhow!("Cache level 's3' requires the 's3' feature")),
                         #[cfg(feature = "redis")]
                         "redis" => config.cache_configs.redis.clone().map(CacheType::Redis),
+                        #[cfg(not(feature = "redis"))]
+                        "redis" => {
+                            return Err(anyhow!(
+                                "Cache level 'redis' requires the 'redis' feature"
+                            ));
+                        }
                         #[cfg(feature = "memcached")]
                         "memcached" => config
                             .cache_configs
                             .memcached
                             .clone()
                             .map(CacheType::Memcached),
+                        #[cfg(not(feature = "memcached"))]
+                        "memcached" => {
+                            return Err(anyhow!(
+                                "Cache level 'memcached' requires the 'memcached' feature"
+                            ));
+                        }
                         #[cfg(feature = "gcs")]
                         "gcs" => config.cache_configs.gcs.clone().map(CacheType::GCS),
+                        #[cfg(not(feature = "gcs"))]
+                        "gcs" => {
+                            return Err(anyhow!("Cache level 'gcs' requires the 'gcs' feature"));
+                        }
                         #[cfg(feature = "gha")]
                         "gha" => config.cache_configs.gha.clone().map(CacheType::GHA),
+                        #[cfg(not(feature = "gha"))]
+                        "gha" => {
+                            return Err(anyhow!("Cache level 'gha' requires the 'gha' feature"));
+                        }
                         #[cfg(feature = "azure")]
                         "azure" => config.cache_configs.azure.clone().map(CacheType::Azure),
+                        #[cfg(not(feature = "azure"))]
+                        "azure" => {
+                            return Err(anyhow!(
+                                "Cache level 'azure' requires the 'azure' feature"
+                            ));
+                        }
                         #[cfg(feature = "webdav")]
                         "webdav" => config.cache_configs.webdav.clone().map(CacheType::Webdav),
+                        #[cfg(not(feature = "webdav"))]
+                        "webdav" => {
+                            return Err(anyhow!(
+                                "Cache level 'webdav' requires the 'webdav' feature"
+                            ));
+                        }
                         #[cfg(feature = "oss")]
                         "oss" => config.cache_configs.oss.clone().map(CacheType::OSS),
+                        #[cfg(not(feature = "oss"))]
+                        "oss" => {
+                            return Err(anyhow!("Cache level 'oss' requires the 'oss' feature"));
+                        }
                         #[cfg(feature = "cos")]
                         "cos" => config.cache_configs.cos.clone().map(CacheType::COS),
+                        #[cfg(not(feature = "cos"))]
+                        "cos" => {
+                            return Err(anyhow!("Cache level 'cos' requires the 'cos' feature"));
+                        }
                         _ => {
                             return Err(anyhow!("Unknown cache level: '{}'", level_name));
                         }
