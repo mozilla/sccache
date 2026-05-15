@@ -54,6 +54,8 @@ connection_string = "BlobEndpoint=https://example.blob.core.windows.net/;SharedA
 container = "my_container_name"
 # Optional string to prepend to each blob storage key
 key_prefix = ""
+# Set to true to use anonymous access (no credentials required)
+no_credentials = false
 
 [cache.disk]
 dir = "/tmp/.cache/sccache"
@@ -278,6 +280,7 @@ The full url appears then as `redis://user:passwd@1.2.3.4:6379/?db=1`.
 * `SCCACHE_AZURE_CONNECTION_STRING`
 * `SCCACHE_AZURE_BLOB_CONTAINER`
 * `SCCACHE_AZURE_KEY_PREFIX`
+* `SCCACHE_AZURE_NO_CREDENTIALS`
 
 #### gha
 
