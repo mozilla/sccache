@@ -1067,12 +1067,12 @@ mod server {
 #[cfg(feature = "dist-client")]
 mod client {
     use super::super::cache;
-    use crate::config;
     use crate::dist::pkg::{InputsPackager, ToolchainPackager};
     use crate::dist::{
         self, AllocJobResult, CompileCommand, JobAlloc, PathTransformer, RunJobResult,
         SchedulerStatusResult, SubmitToolchainResult, Toolchain,
     };
+    use crate::server::DistClientConfig;
 
     use async_trait::async_trait;
     use byteorder::{BigEndian, WriteBytesExt};
@@ -1110,14 +1110,9 @@ mod client {
 
     impl Client {
         pub fn new(
-            pool: &tokio::runtime::Handle,
+            config: &DistClientConfig,
             scheduler_url: reqwest::Url,
-            cache_dir: &Path,
-            cache_size: u64,
-            toolchain_configs: &[config::DistToolchainConfig],
             auth_token: String,
-            rewrite_includes_only: bool,
-            force_remote_build: bool,
         ) -> Result<Self> {
             let timeout = Duration::new(REQUEST_TIMEOUT_SECS, 0);
             let connect_timeout = Duration::new(CONNECT_TIMEOUT_SECS, 0);
@@ -1129,18 +1124,21 @@ mod client {
                 .pool_max_idle_per_host(0)
                 .build()
                 .context("failed to create an async HTTP client")?;
-            let client_toolchains =
-                cache::ClientToolchains::new(cache_dir, cache_size, toolchain_configs)
-                    .context("failed to initialise client toolchains")?;
+            let client_toolchains = cache::ClientToolchains::new(
+                &config.cache_dir,
+                config.toolchain_cache_size,
+                &config.toolchains,
+            )
+            .context("failed to initialise client toolchains")?;
             Ok(Self {
                 auth_token,
                 scheduler_url,
                 server_certs: Default::default(),
                 client: Arc::new(Mutex::new(client)),
-                pool: pool.clone(),
+                pool: config.pool.clone(),
                 tc_cache: Arc::new(client_toolchains),
-                rewrite_includes_only,
-                force_remote_build,
+                rewrite_includes_only: config.rewrite_includes_only,
+                force_remote_build: config.force_remote_build,
             })
         }
 
