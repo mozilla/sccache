@@ -3313,6 +3313,82 @@ LLVM version: 6.0",
             assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
         }
     }
+
+    #[cfg(feature = "dist-client")]
+    #[test]
+    fn test_compiler_get_cached_or_compile_dist_force_remote() {
+        drop(env_logger::try_init());
+        let creator = new_creator();
+        let f = TestFixture::new();
+        let gcc = f.mk_bin("gcc").unwrap();
+        let runtime = Runtime::new().unwrap();
+        let pool = runtime.handle().clone();
+        let dist_client =
+            Arc::new(test_dist::ForceRemoteClient(
+                test_dist::ErrorRunJobClient::new(),
+            ));
+        // Write a dummy input file so the preprocessor cache mode can work
+        std::fs::write(f.tempdir.path().join("foo.c"), "whatever").unwrap();
+        let storage = DiskCache::new(
+            f.tempdir.path().join("cache"),
+            u64::MAX,
+            &pool,
+            Default::default(),
+            CacheMode::ReadWrite,
+            vec![],
+        );
+        let storage = Arc::new(storage);
+        // Pretend to be GCC.
+        next_command(
+            &creator,
+            Ok(MockChild::new(exit_status(0), "compiler_id=gcc", "")),
+        );
+        let c = get_compiler_info(
+            creator.clone(),
+            &gcc,
+            f.tempdir.path(),
+            &[],
+            &[],
+            &pool,
+            None,
+        )
+        .wait()
+        .unwrap()
+        .0;
+        // The preprocessor invocation.
+        next_command(
+            &creator,
+            Ok(MockChild::new(exit_status(0), "preprocessor output", "")),
+        );
+        let cwd = f.tempdir.path();
+        let arguments = ovec!["-c", "foo.c", "-o", "foo.o"];
+        let mut hasher = match c.parse_arguments(&arguments, ".".as_ref(), &[]) {
+            CompilerArguments::Ok(h) => h,
+            o => panic!("Bad result from parse_arguments: {:?}", o),
+        };
+        let service = server::SccacheService::mock_with_dist_client(
+            dist_client.clone(),
+            storage.clone(),
+            pool.clone(),
+        );
+        let result = hasher
+            .get_cached_or_compile(
+                &service,
+                Some(dist_client),
+                creator,
+                storage,
+                arguments,
+                cwd.to_path_buf(),
+                vec![],
+                CacheControl::ForceRecache,
+                pool,
+            )
+            .wait();
+        assert!(
+            result.is_err(),
+            "Expected dist compilation to fail with force_remote, but it succeeded"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -3692,6 +3768,55 @@ mod test_dist {
         }
         fn get_custom_toolchain(&self, _exe: &Path) -> Option<PathBuf> {
             None
+        }
+    }
+
+    pub struct ForceRemoteClient(pub Arc<dyn dist::Client>);
+
+    #[async_trait]
+    impl dist::Client for ForceRemoteClient {
+        async fn do_alloc_job(&self, tc: Toolchain) -> Result<AllocJobResult> {
+            self.0.do_alloc_job(tc).await
+        }
+        async fn do_get_status(&self) -> Result<SchedulerStatusResult> {
+            self.0.do_get_status().await
+        }
+        async fn do_submit_toolchain(
+            &self,
+            job_alloc: JobAlloc,
+            tc: Toolchain,
+        ) -> Result<SubmitToolchainResult> {
+            self.0.do_submit_toolchain(job_alloc, tc).await
+        }
+        async fn do_run_job(
+            &self,
+            job_alloc: JobAlloc,
+            command: CompileCommand,
+            outputs: Vec<String>,
+            inputs_packager: Box<dyn pkg::InputsPackager>,
+        ) -> Result<(RunJobResult, PathTransformer)> {
+            self.0
+                .do_run_job(job_alloc, command, outputs, inputs_packager)
+                .await
+        }
+        async fn put_toolchain(
+            &self,
+            compiler_path: PathBuf,
+            weak_key: String,
+            toolchain_packager: Box<dyn pkg::ToolchainPackager>,
+        ) -> Result<(Toolchain, Option<(String, PathBuf)>)> {
+            self.0
+                .put_toolchain(compiler_path, weak_key, toolchain_packager)
+                .await
+        }
+        fn rewrite_includes_only(&self) -> bool {
+            self.0.rewrite_includes_only()
+        }
+        fn force_remote_build(&self) -> bool {
+            true
+        }
+        fn get_custom_toolchain(&self, exe: &Path) -> Option<PathBuf> {
+            self.0.get_custom_toolchain(exe)
         }
     }
 }
