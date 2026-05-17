@@ -923,6 +923,10 @@ where
         Some(ref client) => client.rewrite_includes_only(),
         _ => false,
     };
+    let force_remote_build = match dist_client {
+        Some(ref client) => client.force_remote_build(),
+        _ => false,
+    };
     let mut path_transformer = dist::PathTransformer::new();
     let (compile_cmd, dist_compile_cmd, cacheable) = compilation
         .generate_compile_commands(&mut path_transformer, rewrite_includes_only)
@@ -1115,6 +1119,9 @@ where
                     local_executable2
                 ))
             } else {
+                if force_remote_build {
+                    return Err(e);
+                }
                 // `{:#}` prints the error and the causes in a single line.
                 let errmsg = format!("{:#}", e);
                 warn!(
@@ -3914,6 +3921,9 @@ mod test_dist {
         fn rewrite_includes_only(&self) -> bool {
             false
         }
+        fn force_remote_build(&self) -> bool {
+            false
+        }
         fn get_custom_toolchain(&self, _exe: &Path) -> Option<PathBuf> {
             None
         }
@@ -3966,6 +3976,9 @@ mod test_dist {
             Ok((self.tc.clone(), None))
         }
         fn rewrite_includes_only(&self) -> bool {
+            false
+        }
+        fn force_remote_build(&self) -> bool {
             false
         }
         fn get_custom_toolchain(&self, _exe: &Path) -> Option<PathBuf> {
@@ -4037,6 +4050,9 @@ mod test_dist {
             Ok((self.tc.clone(), None))
         }
         fn rewrite_includes_only(&self) -> bool {
+            false
+        }
+        fn force_remote_build(&self) -> bool {
             false
         }
         fn get_custom_toolchain(&self, _exe: &Path) -> Option<PathBuf> {
@@ -4116,6 +4132,9 @@ mod test_dist {
             ))
         }
         fn rewrite_includes_only(&self) -> bool {
+            false
+        }
+        fn force_remote_build(&self) -> bool {
             false
         }
         fn get_custom_toolchain(&self, _exe: &Path) -> Option<PathBuf> {
@@ -4215,6 +4234,9 @@ mod test_dist {
             ))
         }
         fn rewrite_includes_only(&self) -> bool {
+            false
+        }
+        fn force_remote_build(&self) -> bool {
             false
         }
         fn get_custom_toolchain(&self, _exe: &Path) -> Option<PathBuf> {
