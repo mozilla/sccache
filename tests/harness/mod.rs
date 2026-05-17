@@ -190,6 +190,7 @@ pub fn sccache_client_cfg(
             toolchains: vec![],
             toolchain_cache_size: TC_CACHE_SIZE,
             rewrite_includes_only: false, // TODO
+            force_remote_build: false,
         },
         server_startup_timeout_ms: None,
         basedirs: vec![],
