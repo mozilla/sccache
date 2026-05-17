@@ -3867,10 +3867,10 @@ LLVM version: 6.0",
         let gcc = f.mk_bin("gcc").unwrap();
         let runtime = Runtime::new().unwrap();
         let pool = runtime.handle().clone();
-        let dist_client =
-            Arc::new(test_dist::ForceRemoteClient(
-                test_dist::ErrorRunJobClient::new(),
-            ));
+        let dist_client = Arc::new(test_dist::ForceRemoteClient(
+            test_dist::ErrorRunJobClient::new(),
+        ));
+
         // Write a dummy input file so the preprocessor cache mode can work
         std::fs::write(f.tempdir.path().join("foo.c"), "whatever").unwrap();
         let storage = DiskCache::new(
@@ -3882,6 +3882,7 @@ LLVM version: 6.0",
             vec![],
         );
         let storage = Arc::new(storage);
+
         // Pretend to be GCC.
         next_command(
             &creator,
@@ -3899,6 +3900,7 @@ LLVM version: 6.0",
         .wait()
         .unwrap()
         .0;
+
         // The preprocessor invocation.
         next_command(
             &creator,
