@@ -583,10 +583,19 @@ pub struct JobComplete {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct BuildServerStatus {
+    pub address: String,
+    pub num_cpus: usize,
+    pub in_progress: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SchedulerStatusResult {
     pub num_servers: usize,
     pub num_cpus: usize,
     pub in_progress: usize,
+    pub servers: Vec<BuildServerStatus>,
 }
 
 // SubmitToolchain
