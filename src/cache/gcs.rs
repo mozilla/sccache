@@ -16,10 +16,8 @@
 use crate::cache::CacheMode;
 use crate::errors::*;
 use opendal::Operator;
-use opendal::{
-    layers::{HttpClientLayer, LoggingLayer},
-    services::Gcs,
-};
+use opendal::{layers::HttpClientLayer, services::Gcs};
+use opendal_layer_logging::LoggingLayer;
 use reqwest::Client;
 use serde::Deserialize;
 use url::Url;

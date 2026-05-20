@@ -11,8 +11,9 @@
 // limitations under the License.
 
 use opendal::Operator;
-use opendal::layers::{HttpClientLayer, LoggingLayer};
+use opendal::layers::HttpClientLayer;
 use opendal::services::S3;
+use opendal_layer_logging::LoggingLayer;
 
 use crate::errors::*;
 

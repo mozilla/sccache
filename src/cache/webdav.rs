@@ -12,8 +12,9 @@
 
 use crate::errors::*;
 use opendal::Operator;
-use opendal::layers::{HttpClientLayer, LoggingLayer};
+use opendal::layers::HttpClientLayer;
 use opendal::services::Webdav;
+use opendal_layer_logging::LoggingLayer;
 
 use super::http_client::set_user_agent;
 
