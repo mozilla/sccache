@@ -92,6 +92,7 @@ reqwest = { version = "0.13", features = [
   "rustls",
   "hickory-dns",
 ], optional = true }
+rustls-native-certs = { version = "0.8", optional = true }
 semver = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = ">=1.0, <1.0.147" # zmij (used in 1.0.147+) requires Rust 1.84+
@@ -204,6 +205,7 @@ dist-client = [
   "reqwest",
   "url",
   "sha2",
+  "rustls-native-certs",
 ]
 # Enables the sccache-dist binary
 dist-server = [
@@ -216,6 +218,7 @@ dist-server = [
   "rouille",
   "syslog",
   "version-compare",
+  "rustls-native-certs",
 ]
 # Enables dist tests with external requirements
 dist-tests = ["dist-client", "dist-server"]
