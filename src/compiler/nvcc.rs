@@ -759,14 +759,20 @@ where
                     }
                     _ => {}
                 }
-                let group = device_compile_groups.get_mut(&args[args.len() - 3]);
+                let group = args
+                    .iter()
+                    .find(|arg| arg.ends_with(".cpp1.ii"))
+                    .and_then(|input| device_compile_groups.get_mut(input));
                 (env_vars.clone(), Cacheable::Yes, group)
             }
             Some("ptxas") => {
                 let group = device_compile_groups.values_mut().find(|cmds| {
                     if let Some(cicc) = cmds.last() {
                         if let Some(cicc_out) = cicc.args.last() {
-                            return cicc_out == &args[args.len() - 3];
+                            return args
+                                .iter()
+                                .find(|arg| arg.ends_with(".ptx"))
+                                .is_some_and(|input| cicc_out == input);
                         }
                     }
                     false
@@ -1482,6 +1488,8 @@ mod test {
     use crate::mock_command::*;
     use crate::test::utils::*;
     use std::collections::HashMap;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
 
     fn parse_arguments_gcc(arguments: Vec<String>) -> CompilerArguments<ParsedArguments> {
@@ -1535,6 +1543,93 @@ mod test {
                 o => panic!("Got unexpected parse result: {:?}", o),
             }
         }
+    }
+
+    fn fake_executable(dir: &Path, name: &str) {
+        let path = dir.join(name);
+        fs::write(&path, "").unwrap();
+        #[cfg(unix)]
+        {
+            let mut permissions = fs::metadata(&path).unwrap().permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&path, permissions).unwrap();
+        }
+    }
+
+    #[test]
+    fn test_group_nvcc_subcommands_with_simt_only_cicc_input() {
+        let bin_dir = tempfile::tempdir().unwrap();
+        for exe in ["nvcc", "gcc", "cudafe++", "cicc", "ptxas", "fatbinary"] {
+            fake_executable(bin_dir.path(), exe);
+        }
+
+        let path = bin_dir.path().to_string_lossy();
+        let dryrun = format!(
+            r#"#$ PATH={path}
+#$ gcc -D__CUDACC__ -E -x c++ "kernel.cu" -o "kernel.cpp4.ii"
+#$ cudafe++ --gen_c_file_name "kernel.cudafe1.cpp" --stub_file_name "kernel.cudafe1.stub.c" --module_id_file_name "kernel.module_id" --simt-only "kernel.cpp4.ii"
+#$ gcc -D__CUDA_ARCH__=800 -D__CUDACC__ -E -x c++ "kernel.cu" -o "kernel.cpp1.ii"
+#$ cicc --device-c -arch compute_80 --module_id_file_name "kernel.module_id" --gen_c_file_name "kernel.cudafe1.c" --stub_file_name "kernel.cudafe1.stub.c" --gen_device_file_name "kernel.cudafe1.gpu" "kernel.cpp1.ii" --simt-only -o "kernel.ptx"
+#$ ptxas -arch=sm_80 --compile-only "kernel.ptx" -o "kernel.cubin"
+#$ fatbinary --create="kernel.fatbin" "--image3=kind=elf,sm=80,file=kernel.cubin" --embedded-fatbin="kernel.fatbin.c" --device-c
+#$ gcc -D__CUDA_ARCH__=800 -D__CUDACC__ -c -x c++ "kernel.cudafe1.cpp" -o "kernel.o"
+"#
+        );
+
+        let creator = new_creator();
+        next_command(
+            &creator,
+            Ok(MockChild::new(exit_status(0), "", dryrun.as_bytes())),
+        );
+        next_command(
+            &creator,
+            Ok(MockChild::new(exit_status(0), "", dryrun.as_bytes())),
+        );
+
+        let groups = group_nvcc_subcommands_by_compilation_stage(
+            &creator,
+            &bin_dir.path().join("nvcc"),
+            &ovec!["-c", "kernel.cu", "-o", "kernel.o"],
+            OsStr::new("-c"),
+            bin_dir.path(),
+            bin_dir.path(),
+            None,
+            &[],
+            &NvccHostCompiler::Gcc,
+            OsStr::new("kernel.o"),
+        )
+        .wait()
+        .unwrap();
+
+        let device_group = groups
+            .iter()
+            .find(|group| {
+                group
+                    .iter()
+                    .any(|cmd| cmd.exe.file_stem().and_then(|stem| stem.to_str()) == Some("cicc"))
+            })
+            .expect("missing device compile group");
+
+        assert_eq!(
+            vec!["gcc", "cicc", "ptxas"],
+            device_group
+                .iter()
+                .map(|cmd| cmd.exe.file_stem().unwrap().to_str().unwrap())
+                .collect::<Vec<_>>()
+        );
+
+        let cicc = device_group
+            .iter()
+            .find(|cmd| cmd.exe.file_stem().and_then(|stem| stem.to_str()) == Some("cicc"))
+            .unwrap();
+        assert!(cicc.args.iter().any(|arg| arg.ends_with(".cpp1.ii")));
+        assert!(cicc.args.iter().any(|arg| arg == "--simt-only"));
+
+        let ptxas = device_group
+            .iter()
+            .find(|cmd| cmd.exe.file_stem().and_then(|stem| stem.to_str()) == Some("ptxas"))
+            .unwrap();
+        assert!(ptxas.args.iter().any(|arg| arg.ends_with(".ptx")));
     }
 
     #[test]
