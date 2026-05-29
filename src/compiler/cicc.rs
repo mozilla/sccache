@@ -28,7 +28,7 @@ use crate::mock_command::{CommandCreator, CommandCreatorSync, RunCommand};
 use async_trait::async_trait;
 
 use std::collections::HashMap;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process;
@@ -39,6 +39,17 @@ use crate::errors::*;
 #[derive(Clone, Debug)]
 pub struct Cicc {
     pub version: Option<String>,
+}
+
+pub(crate) const CICC_INPUT_SUFFIX: &str = ".cpp1.ii";
+pub(crate) const PTXAS_INPUT_SUFFIX: &str = ".ptx";
+
+pub(crate) fn is_cicc_input(arg: impl AsRef<OsStr>) -> bool {
+    arg.as_ref().to_string_lossy().ends_with(CICC_INPUT_SUFFIX)
+}
+
+pub(crate) fn is_ptxas_input(arg: impl AsRef<OsStr>) -> bool {
+    arg.as_ref().to_string_lossy().ends_with(PTXAS_INPUT_SUFFIX)
 }
 
 #[async_trait]
@@ -113,12 +124,8 @@ where
 {
     let mut args = arguments.to_vec();
     let input_loc = match language {
-        Language::Ptx => arguments
-            .iter()
-            .position(|arg| arg.to_string_lossy().ends_with(".cpp1.ii")),
-        Language::Cubin => arguments
-            .iter()
-            .position(|arg| arg.to_string_lossy().ends_with(".ptx")),
+        Language::Ptx => arguments.iter().position(is_cicc_input),
+        Language::Cubin => arguments.iter().position(is_ptxas_input),
         _ => None,
     }
     .unwrap_or(arguments.len() - input_arg_offset_from_end);

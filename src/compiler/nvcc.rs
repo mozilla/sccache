@@ -20,7 +20,7 @@ use crate::compiler::c::{ArtifactDescriptor, CCompilerImpl, CCompilerKind, Parse
 use crate::compiler::gcc::ArgData::*;
 use crate::compiler::{
     self, CCompileCommand, Cacheable, CompileCommand, CompileCommandImpl, CompilerArguments,
-    Language, gcc, get_compiler_info, write_temp_file,
+    Language, cicc, gcc, get_compiler_info, write_temp_file,
 };
 use crate::mock_command::{
     CommandChild, CommandCreator, CommandCreatorSync, ExitStatusValue, RunCommand, exit_status,
@@ -45,6 +45,21 @@ use std::process;
 use which::which_in;
 
 use crate::errors::*;
+
+const NVCC_GENERATED_FILENAME_SUFFIXES: &[&str] = &[
+    cicc::CICC_INPUT_SUFFIX,
+    ".cpp4.ii",
+    ".cudafe1.c",
+    ".cudafe1.cpp",
+    ".cudafe1.stub.c",
+];
+
+fn nvcc_generated_filename_suffix(arg: &str) -> Option<&'static str> {
+    NVCC_GENERATED_FILENAME_SUFFIXES
+        .iter()
+        .find(|ext| arg.ends_with(*ext))
+        .copied()
+}
 
 /// A unit struct on which to implement `CCompilerImpl`.
 #[derive(Clone, Debug)]
@@ -761,7 +776,7 @@ where
                 }
                 let group = args
                     .iter()
-                    .find(|arg| arg.ends_with(".cpp1.ii"))
+                    .find(|arg| cicc::is_cicc_input(OsStr::new(arg)))
                     .and_then(|input| device_compile_groups.get_mut(input));
                 (env_vars.clone(), Cacheable::Yes, group)
             }
@@ -771,7 +786,7 @@ where
                         if let Some(cicc_out) = cicc.args.last() {
                             return args
                                 .iter()
-                                .find(|arg| arg.ends_with(".ptx"))
+                                .find(|arg| cicc::is_ptxas_input(OsStr::new(arg)))
                                 .is_some_and(|input| cicc_out == input);
                         }
                     }
@@ -830,7 +845,7 @@ where
                         // If the output file ends with...
                         // * .cpp1.ii - cicc/ptxas input
                         // * .cpp4.ii - cudafe++ input
-                        if out_name.ends_with(".cpp1.ii") {
+                        if cicc::is_cicc_input(OsStr::new(&out_name)) {
                             Some(out_name.clone())
                         } else {
                             None
@@ -1145,22 +1160,9 @@ fn remap_generated_filenames(
             // If the argument doesn't start with `-` and is a file that
             // ends in one of the below extensions, rename the file to an
             // auto-incrementing stable name
-            let maybe_extension = if !arg.starts_with('-') {
-                {
-                    [
-                        ".cpp1.ii",
-                        ".cpp4.ii",
-                        ".cudafe1.c",
-                        ".cudafe1.cpp",
-                        ".cudafe1.stub.c",
-                    ]
-                    .iter()
-                    .find(|ext| arg.ends_with(*ext))
-                    .copied()
-                }
-            } else {
-                None
-            };
+            let maybe_extension = (!arg.starts_with('-'))
+                .then(|| nvcc_generated_filename_suffix(&arg))
+                .flatten();
 
             // If the argument is a file that ends in one of the above extensions:
             // * If it's our first time seeing this file, create a unique name for it
@@ -1622,14 +1624,14 @@ mod test {
             .iter()
             .find(|cmd| cmd.exe.file_stem().and_then(|stem| stem.to_str()) == Some("cicc"))
             .unwrap();
-        assert!(cicc.args.iter().any(|arg| arg.ends_with(".cpp1.ii")));
+        assert!(cicc.args.iter().any(cicc::is_cicc_input));
         assert!(cicc.args.iter().any(|arg| arg == "--simt-only"));
 
         let ptxas = device_group
             .iter()
             .find(|cmd| cmd.exe.file_stem().and_then(|stem| stem.to_str()) == Some("ptxas"))
             .unwrap();
-        assert!(ptxas.args.iter().any(|arg| arg.ends_with(".ptx")));
+        assert!(ptxas.args.iter().any(cicc::is_ptxas_input));
     }
 
     #[test]
