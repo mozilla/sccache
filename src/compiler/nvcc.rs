@@ -1591,7 +1591,7 @@ mod test {
         let groups = group_nvcc_subcommands_by_compilation_stage(
             &creator,
             &bin_dir.path().join("nvcc"),
-            &ovec!["-c", "kernel.cu", "-o", "kernel.o"],
+            &["-c", "kernel.cu", "-o", "kernel.o"].map(OsString::from),
             OsStr::new("-c"),
             bin_dir.path(),
             bin_dir.path(),
