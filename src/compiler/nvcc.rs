@@ -1548,6 +1548,9 @@ mod test {
     }
 
     fn fake_executable(dir: &Path, name: &str) {
+        #[cfg(windows)]
+        let path = dir.join(format!("{name}.exe"));
+        #[cfg(not(windows))]
         let path = dir.join(name);
         fs::write(&path, "").unwrap();
         #[cfg(unix)]
@@ -1581,11 +1584,19 @@ mod test {
         let creator = new_creator();
         next_command(
             &creator,
-            Ok(MockChild::new(exit_status(0), "", dryrun.as_bytes())),
+            Ok(MockChild::new(
+                exit_status(0),
+                dryrun.as_bytes(),
+                dryrun.as_bytes(),
+            )),
         );
         next_command(
             &creator,
-            Ok(MockChild::new(exit_status(0), "", dryrun.as_bytes())),
+            Ok(MockChild::new(
+                exit_status(0),
+                dryrun.as_bytes(),
+                dryrun.as_bytes(),
+            )),
         );
 
         let groups = group_nvcc_subcommands_by_compilation_stage(
