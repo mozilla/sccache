@@ -844,14 +844,6 @@ fn generate_preprocessor_output_with_paths(num_includes: usize, basedir: &[u8]) 
     data
 }
 
-/// Benchmark normalize_win_path with typical path
-#[divan::bench]
-fn normalize_win_path_typical(bencher: Bencher) {
-    let path = generate_win_path(5);
-
-    bencher.bench(|| black_box(normalize_win_path(black_box(&path))));
-}
-
 /// Benchmark strip_basedirs with typical preprocessor output
 #[divan::bench]
 fn strip_basedirs_typical(bencher: Bencher) {
