@@ -1564,11 +1564,30 @@ mod test {
     #[test]
     fn test_group_nvcc_subcommands_with_simt_only_cicc_input() {
         let bin_dir = tempfile::tempdir().unwrap();
-        for exe in ["nvcc", "gcc", "cudafe++", "cicc", "ptxas", "fatbinary"] {
+
+        #[cfg(windows)]
+        let (host_exe, host_compiler) = ("cl", NvccHostCompiler::Msvc);
+        #[cfg(not(windows))]
+        let (host_exe, host_compiler) = ("gcc", NvccHostCompiler::Gcc);
+
+        for exe in ["nvcc", host_exe, "cudafe++", "cicc", "ptxas", "fatbinary"] {
             fake_executable(bin_dir.path(), exe);
         }
 
         let path = bin_dir.path().to_string_lossy();
+        #[cfg(windows)]
+        let dryrun = format!(
+            r#"#$ PATH={path}
+#$ cl -D__CUDACC__ -E -x c++ "kernel.cu" > "kernel.cpp4.ii"
+#$ cudafe++ --gen_c_file_name "kernel.cudafe1.cpp" --stub_file_name "kernel.cudafe1.stub.c" --module_id_file_name "kernel.module_id" --simt-only "kernel.cpp4.ii"
+#$ cl -D__CUDA_ARCH__=800 -D__CUDACC__ -E -x c++ "kernel.cu" > "kernel.cpp1.ii"
+#$ cicc --device-c -arch compute_80 --module_id_file_name "kernel.module_id" --gen_c_file_name "kernel.cudafe1.c" --stub_file_name "kernel.cudafe1.stub.c" --gen_device_file_name "kernel.cudafe1.gpu" "kernel.cpp1.ii" --simt-only -o "kernel.ptx"
+#$ ptxas -arch=sm_80 --compile-only "kernel.ptx" -o "kernel.cubin"
+#$ fatbinary --create="kernel.fatbin" "--image3=kind=elf,sm=80,file=kernel.cubin" --embedded-fatbin="kernel.fatbin.c" --device-c
+#$ cl -D__CUDA_ARCH__=800 -D__CUDACC__ -c -x c++ "kernel.cudafe1.cpp" -Fo"kernel.o"
+"#
+        );
+        #[cfg(not(windows))]
         let dryrun = format!(
             r#"#$ PATH={path}
 #$ gcc -D__CUDACC__ -E -x c++ "kernel.cu" -o "kernel.cpp4.ii"
@@ -1608,7 +1627,7 @@ mod test {
             bin_dir.path(),
             None,
             &[],
-            &NvccHostCompiler::Gcc,
+            &host_compiler,
             OsStr::new("kernel.o"),
         )
         .wait()
@@ -1624,7 +1643,7 @@ mod test {
             .expect("missing device compile group");
 
         assert_eq!(
-            vec!["gcc", "cicc", "ptxas"],
+            vec![host_exe, "cicc", "ptxas"],
             device_group
                 .iter()
                 .map(|cmd| cmd.exe.file_stem().unwrap().to_str().unwrap())
