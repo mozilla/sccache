@@ -757,6 +757,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
             let status =
                 request_dist_status(srv).context("failed to get dist-status from server")?;
             serde_json::to_writer(&mut io::stdout(), &status)?;
+            println!();
         }
         #[cfg(feature = "dist-client")]
         Command::PackageToolchain(executable, out) => {
