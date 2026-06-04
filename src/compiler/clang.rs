@@ -215,6 +215,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     flag!("-fno-pch-timestamp", PassThroughFlag),
     flag!("-fno-profile-instr-generate", TooHardFlag),
     flag!("-fno-profile-instr-use", TooHardFlag),
+    take_arg!("-fobjc-dispatch-method", OsString, Concatenated(b'='), PassThrough),
     take_arg!("-fplugin", PathBuf, CanBeConcatenated(b'='), ExtraHashFile),
     flag!("-fprebuilt-implicit-modules", TooHardFlag),
     take_arg!("-fprebuilt-module-path", OsString, Concatenated, TooHard),
@@ -967,6 +968,22 @@ mod test {
     fn test_parse_xclang_mrelax_all() {
         let a = parses!("-c", "foo.c", "-o", "foo.o", "-Xclang", "-mrelax-all");
         assert_eq!(ovec!["-Xclang", "-mrelax-all"], a.common_args);
+    }
+
+    #[test]
+    fn test_parse_xclang_fobjc_dispatch_method() {
+        let a = parses!(
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "-Xclang",
+            "-fobjc-dispatch-method=legacy"
+        );
+        assert_eq!(
+            ovec!["-Xclang", "-fobjc-dispatch-method=legacy"],
+            a.common_args
+        );
     }
 
     #[test]
