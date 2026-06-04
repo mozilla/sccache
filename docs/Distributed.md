@@ -278,6 +278,8 @@ of the scheduler and instruct clients to configure their `scheduler_url` with th
 appropriate `https://` address. The scheduler will verify the server's IP in this
 configuration by inspecting the `X-Real-IP` header's value, if present. The webserver
 used in this case should be configured to set this header to the appropriate value.
+This verification is enabled by default and can be disabled by setting
+`check_server_ip = false` in the scheduler config.
 
 Securing communication with the server is performed automatically - HTTPS certificates
 are generated dynamically on server startup and communicated to the scheduler during
@@ -296,6 +298,8 @@ Use the `--config` argument to pass the path to its configuration file to `sccac
 # The socket address the scheduler will listen on. It's strongly recommended
 # to listen on localhost and put a HTTPS server in front of it.
 public_addr = "127.0.0.1:10600"
+# Set to false to disable IP verification of build servers.
+#check_server_ip = true
 
 [client_auth]
 type = "token"

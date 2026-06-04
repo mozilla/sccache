@@ -167,6 +167,7 @@ fn run(command: Command) -> Result<i32> {
             public_addr,
             client_auth,
             server_auth,
+            check_server_ip,
         }) => {
             let check_client_auth: Box<dyn dist::http::ClientAuthCheck> = match client_auth {
                 scheduler_config::ClientAuth::Insecure => Box::new(token_check::EqCheck::new(
@@ -224,6 +225,7 @@ fn run(command: Command) -> Result<i32> {
                 scheduler,
                 check_client_auth,
                 check_server_auth,
+                check_server_ip,
             );
             http_scheduler.start()?;
             unreachable!();
