@@ -507,7 +507,7 @@ where
         may_dist: bool,
         pool: &tokio::runtime::Handle,
         rewrite_includes_only: bool,
-        storage: Arc<dyn Storage>,
+        storage: Option<Arc<dyn Storage>>,
         cache_control: CacheControl,
     ) -> Result<HashResult<T>>;
 
@@ -545,7 +545,7 @@ where
                 may_dist,
                 &pool,
                 rewrite_includes_only,
-                storage.clone(),
+                Some(storage.clone()),
                 cache_control,
             )
             .await;
@@ -2369,7 +2369,7 @@ LLVM version: 6.0",
                         false,
                         pool,
                         false,
-                        Arc::new(MockStorage::new(None, preprocessor_cache_mode)),
+                        Some(Arc::new(MockStorage::new(None, preprocessor_cache_mode))),
                         CacheControl::Default,
                     )
                     .wait()
@@ -2437,7 +2437,7 @@ LLVM version: 6.0",
                         false,
                         pool,
                         false,
-                        Arc::new(MockStorage::new(None, preprocessor_cache_mode)),
+                        Some(Arc::new(MockStorage::new(None, preprocessor_cache_mode))),
                         CacheControl::Default,
                     )
                     .wait()
@@ -2503,7 +2503,7 @@ LLVM version: 6.0",
                         false,
                         pool,
                         false,
-                        Arc::new(MockStorage::new(None, preprocessor_cache_mode)),
+                        Some(Arc::new(MockStorage::new(None, preprocessor_cache_mode))),
                         CacheControl::Default,
                     )
                     .wait()
