@@ -220,7 +220,7 @@ impl LruDiskCache {
         }
         //TODO: ideally LRUCache::insert would give us back the entries it had to remove.
         while self.size() + size > self.capacity() {
-            let (rel_path, _) = self.lru.remove_lru().expect("Unexpectedly empty cache!");
+            let (rel_path, _) = self.lru.remove_lru().ok_or(Error::FileTooLarge)?;
             let remove_path = self.rel_to_abs_path(rel_path);
             //TODO: check that files are removable during `init`, so that this is only
             // due to outside interference.
@@ -332,13 +332,12 @@ impl LruDiskCache {
         // Ensure we have enough space for the advertized space.
         self.make_space(size)?;
         let key = key.as_ref().to_owned();
+        let file = tempfile::Builder::new()
+            .prefix(TEMPFILE_PREFIX)
+            .tempfile_in(&self.root)?;
         self.pending.push(key.clone());
         self.pending_size += size;
-        tempfile::Builder::new()
-            .prefix(TEMPFILE_PREFIX)
-            .tempfile_in(&self.root)
-            .map(|file| LruDiskCacheAddEntry { file, key, size })
-            .map_err(Into::into)
+        Ok(LruDiskCacheAddEntry { file, key, size })
     }
 
     /// Commit an entry coming from `LruDiskCache::prepare_add`.
@@ -728,5 +727,43 @@ mod tests {
         assert!(!c.contains_key("file2"));
         assert!(!f.tmp().join("cache").join("file2").exists());
         assert!(!p4.exists());
+    }
+
+    #[test]
+    fn test_prepare_add_rollback_on_tempfile_failure() {
+        // Verify that if tempfile creation fails inside prepare_add, the
+        // cache's `pending` and `pending_size` state is NOT incremented.
+        // Before the fix, prepare_add updated state BEFORE creating the
+        // tempfile, so a tempfile failure left pending_size > 0 forever,
+        // which later caused make_space() to panic with negative space.
+        let f = TestFixture::new();
+        let cache_dir = f.tmp().join("cache");
+        let mut c = LruDiskCache::new(&cache_dir, 100).unwrap();
+
+        // Sanity: a successful prepare_add bumps size, then dropping the
+        // entry must not leave pending state behind once committed/dropped.
+        let baseline_size = c.size();
+        assert_eq!(baseline_size, 0);
+
+        // Force tempfile creation to fail by removing the cache root
+        // out from under the cache after construction.
+        std::fs::remove_dir_all(&cache_dir).unwrap();
+
+        // prepare_add should now fail (tempfile_in cannot create in a
+        // missing directory).
+        let result = c.prepare_add("k/v", 10);
+        assert!(
+            result.is_err(),
+            "expected prepare_add to fail, got {:?}",
+            result.is_ok()
+        );
+
+        // CRITICAL: pending state must not have advanced. Before the fix,
+        // size() would report 10 here even though no entry was created.
+        assert_eq!(
+            c.size(),
+            baseline_size,
+            "pending_size leaked after tempfile failure (regression of #2689)"
+        );
     }
 }
