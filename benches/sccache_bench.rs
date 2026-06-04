@@ -22,7 +22,7 @@
 use divan::{Bencher, black_box};
 use sccache::cache::{CacheRead, CacheWrite};
 use sccache::lru_disk_cache::LruCache;
-use sccache::util::{Digest, TimeMacroFinder, normalize_win_path, strip_basedirs};
+use sccache::util::{Digest, TimeMacroFinder, strip_basedirs};
 use std::io::Cursor;
 
 // =============================================================================
@@ -819,16 +819,6 @@ fn lru_realistic_eviction_pressure(bencher: Bencher) {
 // =============================================================================
 // Path Normalization Benchmarks
 // =============================================================================
-
-/// Generate a realistic Windows path for benchmarking
-fn generate_win_path(depth: usize) -> Vec<u8> {
-    let mut path = b"C:\\Users\\Developer\\Projects\\".to_vec();
-    for i in 0..depth {
-        path.extend_from_slice(format!("SubDir{}\\", i).as_bytes());
-    }
-    path.extend_from_slice(b"source_file.cpp");
-    path
-}
 
 /// Generate preprocessor output with embedded paths
 fn generate_preprocessor_output_with_paths(num_includes: usize, basedir: &[u8]) -> Vec<u8> {
