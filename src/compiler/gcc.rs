@@ -1099,13 +1099,13 @@ impl Iterator for ExpandIncludeFile<'_> {
             //     recursively.
             //
             // So here we interpret any I/O errors as "just return this
-            // argument". Currently we don't implement handling of arguments
-            // with quotes, so if those are encountered we just pass the option
-            // through literally anyway.
-            //
-            // At this time we interpret all `@` arguments above as non
-            // cacheable, so if we fail to interpret this we'll just call the
-            // compiler anyway.
+            // argument". Quoted arguments (CMake 4.3+ emits modmap content
+            // like `-fmodule-file="key=value"`) are tokenised through the
+            // existing MSVC `CommandLineToArgvW`-style splitter, which handles
+            // double-quoted runs correctly; for the unquoted shape that older
+            // GCC/Clang response files use, the splitter degenerates to plain
+            // whitespace tokenisation, so existing inputs stay byte-equivalent.
+            // See mozilla/sccache#2650.
             //
             // [1]: https://gcc.gnu.org/onlinedocs/gcc/Overall-Options.html#Overall-Options
             let mut contents = String::new();
@@ -1114,10 +1114,8 @@ impl Iterator for ExpandIncludeFile<'_> {
                 debug!("failed to read @-file `{}`: {}", file.display(), e);
                 return Some(arg);
             }
-            if contents.contains('"') || contents.contains('\'') {
-                return Some(arg);
-            }
-            let new_args = contents.split_whitespace().collect::<Vec<_>>();
+            let new_args: Vec<String> =
+                crate::compiler::msvc::SplitMsvcResponseFileArgs::from(&contents).collect();
             self.stack.extend(new_args.iter().rev().map(|s| s.into()));
         }
     }
@@ -2415,6 +2413,55 @@ mod test {
         assert!(preprocessor_args.is_empty());
         assert!(common_args.is_empty());
         assert!(!msvc_show_includes);
+    }
+
+    /// Regression test for mozilla/sccache#2650 — CMake 4.3+ wraps modmap values
+    /// in double quotes when emitting `@<file>.modmap` on clang command lines.
+    /// Before the fix, any quoted character in a response file caused
+    /// `ExpandIncludeFile` to abort and the unexpanded `@arg` reached the
+    /// `cannot_cache!("@")` bailout. After the fix, the quoted run is tokenised
+    /// through the MSVC-style splitter and reaches the parser as an inline
+    /// argument identical to the older unquoted form (`-fmodule-file=key=value`).
+    #[test]
+    fn at_signs_quoted_modmap() {
+        let td = tempfile::Builder::new()
+            .prefix("sccache")
+            .tempdir()
+            .unwrap();
+        // Simulates CMake 4.3+'s modmap content: quoted key=value, no spaces.
+        File::create(td.path().join("main.cpp.o.modmap"))
+            .unwrap()
+            .write_all(b"-fmodule-file=\"greet=greet.pcm\"\n")
+            .unwrap();
+        let at_arg = format!("@{}", td.path().join("main.cpp.o.modmap").display());
+        let expanded: Vec<OsString> =
+            ExpandIncludeFile::new(td.path(), &[OsString::from(at_arg)]).collect();
+        assert_eq!(
+            expanded,
+            vec![OsString::from("-fmodule-file=greet=greet.pcm")]
+        );
+    }
+
+    /// Regression test for the unquoted shape (CMake ≤ 4.2.x and hand-written
+    /// GCC response files): tokenisation must remain whitespace-only equivalent
+    /// to the previous `split_whitespace` implementation.
+    #[test]
+    fn at_signs_unquoted_modmap() {
+        let td = tempfile::Builder::new()
+            .prefix("sccache")
+            .tempdir()
+            .unwrap();
+        File::create(td.path().join("main.cpp.o.modmap"))
+            .unwrap()
+            .write_all(b"-fmodule-file=greet=greet.pcm\n")
+            .unwrap();
+        let at_arg = format!("@{}", td.path().join("main.cpp.o.modmap").display());
+        let expanded: Vec<OsString> =
+            ExpandIncludeFile::new(td.path(), &[OsString::from(at_arg)]).collect();
+        assert_eq!(
+            expanded,
+            vec![OsString::from("-fmodule-file=greet=greet.pcm")]
+        );
     }
 
     #[test]
