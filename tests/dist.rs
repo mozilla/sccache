@@ -176,6 +176,40 @@ fn test_dist_restartedserver() {
 
 #[test]
 #[cfg_attr(not(feature = "dist-tests"), ignore)]
+fn test_dist_scheduler_status_servers() {
+    let tmpdir = tempfile::Builder::new()
+        .prefix("sccache_dist_test")
+        .tempdir()
+        .unwrap();
+    let tmpdir = tmpdir.path();
+    let sccache_dist = harness::sccache_dist_path();
+
+    let mut system = harness::DistSystem::new(&sccache_dist, tmpdir);
+    system.add_scheduler();
+    system.add_server();
+
+    let sccache_cfg = dist_test_sccache_client_cfg(tmpdir, system.scheduler_url());
+    let sccache_cfg_path = tmpdir.join("sccache-cfg.json");
+    write_json_cfg(tmpdir, "sccache-cfg.json", &sccache_cfg);
+    let sccache_cached_cfg_path = tmpdir.join("sccache-cached-cfg");
+
+    stop_local_daemon();
+    start_local_daemon(&sccache_cfg_path, &sccache_cached_cfg_path);
+
+    let status = system.get_scheduler_status();
+    assert_eq!(status.num_servers, 1);
+    assert!(status.num_cpus > 0);
+    assert_eq!(status.in_progress, 0);
+    assert_eq!(status.servers.len(), 1);
+
+    let server = &status.servers[0];
+    assert!(!server.address.is_empty());
+    assert!(server.num_cpus > 0);
+    assert_eq!(server.in_progress, 0);
+}
+
+#[test]
+#[cfg_attr(not(feature = "dist-tests"), ignore)]
 fn test_dist_nobuilder() {
     let tmpdir = tempfile::Builder::new()
         .prefix("sccache_dist_test")
