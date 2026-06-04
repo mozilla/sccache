@@ -148,15 +148,16 @@ pub struct DistClientContainer {
 #[cfg(feature = "dist-client")]
 pub struct DistClientConfig {
     // Reusable items tied to an SccacheServer instance
-    pool: tokio::runtime::Handle,
+    pub pool: tokio::runtime::Handle,
 
     // From the static dist configuration
     scheduler_url: Option<config::HTTPUrl>,
     auth: config::DistAuth,
-    cache_dir: PathBuf,
-    toolchain_cache_size: u64,
-    toolchains: Vec<config::DistToolchainConfig>,
-    rewrite_includes_only: bool,
+    pub cache_dir: PathBuf,
+    pub toolchain_cache_size: u64,
+    pub toolchains: Vec<config::DistToolchainConfig>,
+    pub rewrite_includes_only: bool,
+    pub force_remote_build: bool,
 }
 
 #[cfg(feature = "dist-client")]
@@ -213,6 +214,7 @@ impl DistClientContainer {
             toolchain_cache_size: config.dist.toolchain_cache_size,
             toolchains: config.dist.toolchains.clone(),
             rewrite_includes_only: config.dist.rewrite_includes_only,
+            force_remote_build: config.dist.force_remote_build,
         };
         let state = Self::create_state(config);
         let state = pool.block_on(state);
@@ -370,15 +372,7 @@ impl DistClientContainer {
                     auth_token
                         .context("could not load client auth token, run |sccache --dist-auth|")
                 );
-                let dist_client = dist::http::Client::new(
-                    &config.pool,
-                    url,
-                    &config.cache_dir.join("client"),
-                    config.toolchain_cache_size,
-                    &config.toolchains,
-                    auth_token,
-                    config.rewrite_includes_only,
-                );
+                let dist_client = dist::http::Client::new(&config, url, auth_token);
                 let dist_client =
                     try_or_retry_later!(dist_client.context("failure during dist client creation"));
                 use crate::dist::Client;
@@ -978,6 +972,7 @@ where
                     toolchain_cache_size: 0,
                     toolchains: vec![],
                     rewrite_includes_only: false,
+                    force_remote_build: false,
                 }),
                 dist_client,
             ))),
