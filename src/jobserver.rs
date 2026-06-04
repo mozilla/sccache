@@ -1,12 +1,63 @@
 use std::io;
+use std::io::Write;
 use std::process::Command;
 use std::sync::Arc;
 
-use futures::StreamExt;
-use futures::channel::mpsc;
-use futures::channel::oneshot;
+use tokio::sync::oneshot;
 
 use crate::errors::*;
+
+#[cfg(unix)]
+fn create_fifo_jobserver(num: usize) -> io::Result<jobserver::Client> {
+    use std::fs::OpenOptions;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let dir = std::path::PathBuf::from(format!(
+        "/tmp/sccache-jobserver-{}",
+        unsafe { libc::getuid() }
+    ));
+    std::fs::create_dir_all(&dir)?;
+    let fifo_path = dir.join("fifo");
+
+    if fifo_path.exists() {
+        std::fs::remove_file(&fifo_path)?;
+    }
+
+    let path_cstr = std::ffi::CString::new(fifo_path.to_str().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "non-UTF8 temp path")
+    })?)
+    .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "nul in path"))?;
+
+    let ret = unsafe { libc::mkfifo(path_cstr.as_ptr(), 0o600) };
+    if ret != 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(&fifo_path)?;
+
+    const TOKEN: [u8; 128] = [b'|'; 128];
+    let mut remaining = num;
+    while remaining > 0 {
+        let n = remaining.min(TOKEN.len());
+        file.write_all(&TOKEN[..n])?;
+        remaining -= n;
+    }
+
+    let env_val = format!(
+        "-j --jobserver-fds=fifo:{path} --jobserver-auth=fifo:{path}",
+        path = fifo_path.display()
+    );
+    unsafe { std::env::set_var("CARGO_MAKEFLAGS", &env_val) };
+
+    let client = unsafe { jobserver::Client::from_env() }
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "failed to open fifo jobserver"))?;
+
+    Ok(client)
+}
 
 // The execution model of sccache is that on the first run it spawns a server
 // in the background and detaches it.
@@ -73,7 +124,7 @@ pub unsafe fn discard_inherited_jobserver() {
 #[derive(Clone)]
 pub struct Client {
     helper: Option<Arc<jobserver::HelperThread>>,
-    tx: Option<mpsc::UnboundedSender<oneshot::Sender<io::Result<jobserver::Acquired>>>>,
+    tx: Option<std::sync::mpsc::Sender<oneshot::Sender<io::Result<jobserver::Acquired>>>>,
     inner: jobserver::Client,
 }
 
@@ -87,6 +138,10 @@ impl Client {
     }
 
     pub fn new_num(num: usize) -> Client {
+        #[cfg(unix)]
+        let inner = create_fifo_jobserver(num)
+            .unwrap_or_else(|_| jobserver::Client::new(num).expect("failed to create jobserver"));
+        #[cfg(not(unix))]
         let inner = jobserver::Client::new(num).expect("failed to create jobserver");
         Client::_new(inner, false)
     }
@@ -95,18 +150,13 @@ impl Client {
         let (helper, tx) = if inherited {
             (None, None)
         } else {
-            let (tx, mut rx) = mpsc::unbounded::<oneshot::Sender<_>>();
+            let (tx, rx) = std::sync::mpsc::channel::<oneshot::Sender<_>>();
             let helper = inner
                 .clone()
                 .into_helper_thread(move |token| {
-                    let rt = tokio::runtime::Builder::new_current_thread()
-                        .build()
-                        .unwrap();
-                    rt.block_on(async {
-                        if let Some(sender) = rx.next().await {
-                            drop(sender.send(token));
-                        }
-                    });
+                    if let Ok(sender) = rx.recv() {
+                        let _ = sender.send(token);
+                    }
                 })
                 .expect("failed to spawn helper thread");
             (Some(Arc::new(helper)), Some(tx))
@@ -132,7 +182,7 @@ impl Client {
         };
         let (mytx, myrx) = oneshot::channel();
         helper.request_token();
-        tx.unbounded_send(mytx).unwrap();
+        tx.send(mytx).context("jobserver helper thread gone")?;
 
         let acquired = myrx
             .await
