@@ -28,7 +28,7 @@ use crate::mock_command::{CommandCreator, CommandCreatorSync, RunCommand};
 use async_trait::async_trait;
 
 use std::collections::HashMap;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process;
@@ -39,6 +39,17 @@ use crate::errors::*;
 #[derive(Clone, Debug)]
 pub struct Cicc {
     pub version: Option<String>,
+}
+
+pub(crate) const CICC_INPUT_SUFFIX: &str = ".cpp1.ii";
+pub(crate) const PTXAS_INPUT_SUFFIX: &str = ".ptx";
+
+pub(crate) fn is_cicc_input(arg: impl AsRef<OsStr>) -> bool {
+    arg.as_ref().to_string_lossy().ends_with(CICC_INPUT_SUFFIX)
+}
+
+pub(crate) fn is_ptxas_input(arg: impl AsRef<OsStr>) -> bool {
+    arg.as_ref().to_string_lossy().ends_with(PTXAS_INPUT_SUFFIX)
 }
 
 #[async_trait]
@@ -112,7 +123,12 @@ where
     S: SearchableArgInfo<ArgData>,
 {
     let mut args = arguments.to_vec();
-    let input_loc = arguments.len() - input_arg_offset_from_end;
+    let input_loc = match language {
+        Language::Ptx => arguments.iter().position(is_cicc_input),
+        Language::Cubin => arguments.iter().position(is_ptxas_input),
+        _ => None,
+    }
+    .unwrap_or(arguments.len() - input_arg_offset_from_end);
     let input = args.splice(input_loc..input_loc + 1, []).next().unwrap();
 
     let mut take_next = false;
@@ -349,3 +365,68 @@ counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     take_arg!("--stub_file_name", PathBuf, Separated, UnhashedOutput),
     take_arg!("-o", PathBuf, Separated, Output),
 ]);
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::compiler::ptxas;
+
+    fn os_strings(args: &[&str]) -> Vec<OsString> {
+        args.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn test_parse_cicc_input_before_simt_only() {
+        let args = os_strings(&[
+            "--device-c",
+            "-arch",
+            "compute_80",
+            "--module_id_file_name",
+            "kernel.module_id",
+            "kernel.cpp1.ii",
+            "--simt-only",
+            "-o",
+            "kernel.ptx",
+        ]);
+
+        let parsed = match parse_arguments(&args, ".".as_ref(), Language::Ptx, &ARGS[..], 3) {
+            CompilerArguments::Ok(parsed) => parsed,
+            other => panic!("Got unexpected parse result: {:?}", other),
+        };
+
+        assert_eq!(PathBuf::from("kernel.cpp1.ii"), parsed.input);
+        assert_eq!(
+            Some(&ArtifactDescriptor {
+                path: PathBuf::from(".").join("kernel.ptx"),
+                optional: false
+            }),
+            parsed.outputs.get("obj")
+        );
+    }
+
+    #[test]
+    fn test_parse_ptxas_input_by_ptx_extension() {
+        let args = os_strings(&[
+            "-arch=sm_80",
+            "kernel.ptx",
+            "--some-new-flag",
+            "-o",
+            "kernel.cubin",
+        ]);
+
+        let parsed =
+            match parse_arguments(&args, ".".as_ref(), Language::Cubin, &ptxas::ARGS[..], 3) {
+                CompilerArguments::Ok(parsed) => parsed,
+                other => panic!("Got unexpected parse result: {:?}", other),
+            };
+
+        assert_eq!(PathBuf::from("kernel.ptx"), parsed.input);
+        assert_eq!(
+            Some(&ArtifactDescriptor {
+                path: PathBuf::from(".").join("kernel.cubin"),
+                optional: false
+            }),
+            parsed.outputs.get("obj")
+        );
+    }
+}

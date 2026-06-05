@@ -235,7 +235,6 @@ workspace = true
 
 [workspace.lints.clippy]
 cloned_instead_of_copied = "warn"
-cloned_ref_to_slice_refs = "warn"
 explicit_into_iter_loop = "warn"
 from_iter_instead_of_collect = "warn"
 implicit_clone = "warn"
@@ -243,4 +242,3 @@ manual_string_new = "warn"
 ptr_as_ptr = "warn"
 ref_option = "warn"
 semicolon_if_nothing_returned = "warn"
-unnecessary_semicolon = "warn"
