@@ -38,7 +38,7 @@ impl OSSCache {
         if no_credentials {
             // Allow anonymous access to OSS so that OpenDAL will not
             // throw error when no credentials are provided.
-            builder = builder.allow_anonymous();
+            builder = builder.skip_signature();
         }
 
         let op = Operator::new(builder)?

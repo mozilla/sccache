@@ -87,7 +87,7 @@ impl S3Cache {
                 .disable_ec2_metadata()
                 // Allow anonymous access to S3 so that OpenDAL will not
                 // throw error when no credentials are provided.
-                .allow_anonymous();
+                .skip_signature();
         }
 
         if let Some(endpoint) = &self.endpoint {
