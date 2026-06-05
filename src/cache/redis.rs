@@ -15,8 +15,8 @@
 
 use crate::errors::*;
 use opendal::Operator;
-use opendal::layers::LoggingLayer;
 use opendal::services::Redis;
+use opendal_layer_logging::LoggingLayer;
 use std::collections::HashMap;
 use std::time::Duration;
 use url::Url;

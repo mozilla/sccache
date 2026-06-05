@@ -11,8 +11,9 @@
 // limitations under the License.
 
 use opendal::Operator;
-use opendal::layers::{HttpClientLayer, LoggingLayer};
+use opendal::layers::HttpClientLayer;
 use opendal::services::S3;
+use opendal_layer_logging::LoggingLayer;
 
 use crate::errors::*;
 
@@ -86,7 +87,7 @@ impl S3Cache {
                 .disable_ec2_metadata()
                 // Allow anonymous access to S3 so that OpenDAL will not
                 // throw error when no credentials are provided.
-                .allow_anonymous();
+                .skip_signature();
         }
 
         if let Some(endpoint) = &self.endpoint {

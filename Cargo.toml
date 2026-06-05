@@ -80,19 +80,19 @@ memmap2 = "0.9.4"
 mime = "0.3"
 number_prefix = "0.4"
 object = "0.37"
-opendal = { version = "0.55.0", optional = true, default-features = false }
+opendal = { version = "0.57.0", optional = true, default-features = false }
+opendal-layer-logging = { version = "0.57.0", optional = true }
 openssl = { version = "0.10.75", optional = true }
 rand = "0.8.4"
 regex = "1.10.3"
-reqsign = { version = "0.18.0", optional = true }
-reqwest = { version = "0.12", features = [
+reqwest = { version = "0.13", features = [
   "json",
   "blocking",
   "stream",
-  "rustls-tls",
-  "rustls-tls-native-roots",
-  "trust-dns",
+  "rustls",
+  "hickory-dns",
 ], optional = true }
+rustls-native-certs = { version = "0.8", optional = true }
 semver = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = ">=1.0, <1.0.147" # zmij (used in 1.0.147+) requires Rust 1.84+
@@ -135,6 +135,10 @@ rouille = { version = "3.6", optional = true, default-features = false, features
 ] }
 syslog = { version = "7", optional = true }
 version-compare = { version = "0.1.1", optional = true }
+
+[patch.crates-io]
+opendal = { git = "https://github.com/flip1995/opendal.git", branch = "tcp-address-resolve-fix" }
+opendal-layer-logging = { git = "https://github.com/flip1995/opendal.git", branch = "tcp-address-resolve-fix" }
 
 [dev-dependencies]
 assert_cmd = "2.0.13"
@@ -179,17 +183,17 @@ all = [
   "oss",
   "cos",
 ]
-azure = ["opendal/services-azblob", "reqsign", "reqwest"]
-cos = ["opendal/services-cos", "reqsign", "reqwest"]
+azure = ["opendal/services-azblob", "opendal-layer-logging", "reqwest"]
+cos = ["opendal/services-cos", "opendal-layer-logging", "reqwest"]
 default = ["all"]
-gcs = ["opendal/services-gcs", "reqsign", "url", "reqwest"]
-gha = ["opendal/services-ghac", "reqwest"]
-memcached = ["opendal/services-memcached"]
+gcs = ["opendal/services-gcs", "opendal-layer-logging", "url", "reqwest"]
+gha = ["opendal/services-ghac", "opendal-layer-logging", "reqwest"]
+memcached = ["opendal/services-memcached", "opendal-layer-logging"]
 native-zlib = []
-oss = ["opendal/services-oss", "reqsign", "reqwest"]
-redis = ["url", "opendal/services-redis"]
-s3 = ["opendal/services-s3", "reqsign", "reqwest"]
-webdav = ["opendal/services-webdav", "reqwest"]
+oss = ["opendal/services-oss", "opendal-layer-logging", "reqwest"]
+redis = ["url", "opendal/services-redis", "opendal-layer-logging"]
+s3 = ["opendal/services-s3", "opendal-layer-logging", "reqwest"]
+webdav = ["opendal/services-webdav", "opendal-layer-logging", "reqwest"]
 # Enable features that will build a vendored version of openssl and
 # statically linked with it, instead of linking against the system-wide openssl
 # dynamically or statically.
@@ -205,6 +209,7 @@ dist-client = [
   "reqwest",
   "url",
   "sha2",
+  "rustls-native-certs",
 ]
 # Enables the sccache-dist binary
 dist-server = [
@@ -217,6 +222,7 @@ dist-server = [
   "rouille",
   "syslog",
   "version-compare",
+  "rustls-native-certs",
 ]
 # Enables dist tests with external requirements
 dist-tests = ["dist-client", "dist-server"]

@@ -358,8 +358,8 @@ mod server {
 
         // Finish the certificate
         builder
-            .sign(&privkey, openssl::hash::MessageDigest::sha1())
-            .context("failed to sign x509 with sha1")?;
+            .sign(&privkey, openssl::hash::MessageDigest::sha256())
+            .context("failed to sign x509 with sha256")?;
         let cert: openssl::x509::X509 = builder.build();
         let cert_pem = cert.to_pem().context("failed to create pem from x509")?;
         let cert_digest = cert
