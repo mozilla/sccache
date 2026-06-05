@@ -24,10 +24,9 @@ mod common {
     use reqwest::header;
     use serde::{Deserialize, Serialize};
     #[cfg(feature = "dist-server")]
-    use std::collections::HashMap;
+    use {crate::util::BASE64_URL_SAFE_ENGINE, base64::Engine, std::collections::HashMap};
 
     use crate::dist;
-
     use crate::errors::*;
 
     // Note that content-length is necessary due to https://github.com/tiny-http/tiny-http/issues/147
@@ -154,25 +153,17 @@ mod common {
     }
 
     #[cfg(feature = "dist-server")]
-    // cert_pem is quite long so elide it (you can retrieve it by hitting the server url anyway)
     impl std::fmt::Debug for HeartbeatServerHttpRequest {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            let HeartbeatServerHttpRequest {
-                jwt_key,
-                num_cpus,
-                server_nonce,
-                cert_digest,
-                cert_pem,
-            } = self;
-            write!(
-                f,
-                "HeartbeatServerHttpRequest {{ jwt_key: {:?}, num_cpus: {:?}, server_nonce: {:?}, cert_digest: {:?}, cert_pem: [...{} bytes...] }}",
-                jwt_key,
-                num_cpus,
-                server_nonce,
-                cert_digest,
-                cert_pem.len()
-            )
+            f.debug_struct("HeartbeatServerHttpRequest")
+                .field("jwt_key", &BASE64_URL_SAFE_ENGINE.encode(&self.jwt_key))
+                .field("num_cpus", &self.num_cpus)
+                .field("server_nonce", &self.server_nonce)
+                .field(
+                    "cert_digest",
+                    &BASE64_URL_SAFE_ENGINE.encode(&self.cert_digest),
+                )
+                .finish()
         }
     }
     #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -834,18 +834,6 @@ fn generate_preprocessor_output_with_paths(num_includes: usize, basedir: &[u8]) 
     data
 }
 
-/// Benchmark normalize_win_path with typical path
-#[divan::bench]
-fn normalize_win_path_typical(bencher: Bencher) {
-    let mut path = b"C:\\Users\\Developer\\Projects\\".to_vec();
-    for i in 0..5 {
-        path.extend_from_slice(format!("SubDir{}\\", i).as_bytes());
-    }
-    path.extend_from_slice(b"source_file.cpp");
-
-    bencher.bench(|| black_box(sccache::util::normalize_win_path(black_box(&path))));
-}
-
 /// Benchmark strip_basedirs with typical preprocessor output
 #[divan::bench]
 fn strip_basedirs_typical(bencher: Bencher) {
