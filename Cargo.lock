@@ -708,19 +708,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "crc"
+version = "3.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9710d3b3739c2e349eb44fe848ad0b7c8cb1e42bd87ee49371df2f7acaf3e675"
+dependencies = [
+ "crc-catalog",
+]
+
+[[package]]
+name = "crc-catalog"
+version = "2.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "217698eaf96b4a3f0bc4f3662aaa55bdf913cd54d7204591faa790070c6d0853"
+
+[[package]]
+name = "crc-fast"
+version = "1.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2fd92aca2c6001b1bf5ba0ff84ee74ec8501b52bbef0cac80bf25a6c1d87a83d"
+dependencies = [
+ "crc",
+ "digest 0.10.7",
+ "rustversion",
+ "spin 0.10.0",
+]
+
+[[package]]
 name = "crc16"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "338089f42c427b86394a5ee60ff321da23a5c89c9d89514c829687b26359fcff"
-
-[[package]]
-name = "crc32c"
-version = "0.6.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a47af21622d091a8f0fb295b88bc886ac74efcc613efc19f5d0b21de5c89e47"
-dependencies = [
- "rustc_version",
-]
 
 [[package]]
 name = "crc32fast"
@@ -2288,8 +2306,7 @@ dependencies = [
 [[package]]
 name = "opendal"
 version = "0.57.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "96c9c85ce253ff87225e7669979d877a20c98a06604ec9d6dd5f4473e08f1ae1"
+source = "git+https://github.com/flip1995/opendal.git?branch=tcp-address-resolve-fix#38488ef3ea391a209c73bffc6e6c3a4c0f678337"
 dependencies = [
  "opendal-core",
  "opendal-service-azblob",
@@ -2306,8 +2323,7 @@ dependencies = [
 [[package]]
 name = "opendal-core"
 version = "0.57.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4f8607c90e2c963a91467f50fb49fbc7fb3d573f88cea219ca59ccd3740b309"
+source = "git+https://github.com/flip1995/opendal.git?branch=tcp-address-resolve-fix#38488ef3ea391a209c73bffc6e6c3a4c0f678337"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2334,8 +2350,7 @@ dependencies = [
 [[package]]
 name = "opendal-layer-logging"
 version = "0.57.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "58ada45c6d81d1aa4c9305d0c7d4bc317c59c85866a0908a2d75a7a978aa5ee2"
+source = "git+https://github.com/flip1995/opendal.git?branch=tcp-address-resolve-fix#38488ef3ea391a209c73bffc6e6c3a4c0f678337"
 dependencies = [
  "log",
  "opendal-core",
@@ -2344,8 +2359,7 @@ dependencies = [
 [[package]]
 name = "opendal-service-azblob"
 version = "0.57.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0030644366ef5d8cbe3a4a5822bf99a4aafddc1666e9d24b44d158d9062fc76a"
+source = "git+https://github.com/flip1995/opendal.git?branch=tcp-address-resolve-fix#38488ef3ea391a209c73bffc6e6c3a4c0f678337"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -2365,8 +2379,7 @@ dependencies = [
 [[package]]
 name = "opendal-service-azure-common"
 version = "0.57.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9b489f13c42e69d69bdd72952b634356ec43a7881a20259b38b540fcecdf4051"
+source = "git+https://github.com/flip1995/opendal.git?branch=tcp-address-resolve-fix#38488ef3ea391a209c73bffc6e6c3a4c0f678337"
 dependencies = [
  "http",
  "opendal-core",
@@ -2375,8 +2388,7 @@ dependencies = [
 [[package]]
 name = "opendal-service-cos"
 version = "0.57.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa8cafe9729213375c7331019b0cb756ad3e1aff7f45cd32c45eae91ebde8901"
+source = "git+https://github.com/flip1995/opendal.git?branch=tcp-address-resolve-fix#38488ef3ea391a209c73bffc6e6c3a4c0f678337"
 dependencies = [
  "bytes",
  "http",
@@ -2392,8 +2404,7 @@ dependencies = [
 [[package]]
 name = "opendal-service-gcs"
 version = "0.57.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "48de101aac565ed06af4b47903c24eafd249075553ec1fb18256751c45148d47"
+source = "git+https://github.com/flip1995/opendal.git?branch=tcp-address-resolve-fix#38488ef3ea391a209c73bffc6e6c3a4c0f678337"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2413,8 +2424,7 @@ dependencies = [
 [[package]]
 name = "opendal-service-ghac"
 version = "0.57.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "43625a762e1211d27c718d95c86e32d942514697237d748fb859ce5b4c427ec4"
+source = "git+https://github.com/flip1995/opendal.git?branch=tcp-address-resolve-fix#38488ef3ea391a209c73bffc6e6c3a4c0f678337"
 dependencies = [
  "bytes",
  "ghac",
@@ -2433,8 +2443,7 @@ dependencies = [
 [[package]]
 name = "opendal-service-memcached"
 version = "0.57.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e30cb6636724313936c706bbf8957d4eeae73e6513702723690737cd1821102"
+source = "git+https://github.com/flip1995/opendal.git?branch=tcp-address-resolve-fix#38488ef3ea391a209c73bffc6e6c3a4c0f678337"
 dependencies = [
  "fastpool",
  "opendal-core",
@@ -2446,8 +2455,7 @@ dependencies = [
 [[package]]
 name = "opendal-service-oss"
 version = "0.57.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "328fa55e8888cbdfe00826bfea2a79042422b720e8369e9e021e46121dea5ace"
+source = "git+https://github.com/flip1995/opendal.git?branch=tcp-address-resolve-fix#38488ef3ea391a209c73bffc6e6c3a4c0f678337"
 dependencies = [
  "bytes",
  "http",
@@ -2463,8 +2471,7 @@ dependencies = [
 [[package]]
 name = "opendal-service-redis"
 version = "0.57.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8d4346d72c6c1c61d0fa5affaefe5e7180fd3bdde7608411f4b6264ab1a01c34"
+source = "git+https://github.com/flip1995/opendal.git?branch=tcp-address-resolve-fix#38488ef3ea391a209c73bffc6e6c3a4c0f678337"
 dependencies = [
  "bytes",
  "fastpool",
@@ -2478,12 +2485,11 @@ dependencies = [
 [[package]]
 name = "opendal-service-s3"
 version = "0.57.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "313d46c9f5ae70bca26b7c3e3fbb9b639292625f28af73aa016f47e788af9deb"
+source = "git+https://github.com/flip1995/opendal.git?branch=tcp-address-resolve-fix#38488ef3ea391a209c73bffc6e6c3a4c0f678337"
 dependencies = [
  "base64 0.22.1",
  "bytes",
- "crc32c",
+ "crc-fast",
  "http",
  "log",
  "md-5",
@@ -2499,8 +2505,7 @@ dependencies = [
 [[package]]
 name = "opendal-service-webdav"
 version = "0.57.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a9edadbbf8311e4d382400a5c6021bbfcc850f472a60995897bdc5cbf2d1cabd"
+source = "git+https://github.com/flip1995/opendal.git?branch=tcp-address-resolve-fix#38488ef3ea391a209c73bffc6e6c3a4c0f678337"
 dependencies = [
  "anyhow",
  "bytes",
@@ -3972,6 +3977,12 @@ checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
 dependencies = [
  "lock_api",
 ]
+
+[[package]]
+name = "spin"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d5fe4ccb98d9c292d56fec89a5e07da7fc4cf0dc11e156b41793132775d3e591"
 
 [[package]]
 name = "spki"
