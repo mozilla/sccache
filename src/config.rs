@@ -347,6 +347,12 @@ pub struct GHACacheConfig {
     /// Version for gha cache is a namespace. By setting different versions,
     /// we can avoid mixed caches.
     pub version: String,
+    #[serde(default = "default_gha_rw_mode")]
+    pub rw_mode: CacheModeConfig,
+}
+
+fn default_gha_rw_mode() -> CacheModeConfig {
+    CacheModeConfig::ReadWrite
 }
 
 /// Memcached's default value of expiration is 10800s (3 hours), which is too
@@ -1000,12 +1006,23 @@ fn config_from_env() -> Result<EnvConfig> {
     });
 
     // ======= GHA =======
+    let gha_rw_mode = match env::var("SCCACHE_GHA_RW_MODE").as_ref().map(String::as_str) {
+        Ok("READ_ONLY") => CacheModeConfig::ReadOnly,
+        Ok("READ_WRITE") => CacheModeConfig::ReadWrite,
+        Ok(_) => {
+            warn!("Invalid SCCACHE_GHA_RW_MODE -- defaulting to READ_WRITE.");
+            CacheModeConfig::ReadWrite
+        }
+        _ => CacheModeConfig::ReadWrite,
+    };
+
     let gha = if let Ok(version) = env::var("SCCACHE_GHA_VERSION") {
         // If SCCACHE_GHA_VERSION has been set, we don't need to check
         // SCCACHE_GHA_ENABLED's value anymore.
         Some(GHACacheConfig {
             enabled: true,
             version,
+            rw_mode: gha_rw_mode,
         })
     } else if bool_from_env_var("SCCACHE_GHA_ENABLED")?.unwrap_or(false) {
         // If only SCCACHE_GHA_ENABLED has been set to the true value, enable with
@@ -1013,6 +1030,7 @@ fn config_from_env() -> Result<EnvConfig> {
         Some(GHACacheConfig {
             enabled: true,
             version: String::new(),
+            rw_mode: gha_rw_mode,
         })
     } else {
         None
@@ -2175,6 +2193,42 @@ fn test_s3_no_credentials_valid_false() {
 
 #[test]
 #[serial(config_from_env)]
+fn test_gha_rw_mode() {
+    for (env_value, expected_rw_mode) in [
+        (None, CacheModeConfig::ReadWrite),
+        (Some("READ_ONLY"), CacheModeConfig::ReadOnly),
+        (Some("READ_WRITE"), CacheModeConfig::ReadWrite),
+        (Some("INVALID"), CacheModeConfig::ReadWrite),
+    ] {
+        unsafe {
+            env::set_var("SCCACHE_GHA_VERSION", "ci-v1");
+            match env_value {
+                Some(value) => env::set_var("SCCACHE_GHA_RW_MODE", value),
+                None => env::remove_var("SCCACHE_GHA_RW_MODE"),
+            }
+        }
+
+        let cfg = config_from_env();
+
+        unsafe {
+            env::remove_var("SCCACHE_GHA_VERSION");
+            env::remove_var("SCCACHE_GHA_RW_MODE");
+        }
+
+        let env_cfg = cfg.unwrap();
+        match env_cfg.cache.gha {
+            Some(config) => {
+                assert!(config.enabled);
+                assert_eq!(config.version, "ci-v1");
+                assert_eq!(config.rw_mode, expected_rw_mode);
+            }
+            None => unreachable!(),
+        }
+    }
+}
+
+#[test]
+#[serial(config_from_env)]
 #[cfg(feature = "gcs")]
 fn test_gcs_service_account() {
     unsafe {
@@ -2244,6 +2298,7 @@ service_account = "example_service_account"
 [cache.gha]
 enabled = true
 version = "sccache"
+rw_mode = "READ_ONLY"
 
 [cache.memcached]
 # Deprecated alias for `endpoint`
@@ -2315,7 +2370,8 @@ key_prefix = "cosprefix"
                 }),
                 gha: Some(GHACacheConfig {
                     enabled: true,
-                    version: "sccache".to_string()
+                    version: "sccache".to_string(),
+                    rw_mode: CacheModeConfig::ReadOnly,
                 }),
                 redis: Some(RedisCacheConfig {
                     url: Some("redis://user:passwd@1.2.3.4:6379/?db=1".to_owned()),

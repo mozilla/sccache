@@ -281,10 +281,11 @@ The full url appears then as `redis://user:passwd@1.2.3.4:6379/?db=1`.
 
 #### gha
 
+* `SCCACHE_GHA_ENABLED` enable GitHub Actions cache storage (`true`, `on`, or `1`)
+* `SCCACHE_GHA_VERSION` cache namespace version. Setting this also enables GitHub Actions cache storage.
+* `SCCACHE_GHA_RW_MODE` the mode that the cache will operate in (`READ_ONLY` or `READ_WRITE`). Defaults to `READ_WRITE`.
 * `SCCACHE_GHA_CACHE_URL` / `ACTIONS_RESULTS_URL` GitHub Actions cache API URL
 * `SCCACHE_GHA_RUNTIME_TOKEN` / `ACTIONS_RUNTIME_TOKEN` GitHub Actions access token
-* `SCCACHE_GHA_CACHE_TO` cache key to write
-* `SCCACHE_GHA_CACHE_FROM` comma separated list of cache keys to read from
 
 #### webdav
 

@@ -27,6 +27,8 @@ use crate::cache::memcached::MemcachedCache;
 use crate::cache::multilevel::{MultiLevelStats, MultiLevelStorage};
 #[cfg(feature = "oss")]
 use crate::cache::oss::OSSCache;
+#[cfg(feature = "gha")]
+use crate::cache::readonly::ReadOnlyStorage;
 #[cfg(feature = "redis")]
 use crate::cache::redis::RedisCache;
 #[cfg(feature = "s3")]
@@ -398,13 +400,20 @@ pub fn build_single_cache(
             Ok(Arc::new(storage))
         }
         #[cfg(feature = "gha")]
-        CacheType::GHA(config::GHACacheConfig { version, .. }) => {
+        CacheType::GHA(config::GHACacheConfig {
+            version, rw_mode, ..
+        }) => {
             debug!("Init gha cache with version {version}");
 
             let operator = GHACache::build(version)
                 .map_err(|err| anyhow!("create gha cache failed: {err:?}"))?;
-            let storage = RemoteStorage::new(operator, basedirs.to_vec());
-            Ok(Arc::new(storage))
+            let storage: Arc<dyn Storage> =
+                Arc::new(RemoteStorage::new(operator, basedirs.to_vec()));
+
+            match (*rw_mode).into() {
+                CacheMode::ReadOnly => Ok(Arc::new(ReadOnlyStorage(storage))),
+                CacheMode::ReadWrite => Ok(storage),
+            }
         }
         #[cfg(feature = "memcached")]
         CacheType::Memcached(config::MemcachedCacheConfig {

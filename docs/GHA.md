@@ -4,6 +4,8 @@ To use the [GitHub Actions cache](https://docs.github.com/en/actions/using-workf
 
 By changing `SCCACHE_GHA_VERSION`, we can purge all the cache.
 
+By default, the GitHub Actions cache operates in read/write mode. Set `SCCACHE_GHA_RW_MODE=READ_ONLY` to read existing cache entries without writing new entries, or `SCCACHE_GHA_RW_MODE=READ_WRITE` to explicitly enable both reads and writes.
+
 This cache type will need tokens like `ACTIONS_RESULTS_URL` and `ACTIONS_RUNTIME_TOKEN` to work. You can set these environmental variables using the following step in a GitHub Actions workflow.
 
 ```yaml
