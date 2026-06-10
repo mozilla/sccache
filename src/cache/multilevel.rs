@@ -796,14 +796,14 @@ impl Storage for MultiLevelStorage {
     }
 
     async fn check(&self) -> Result<CacheMode> {
-        let mut result = CacheMode::ReadWrite;
+        let mut has_read_write_level = false;
         for (idx, level) in self.levels.iter().enumerate() {
             match level.check().await {
                 Ok(CacheMode::ReadOnly) => {
-                    result = CacheMode::ReadOnly;
                     debug!("Cache level {} is read-only", idx);
                 }
                 Ok(CacheMode::ReadWrite) => {
+                    has_read_write_level = true;
                     trace!("Cache level {} is read-write", idx);
                 }
                 Err(e) => {
@@ -812,7 +812,11 @@ impl Storage for MultiLevelStorage {
                 }
             }
         }
-        Ok(result)
+        if has_read_write_level {
+            Ok(CacheMode::ReadWrite)
+        } else {
+            Ok(CacheMode::ReadOnly)
+        }
     }
 
     fn location(&self) -> String {
