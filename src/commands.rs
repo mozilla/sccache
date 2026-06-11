@@ -109,6 +109,10 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
         .env("SCCACHE_START_SERVER", "1")
         .env("SCCACHE_STARTUP_NOTIFY", &socket_path)
         .env("RUST_BACKTRACE", "1")
+        // The daemon is always a storage proxy; it never runs in client-side
+        // mode itself.  Strip the variable so an inherited value cannot
+        // accidentally influence daemon behaviour in the future.
+        .env_remove("SCCACHE_CLIENT_SIDE")
         .spawn()?;
 
     let startup = async move {
@@ -209,7 +213,10 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
             ),
             (OsString::from("RUST_BACKTRACE"), OsString::from("1")),
         ];
-        for (key, val) in env::vars_os().chain(extra_vars) {
+        for (key, val) in env::vars_os()
+            .filter(|(k, _)| k != "SCCACHE_CLIENT_SIDE")
+            .chain(extra_vars)
+        {
             v.extend(
                 key.encode_wide()
                     .chain(Some('=' as u16))
