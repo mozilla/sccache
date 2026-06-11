@@ -1579,6 +1579,17 @@ impl PerLanguageCount {
     }
 }
 
+impl std::ops::AddAssign for PerLanguageCount {
+    fn add_assign(&mut self, rhs: Self) {
+        for (k, v) in rhs.counts {
+            *self.counts.entry(k).or_default() += v;
+        }
+        for (k, v) in rhs.adv_counts {
+            *self.adv_counts.entry(k).or_default() += v;
+        }
+    }
+}
+
 /// Statistics about the server.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ServerStats {
@@ -1629,6 +1640,45 @@ pub struct ServerStats {
     pub dist_errors: u64,
     /// Multi-level cache statistics (if multi-level caching is enabled)
     pub multi_level: Option<crate::cache::multilevel::MultiLevelStats>,
+}
+
+impl std::ops::AddAssign for ServerStats {
+    fn add_assign(&mut self, rhs: Self) {
+        self.compile_requests += rhs.compile_requests;
+        self.requests_unsupported_compiler += rhs.requests_unsupported_compiler;
+        self.requests_not_compile += rhs.requests_not_compile;
+        self.requests_not_cacheable += rhs.requests_not_cacheable;
+        self.requests_executed += rhs.requests_executed;
+        self.cache_errors += rhs.cache_errors;
+        self.cache_hits += rhs.cache_hits;
+        self.cache_misses += rhs.cache_misses;
+        self.cache_timeouts += rhs.cache_timeouts;
+        self.cache_read_errors += rhs.cache_read_errors;
+        self.non_cacheable_compilations += rhs.non_cacheable_compilations;
+        self.forced_recaches += rhs.forced_recaches;
+        self.cache_write_errors += rhs.cache_write_errors;
+        self.cache_writes += rhs.cache_writes;
+        self.cache_write_duration += rhs.cache_write_duration;
+        self.cache_read_hit_duration += rhs.cache_read_hit_duration;
+        self.compilations += rhs.compilations;
+        self.compiler_write_duration += rhs.compiler_write_duration;
+        self.compile_fails += rhs.compile_fails;
+        for (k, v) in rhs.not_cached {
+            *self.not_cached.entry(k).or_default() += v;
+        }
+        for (k, v) in rhs.dist_compiles {
+            *self.dist_compiles.entry(k).or_default() += v;
+        }
+        self.dist_errors += rhs.dist_errors;
+        self.multi_level = match (self.multi_level.take(), rhs.multi_level) {
+            (Some(mut a), Some(b)) => {
+                a += b;
+                Some(a)
+            }
+            (a, None) => a,
+            (None, b) => b,
+        };
+    }
 }
 
 /// Info and stats about the server.

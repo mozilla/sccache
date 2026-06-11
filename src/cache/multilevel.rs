@@ -173,6 +173,33 @@ impl<'de> Deserialize<'de> for MultiLevelStats {
     }
 }
 
+impl std::ops::AddAssign for LevelStats {
+    fn add_assign(&mut self, rhs: Self) {
+        // name and location identify the level — keep lhs values
+        self.hits += rhs.hits;
+        self.misses += rhs.misses;
+        self.writes += rhs.writes;
+        self.write_failures += rhs.write_failures;
+        self.backfills_from += rhs.backfills_from;
+        self.backfills_to += rhs.backfills_to;
+        self.hit_duration += rhs.hit_duration;
+        self.write_duration += rhs.write_duration;
+    }
+}
+
+impl std::ops::AddAssign for MultiLevelStats {
+    fn add_assign(&mut self, rhs: Self) {
+        let mut rhs_iter = rhs.0.into_iter();
+        for lhs_level in &mut self.0 {
+            if let Some(rhs_level) = rhs_iter.next() {
+                *lhs_level += rhs_level;
+            }
+        }
+        // Append any extra levels present only in rhs
+        self.0.extend(rhs_iter);
+    }
+}
+
 impl LevelStats {
     /// Calculate hit rate as a percentage
     pub fn hit_rate(&self) -> f64 {
