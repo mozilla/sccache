@@ -557,7 +557,10 @@ where
         let (key, compilation, weak_toolchain_key) = match result {
             Err(e) => {
                 return match e.downcast::<ProcessError>() {
-                    Ok(ProcessError(output)) => Ok((CompileResult::Error, output)),
+                    Ok(ProcessError(output)) => {
+                        debug!("[{}]: process error: {:?}", out_pretty, output);
+                        Ok((CompileResult::Error, output))
+                    }
                     Err(e) => Err(e),
                 };
             }
