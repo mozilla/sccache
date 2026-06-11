@@ -1383,12 +1383,12 @@ where
 
                         match compiled {
                             CompileResult::Error => {
-                                debug!("compile result: cache error");
+                                debug!("[{}]: compile result: cache error", out_pretty);
 
                                 stats.cache_errors.increment(&kind, &lang);
                             }
                             CompileResult::CacheHit(duration) => {
-                                debug!("compile result: cache hit");
+                                debug!("[{}]: compile result: cache hit", out_pretty);
 
                                 stats.cache_hits.increment(&kind, &lang);
                                 stats.cache_read_hit_duration += duration;
