@@ -715,13 +715,25 @@ impl Storage for MultiLevelStorage {
         Ok(Cache::Miss)
     }
 
+    async fn get_raw(&self, key: &str) -> Result<Option<Bytes>> {
+        for level in &self.levels {
+            if let Some(bytes) = level.get_raw(key).await? {
+                return Ok(Some(bytes));
+            }
+        }
+        Ok(None)
+    }
+
     async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration> {
+        let data: Bytes = entry.finish()?.into();
+        self.put_raw(key, data).await
+    }
+
+    async fn put_raw(&self, key: &str, data: Bytes) -> Result<Duration> {
         if self.levels.is_empty() {
             return Err(anyhow!("No cache levels configured"));
         }
 
-        // Serialize cache entry once
-        let data: Bytes = entry.finish()?.into();
         let key_str = key.to_string();
 
         match self.write_error_policy {
