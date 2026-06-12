@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cache::storage_from_config;
+use crate::cache::{IpcStorage, storage_from_config};
 use crate::client::{ServerConnection, connect_to_server, connect_with_retry};
 use crate::cmdline::{Command, StatsFormat};
 use crate::compiler::ColorMode;
@@ -33,10 +33,11 @@ use std::io::{self, IsTerminal, Write};
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::process;
+use std::sync::Arc;
 use std::time::Duration;
 use strip_ansi_escapes::Writer;
 use tokio::io::AsyncReadExt;
-use tokio::runtime::Runtime;
+use tokio::runtime::{Builder, Runtime};
 use walkdir::WalkDir;
 use which::which_in;
 
@@ -649,6 +650,68 @@ where
     )
 }
 
+/// Run a compile in client-side mode: the compile pipeline executes in this
+/// process, and only cache I/O is forwarded to the daemon via `conn`.
+///
+/// Shares `handle_compile_result` with the daemon-IPC path so local-fallback
+/// execution is not duplicated.
+#[allow(clippy::too_many_arguments)]
+pub fn do_compile_client_side<C>(
+    jobserver: &Client,
+    runtime: &mut Runtime,
+    conn: ServerConnection,
+    exe: &Path,
+    cmdline: Vec<OsString>,
+    cwd: &Path,
+    path: Option<OsString>,
+    env_vars: Vec<(OsString, OsString)>,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<i32>
+where
+    C: CommandCreatorSync + Clone + Send + Sync + 'static,
+{
+    trace!("do_compile_client_side");
+    let exe_path = which_in(exe, path, cwd)?;
+    let storage = IpcStorage::connect(conn)?;
+    let conn_arc = storage.conn();
+    let (tx, _rx) = futures::channel::mpsc::channel(1);
+    let (_, info) = server::WaitUntilZero::new();
+    let service = server::SccacheService::<C>::new(
+        server::DistClientContainer::new_disabled(),
+        Arc::new(storage),
+        jobserver,
+        runtime.handle().clone(),
+        tx,
+        info,
+    );
+    let compile = Compile {
+        exe: exe_path.as_os_str().to_owned(),
+        cwd: cwd.as_os_str().to_owned(),
+        args: cmdline.clone(),
+        env_vars,
+    };
+    let (compile_resp, finished) = runtime.block_on(service.compile_direct(compile))?;
+    let creator = C::new(jobserver);
+    let exit_code = handle_compile_result(
+        creator,
+        runtime,
+        compile_resp,
+        finished,
+        &exe_path,
+        cmdline,
+        cwd,
+        stdout,
+        stderr,
+    )?;
+    // Ship accumulated stats back to the daemon (best-effort; don't fail the build on error).
+    let delta: ServerStats = runtime.block_on(service.take_stats());
+    if let Ok(mut conn) = conn_arc.lock() {
+        let _ = conn.request(Request::RecordStats(Box::new(delta)));
+    }
+    Ok(exit_code)
+}
+
 /// Run `cmd` and return the process exit status.
 pub fn run_command(cmd: Command) -> Result<i32> {
     // Config isn't required for all commands, but if it's broken then we should flag
@@ -845,6 +908,28 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 
             let jobserver = Client::new();
             let conn = connect_or_start_server(&get_addr(), startup_timeout)?;
+            if config.client_side_mode {
+                // Under make -jN each CLI process gets only 2 worker threads;
+                // one for preprocessing/compilation and one for IPC.  The
+                // blocking thread pool absorbs zstd/zip work.
+                let mut runtime = Builder::new_multi_thread()
+                    .worker_threads(2)
+                    .enable_all()
+                    .build()?;
+                let res = do_compile_client_side::<ProcessCommandCreator>(
+                    &jobserver,
+                    &mut runtime,
+                    conn,
+                    exe.as_ref(),
+                    cmdline,
+                    &cwd,
+                    env::var_os("PATH"),
+                    env_vars,
+                    &mut io::stdout(),
+                    &mut io::stderr(),
+                );
+                return res.context("failed to execute compile");
+            }
             let mut runtime = Runtime::new()?;
             let res = do_compile(
                 ProcessCommandCreator::new(&jobserver),

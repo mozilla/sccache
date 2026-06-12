@@ -1134,6 +1134,12 @@ where
         *self.stats.lock().await = ServerStats::default();
     }
 
+    /// Snapshot and reset the current stats (used by client-side processes before exit).
+    pub async fn take_stats(&self) -> ServerStats {
+        let mut s = self.stats.lock().await;
+        std::mem::take(&mut *s)
+    }
+
     async fn merge_stats(&self, delta: ServerStats) {
         *self.stats.lock().await += delta;
     }
@@ -1154,6 +1160,27 @@ where
             .compiler_info(exe.into(), cwd.clone(), &cmd, &env_vars)
             .await;
         Ok(me.check_compiler(info, cmd, cwd, env_vars).await)
+    }
+
+    /// Run a compile entirely in the current process (used in client-side mode).
+    ///
+    /// Returns the `CompileResponse` variant and, when compilation started, the
+    /// accompanying `CompileFinished` result.
+    pub async fn compile_direct(
+        &self,
+        compile: Compile,
+    ) -> Result<(CompileResponse, Option<CompileFinished>)> {
+        match self.handle_compile(compile).await? {
+            Message::WithBody(Response::Compile(resp), body) => {
+                let finished = match body.await? {
+                    Response::CompileFinished(f) => f,
+                    _ => bail!("unexpected body response from compile_direct"),
+                };
+                Ok((resp, Some(finished)))
+            }
+            Message::WithoutBody(Response::Compile(resp)) => Ok((resp, None)),
+            _ => bail!("unexpected response from handle_compile in compile_direct"),
+        }
     }
 
     /// Look up compiler info from the cache for the compiler `path`.
@@ -2347,7 +2374,7 @@ impl Future for ShutdownOrInactive {
 
 /// Helper future which tracks the `ActiveInfo` below. This future will resolve
 /// once all instances of `ActiveInfo` have been dropped.
-struct WaitUntilZero {
+pub(crate) struct WaitUntilZero {
     info: std::sync::Weak<std::sync::Mutex<Info>>,
 }
 
@@ -2371,7 +2398,7 @@ impl Drop for Info {
 
 impl WaitUntilZero {
     #[rustfmt::skip]
-    fn new() -> (WaitUntilZero, ActiveInfo) {
+    pub(crate) fn new() -> (WaitUntilZero, ActiveInfo) {
         let info = Arc::new(std::sync::Mutex::new(Info { waker: None }));
 
         (WaitUntilZero { info: Arc::downgrade(&info) }, ActiveInfo { info })
