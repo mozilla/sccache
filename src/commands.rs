@@ -503,16 +503,14 @@ fn handle_compile_finished(
     }
 }
 
-/// Handle `response`, the response from sending a `Compile` request to the server. Return the compiler exit status.
+/// Handle `response`, the response from sending a `Compile` request to the server.
 ///
-/// If the server returned `CompileStarted`, wait for a `CompileFinished` and
-/// print the results.
-///
-/// If the server returned `UnhandledCompile`, run the compilation command
-/// locally using `creator` and return the result.
+/// If the server returned `CompileStarted`, reads the follow-up `CompileFinished`
+/// from `conn`, falling back to local execution if the server disconnects
+/// unexpectedly.  Delegates to `handle_compile_result` for the final dispatch.
 #[allow(clippy::too_many_arguments)]
 fn handle_compile_response<T>(
-    mut creator: T,
+    creator: T,
     runtime: &mut Runtime,
     conn: &mut ServerConnection,
     response: CompileResponse,
@@ -525,14 +523,12 @@ fn handle_compile_response<T>(
 where
     T: CommandCreatorSync,
 {
-    match response {
+    let result = match &response {
         CompileResponse::CompileStarted => {
             debug!("Server sent CompileStarted");
             // Wait for CompileFinished.
             match conn.read_one_response() {
-                Ok(Response::CompileFinished(result)) => {
-                    return handle_compile_finished(result, stdout, stderr);
-                }
+                Ok(Response::CompileFinished(result)) => Some(result),
                 Ok(_) => bail!("unexpected response from server"),
                 Err(e) => {
                     match e.downcast_ref::<io::Error>() {
@@ -555,8 +551,42 @@ where
                             }
                         }
                     }
+                    None
                 }
             }
+        }
+        _ => None,
+    };
+
+    handle_compile_result(
+        creator, runtime, response, result, exe, cmdline, cwd, stdout, stderr,
+    )
+}
+
+/// Dispatch the outcome of a compile, whether received from the daemon over IPC
+/// or produced by a local `SccacheService` in client-side mode.
+#[allow(clippy::too_many_arguments)]
+fn handle_compile_result<T>(
+    mut creator: T,
+    runtime: &mut Runtime,
+    response: CompileResponse,
+    finished: Option<CompileFinished>,
+    exe: &Path,
+    cmdline: Vec<OsString>,
+    cwd: &Path,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<i32>
+where
+    T: CommandCreatorSync,
+{
+    match response {
+        CompileResponse::CompileStarted => {
+            return handle_compile_finished(
+                finished.expect("CompileStarted must have a result"),
+                stdout,
+                stderr,
+            );
         }
         CompileResponse::UnsupportedCompiler(s) => {
             debug!("Server sent UnsupportedCompiler: {:?}", s);
