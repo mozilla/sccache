@@ -112,7 +112,7 @@ impl Acceptor for tokio::net::TcpListener {
 }
 
 // A helper trait to unify the behavior of TCP and UDS stream.
-pub trait Connection: std::io::Read + std::io::Write {
+pub trait Connection: std::io::Read + std::io::Write + Send {
     fn try_clone(&self) -> std::io::Result<Box<dyn Connection>>;
 }
 
