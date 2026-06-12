@@ -397,6 +397,14 @@ impl LruDiskCache {
         self.get_file(key).map(|f| Box::new(f) as Box<dyn ReadSeek>)
     }
 
+    /// Return the absolute path for `key` if it is present in the cache, without opening the
+    /// file. Updates the LRU eviction order. Returns `None` if the key is absent.
+    pub fn get_abs_path<K: AsRef<OsStr>>(&mut self, key: K) -> Option<PathBuf> {
+        let rel_path = key.as_ref();
+        let path = self.rel_to_abs_path(rel_path);
+        self.lru.get(rel_path).map(|_| path)
+    }
+
     /// Remove the given key from the cache.
     pub fn remove<K: AsRef<OsStr>>(&mut self, key: K) -> Result<()> {
         match self.lru.remove(key.as_ref()) {

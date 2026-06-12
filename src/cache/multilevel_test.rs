@@ -1341,3 +1341,165 @@ fn test_put_mode_all_skips_readonly() {
         ));
     });
 }
+
+// A Storage that does NOT override get_raw/put_raw, so it inherits the
+// default no-op implementations.  Used to verify that MultiLevelStorage
+// correctly skips levels that don't support raw access.
+struct NoRawStorage {
+    inner: InMemoryStorage,
+}
+
+impl NoRawStorage {
+    fn new() -> Self {
+        Self {
+            inner: InMemoryStorage::new(),
+        }
+    }
+}
+
+#[async_trait]
+impl Storage for NoRawStorage {
+    async fn get(&self, key: &str) -> Result<Cache> {
+        self.inner.get(key).await
+    }
+    async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration> {
+        self.inner.put(key, entry).await
+    }
+    fn location(&self) -> String {
+        "NoRaw".to_string()
+    }
+    async fn current_size(&self) -> Result<Option<u64>> {
+        Ok(None)
+    }
+    async fn max_size(&self) -> Result<Option<u64>> {
+        Ok(None)
+    }
+    // get_raw and put_raw are NOT overridden — they inherit the default
+    // no-op implementations from the Storage trait.
+}
+
+#[test]
+fn test_multilevel_get_raw_finds_first_hit() {
+    // Verifies that MultiLevelStorage::get_raw iterates levels in order
+    // and returns the bytes from the first level that has them.
+    let runtime = RuntimeBuilder::new_multi_thread()
+        .enable_all()
+        .worker_threads(1)
+        .build()
+        .unwrap();
+
+    let l0 = Arc::new(InMemoryStorage::new()); // empty
+    let l1 = Arc::new(InMemoryStorage::new()); // will hold the entry
+
+    let storage = MultiLevelStorage::new(vec![
+        l0.clone() as Arc<dyn Storage>,
+        l1.clone() as Arc<dyn Storage>,
+    ]);
+
+    runtime.block_on(async {
+        l1.put("key", CacheWrite::default()).await.unwrap();
+
+        // L0 has nothing — get_raw on L0 directly returns None.
+        assert!(l0.get_raw("key").await.unwrap().is_none());
+
+        // MultiLevelStorage::get_raw should skip L0 and find the entry at L1.
+        let raw = storage.get_raw("key").await.unwrap();
+        assert!(
+            raw.is_some(),
+            "expected a hit via MultiLevelStorage::get_raw"
+        );
+
+        // The bytes should be parseable as a valid cache entry.
+        let bytes = raw.unwrap();
+        assert!(
+            CacheRead::from(std::io::Cursor::new(bytes.to_vec())).is_ok(),
+            "get_raw bytes should be a valid zip archive"
+        );
+
+        // A key that exists in neither level should return None.
+        assert!(storage.get_raw("missing").await.unwrap().is_none());
+    });
+}
+
+#[test]
+fn test_multilevel_get_raw_skips_levels_without_raw_support() {
+    // Verifies that MultiLevelStorage::get_raw gracefully skips a level
+    // that inherits the default no-op get_raw (returns Ok(None)) and
+    // continues to the next level.  This is the exact scenario that
+    // motivated adding get_raw to MultiLevelStorage: without an explicit
+    // implementation, calling get_raw on the MultiLevelStorage itself
+    // would always return None even when data is present.
+    let runtime = RuntimeBuilder::new_multi_thread()
+        .enable_all()
+        .worker_threads(1)
+        .build()
+        .unwrap();
+
+    let l0 = Arc::new(NoRawStorage::new()); // no get_raw support
+    let l1 = Arc::new(InMemoryStorage::new()); // has get_raw support
+
+    let storage = MultiLevelStorage::new(vec![
+        l0.clone() as Arc<dyn Storage>,
+        l1.clone() as Arc<dyn Storage>,
+    ]);
+
+    runtime.block_on(async {
+        // Put data at L1 (also via L0 which stores via its inner InMemoryStorage,
+        // but L0::get_raw returns None so the multilevel must reach L1).
+        l1.put("key", CacheWrite::default()).await.unwrap();
+
+        // Confirm L0::get_raw truly returns None (the default).
+        assert!(l0.get_raw("key").await.unwrap().is_none());
+
+        // MultiLevelStorage::get_raw should fall through L0 and find the entry at L1.
+        let raw = storage.get_raw("key").await.unwrap();
+        assert!(
+            raw.is_some(),
+            "expected hit at L1 after skipping L0 (no raw support)"
+        );
+    });
+}
+
+#[test]
+fn test_multilevel_put_raw_writes_to_all_levels() {
+    // Verifies that MultiLevelStorage::put_raw propagates the raw bytes
+    // to every level, so a subsequent get_raw on any individual level
+    // returns the same bytes.
+    let runtime = RuntimeBuilder::new_multi_thread()
+        .enable_all()
+        .worker_threads(1)
+        .build()
+        .unwrap();
+
+    let l0 = Arc::new(InMemoryStorage::new());
+    let l1 = Arc::new(InMemoryStorage::new());
+
+    let storage = MultiLevelStorage::new(vec![
+        l0.clone() as Arc<dyn Storage>,
+        l1.clone() as Arc<dyn Storage>,
+    ]);
+
+    runtime.block_on(async {
+        // Build raw bytes for a valid (empty) cache entry.
+        let raw_bytes: Bytes = CacheWrite::default().finish().unwrap().into();
+
+        storage.put_raw("key", raw_bytes.clone()).await.unwrap();
+
+        // Give background writes time to complete.
+        sleep(Duration::from_millis(50)).await;
+
+        // Both levels should now hold identical bytes.
+        let from_l0 = l0.get_raw("key").await.unwrap();
+        let from_l1 = l1.get_raw("key").await.unwrap();
+        assert_eq!(
+            from_l0.as_deref(),
+            Some(raw_bytes.as_ref()),
+            "L0 should have the raw bytes"
+        );
+        assert_eq!(
+            from_l1.as_deref(),
+            Some(raw_bytes.as_ref()),
+            "L1 should have the raw bytes"
+        );
+    });
+}

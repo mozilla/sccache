@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cache::storage_from_config;
+use crate::cache::{IpcStorage, storage_from_config};
 use crate::client::{ServerConnection, connect_to_server, connect_with_retry};
 use crate::cmdline::{Command, StatsFormat};
 use crate::compiler::ColorMode;
@@ -33,10 +33,11 @@ use std::io::{self, IsTerminal, Write};
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::process;
+use std::sync::Arc;
 use std::time::Duration;
 use strip_ansi_escapes::Writer;
 use tokio::io::AsyncReadExt;
-use tokio::runtime::Runtime;
+use tokio::runtime::{Builder, Runtime};
 use walkdir::WalkDir;
 use which::which_in;
 
@@ -109,6 +110,10 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
         .env("SCCACHE_START_SERVER", "1")
         .env("SCCACHE_STARTUP_NOTIFY", &socket_path)
         .env("RUST_BACKTRACE", "1")
+        // The daemon is always a storage proxy; it never runs in client-side
+        // mode itself.  Strip the variable so an inherited value cannot
+        // accidentally influence daemon behaviour in the future.
+        .env_remove("SCCACHE_CLIENT_SIDE")
         .spawn()?;
 
     let startup = async move {
@@ -209,7 +214,10 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
             ),
             (OsString::from("RUST_BACKTRACE"), OsString::from("1")),
         ];
-        for (key, val) in env::vars_os().chain(extra_vars) {
+        for (key, val) in env::vars_os()
+            .filter(|(k, _)| k != "SCCACHE_CLIENT_SIDE")
+            .chain(extra_vars)
+        {
             v.extend(
                 key.encode_wide()
                     .chain(Some('=' as u16))
@@ -496,16 +504,14 @@ fn handle_compile_finished(
     }
 }
 
-/// Handle `response`, the response from sending a `Compile` request to the server. Return the compiler exit status.
+/// Handle `response`, the response from sending a `Compile` request to the server.
 ///
-/// If the server returned `CompileStarted`, wait for a `CompileFinished` and
-/// print the results.
-///
-/// If the server returned `UnhandledCompile`, run the compilation command
-/// locally using `creator` and return the result.
+/// If the server returned `CompileStarted`, reads the follow-up `CompileFinished`
+/// from `conn`, falling back to local execution if the server disconnects
+/// unexpectedly.  Delegates to `handle_compile_result` for the final dispatch.
 #[allow(clippy::too_many_arguments)]
 fn handle_compile_response<T>(
-    mut creator: T,
+    creator: T,
     runtime: &mut Runtime,
     conn: &mut ServerConnection,
     response: CompileResponse,
@@ -518,14 +524,12 @@ fn handle_compile_response<T>(
 where
     T: CommandCreatorSync,
 {
-    match response {
+    let result = match &response {
         CompileResponse::CompileStarted => {
             debug!("Server sent CompileStarted");
             // Wait for CompileFinished.
             match conn.read_one_response() {
-                Ok(Response::CompileFinished(result)) => {
-                    return handle_compile_finished(result, stdout, stderr);
-                }
+                Ok(Response::CompileFinished(result)) => Some(result),
                 Ok(_) => bail!("unexpected response from server"),
                 Err(e) => {
                     match e.downcast_ref::<io::Error>() {
@@ -548,8 +552,42 @@ where
                             }
                         }
                     }
+                    None
                 }
             }
+        }
+        _ => None,
+    };
+
+    handle_compile_result(
+        creator, runtime, response, result, exe, cmdline, cwd, stdout, stderr,
+    )
+}
+
+/// Dispatch the outcome of a compile, whether received from the daemon over IPC
+/// or produced by a local `SccacheService` in client-side mode.
+#[allow(clippy::too_many_arguments)]
+fn handle_compile_result<T>(
+    mut creator: T,
+    runtime: &mut Runtime,
+    response: CompileResponse,
+    finished: Option<CompileFinished>,
+    exe: &Path,
+    cmdline: Vec<OsString>,
+    cwd: &Path,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<i32>
+where
+    T: CommandCreatorSync,
+{
+    match response {
+        CompileResponse::CompileStarted => {
+            return handle_compile_finished(
+                finished.expect("CompileStarted must have a result"),
+                stdout,
+                stderr,
+            );
         }
         CompileResponse::UnsupportedCompiler(s) => {
             debug!("Server sent UnsupportedCompiler: {:?}", s);
@@ -610,6 +648,68 @@ where
     handle_compile_response(
         creator, runtime, &mut conn, res, &exe_path, cmdline, cwd, stdout, stderr,
     )
+}
+
+/// Run a compile in client-side mode: the compile pipeline executes in this
+/// process, and only cache I/O is forwarded to the daemon via `conn`.
+///
+/// Shares `handle_compile_result` with the daemon-IPC path so local-fallback
+/// execution is not duplicated.
+#[allow(clippy::too_many_arguments)]
+pub fn do_compile_client_side<C>(
+    jobserver: &Client,
+    runtime: &mut Runtime,
+    conn: ServerConnection,
+    exe: &Path,
+    cmdline: Vec<OsString>,
+    cwd: &Path,
+    path: Option<OsString>,
+    env_vars: Vec<(OsString, OsString)>,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<i32>
+where
+    C: CommandCreatorSync + Clone + Send + Sync + 'static,
+{
+    trace!("do_compile_client_side");
+    let exe_path = which_in(exe, path, cwd)?;
+    let storage = IpcStorage::connect(conn)?;
+    let conn_arc = storage.conn();
+    let (tx, _rx) = futures::channel::mpsc::channel(1);
+    let (_, info) = server::WaitUntilZero::new();
+    let service = server::SccacheService::<C>::new(
+        server::DistClientContainer::new_disabled(),
+        Arc::new(storage),
+        jobserver,
+        runtime.handle().clone(),
+        tx,
+        info,
+    );
+    let compile = Compile {
+        exe: exe_path.as_os_str().to_owned(),
+        cwd: cwd.as_os_str().to_owned(),
+        args: cmdline.clone(),
+        env_vars,
+    };
+    let (compile_resp, finished) = runtime.block_on(service.compile_direct(compile))?;
+    let creator = C::new(jobserver);
+    let exit_code = handle_compile_result(
+        creator,
+        runtime,
+        compile_resp,
+        finished,
+        &exe_path,
+        cmdline,
+        cwd,
+        stdout,
+        stderr,
+    )?;
+    // Ship accumulated stats back to the daemon (best-effort; don't fail the build on error).
+    let delta: ServerStats = runtime.block_on(service.take_stats());
+    if let Ok(mut conn) = conn_arc.lock() {
+        let _ = conn.request(Request::RecordStats(Box::new(delta)));
+    }
+    Ok(exit_code)
 }
 
 /// Run `cmd` and return the process exit status.
@@ -808,6 +908,28 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 
             let jobserver = Client::new();
             let conn = connect_or_start_server(&get_addr(), startup_timeout)?;
+            if config.client_side_mode {
+                // Under make -jN each CLI process gets only 2 worker threads;
+                // one for preprocessing/compilation and one for IPC.  The
+                // blocking thread pool absorbs zstd/zip work.
+                let mut runtime = Builder::new_multi_thread()
+                    .worker_threads(2)
+                    .enable_all()
+                    .build()?;
+                let res = do_compile_client_side::<ProcessCommandCreator>(
+                    &jobserver,
+                    &mut runtime,
+                    conn,
+                    exe.as_ref(),
+                    cmdline,
+                    &cwd,
+                    env::var_os("PATH"),
+                    env_vars,
+                    &mut io::stdout(),
+                    &mut io::stderr(),
+                );
+                return res.context("failed to execute compile");
+            }
             let mut runtime = Runtime::new()?;
             let res = do_compile(
                 ProcessCommandCreator::new(&jobserver),

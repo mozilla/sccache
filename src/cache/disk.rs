@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cache::{Cache, CacheMode, CacheRead, CacheWrite, Storage};
+use crate::cache::{Cache, CacheMode, CacheRead, CacheWrite, GetPathResult, Storage};
 use crate::compiler::PreprocessorCacheEntry;
 use crate::lru_disk_cache::{Error as LruError, ReadSeek};
 use async_trait::async_trait;
@@ -130,6 +130,26 @@ impl Storage for DiskCache {
                 },
             )
             .await?
+    }
+
+    async fn get_path(&self, key: &str) -> GetPathResult {
+        let rel_path = make_key_path(key);
+        let lru = self.lru.clone();
+        self.pool
+            .spawn_blocking(move || {
+                match lru
+                    .lock()
+                    .unwrap()
+                    .get_or_init()
+                    .ok()
+                    .and_then(|c| c.get_abs_path(&rel_path))
+                {
+                    Some(p) => GetPathResult::Found(p),
+                    None => GetPathResult::Miss,
+                }
+            })
+            .await
+            .unwrap_or(GetPathResult::Miss)
     }
 
     async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration> {
