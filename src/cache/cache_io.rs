@@ -13,6 +13,7 @@
 use super::utils::{get_file_mode, set_file_mode};
 use crate::errors::*;
 use fs_err as fs;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::io::{Cursor, Read, Seek, Write};
 use std::path::{Path, PathBuf};
@@ -56,7 +57,7 @@ impl fmt::Debug for Cache {
 }
 
 /// CacheMode is used to represent which mode we are using.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CacheMode {
     /// Only read cache from storage.
     ReadOnly,

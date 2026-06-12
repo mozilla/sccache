@@ -1,5 +1,7 @@
+use crate::cache::{CacheMode, GetPathResult};
 use crate::compiler::ColorMode;
-use crate::server::{DistInfo, ServerInfo};
+use crate::config::PreprocessorCacheModeConfig;
+use crate::server::{DistInfo, ServerInfo, ServerStats};
 use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
 
@@ -16,6 +18,23 @@ pub enum Request {
     Shutdown,
     /// Execute a compile or fetch a cached compilation result.
     Compile(Compile),
+
+    // --- Storage RPCs (client-side mode) ---
+    /// One-shot handshake: client requests cache metadata from the daemon.
+    StorageHandshake,
+    /// Fetch the filesystem path of the cached entry for `key`.
+    /// Returns `None` if the backend does not support direct file access or the key is absent.
+    StorageGetPath { key: String },
+    /// Fetch raw (zip) bytes for `key`; returns `None` on a miss.
+    StorageGetRaw { key: String },
+    /// Store raw (zip) bytes under `key`.
+    StoragePutRaw { key: String, data: Vec<u8> },
+    /// Retrieve the preprocessor cache entry for `key`.
+    StorageGetPreprocessorEntry { key: String },
+    /// Store or overwrite the preprocessor cache entry for `key`.
+    StoragePutPreprocessorEntry { key: String, entry_bytes: Vec<u8> },
+    /// Merge per-invocation stats into the daemon's running totals.
+    RecordStats(Box<ServerStats>),
 }
 
 /// A server response.
@@ -33,6 +52,22 @@ pub enum Response {
     ShuttingDown(Box<ServerInfo>),
     /// Second response for `Request::Compile`, containing the results of the compilation.
     CompileFinished(CompileFinished),
+
+    // --- Storage RPC responses (client-side mode) ---
+    /// Response for `Request::StorageHandshake`.
+    StorageHandshake(StorageHandshakeInfo),
+    /// Response for `Request::StorageGetPath`.
+    StorageGetPath(GetPathResult),
+    /// Response for `Request::StorageGetRaw`: zip bytes on hit, `None` on miss.
+    StorageGetRaw(Option<Vec<u8>>),
+    /// Response for `Request::StoragePutRaw`.
+    StoragePutRaw(Result<(), String>),
+    /// Response for `Request::StorageGetPreprocessorEntry`.
+    StorageGetPreprocessorEntry(Result<Option<Vec<u8>>, String>),
+    /// Response for `Request::StoragePutPreprocessorEntry`.
+    StoragePutPreprocessorEntry(Result<(), String>),
+    /// Response for `Request::RecordStats`.
+    RecordStats,
 }
 
 /// Possible responses from the server for a `Compile` request.
@@ -72,4 +107,15 @@ pub struct Compile {
     pub args: Vec<OsString>,
     /// The environment variables present when the compiler was executed, as (var, val).
     pub env_vars: Vec<(OsString, OsString)>,
+}
+
+/// Cache metadata returned by the daemon on `StorageHandshake`.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct StorageHandshakeInfo {
+    pub location: String,
+    pub cache_type_name: String,
+    pub basedirs: Vec<Vec<u8>>,
+    pub preprocessor_cache_mode_config: PreprocessorCacheModeConfig,
+    pub cache_mode: CacheMode,
+    pub max_size: Option<u64>,
 }
