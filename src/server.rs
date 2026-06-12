@@ -14,6 +14,7 @@
 
 use crate::cache::readonly::ReadOnlyStorage;
 use crate::cache::{CacheMode, Storage, storage_from_config};
+use crate::compiler::PreprocessorCacheEntry;
 use crate::compiler::{
     CacheControl, CompileResult, Compiler, CompilerArguments, CompilerHasher, CompilerKind,
     CompilerProxy, DistType, Language, MissType, get_compiler_info,
@@ -24,7 +25,9 @@ use crate::config::Config;
 use crate::dist;
 use crate::jobserver::Client;
 use crate::mock_command::{CommandCreatorSync, ProcessCommandCreator};
-use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
+use crate::protocol::{
+    Compile, CompileFinished, CompileResponse, Request, Response, StorageHandshakeInfo,
+};
 use crate::util;
 #[cfg(feature = "dist-client")]
 use anyhow::Context as _;
@@ -898,6 +901,84 @@ where
                         Message::WithoutBody(Response::ShuttingDown(Box::new(info)))
                     })
                 }
+                Request::StorageHandshake => {
+                    debug!("handle_client: storage_handshake");
+                    let info = StorageHandshakeInfo {
+                        location: me.storage.location(),
+                        cache_type_name: me.storage.cache_type_name().to_owned(),
+                        basedirs: me.storage.basedirs().to_vec(),
+                        preprocessor_cache_mode_config: me.storage.preprocessor_cache_mode_config(),
+                        cache_mode: me.storage.check().await.unwrap_or(CacheMode::ReadWrite),
+                        max_size: me.storage.max_size().await.unwrap_or(None),
+                    };
+                    Ok(Message::WithoutBody(Response::StorageHandshake(info)))
+                }
+                Request::StorageGetPath { key } => {
+                    debug!("handle_client: storage_get_path key={}", key);
+                    Ok(Message::WithoutBody(Response::StorageGetPath(
+                        me.storage.get_path(&key).await,
+                    )))
+                }
+                Request::StorageGetRaw { key } => {
+                    debug!("handle_client: storage_get_raw key={}", key);
+                    let resp = match me.storage.get_raw(&key).await {
+                        Ok(opt) => Response::StorageGetRaw(opt.map(|b| b.to_vec())),
+                        Err(e) => {
+                            warn!("storage_get_raw error: {e:#}");
+                            Response::StorageGetRaw(None)
+                        }
+                    };
+                    Ok(Message::WithoutBody(resp))
+                }
+                Request::StoragePutRaw { key, data } => {
+                    debug!("handle_client: storage_put_raw key={}", key);
+                    let result = me
+                        .storage
+                        .put_raw(&key, data.into())
+                        .await
+                        .map(|_| ())
+                        .map_err(|e| format!("{e:#}"));
+                    Ok(Message::WithoutBody(Response::StoragePutRaw(result)))
+                }
+                Request::StorageGetPreprocessorEntry { key } => {
+                    debug!("handle_client: storage_get_preprocessor_entry key={}", key);
+                    let result = me
+                        .storage
+                        .get_preprocessor_cache_entry(&key)
+                        .await
+                        .map(|opt| {
+                            opt.and_then(|mut seekable| {
+                                use std::io::Read;
+                                let mut buf = vec![];
+                                seekable.read_to_end(&mut buf).ok()?;
+                                Some(buf)
+                            })
+                        })
+                        .map_err(|e| format!("{e:#}"));
+                    Ok(Message::WithoutBody(Response::StorageGetPreprocessorEntry(
+                        result,
+                    )))
+                }
+                Request::StoragePutPreprocessorEntry { key, entry_bytes } => {
+                    debug!("handle_client: storage_put_preprocessor_entry key={}", key);
+                    let result = async {
+                        let entry = PreprocessorCacheEntry::read(&entry_bytes)
+                            .map_err(|e| format!("{e:#}"))?;
+                        me.storage
+                            .put_preprocessor_cache_entry(&key, entry)
+                            .await
+                            .map_err(|e| format!("{e:#}"))
+                    }
+                    .await;
+                    Ok(Message::WithoutBody(Response::StoragePutPreprocessorEntry(
+                        result,
+                    )))
+                }
+                Request::RecordStats(delta) => {
+                    debug!("handle_client: record_stats");
+                    me.merge_stats(*delta).await;
+                    Ok(Message::WithoutBody(Response::RecordStats))
+                }
             }
         })
     }
@@ -1051,6 +1132,10 @@ where
     /// Zero stats about the cache.
     async fn zero_stats(&self) {
         *self.stats.lock().await = ServerStats::default();
+    }
+
+    async fn merge_stats(&self, delta: ServerStats) {
+        *self.stats.lock().await += delta;
     }
 
     /// Handle a compile request from a client.

@@ -50,6 +50,7 @@ use crate::config::Config;
 use crate::config::{self, CacheType, PreprocessorCacheModeConfig};
 use async_trait::async_trait;
 use bytes::Bytes;
+use serde::{Deserialize, Serialize};
 
 use std::io;
 use std::path::PathBuf;
@@ -59,7 +60,7 @@ use std::time::Duration;
 use crate::errors::*;
 
 /// Result of [`Storage::get_path`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GetPathResult {
     /// Cache hit: the entry lives at this filesystem path.
     Found(PathBuf),
