@@ -503,16 +503,14 @@ fn handle_compile_finished(
     }
 }
 
-/// Handle `response`, the response from sending a `Compile` request to the server. Return the compiler exit status.
+/// Handle `response`, the response from sending a `Compile` request to the server.
 ///
-/// If the server returned `CompileStarted`, wait for a `CompileFinished` and
-/// print the results.
-///
-/// If the server returned `UnhandledCompile`, run the compilation command
-/// locally using `creator` and return the result.
+/// If the server returned `CompileStarted`, reads the follow-up `CompileFinished`
+/// from `conn`, falling back to local execution if the server disconnects
+/// unexpectedly.  Delegates to `handle_compile_result` for the final dispatch.
 #[allow(clippy::too_many_arguments)]
 fn handle_compile_response<T>(
-    mut creator: T,
+    creator: T,
     runtime: &mut Runtime,
     conn: &mut ServerConnection,
     response: CompileResponse,
@@ -525,14 +523,12 @@ fn handle_compile_response<T>(
 where
     T: CommandCreatorSync,
 {
-    match response {
+    let result = match &response {
         CompileResponse::CompileStarted => {
             debug!("Server sent CompileStarted");
             // Wait for CompileFinished.
             match conn.read_one_response() {
-                Ok(Response::CompileFinished(result)) => {
-                    return handle_compile_finished(result, stdout, stderr);
-                }
+                Ok(Response::CompileFinished(result)) => Some(result),
                 Ok(_) => bail!("unexpected response from server"),
                 Err(e) => {
                     match e.downcast_ref::<io::Error>() {
@@ -555,8 +551,41 @@ where
                             }
                         }
                     }
+                    None
                 }
             }
+        }
+        _ => None,
+    };
+
+    handle_compile_result(
+        creator, runtime, response, result, exe, cmdline, cwd, stdout, stderr,
+    )
+}
+
+/// Dispatch the outcome of a compile, whether received from the daemon over IPC
+/// or produced by a local `SccacheService` in client-side mode.
+#[allow(clippy::too_many_arguments)]
+fn handle_compile_result<T>(
+    mut creator: T,
+    runtime: &mut Runtime,
+    response: CompileResponse,
+    finished: Option<CompileFinished>,
+    exe: &Path,
+    cmdline: Vec<OsString>,
+    cwd: &Path,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<i32>
+where
+    T: CommandCreatorSync,
+{
+    match response {
+        CompileResponse::CompileStarted => {
+            if let Some(finished) = finished {
+                return handle_compile_finished(finished, stdout, stderr);
+            }
+            // Server disconnected before sending CompileFinished; fall back to local compilation.
         }
         CompileResponse::UnsupportedCompiler(s) => {
             debug!("Server sent UnsupportedCompiler: {:?}", s);
@@ -833,4 +862,90 @@ pub fn run_command(cmd: Command) -> Result<i32> {
     }
 
     Ok(0)
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::jobserver::Client;
+    use crate::mock_command::{
+        CommandCreator, ExitStatusValue, MockChild, MockCommandCreator, exit_status,
+    };
+    use crate::net::Connection;
+    use std::sync::{Arc, Mutex};
+
+    fn make_runtime() -> Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    /// A `Connection` that immediately returns EOF on reads and discards writes.
+    /// Used to simulate a server that disconnects before sending `CompileFinished`.
+    struct DisconnectedConnection;
+
+    impl io::Read for DisconnectedConnection {
+        fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+            Ok(0)
+        }
+    }
+
+    impl io::Write for DisconnectedConnection {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Connection for DisconnectedConnection {
+        fn try_clone(&self) -> io::Result<Box<dyn Connection>> {
+            Ok(Box::new(DisconnectedConnection))
+        }
+    }
+
+    /// A mid-compile server disconnect: the server sends CompileStarted then drops the
+    /// connection before CompileFinished.  handle_compile_response must fall back to
+    /// local compilation rather than panic.
+    #[test]
+    fn test_handle_compile_response_disconnect_falls_back_to_local() {
+        let mut runtime = make_runtime();
+        let client = Client::new_num(1);
+        let creator = Arc::new(Mutex::new(MockCommandCreator::new(&client)));
+        // exit_status takes a raw platform value: on Unix the wait(2) encoding
+        // puts the exit code in bits 15:8, so exit code 1 is `1 << 8`.
+        // On Windows the raw value is the exit code directly.
+        #[cfg(unix)]
+        let exit_val: ExitStatusValue = 1 << 8;
+        #[cfg(windows)]
+        let exit_val: ExitStatusValue = 1;
+        creator
+            .lock()
+            .unwrap()
+            .next_command_spawns(Ok(MockChild::new(exit_status(exit_val), "", "")));
+
+        let mut conn = ServerConnection::new(Box::new(DisconnectedConnection)).unwrap();
+        let exe = Path::new("cc");
+        let cmdline = vec![OsString::from("foo.c")];
+        let cwd = Path::new("/");
+        let mut stdout = vec![];
+        let mut stderr = vec![];
+
+        let code = handle_compile_response(
+            creator,
+            &mut runtime,
+            &mut conn,
+            CompileResponse::CompileStarted,
+            exe,
+            cmdline,
+            cwd,
+            &mut stdout,
+            &mut stderr,
+        )
+        .unwrap();
+
+        assert_eq!(code, 1);
+    }
 }
