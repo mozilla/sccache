@@ -1096,18 +1096,35 @@ pub fn strip_basedirs<'a>(preprocessor_output: &'a [u8], basedirs: &[Vec<u8>]) -
 
     for (idx, basedir_bytes) in basedirs.iter().enumerate() {
         let basedir = basedir_bytes.as_slice();
-        // Use memchr's fast substring search
-        let finder = memchr::memmem::find_iter(normalized_output, &basedir);
 
-        for pos in finder {
-            // Check if this is a valid boundary (start, whitespace, quote, or '<')
-            let is_boundary = pos == 0
-                || normalized_output[pos - 1].is_ascii_whitespace()
-                || normalized_output[pos - 1] == b'"'
-                || normalized_output[pos - 1] == b'<';
+        // On Windows, preprocessor output quotes paths as C string literals
+        // (#line directives and GNU linemarkers), so backslash separators
+        // appear escaped: `#line 1 "C:\\dir\\file.h"`. normalize_win_path
+        // converts each backslash to a forward slash, which turns every
+        // escaped separator into a DOUBLE forward slash ("c://dir//file.h").
+        // Search for that doubled variant of the basedir as well, otherwise
+        // such paths are never stripped.
+        #[cfg(target_os = "windows")]
+        let doubled_basedir = double_path_separators(basedir);
+        #[cfg(target_os = "windows")]
+        let needles: [&[u8]; 2] = [basedir, &doubled_basedir];
+        #[cfg(not(target_os = "windows"))]
+        let needles: [&[u8]; 1] = [basedir];
 
-            if is_boundary {
-                matches.push((pos, basedir.len(), idx));
+        for needle in needles {
+            // Use memchr's fast substring search
+            let finder = memchr::memmem::find_iter(normalized_output, needle);
+
+            for pos in finder {
+                // Check if this is a valid boundary (start, whitespace, quote, or '<')
+                let is_boundary = pos == 0
+                    || normalized_output[pos - 1].is_ascii_whitespace()
+                    || normalized_output[pos - 1] == b'"'
+                    || normalized_output[pos - 1] == b'<';
+
+                if is_boundary {
+                    matches.push((pos, needle.len(), idx));
+                }
             }
         }
     }
@@ -1152,6 +1169,24 @@ pub fn strip_basedirs<'a>(preprocessor_output: &'a [u8], basedirs: &[Vec<u8>]) -
     result.extend_from_slice(&preprocessor_output[current_pos..]);
 
     Cow::Owned(result)
+}
+
+/// Double every `/` in a normalized path.
+///
+/// Paths inside preprocessor output are C string literals, so on Windows
+/// their backslash separators are escaped (`\\`). After normalize_win_path
+/// each backslash becomes a `/`, i.e. every escaped separator ends up as
+/// `//`. This produces the matching variant of a basedir for such paths.
+#[cfg(target_os = "windows")]
+fn double_path_separators(path: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(path.len() * 2);
+    for &b in path {
+        out.push(b);
+        if b == b'/' {
+            out.push(b'/');
+        }
+    }
+    out
 }
 
 /// Normalize path for case-insensitive comparison.
@@ -1703,6 +1738,63 @@ mod tests {
         assert_eq!(
             &*output, expected,
             "Failed to strip reverse mixed slash path"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_strip_basedir_windows_escaped_backslashes() {
+        // MSVC (cl -E) and clang on Windows quote paths in #line directives /
+        // GNU linemarkers as C string literals, escaping every backslash:
+        //     #line 1 "C:\\Users\\test\\project\\src\\main.c"
+        // normalize_win_path converts each '\' to '/', so each escaped
+        // separator becomes a DOUBLE forward slash ("c://users//...") and must
+        // still match the basedir (normalized with single slashes).
+        let basedir = b"c:/users/test/project/".to_vec();
+        let input = b"#line 1 \"C:\\\\Users\\\\test\\\\project\\\\src\\\\main.c\"";
+        let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
+        let expected = b"#line 1 \"src\\\\main.c\"";
+        assert_eq!(
+            &*output,
+            &expected[..],
+            "Failed to strip basedir from path with escaped backslashes"
+        );
+
+        // GNU-style linemarker as emitted by clang on Windows
+        let input = b"# 1 \"C:\\\\Users\\\\test\\\\project\\\\include\\\\header.h\" 1\nint x;";
+        let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
+        let expected = b"# 1 \"include\\\\header.h\" 1\nint x;";
+        assert_eq!(
+            &*output,
+            &expected[..],
+            "Failed to strip basedir from GNU linemarker with escaped backslashes"
+        );
+
+        // Multiple occurrences, plain and escaped forms mixed in one output
+        let input =
+            b"# 1 \"C:\\\\Users\\\\test\\\\project\\\\a.c\"\n# 2 \"C:/Users/test/project/b.h\"";
+        let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
+        let expected = b"# 1 \"a.c\"\n# 2 \"b.h\"";
+        assert_eq!(
+            &*output,
+            &expected[..],
+            "Failed to strip both escaped and plain forms of the basedir"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_strip_basedir_windows_escaped_unc() {
+        // UNC basedir: //server/share/dir/ appears as \\\\server\\share\\dir\\
+        // in escaped form
+        let basedir = b"//server/share/project/".to_vec();
+        let input = b"#line 1 \"\\\\\\\\server\\\\share\\\\project\\\\src\\\\main.c\"";
+        let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
+        let expected = b"#line 1 \"src\\\\main.c\"";
+        assert_eq!(
+            &*output,
+            &expected[..],
+            "Failed to strip escaped UNC basedir"
         );
     }
 
