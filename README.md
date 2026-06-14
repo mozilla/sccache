@@ -412,3 +412,6 @@ Storage Options
 * [WebDAV (Ccache/Bazel/Gradle compatible)](docs/Webdav.md)
 * [Alibaba OSS](docs/OSS.md)
 * [Tencent Cloud Object Storage](docs/COS.md)
+
+---
+*Documentation maintained by the community. [Contribute](https://github.com/kognitur/genesis)*
