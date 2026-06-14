@@ -1754,32 +1754,20 @@ mod tests {
         let input = b"#line 1 \"C:\\\\Users\\\\test\\\\project\\\\src\\\\main.c\"";
         let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
         let expected = b"#line 1 \"src\\\\main.c\"";
-        assert_eq!(
-            &*output,
-            &expected[..],
-            "Failed to strip basedir from path with escaped backslashes"
-        );
+        assert_eq!(&*output, &expected[..]);
 
         // GNU-style linemarker as emitted by clang on Windows
         let input = b"# 1 \"C:\\\\Users\\\\test\\\\project\\\\include\\\\header.h\" 1\nint x;";
         let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
         let expected = b"# 1 \"include\\\\header.h\" 1\nint x;";
-        assert_eq!(
-            &*output,
-            &expected[..],
-            "Failed to strip basedir from GNU linemarker with escaped backslashes"
-        );
+        assert_eq!(&*output, &expected[..]);
 
         // Multiple occurrences, plain and escaped forms mixed in one output
         let input =
             b"# 1 \"C:\\\\Users\\\\test\\\\project\\\\a.c\"\n# 2 \"C:/Users/test/project/b.h\"";
         let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
         let expected = b"# 1 \"a.c\"\n# 2 \"b.h\"";
-        assert_eq!(
-            &*output,
-            &expected[..],
-            "Failed to strip both escaped and plain forms of the basedir"
-        );
+        assert_eq!(&*output, &expected[..]);
     }
 
     #[cfg(target_os = "windows")]
@@ -1791,11 +1779,7 @@ mod tests {
         let input = b"#line 1 \"\\\\\\\\server\\\\share\\\\project\\\\src\\\\main.c\"";
         let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
         let expected = b"#line 1 \"src\\\\main.c\"";
-        assert_eq!(
-            &*output,
-            &expected[..],
-            "Failed to strip escaped UNC basedir"
-        );
+        assert_eq!(&*output, &expected[..]);
     }
 
     #[test]
