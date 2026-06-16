@@ -75,6 +75,22 @@ pub trait Storage: Send + Sync {
     /// finished.
     async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration>;
 
+    /// Store freshly produced compiler `objects` (plus `stdout`/`stderr`) under `key`. The default
+    /// zips+zstds them via `put`; the disk cache overrides it to reflink originals for `file_clone`.
+    async fn put_objects(
+        &self,
+        key: &str,
+        objects: Vec<FileObjectSource>,
+        stdout: Vec<u8>,
+        stderr: Vec<u8>,
+        pool: &tokio::runtime::Handle,
+    ) -> Result<Duration> {
+        let mut entry = CacheWrite::from_objects(objects, pool).await?;
+        entry.put_stdout(&stdout)?;
+        entry.put_stderr(&stderr)?;
+        self.put(key, entry).await
+    }
+
     /// Get raw serialized cache entry bytes by `key` (for multi-level backfill).
     /// Returns `None` if the entry is not found, or if the implementation doesn't support raw access.
     /// This is used by multi-level caches to backfill faster levels.
@@ -589,6 +605,7 @@ pub fn storage_from_config(
         preprocessor_cache_mode_config,
         rw_mode,
         config.basedirs.clone(),
+        config.fallback_cache.file_clone,
     )))
 }
 

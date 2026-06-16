@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cache::{Cache, CacheWrite, DecompressionFailure, FileObjectSource, Storage};
+use crate::cache::{Cache, DecompressionFailure, ExtractionStats, FileObjectSource, Storage};
 use crate::compiler::args::*;
 use crate::compiler::c::{CCompiler, CCompilerKind};
 use crate::compiler::cicc::Cicc;
@@ -601,6 +601,23 @@ where
             })
             .collect::<Vec<_>>();
 
+        // In locally-preprocessed mode the dependency file ("d") was already produced
+        // locally, so don't overwrite it from the cache.
+        fn filtered_restore_outputs(
+            locally_preprocessed: bool,
+            outputs: &[FileObjectSource],
+        ) -> Vec<FileObjectSource> {
+            if locally_preprocessed {
+                outputs
+                    .iter()
+                    .filter(|fobj_source| fobj_source.key != "d")
+                    .cloned()
+                    .collect()
+            } else {
+                outputs.to_vec()
+            }
+        }
+
         let lookup = match cache_status.await {
             (Ok(Ok(Cache::Hit(mut entry))), duration) => {
                 debug!(
@@ -614,30 +631,14 @@ where
                     stderr: entry.get_stderr(),
                 };
 
-                let filtered_outputs = if compilation.is_locally_preprocessed() {
-                    // In this mode, cache entries are exclusively distinguished by their preprocessed
-                    // source contents. But two files may differ in their names and / or the names of
-                    // included files while still producing the same preprocessed output, so they get the
-                    // same cache entry. That entry will have wrong (file names) dependency informaton in
-                    // the dependency file except for the compilation unit that originally produced it.
-                    // Since we did local preprocessing, that should already have produced the dependency
-                    // file - just leave that one alone and don't overwrite it from the cache.
-                    outputs
-                        .iter()
-                        .filter(|fobj_source| fobj_source.key != "d") // key "d" means dependency file
-                        .cloned()
-                        .collect()
-                } else {
-                    // In this mode, no local preprocessing was done, so the dependency file (if any)
-                    // has not been created. But in this mode, the cache key also includes a lot of
-                    // information about filenames (and less relevant here, file hashes), so it *is* safe
-                    // to restore the dependency file from the cache.
-                    outputs.clone()
-                };
+                let filtered_outputs =
+                    filtered_restore_outputs(compilation.is_locally_preprocessed(), &outputs);
 
-                let hit = CompileResult::CacheHit(duration);
                 match entry.extract_objects(filtered_outputs, &pool).await {
-                    Ok(()) => Ok(CacheLookupResult::Success(hit, output)),
+                    Ok(stats) => Ok(CacheLookupResult::Success(
+                        CompileResult::CacheHit(duration, stats),
+                        output,
+                    )),
                     Err(e) => {
                         if e.downcast_ref::<DecompressionFailure>().is_some() {
                             debug!("[{}]: Failed to decompress object", out_pretty);
@@ -645,6 +646,35 @@ where
                         } else {
                             Err(e)
                         }
+                    }
+                }
+            }
+            (Ok(Ok(Cache::UncompressedHit(entry))), duration) => {
+                debug!(
+                    "[{}]: Cache hit (uncompressed) in {}",
+                    out_pretty,
+                    fmt_duration_as_secs(&duration)
+                );
+                let output = process::Output {
+                    status: exit_status(0),
+                    stdout: entry.get_stdout(),
+                    stderr: entry.get_stderr(),
+                };
+
+                let filtered_outputs =
+                    filtered_restore_outputs(compilation.is_locally_preprocessed(), &outputs);
+
+                match entry.extract_objects(filtered_outputs, &pool).await {
+                    Ok(stats) => Ok(CacheLookupResult::Success(
+                        CompileResult::CacheHit(duration, stats),
+                        output,
+                    )),
+                    Err(e) => {
+                        debug!(
+                            "[{}]: Failed to restore uncompressed object: {:?}",
+                            out_pretty, e
+                        );
+                        Ok(CacheLookupResult::Miss(MissType::CacheReadError))
                     }
                 }
             }
@@ -773,30 +803,30 @@ where
                     out_pretty,
                     fmt_duration_as_secs(&duration_compilation)
                 );
-                let start_create_artifact = Instant::now();
-                let mut entry = CacheWrite::from_objects(outputs, &pool)
-                    .await
-                    .context("failed to zip up compiler outputs")?;
 
-                entry.put_stdout(&compiler_result.stdout)?;
-                entry.put_stderr(&compiler_result.stderr)?;
-                debug!(
-                    "[{}]: Created cache artifact in {}",
-                    out_pretty,
-                    fmt_duration_as_secs(&start_create_artifact.elapsed())
-                );
-
+                // The compiler outputs still exist on disk; hand them to the backend directly so the
+                // disk cache can reflink them when `file_clone` is enabled (other backends zip+zstd).
+                let stdout = compiler_result.stdout.clone();
+                let stderr = compiler_result.stderr.clone();
                 let out_pretty2 = out_pretty.clone();
                 // Try to finish storing the newly-written cache
                 // entry. We'll get the result back elsewhere.
                 let future = async move {
                     let start = Instant::now();
-                    match storage.put(&key, entry).await {
+                    match storage
+                        .put_objects(&key, outputs, stdout, stderr, &pool)
+                        .await
+                    {
                         Ok(_) => {
-                            debug!("[{}]: Stored in cache successfully!", out_pretty2);
+                            let elapsed = start.elapsed();
+                            debug!(
+                                "[{}]: Stored in cache successfully in {}",
+                                out_pretty2,
+                                fmt_duration_as_secs(&elapsed)
+                            );
                             Ok(CacheWriteInfo {
                                 object_file_pretty: out_pretty2,
-                                duration: start.elapsed(),
+                                duration: elapsed,
                             })
                         }
                         Err(e) => Err(e),
@@ -1220,8 +1250,8 @@ pub struct CacheWriteInfo {
 pub enum CompileResult {
     /// An error made the compilation not possible.
     Error,
-    /// Result was found in cache.
-    CacheHit(Duration),
+    /// Result was found in cache, with counts of how objects were restored (reflinked vs copied).
+    CacheHit(Duration, ExtractionStats),
     /// Result was not found in cache.
     ///
     /// The `CacheWriteFuture` will resolve when the result is finished
@@ -1254,7 +1284,7 @@ impl fmt::Debug for CompileResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             CompileResult::Error => write!(f, "CompileResult::Error"),
-            CompileResult::CacheHit(ref d) => write!(f, "CompileResult::CacheHit({:?})", d),
+            CompileResult::CacheHit(ref d, _) => write!(f, "CompileResult::CacheHit({:?})", d),
             CompileResult::CacheMiss(ref m, ref dt, ref d, _) => {
                 write!(f, "CompileResult::CacheMiss({:?}, {:?}, {:?}, _)", d, m, dt)
             }
@@ -1276,7 +1306,7 @@ impl PartialEq<CompileResult> for CompileResult {
     fn eq(&self, other: &CompileResult) -> bool {
         match (self, other) {
             (&CompileResult::Error, &CompileResult::Error) => true,
-            (&CompileResult::CacheHit(_), &CompileResult::CacheHit(_)) => true,
+            (&CompileResult::CacheHit(..), &CompileResult::CacheHit(..)) => true,
             (CompileResult::CacheMiss(m, dt, _, _), CompileResult::CacheMiss(n, dt2, _, _)) => {
                 m == n && dt == dt2
             }
@@ -1896,7 +1926,7 @@ where
 mod test {
     use super::*;
     use crate::cache::disk::DiskCache;
-    use crate::cache::{CacheMode, CacheRead};
+    use crate::cache::{CacheMode, CacheRead, CacheWrite};
     use crate::config::PreprocessorCacheModeConfig;
     use crate::mock_command::*;
     use crate::test::mock_storage::MockStorage;
@@ -2556,6 +2586,7 @@ LLVM version: 6.0",
             },
             CacheMode::ReadWrite,
             vec![],
+            false,
         );
         // Write a dummy input file so the preprocessor cache mode can work
         std::fs::write(f.tempdir.path().join("foo.c"), "whatever").unwrap();
@@ -2661,7 +2692,10 @@ LLVM version: 6.0",
             .unwrap();
         // Ensure that the object file was created.
         assert!(fs::metadata(&obj).map(|m| m.len() > 0).unwrap());
-        assert_eq!(CompileResult::CacheHit(Duration::new(0, 0)), cached);
+        assert_eq!(
+            CompileResult::CacheHit(Duration::new(0, 0), ExtractionStats::default()),
+            cached
+        );
         assert_eq!(exit_status(0), res.status);
         assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
         assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
@@ -2687,6 +2721,7 @@ LLVM version: 6.0",
             },
             CacheMode::ReadWrite,
             vec![],
+            false,
         );
         // Write a dummy input file so the preprocessor cache mode can work
         std::fs::write(f.tempdir.path().join("foo.c"), "whatever").unwrap();
@@ -2791,7 +2826,10 @@ LLVM version: 6.0",
             .unwrap();
         // Ensure that the object file was created.
         assert!(fs::metadata(&obj).map(|m| m.len() > 0).unwrap());
-        assert_eq!(CompileResult::CacheHit(Duration::new(0, 0)), cached);
+        assert_eq!(
+            CompileResult::CacheHit(Duration::new(0, 0), ExtractionStats::default()),
+            cached
+        );
         assert_eq!(exit_status(0), res.status);
         assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
         assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
@@ -2965,11 +3003,95 @@ LLVM version: 6.0",
             ))
             .unwrap();
         match cached {
-            CompileResult::CacheHit(duration) => {
+            CompileResult::CacheHit(duration, _) => {
                 assert!(duration >= storage_delay);
             }
             _ => panic!("Unexpected compile result: {:?}", cached),
         }
+    }
+
+    #[test_case(true ; "with preprocessor cache")]
+    #[test_case(false ; "without preprocessor cache")]
+    fn test_compiler_get_cached_or_compile_uncompressed_hit(preprocessor_cache_mode: bool) {
+        drop(env_logger::try_init());
+        let creator = new_creator();
+        let f = TestFixture::new();
+        let gcc = f.mk_bin("gcc").unwrap();
+        let runtime = Runtime::new().unwrap();
+        let pool = runtime.handle().clone();
+        std::fs::write(f.tempdir.path().join("foo.c"), "whatever").unwrap();
+        let storage = Arc::new(MockStorage::new(None, preprocessor_cache_mode));
+        let service = server::SccacheService::mock_with_storage(storage.clone(), pool.clone());
+        next_command(
+            &creator,
+            Ok(MockChild::new(exit_status(0), "compiler_id=gcc", "")),
+        );
+        let c = get_compiler_info(
+            creator.clone(),
+            &gcc,
+            f.tempdir.path(),
+            &[],
+            &[],
+            &pool,
+            None,
+        )
+        .wait()
+        .unwrap()
+        .0;
+        next_command(
+            &creator,
+            Ok(MockChild::new(exit_status(0), "preprocessor output", "")),
+        );
+
+        const COMPILER_STDOUT: &[u8] = b"uncompressed stdout";
+        const COMPILER_STDERR: &[u8] = b"uncompressed stderr";
+        let obj_contents: &[u8] = &[9, 8, 7, 6, 5];
+
+        let entry_dir = f.tempdir.path().join("uentry");
+        std::fs::create_dir_all(entry_dir.join(crate::cache::cache_io::OBJECTS_SUBDIR)).unwrap();
+        std::fs::write(
+            entry_dir
+                .join(crate::cache::cache_io::OBJECTS_SUBDIR)
+                .join("obj"),
+            obj_contents,
+        )
+        .unwrap();
+        std::fs::write(entry_dir.join("stdout"), COMPILER_STDOUT).unwrap();
+        std::fs::write(entry_dir.join("stderr"), COMPILER_STDERR).unwrap();
+        std::fs::write(entry_dir.join(crate::lru_disk_cache::DIR_ENTRY_MARKER), b"").unwrap();
+        let entry = crate::cache::UncompressedCacheEntry::new(entry_dir);
+
+        let cwd = f.tempdir.path();
+        let obj = cwd.join("foo.o");
+        let arguments = ovec!["-c", "foo.c", "-o", "foo.o"];
+        let mut hasher = match c.parse_arguments(&arguments, ".".as_ref(), &[]) {
+            CompilerArguments::Ok(h) => h,
+            o => panic!("Bad result from parse_arguments: {:?}", o),
+        };
+        storage.next_get(Ok(Cache::UncompressedHit(entry)));
+        let (cached, res) = runtime
+            .block_on(hasher.get_cached_or_compile(
+                &service,
+                None,
+                creator,
+                storage,
+                arguments,
+                cwd.to_path_buf(),
+                vec![],
+                CacheControl::Default,
+                pool,
+            ))
+            .unwrap();
+        match cached {
+            CompileResult::CacheHit(_, stats) => {
+                assert_eq!(stats.objects_reflinked + stats.objects_copied, 1);
+            }
+            _ => panic!("Unexpected compile result: {:?}", cached),
+        }
+        assert_eq!(exit_status(0), res.status);
+        assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
+        assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
+        assert_eq!(fs::read(&obj).unwrap(), obj_contents);
     }
 
     #[test_case(true ; "with preprocessor cache")]
@@ -2991,6 +3113,7 @@ LLVM version: 6.0",
             },
             CacheMode::ReadWrite,
             vec![],
+            false,
         );
         let storage = Arc::new(storage);
         let service = server::SccacheService::mock_with_storage(storage.clone(), pool.clone());
@@ -3121,6 +3244,7 @@ LLVM version: 6.0",
             },
             CacheMode::ReadWrite,
             vec![],
+            false,
         );
         let storage = Arc::new(storage);
         let service = server::SccacheService::mock_with_storage(storage.clone(), pool.clone());
@@ -3220,6 +3344,7 @@ LLVM version: 6.0",
             },
             CacheMode::ReadWrite,
             vec![],
+            false,
         );
         let storage = Arc::new(storage);
         // Pretend to be GCC.

@@ -298,6 +298,9 @@ pub struct DiskCacheConfig {
     pub size: u64,
     pub preprocessor_cache_mode: PreprocessorCacheModeConfig,
     pub rw_mode: CacheModeConfig,
+    /// Store cache entries uncompressed and restore them via filesystem reflinks (copy-on-write) on
+    /// CoW filesystems, falling back to copies elsewhere. Defaults to `false`.
+    pub file_clone: bool,
 }
 
 impl Default for DiskCacheConfig {
@@ -307,6 +310,7 @@ impl Default for DiskCacheConfig {
             size: default_disk_cache_size(),
             preprocessor_cache_mode: PreprocessorCacheModeConfig::activated(),
             rw_mode: CacheModeConfig::ReadWrite,
+            file_clone: false,
         }
     }
 }
@@ -1119,16 +1123,20 @@ fn config_from_env() -> Result<EnvConfig> {
         _ => (CacheModeConfig::ReadWrite, false),
     };
 
+    let file_clone_overridden = bool_from_env_var("SCCACHE_FILE_CLONE")?;
+
     let any_overridden = disk_dir.is_some()
         || disk_sz.is_some()
         || preprocessor_mode_overridden
-        || disk_rw_mode_overridden;
+        || disk_rw_mode_overridden
+        || file_clone_overridden.is_some();
     let disk = if any_overridden {
         Some(DiskCacheConfig {
             dir: disk_dir.unwrap_or_else(default_disk_cache_dir),
             size: disk_sz.unwrap_or_else(default_disk_cache_size),
             preprocessor_cache_mode: preprocessor_mode_config,
             rw_mode: disk_rw_mode,
+            file_clone: file_clone_overridden.unwrap_or(false),
         })
     } else {
         None
@@ -1569,6 +1577,7 @@ fn config_overrides() {
                 size: 5,
                 preprocessor_cache_mode: Default::default(),
                 rw_mode: CacheModeConfig::ReadWrite,
+                file_clone: false,
             }),
             redis: Some(RedisCacheConfig {
                 endpoint: Some("myotherredisurl".to_owned()),
@@ -1591,6 +1600,7 @@ fn config_overrides() {
                 size: 15,
                 preprocessor_cache_mode: Default::default(),
                 rw_mode: CacheModeConfig::ReadWrite,
+                file_clone: false,
             }),
             memcached: Some(MemcachedCacheConfig {
                 url: "memurl".to_owned(),
@@ -1634,6 +1644,7 @@ fn config_overrides() {
                     size: 5,
                     preprocessor_cache_mode: Default::default(),
                     rw_mode: CacheModeConfig::ReadWrite,
+                    file_clone: false,
                 }),
                 memcached: Some(MemcachedCacheConfig {
                     url: "memurl".to_owned(),
@@ -1657,6 +1668,7 @@ fn config_overrides() {
                 size: 5,
                 preprocessor_cache_mode: Default::default(),
                 rw_mode: CacheModeConfig::ReadWrite,
+                file_clone: false,
             },
             dist: Default::default(),
             server_startup_timeout: None,
@@ -2208,6 +2220,72 @@ fn test_gcs_service_account() {
 }
 
 #[test]
+#[serial(config_from_env)]
+fn test_file_clone_from_env() {
+    temp_env::with_vars(
+        vec![
+            ("SCCACHE_FILE_CLONE", Some("true")),
+            ("SCCACHE_DIRECT", None::<&str>),
+        ],
+        || {
+            let disk = config_from_env()
+                .unwrap()
+                .cache
+                .disk
+                .expect("file_clone override should produce a disk config");
+            assert!(disk.file_clone);
+            assert_eq!(
+                disk.preprocessor_cache_mode,
+                PreprocessorCacheModeConfig::activated()
+            );
+        },
+    );
+}
+
+#[test]
+#[serial(config_from_env)]
+fn test_file_clone_from_env_disabled() {
+    temp_env::with_vars(
+        vec![
+            ("SCCACHE_FILE_CLONE", Some("false")),
+            ("SCCACHE_DIRECT", None::<&str>),
+        ],
+        || {
+            let disk = config_from_env()
+                .unwrap()
+                .cache
+                .disk
+                .expect("file_clone override should produce a disk config");
+            assert!(!disk.file_clone);
+        },
+    );
+}
+
+#[test]
+fn test_file_clone_toml_roundtrip() {
+    const CONFIG_STR: &str = r#"
+[cache.disk]
+dir = "/tmp/file_clone_cache"
+size = 1024
+file_clone = true
+"#;
+    let file_config: FileConfig = toml::from_str(CONFIG_STR).expect("Is valid toml.");
+    let disk = file_config.cache.disk.expect("disk config present");
+    assert!(disk.file_clone);
+    assert_eq!(
+        disk.preprocessor_cache_mode,
+        PreprocessorCacheModeConfig::activated()
+    );
+    assert_eq!(disk.rw_mode, CacheModeConfig::ReadWrite);
+
+    let serialized = toml::to_string(&disk).unwrap();
+    assert!(serialized.contains("file_clone = true"));
+
+    let without: DiskCacheConfig = toml::from_str("dir = \"/tmp/x\"\nsize = 1024\n").unwrap();
+    assert!(!without.file_clone);
+}
+
+#[test]
 fn full_toml_parse() {
     const CONFIG_STR: &str = r#"
 server_startup_timeout_ms = 10000
@@ -2304,6 +2382,7 @@ key_prefix = "cosprefix"
                     size: 7 * 1024 * 1024 * 1024,
                     preprocessor_cache_mode: PreprocessorCacheModeConfig::activated(),
                     rw_mode: CacheModeConfig::ReadWrite,
+                    file_clone: false,
                 }),
                 gcs: Some(GCSCacheConfig {
                     bucket: "bucket".to_owned(),
@@ -2446,7 +2525,7 @@ fn server_toml_parse() {
             },
             toolchain_cache_size: 10737418240,
         }
-    )
+    );
 }
 
 #[test]

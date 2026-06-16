@@ -1987,6 +1987,55 @@ fn test_sccache_command(preprocessor_cache_mode: bool) {
 
 #[test]
 #[serial]
+#[cfg(any(unix, target_env = "msvc"))]
+fn test_sccache_command_file_clone() {
+    let _ = env_logger::try_init();
+    let tempdir = tempfile::Builder::new()
+        .prefix("sccache_system_test_file_clone")
+        .tempdir()
+        .unwrap();
+    let compilers = find_compilers();
+    if compilers.is_empty() {
+        warn!("No compilers found, skipping test");
+    } else {
+        stop_local_daemon();
+        let mut sccache_cfg = sccache_client_cfg(tempdir.path(), false);
+        sccache_cfg
+            .cache
+            .disk
+            .as_mut()
+            .expect("disk cache config")
+            .file_clone = true;
+        write_json_cfg(tempdir.path(), "sccache-cfg.json", &sccache_cfg);
+        let sccache_cached_cfg_path = tempdir.path().join("sccache-cached-cfg");
+        trace!("start server");
+        start_local_daemon(
+            &tempdir.path().join("sccache-cfg.json"),
+            &sccache_cached_cfg_path,
+        );
+        for compiler in compilers {
+            // test_basic_compile hard-codes C-compiler stats assertions, so skip the C++ driver.
+            if compiler.name != "clang++" {
+                test_basic_compile(compiler, tempdir.path());
+                // A compressed hit would leave both counters at 0, so requiring sum >= 1
+                // proves the uncompressed file_clone restore path ran (reflink or copy).
+                get_stats(|info| {
+                    assert!(
+                        info.stats.objects_reflinked + info.stats.objects_copied_fallback >= 1,
+                        "file_clone hit must reflink or copy >= 1 object (reflinked={}, copied={})",
+                        info.stats.objects_reflinked,
+                        info.stats.objects_copied_fallback
+                    );
+                });
+                zero_stats();
+            }
+        }
+        stop_local_daemon();
+    }
+}
+
+#[test]
+#[serial]
 fn test_stats_no_server() {
     // Ensure there's no existing sccache server running.
     stop_local_daemon();

@@ -6,6 +6,12 @@ The default cache size is 10 gigabytes. To change this, set `SCCACHE_CACHE_SIZE`
 
 The local storage only supports a single sccache server at a time. Multiple concurrent servers will race and cause spurious build failures.
 
+## File clone (reflink / copy-on-write) mode
+
+By default the local cache stores each entry as a compressed (ZIP-of-zstd) file. Setting `file_clone = true` in `[cache.disk]` (or `SCCACHE_FILE_CLONE=true`) instead stores entries **uncompressed** and restores them with filesystem **reflinks** (copy-on-write). On a CoW filesystem (Btrfs, XFS with reflink, APFS, ReFS) this makes cache writes and cache hits near-instant and lets the cached artifacts share disk blocks with your build tree, so the cache adds almost no extra disk usage.
+
+For the full disk/speed benefit, the cache directory **and** the build directory must live on the **same** copy-on-write filesystem. On other filesystems `file_clone` still works (no decompression on read) but falls back to plain copies, which use the normal amount of disk. See [the file_clone doc](FileClone.md) for full details, including how to verify reflinks happened via `sccache --show-stats`.
+
 ## Preprocessor cache mode
 
 This is inspired by [ccache's direct mode](https://ccache.dev/manual/3.7.9.html#_the_direct_mode) and works roughly the same.
