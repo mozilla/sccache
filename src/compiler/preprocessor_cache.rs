@@ -254,7 +254,11 @@ impl PreprocessorCacheEntry {
 
             if config.ignore_time_macros {
                 match Digest::reader_sync(file) {
-                    Ok(new_digest) => return include.digest == new_digest,
+                    Ok(new_digest) => {
+                        if include.digest != new_digest {
+                            return false;
+                        }
+                    }
                     Err(e) => {
                         debug!(
                             "{} is in a preprocessor cache entry but can't be read ({})",
@@ -637,6 +641,54 @@ mod test {
         assert!(!finder.found_time());
         assert!(!finder.found_timestamp());
         assert!(!finder.found_date());
+    }
+
+    #[test]
+    fn test_preprocessor_cache_result_checks_all_includes_when_ignoring_time_macros() {
+        use std::fs;
+
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let first_path = dir.path().join("first.h");
+        let second_path = dir.path().join("second.h");
+        let first_contents = b"first\n";
+        let second_contents = b"old2\n";
+
+        fs::write(&first_path, first_contents).unwrap();
+        fs::write(&second_path, second_contents).unwrap();
+
+        let mut includes = vec![
+            IncludeEntry {
+                path: first_path.into_os_string(),
+                digest: Digest::reader_sync(first_contents.as_slice()).unwrap(),
+                file_size: first_contents.len() as u64,
+                mtime: None,
+                ctime: None,
+            },
+            IncludeEntry {
+                path: second_path.clone().into_os_string(),
+                digest: Digest::reader_sync(second_contents.as_slice()).unwrap(),
+                file_size: second_contents.len() as u64,
+                mtime: None,
+                ctime: None,
+            },
+        ];
+
+        fs::write(second_path, b"new2\n").unwrap();
+
+        let config = PreprocessorCacheModeConfig {
+            ignore_time_macros: true,
+            ..PreprocessorCacheModeConfig::activated()
+        };
+        let mut updated = false;
+
+        assert!(!PreprocessorCacheEntry::result_matches(
+            "result-digest",
+            &mut includes,
+            config,
+            &mut updated
+        ));
     }
 
     #[test]
