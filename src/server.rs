@@ -92,6 +92,24 @@ pub enum ServerStartup {
     Err { reason: String },
 }
 
+/// Validate that all output paths are absolute and contain no `..` components.
+fn validate_output_paths(paths: &[crate::cache::FileObjectSource]) -> Result<()> {
+    for fos in paths {
+        if !fos.path.is_absolute() {
+            anyhow::bail!("output path must be absolute, got: {}", fos.path.display());
+        }
+        for component in fos.path.components() {
+            if matches!(component, std::path::Component::ParentDir) {
+                anyhow::bail!(
+                    "output path must not contain '..' components, got: {}",
+                    fos.path.display()
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Get the time the server should idle for before shutting down, in seconds.
 fn get_idle_timeout() -> u64 {
     // A value of 0 disables idle shutdown entirely.
@@ -898,6 +916,14 @@ where
                         Message::WithoutBody(Response::ShuttingDown(Box::new(info)))
                     })
                 }
+                Request::CacheGet(req) => {
+                    debug!("handle_client: cache_get");
+                    me.handle_cache_get(req).await
+                }
+                Request::CachePut(req) => {
+                    debug!("handle_client: cache_put");
+                    me.handle_cache_put(req).await
+                }
             }
         })
     }
@@ -995,13 +1021,22 @@ where
     where
         T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
+        // Use a generous default frame-length limit (512 MB) so that large cache
+        // entries (e.g. Rust rlib files with embedded bitcode and debug info) can be
+        // transferred over the IPC channel in client-side compilation mode, while
+        // still guarding against OOM from corrupted messages.
+        // SCCACHE_MAX_FRAME_LENGTH overrides this value entirely.
+        const DEFAULT_MAX_FRAME_LENGTH: usize = 512 * 1024 * 1024; // 512 MB
         let mut builder = length_delimited::Builder::new();
         if let Ok(max_frame_length_str) = env::var("SCCACHE_MAX_FRAME_LENGTH") {
             if let Ok(max_frame_length) = max_frame_length_str.parse::<usize>() {
                 builder.max_frame_length(max_frame_length);
             } else {
                 warn!("Content of SCCACHE_MAX_FRAME_LENGTH is not a valid number, using default");
+                builder.max_frame_length(DEFAULT_MAX_FRAME_LENGTH);
             }
+        } else {
+            builder.max_frame_length(DEFAULT_MAX_FRAME_LENGTH);
         }
         let io = builder.new_framed(socket);
 
@@ -1051,6 +1086,132 @@ where
     /// Zero stats about the cache.
     async fn zero_stats(&self) {
         *self.stats.lock().await = ServerStats::default();
+    }
+
+    /// Handle a cache get request from a client.
+    ///
+    /// On a hit the server extracts the artifacts directly to the paths
+    /// specified by the client (both share the same filesystem), so no
+    /// large data has to be transferred over the IPC channel.
+    ///
+    /// Output paths are validated to be absolute and free of `..` components
+    /// before any filesystem access.
+    async fn handle_cache_get(
+        &self,
+        req: crate::protocol::CacheGetRequest,
+    ) -> Result<SccacheResponse> {
+        use crate::cache::Cache;
+        use crate::protocol::{CacheGetResponse, Response};
+
+        if let Err(e) = validate_output_paths(&req.output_paths) {
+            warn!("CacheGet({}): {e:#}", req.key);
+            return Ok(Message::WithoutBody(Response::CacheGet(
+                CacheGetResponse::Error(format!("invalid output paths: {e:#}")),
+            )));
+        }
+
+        match self.storage.get(&req.key).await {
+            Ok(Cache::Hit(mut cache_read)) => {
+                // Read stdout/stderr before consuming the entry.
+                let stdout = cache_read.get_stdout();
+                let stderr = cache_read.get_stderr();
+                // Extract compiled artifacts directly to disk – no IPC bulk transfer.
+                match cache_read
+                    .extract_objects(req.output_paths.clone(), &self.rt)
+                    .await
+                {
+                    Ok(()) => {
+                        self.stats.lock().await.client_side_cache_hits += 1;
+                        Ok(Message::WithoutBody(Response::CacheGet(
+                            CacheGetResponse::Hit { stdout, stderr },
+                        )))
+                    }
+                    Err(e) => {
+                        // Best-effort cleanup: remove any partially-extracted files.
+                        for fos in &req.output_paths {
+                            let _ = std::fs::remove_file(&fos.path);
+                        }
+                        warn!(
+                            "CacheGet({}): failed to extract cache entry: {e:#}",
+                            req.key
+                        );
+                        self.stats.lock().await.client_side_cache_errors += 1;
+                        Ok(Message::WithoutBody(Response::CacheGet(
+                            CacheGetResponse::Error(format!(
+                                "key={}: failed to extract cache entry: {e:#}",
+                                req.key
+                            )),
+                        )))
+                    }
+                }
+            }
+            Ok(Cache::Miss | Cache::None | Cache::Recache) => {
+                self.stats.lock().await.client_side_cache_misses += 1;
+                Ok(Message::WithoutBody(Response::CacheGet(
+                    CacheGetResponse::Miss,
+                )))
+            }
+            Err(e) => {
+                warn!("CacheGet({}): storage error: {e:#}", req.key);
+                self.stats.lock().await.client_side_cache_errors += 1;
+                Ok(Message::WithoutBody(Response::CacheGet(
+                    CacheGetResponse::Error(format!("key={}: storage error: {e:#}", req.key)),
+                )))
+            }
+        }
+    }
+
+    /// Handle a cache put request from a client.
+    ///
+    /// The server reads the output artifacts from disk directly (shared
+    /// filesystem), packs them into a cache entry, and stores it.
+    ///
+    /// Output paths are validated to be absolute and free of `..` components
+    /// before any filesystem access.
+    async fn handle_cache_put(
+        &self,
+        req: crate::protocol::CachePutRequest,
+    ) -> Result<SccacheResponse> {
+        use crate::cache::CacheWrite;
+        use crate::protocol::{CachePutResponse, Response};
+
+        if let Err(e) = validate_output_paths(&req.output_paths) {
+            warn!("CachePut({}): {e:#}", req.key);
+            return Ok(Message::WithoutBody(Response::CachePut(
+                CachePutResponse::Error(format!("invalid output paths: {e:#}")),
+            )));
+        }
+
+        let pool = self.rt.clone();
+        let mut entry = match CacheWrite::from_objects(req.output_paths, &pool).await {
+            Ok(e) => e,
+            Err(e) => {
+                let msg = format!("key={}: failed to read output files: {e:#}", req.key);
+                warn!("CachePut({}): {}", req.key, msg);
+                return Ok(Message::WithoutBody(Response::CachePut(
+                    CachePutResponse::Error(msg),
+                )));
+            }
+        };
+        let _ = entry.put_stdout(&req.stdout);
+        let _ = entry.put_stderr(&req.stderr);
+
+        match self.storage.put(&req.key, entry).await {
+            Ok(_duration) => {
+                let mut stats = self.stats.lock().await;
+                stats.cache_writes += 1;
+                Ok(Message::WithoutBody(Response::CachePut(
+                    CachePutResponse::Success,
+                )))
+            }
+            Err(e) => {
+                let msg = format!("key={}: failed to store to backend: {e:#}", req.key);
+                warn!("CachePut({}): {}", req.key, msg);
+                Ok(Message::WithoutBody(Response::CachePut(
+                    CachePutResponse::Error(msg),
+                )))
+            }
+        }
     }
 
     /// Handle a compile request from a client.
@@ -1627,6 +1788,12 @@ pub struct ServerStats {
     pub dist_compiles: HashMap<String, usize>,
     /// The count of compilations that were distributed but failed and had to be re-run locally
     pub dist_errors: u64,
+    /// The count of client-side cache hits (via CacheGet).
+    pub client_side_cache_hits: u64,
+    /// The count of client-side cache misses (via CacheGet).
+    pub client_side_cache_misses: u64,
+    /// The count of client-side cache errors (via CacheGet).
+    pub client_side_cache_errors: u64,
     /// Multi-level cache statistics (if multi-level caching is enabled)
     pub multi_level: Option<crate::cache::multilevel::MultiLevelStats>,
 }
@@ -1678,6 +1845,9 @@ impl Default for ServerStats {
             not_cached: HashMap::new(),
             dist_compiles: HashMap::new(),
             dist_errors: u64::default(),
+            client_side_cache_hits: u64::default(),
+            client_side_cache_misses: u64::default(),
+            client_side_cache_errors: u64::default(),
             multi_level: None,
         }
     }
@@ -1768,6 +1938,21 @@ impl ServerStats {
             set_lang_stat!(stats_vec, self.cache_errors, "Cache errors");
         }
 
+        set_stat!(
+            stats_vec,
+            self.client_side_cache_hits,
+            "Client-side cache hits"
+        );
+        set_stat!(
+            stats_vec,
+            self.client_side_cache_misses,
+            "Client-side cache misses"
+        );
+        set_stat!(
+            stats_vec,
+            self.client_side_cache_errors,
+            "Client-side cache errors"
+        );
         set_stat!(stats_vec, self.compilations, "Compilations");
         set_stat!(stats_vec, self.compile_fails, "Compilation failures");
 
@@ -2380,6 +2565,121 @@ mod tests {
         assert!(output.contains("Cache hits rate (c/c++ [clang])   100.00 %"));
         assert!(output.contains("Cache hits rate (cuda)              0.00 %"));
         assert!(output.contains("Cache hits rate (rust)             33.33 %"));
+    }
+
+    /// Return a cross-platform absolute path for use in tests.
+    fn abs_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(name)
+    }
+
+    /// Return an absolute path that contains a `..` component.
+    fn abs_path_with_dotdot() -> PathBuf {
+        // temp_dir is absolute on all platforms; appending `../x` keeps it absolute
+        // while introducing the forbidden component.
+        std::env::temp_dir().join("..").join("etc").join("passwd")
+    }
+
+    #[test]
+    fn test_validate_output_paths_absolute_ok() {
+        use crate::cache::FileObjectSource;
+        let paths = vec![FileObjectSource {
+            key: "obj".into(),
+            path: abs_path("file.o"),
+            optional: false,
+        }];
+        assert!(validate_output_paths(&paths).is_ok());
+    }
+
+    #[test]
+    fn test_validate_output_paths_relative_rejected() {
+        use crate::cache::FileObjectSource;
+        let paths = vec![FileObjectSource {
+            key: "obj".into(),
+            path: PathBuf::from("relative/file.o"),
+            optional: false,
+        }];
+        let err = validate_output_paths(&paths).unwrap_err();
+        assert!(
+            err.to_string().contains("must be absolute"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_output_paths_dotdot_rejected() {
+        use crate::cache::FileObjectSource;
+        let paths = vec![FileObjectSource {
+            key: "obj".into(),
+            path: abs_path_with_dotdot(),
+            optional: false,
+        }];
+        let err = validate_output_paths(&paths).unwrap_err();
+        assert!(err.to_string().contains("'..'"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn test_validate_output_paths_empty_ok() {
+        assert!(validate_output_paths(&[]).is_ok());
+    }
+
+    #[test]
+    fn test_validate_output_paths_multiple() {
+        use crate::cache::FileObjectSource;
+        let paths = vec![
+            FileObjectSource {
+                key: "obj".into(),
+                path: abs_path("file.o"),
+                optional: false,
+            },
+            FileObjectSource {
+                key: "dwo".into(),
+                path: abs_path("file.dwo"),
+                optional: false,
+            },
+        ];
+        assert!(validate_output_paths(&paths).is_ok());
+
+        // Second path is relative
+        let paths = vec![
+            FileObjectSource {
+                key: "obj".into(),
+                path: abs_path("file.o"),
+                optional: false,
+            },
+            FileObjectSource {
+                key: "bad".into(),
+                path: PathBuf::from("relative.o"),
+                optional: false,
+            },
+        ];
+        assert!(validate_output_paths(&paths).is_err());
+    }
+
+    #[test]
+    fn test_print_client_side_stats() {
+        let stats = ServerStats {
+            client_side_cache_hits: 5,
+            client_side_cache_misses: 3,
+            client_side_cache_errors: 1,
+            ..Default::default()
+        };
+
+        let mut writer = StringWriter::new();
+        stats.print(&mut writer, false);
+
+        let output = writer.get_output();
+        assert!(
+            output.contains("Client-side cache hits"),
+            "missing client-side hits in output:\n{output}"
+        );
+        assert!(
+            output.contains("Client-side cache misses"),
+            "missing client-side misses in output:\n{output}"
+        );
+        assert!(
+            output.contains("Client-side cache errors"),
+            "missing client-side errors in output:\n{output}"
+        );
     }
 
     // Test that 2 servers with the same hits will always be printed in the same order.

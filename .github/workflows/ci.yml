@@ -44,6 +44,8 @@ jobs:
       - name: Clone repository
         uses: actions/checkout@v5
 
+      # TODO: restore `cargo test` once per-feature tests are compatible with
+      # both server-side and client-side compilation modes.
       - name: Check feature ${{ matrix.feature }}
         run: cargo check --no-default-features --features ${{ matrix.feature }}
 
@@ -79,6 +81,10 @@ jobs:
           - os: ubuntu-22.04
             rustc: stable
           - os: ubuntu-22.04
+            rustc: stable
+            extra_desc: client-side-mode
+            test_client_side: true
+          - os: ubuntu-22.04
             rustc: beta
           - os: ubuntu-22.04
             rustc: nightly
@@ -98,7 +104,14 @@ jobs:
             extra_desc: cuda12.8
           # # M1 CPU
           - os: macos-14
+          - os: macos-14
+            extra_desc: client-side-mode
+            test_client_side: true
           - os: macos-15-intel
+          - os: windows-2022
+            extra_desc: client-side-mode
+            test_client_side: true
+            no_coverage: true
           - os: windows-2022
             cuda: "12.8"
             # Oldest supported version, keep in sync with README.md
@@ -209,6 +222,7 @@ jobs:
           CARGO_INCREMENTAL: "0"
           RUSTC_WRAPPER: ""
           RUSTFLAGS: "-Cinstrument-coverage -Ccodegen-units=1 -Copt-level=0 -Coverflow-checks=off"
+          SCCACHE_CLIENT_SIDE_COMPILE: ${{ matrix.test_client_side && '1' || '0' }}
 
       - name: Upload failure
         if: failure()

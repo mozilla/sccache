@@ -13,34 +13,41 @@ use fs_err as fs;
 use helpers::{SCCACHE_BIN, SccacheTest};
 use predicates::prelude::*;
 use serial_test::serial;
+use std::ffi::OsString;
 use std::path::Path;
 use std::process::Command;
 
 #[macro_use]
 extern crate log;
 
+/// These tests check server-side stats (cache_hits/cache_misses), so client-side
+/// compilation must be disabled to ensure compilations go through the server.
+fn server_side_envs() -> Vec<(&'static str, OsString)> {
+    vec![("SCCACHE_CLIENT_SIDE_COMPILE", OsString::from("0"))]
+}
+
 #[test]
 #[serial]
 fn test_rust_cargo_check() -> Result<()> {
-    test_rust_cargo_cmd("check", SccacheTest::new(None)?)
+    test_rust_cargo_cmd("check", SccacheTest::new(Some(&server_side_envs()))?)
 }
 
 #[test]
 #[serial]
 fn test_rust_cargo_check_readonly() -> Result<()> {
-    test_rust_cargo_cmd_readonly("check", SccacheTest::new(None)?)
+    test_rust_cargo_cmd_readonly("check", SccacheTest::new(Some(&server_side_envs()))?)
 }
 
 #[test]
 #[serial]
 fn test_rust_cargo_build() -> Result<()> {
-    test_rust_cargo_cmd("build", SccacheTest::new(None)?)
+    test_rust_cargo_cmd("build", SccacheTest::new(Some(&server_side_envs()))?)
 }
 
 #[test]
 #[serial]
 fn test_rust_cargo_build_readonly() -> Result<()> {
-    test_rust_cargo_cmd_readonly("build", SccacheTest::new(None)?)
+    test_rust_cargo_cmd_readonly("build", SccacheTest::new(Some(&server_side_envs()))?)
 }
 
 #[test]
@@ -87,67 +94,43 @@ fn test_run_log() -> Result<()> {
 #[test]
 #[serial]
 fn test_rust_cargo_run_with_env_dep_parsing() -> Result<()> {
-    test_rust_cargo_env_dep(SccacheTest::new(None)?)
+    test_rust_cargo_env_dep(SccacheTest::new(Some(&server_side_envs()))?)
 }
 
 #[cfg(feature = "unstable")]
 #[test]
 #[serial]
 fn test_rust_cargo_check_nightly() -> Result<()> {
-    use std::ffi::OsString;
-
-    test_rust_cargo_cmd(
-        "check",
-        SccacheTest::new(Some(&[(
-            "RUSTFLAGS",
-            OsString::from("-Cprofile-generate=."),
-        )]))?,
-    )
+    let mut envs = server_side_envs();
+    envs.push(("RUSTFLAGS", OsString::from("-Cprofile-generate=.")));
+    test_rust_cargo_cmd("check", SccacheTest::new(Some(&envs))?)
 }
 
 #[cfg(feature = "unstable")]
 #[test]
 #[serial]
 fn test_rust_cargo_check_nightly_readonly() -> Result<()> {
-    use std::ffi::OsString;
-
-    test_rust_cargo_cmd_readonly(
-        "check",
-        SccacheTest::new(Some(&[(
-            "RUSTFLAGS",
-            OsString::from("-Cprofile-generate=."),
-        )]))?,
-    )
+    let mut envs = server_side_envs();
+    envs.push(("RUSTFLAGS", OsString::from("-Cprofile-generate=.")));
+    test_rust_cargo_cmd_readonly("check", SccacheTest::new(Some(&envs))?)
 }
 
 #[cfg(feature = "unstable")]
 #[test]
 #[serial]
 fn test_rust_cargo_build_nightly() -> Result<()> {
-    use std::ffi::OsString;
-
-    test_rust_cargo_cmd(
-        "build",
-        SccacheTest::new(Some(&[(
-            "RUSTFLAGS",
-            OsString::from("-Cprofile-generate=."),
-        )]))?,
-    )
+    let mut envs = server_side_envs();
+    envs.push(("RUSTFLAGS", OsString::from("-Cprofile-generate=.")));
+    test_rust_cargo_cmd("build", SccacheTest::new(Some(&envs))?)
 }
 
 #[cfg(feature = "unstable")]
 #[test]
 #[serial]
 fn test_rust_cargo_build_nightly_readonly() -> Result<()> {
-    use std::ffi::OsString;
-
-    test_rust_cargo_cmd_readonly(
-        "build",
-        SccacheTest::new(Some(&[(
-            "RUSTFLAGS",
-            OsString::from("-Cprofile-generate=."),
-        )]))?,
-    )
+    let mut envs = server_side_envs();
+    envs.push(("RUSTFLAGS", OsString::from("-Cprofile-generate=.")));
+    test_rust_cargo_cmd_readonly("build", SccacheTest::new(Some(&envs))?)
 }
 
 /// Test that building a simple Rust crate with cargo using sccache results in a cache hit
@@ -350,7 +333,7 @@ fn test_rust_cargo_env_dep(test_info: SccacheTest) -> Result<()> {
 #[test]
 #[serial]
 fn test_rust_cargo_cmd_readonly_preemtive_block() -> Result<()> {
-    let test_info = SccacheTest::new(None)?;
+    let test_info = SccacheTest::new(Some(&server_side_envs()))?;
     // `cargo clean` first, just to be sure there's no leftover build objects.
     cargo_clean(&test_info)?;
 

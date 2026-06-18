@@ -373,7 +373,7 @@ where
         may_dist: bool,
         pool: &tokio::runtime::Handle,
         rewrite_includes_only: bool,
-        storage: Arc<dyn Storage>,
+        storage: Option<Arc<dyn Storage>>,
         cache_control: CacheControl,
     ) -> Result<HashResult<T>> {
         let start_of_compilation = std::time::SystemTime::now();
@@ -394,7 +394,10 @@ where
 
         // Try to look for a cached preprocessing step for this compilation
         // request.
-        let preprocessor_cache_mode_config = storage.preprocessor_cache_mode_config();
+        let preprocessor_cache_mode_config = storage
+            .as_ref()
+            .map(|s| s.preprocessor_cache_mode_config())
+            .unwrap_or_default();
         let too_hard_for_preprocessor_cache_mode = self
             .parsed_args
             .too_hard_for_preprocessor_cache_mode
@@ -453,7 +456,7 @@ where
                 &absolute_input_path,
                 self.compiler.plusplus(),
                 preprocessor_cache_mode_config,
-                storage.basedirs(),
+                storage.as_ref().map(|s| s.basedirs()).unwrap_or(&[]),
             )?
         } else {
             None
@@ -462,10 +465,10 @@ where
         let (preprocessor_output, include_files) = if needs_preprocessing {
             if let Some(preprocessor_key) = &preprocessor_key {
                 if cache_control == CacheControl::Default {
-                    if let Some(mut seekable) = storage
-                        .get_preprocessor_cache_entry(preprocessor_key)
-                        .await?
-                    {
+                    if let Some(mut seekable) = match &storage {
+                        Some(s) => s.get_preprocessor_cache_entry(preprocessor_key).await?,
+                        None => None,
+                    } {
                         let mut buf = vec![];
                         seekable.read_to_end(&mut buf)?;
                         let mut preprocessor_cache_entry = PreprocessorCacheEntry::read(&buf)?;
@@ -481,15 +484,17 @@ where
                                 "Preprocessor cache updated because of time macros: {preprocessor_key}"
                             );
 
-                            if let Err(e) = storage
-                                .put_preprocessor_cache_entry(
-                                    preprocessor_key,
-                                    preprocessor_cache_entry,
-                                )
-                                .await
-                            {
-                                debug!("Failed to update preprocessor cache: {}", e);
-                                update_failed = true;
+                            if let Some(ref s) = storage {
+                                if let Err(e) = s
+                                    .put_preprocessor_cache_entry(
+                                        preprocessor_key,
+                                        preprocessor_cache_entry,
+                                    )
+                                    .await
+                                {
+                                    debug!("Failed to update preprocessor cache: {}", e);
+                                    update_failed = true;
+                                }
                             }
                         }
 
@@ -634,7 +639,7 @@ where
         .with_extra_hashes(&extra_hashes)
         .with_env_vars(&env_vars)
         .with_plusplus(self.compiler.plusplus())
-        .with_basedirs(storage.basedirs())
+        .with_basedirs(storage.as_ref().map(|s| s.basedirs()).unwrap_or(&[]))
         .compute();
 
         // Cache the preprocessing step
@@ -648,11 +653,13 @@ where
                 files.sort_unstable_by(|a, b| a.1.cmp(&b.1));
                 preprocessor_cache_entry.add_result(start_of_compilation, &key, files);
 
-                if let Err(e) = storage
-                    .put_preprocessor_cache_entry(&preprocessor_key, preprocessor_cache_entry)
-                    .await
-                {
-                    debug!("Failed to update preprocessor cache: {}", e);
+                if let Some(ref s) = storage {
+                    if let Err(e) = s
+                        .put_preprocessor_cache_entry(&preprocessor_key, preprocessor_cache_entry)
+                        .await
+                    {
+                        debug!("Failed to update preprocessor cache: {}", e);
+                    }
                 }
             }
         }
