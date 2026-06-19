@@ -20,33 +20,11 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-#[cfg(any(
-    feature = "azure",
-    feature = "gcs",
-    feature = "gha",
-    feature = "memcached",
-    feature = "redis",
-    feature = "s3",
-    feature = "webdav",
-    feature = "oss",
-    feature = "cos"
-))]
+#[cfg(any_cache_remote)]
 use crate::cache::build_single_cache;
 use crate::cache::disk::DiskCache;
 use crate::cache::{Cache, CacheMode, CacheWrite, Storage};
 use crate::compiler::PreprocessorCacheEntry;
-#[cfg(any(
-    feature = "azure",
-    feature = "gcs",
-    feature = "gha",
-    feature = "memcached",
-    feature = "redis",
-    feature = "s3",
-    feature = "webdav",
-    feature = "oss",
-    feature = "cos"
-))]
-use crate::config::CacheType;
 use crate::config::{Config, PreprocessorCacheModeConfig, WriteErrorPolicy};
 use crate::errors::*;
 
@@ -418,71 +396,25 @@ impl MultiLevelStorage {
                 trace!("Added disk cache level");
             } else {
                 // Build remote cache - get the appropriate CacheType
-                #[cfg(any(
-                    feature = "azure",
-                    feature = "gcs",
-                    feature = "gha",
-                    feature = "memcached",
-                    feature = "redis",
-                    feature = "s3",
-                    feature = "webdav",
-                    feature = "oss",
-                    feature = "cos"
-                ))]
+                #[cfg(any_cache_remote)]
                 {
-                    let cache_type = match level_name.to_lowercase().as_str() {
-                        #[cfg(feature = "s3")]
-                        "s3" => config.cache_configs.s3.clone().map(CacheType::S3),
-                        #[cfg(feature = "redis")]
-                        "redis" => config.cache_configs.redis.clone().map(CacheType::Redis),
-                        #[cfg(feature = "memcached")]
-                        "memcached" => config
-                            .cache_configs
-                            .memcached
-                            .clone()
-                            .map(CacheType::Memcached),
-                        #[cfg(feature = "gcs")]
-                        "gcs" => config.cache_configs.gcs.clone().map(CacheType::GCS),
-                        #[cfg(feature = "gha")]
-                        "gha" => config.cache_configs.gha.clone().map(CacheType::GHA),
-                        #[cfg(feature = "azure")]
-                        "azure" => config.cache_configs.azure.clone().map(CacheType::Azure),
-                        #[cfg(feature = "webdav")]
-                        "webdav" => config.cache_configs.webdav.clone().map(CacheType::Webdav),
-                        #[cfg(feature = "oss")]
-                        "oss" => config.cache_configs.oss.clone().map(CacheType::OSS),
-                        #[cfg(feature = "cos")]
-                        "cos" => config.cache_configs.cos.clone().map(CacheType::COS),
-                        _ => {
-                            return Err(anyhow!("Unknown cache level: '{}'", level_name));
-                        }
-                    };
-
-                    if let Some(cache_type) = cache_type {
-                        let storage = build_single_cache(&cache_type, &config.basedirs, pool)
-                            .with_context(|| {
-                                format!("Failed to build cache for level '{}'", level_name)
-                            })?;
-                        storages.push(storage);
-                        trace!("Added cache level: {}", level_name);
-                    } else {
-                        return Err(anyhow!(
+                    let level_lower = level_name.to_lowercase();
+                    let (_display_name, cache_type) =
+                        config.cache_configs.cache_type_by_name(&level_lower)?;
+                    let cache_type = cache_type.ok_or_else(|| {
+                        anyhow!(
                             "Cache level '{}' specified in SCCACHE_MULTILEVEL_CHAIN but not configured (missing environment variables)",
                             level_name
-                        ));
-                    }
+                        )
+                    })?;
+                    let storage = build_single_cache(&cache_type, &config.basedirs, pool)
+                        .with_context(|| {
+                            format!("Failed to build cache for level '{}'", level_name)
+                        })?;
+                    storages.push(storage);
+                    trace!("Added cache level: {}", level_name);
                 }
-                #[cfg(not(any(
-                    feature = "azure",
-                    feature = "gcs",
-                    feature = "gha",
-                    feature = "memcached",
-                    feature = "redis",
-                    feature = "s3",
-                    feature = "webdav",
-                    feature = "oss",
-                    feature = "cos"
-                )))]
+                #[cfg(not(any_cache_remote))]
                 {
                     return Err(anyhow!(
                         "Cache level '{}' requires a backend feature to be enabled (e.g., --features redis,s3)",

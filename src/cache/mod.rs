@@ -40,15 +40,7 @@ pub(crate) mod utils;
 #[cfg(feature = "webdav")]
 pub mod webdav;
 
-#[cfg(any(
-    feature = "azure",
-    feature = "gcs",
-    feature = "gha",
-    feature = "s3",
-    feature = "webdav",
-    feature = "oss",
-    feature = "cos"
-))]
+#[cfg(any_http_remote)]
 pub(crate) mod http_client;
 
 pub use crate::cache::cache::*;
