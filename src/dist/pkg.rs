@@ -98,6 +98,20 @@ mod toolchain_imp {
         }
 
         pub fn add_executable_and_deps(&mut self, executable: PathBuf) -> Result<()> {
+            // A relocated program interpreter (e.g. a Yocto/OE uninative
+            // toolchain) resolves its libc/libm against its own sysroot, not the
+            // host paths ldd reports. Bundle the interpreter's directory so those
+            // libraries exist where the loader looks inside the build sandbox.
+            if let Some(libdir) = read_elf_interpreter(&executable)
+                .and_then(|interp| relocated_interpreter_libdir(&interp))
+            {
+                self.add_dir_contents(&libdir).with_context(|| {
+                    format!(
+                        "Failed to bundle relocated interpreter libdir {}",
+                        libdir.display()
+                    )
+                })?;
+            }
             let mut remaining = vec![executable];
             while let Some(obj_path) = remaining.pop() {
                 assert!(obj_path.is_absolute());
@@ -350,6 +364,50 @@ mod toolchain_imp {
         libs
     }
 
+    /// Read a binary's ELF program interpreter (PT_INTERP), if it has one.
+    ///
+    /// Returns `None` for static binaries, non-ELF or non-64-bit files, and
+    /// anything that fails to parse -- callers treat that as "nothing special
+    /// to bundle", preserving the default ldd-only behaviour.
+    fn read_elf_interpreter(executable: &Path) -> Option<PathBuf> {
+        use object::Endianness;
+        use object::read::elf::{ElfFile64, ProgramHeader};
+
+        let data = fs::read(executable).ok()?;
+        let elf = ElfFile64::<Endianness>::parse(data.as_slice()).ok()?;
+        let endian = elf.endian();
+        for header in elf.elf_program_headers() {
+            if let Ok(Some(interp)) = header.interpreter(endian, elf.data()) {
+                return str::from_utf8(interp).ok().map(PathBuf::from);
+            }
+        }
+        None
+    }
+
+    /// If `interp` is a relocated program interpreter -- one living outside the
+    /// standard host loader directories -- return the directory that should be
+    /// bundled alongside the toolchain.
+    ///
+    /// Yocto/OpenEmbedded "uninative" cross toolchains ship their own glibc and
+    /// loader, and the loader's built-in search path points at its own sysroot
+    /// lib dir rather than the host's. `ldd` resolves a binary's NEEDED
+    /// libraries against the *host* loader, so for these binaries it reports
+    /// host paths (e.g. /usr/lib/libm.so.6) that do not exist where the
+    /// relocated loader actually searches at runtime. Bundling the
+    /// interpreter's own directory -- which holds the matching libc/libm and
+    /// the loader itself -- makes the toolchain resolvable inside the sandbox.
+    fn relocated_interpreter_libdir(interp: &Path) -> Option<PathBuf> {
+        const STANDARD_LOADER_PREFIXES: &[&str] = &["/lib/", "/lib64/", "/usr/lib/", "/usr/lib64/"];
+        let interp_str = interp.to_str()?;
+        if STANDARD_LOADER_PREFIXES
+            .iter()
+            .any(|prefix| interp_str.starts_with(prefix))
+        {
+            return None;
+        }
+        interp.parent().map(Path::to_path_buf)
+    }
+
     #[test]
     fn test_ldd_parse() {
         let ubuntu_ls_output = "\tlinux-vdso.so.1 =>  (0x00007fffcfffe000)
@@ -407,6 +465,35 @@ mod toolchain_imp {
                 "/lib64/ld-linux-x86-64.so.2",
                 "/usr/lib64/ld-linux-x86-64.so.2",
             ]
+        );
+    }
+
+    #[test]
+    fn test_relocated_interpreter_libdir() {
+        // Standard host loaders are left to ldd's host resolution.
+        for standard in [
+            "/lib64/ld-linux-x86-64.so.2",
+            "/usr/lib64/ld-linux-x86-64.so.2",
+            "/usr/lib/ld-linux-aarch64.so.1",
+            "/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+        ] {
+            assert_eq!(
+                relocated_interpreter_libdir(Path::new(standard)),
+                None,
+                "{standard} is a standard host loader and must not trigger bundling"
+            );
+        }
+
+        // A relocated loader (e.g. a Yocto/OE uninative toolchain) resolves its
+        // libc/libm against its own sysroot lib dir, which ldd does not report.
+        // Return that directory so it gets bundled into the toolchain package.
+        assert_eq!(
+            relocated_interpreter_libdir(Path::new(
+                "/home/u/build/tmp/sysroots-uninative/x86_64-linux/lib/ld-linux-x86-64.so.2"
+            )),
+            Some(PathBuf::from(
+                "/home/u/build/tmp/sysroots-uninative/x86_64-linux/lib"
+            ))
         );
     }
 }
