@@ -33,6 +33,18 @@ pub(in crate::cache) fn get_file_mode(_file: &fs::File) -> Result<Option<u32>> {
     Ok(None)
 }
 
+/// Extract the unix mode bits from already-fetched metadata (no extra `stat`/`open`).
+#[cfg(unix)]
+pub(in crate::cache) fn file_mode_of(meta: &std::fs::Metadata) -> Option<u32> {
+    use std::os::unix::fs::MetadataExt;
+    Some(meta.mode())
+}
+
+#[cfg(windows)]
+pub(in crate::cache) fn file_mode_of(_meta: &std::fs::Metadata) -> Option<u32> {
+    None
+}
+
 #[cfg(unix)]
 pub(in crate::cache) fn set_file_mode(path: &Path, mode: u32) -> Result<()> {
     use std::fs::Permissions;

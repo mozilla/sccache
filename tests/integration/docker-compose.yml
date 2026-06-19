@@ -331,6 +331,17 @@ services:
       - test
       - zstd
 
+  test-file-clone:
+    <<: *test-runner
+    image: rust:latest
+    entrypoint: /sccache/tests/integration/scripts/test-file-clone.sh
+    environment:
+      <<: *common-env
+      CARGO_INCREMENTAL: "0"
+    profiles:
+      - test
+      - file-clone
+
   test-basedirs:
     <<: *test-runner
     image: gcc:latest

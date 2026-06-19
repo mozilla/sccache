@@ -1387,11 +1387,13 @@ where
 
                                 stats.cache_errors.increment(&kind, &lang);
                             }
-                            CompileResult::CacheHit(duration) => {
+                            CompileResult::CacheHit(duration, extraction) => {
                                 debug!("[{}]: compile result: cache hit", out_pretty);
 
                                 stats.cache_hits.increment(&kind, &lang);
                                 stats.cache_read_hit_duration += duration;
+                                stats.objects_reflinked += extraction.objects_reflinked;
+                                stats.objects_copied_fallback += extraction.objects_copied;
                             }
                             CompileResult::CacheMiss(miss_type, dt, duration, future) => {
                                 debug!("[{}]: compile result: cache miss", out_pretty);
@@ -1610,6 +1612,10 @@ pub struct ServerStats {
     pub cache_write_errors: u64,
     /// The number of successful cache writes.
     pub cache_writes: u64,
+    /// Cache objects restored by reflink (copy-on-write); only non-zero with `file_clone`.
+    pub objects_reflinked: u64,
+    /// Cache objects restored by copying because reflinking was unavailable.
+    pub objects_copied_fallback: u64,
     /// The total time spent writing cache entries.
     pub cache_write_duration: Duration,
     /// The total time spent reading cache hits.
@@ -1670,6 +1676,8 @@ impl Default for ServerStats {
             forced_recaches: u64::default(),
             cache_write_errors: u64::default(),
             cache_writes: u64::default(),
+            objects_reflinked: u64::default(),
+            objects_copied_fallback: u64::default(),
             cache_write_duration: Duration::new(0, 0),
             cache_read_hit_duration: Duration::new(0, 0),
             compilations: u64::default(),
@@ -1760,6 +1768,16 @@ impl ServerStats {
 
         set_stat!(stats_vec, self.cache_timeouts, "Cache timeouts");
         set_stat!(stats_vec, self.cache_read_errors, "Cache read errors");
+        set_stat!(
+            stats_vec,
+            self.objects_reflinked,
+            "Objects restored by reflink"
+        );
+        set_stat!(
+            stats_vec,
+            self.objects_copied_fallback,
+            "Objects restored by copy"
+        );
         set_stat!(stats_vec, self.forced_recaches, "Forced recaches");
         set_stat!(stats_vec, self.cache_write_errors, "Cache write errors");
         if advanced {

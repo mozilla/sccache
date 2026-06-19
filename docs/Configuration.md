@@ -58,6 +58,11 @@ key_prefix = ""
 [cache.disk]
 dir = "/tmp/.cache/sccache"
 size = 7516192768 # 7 GiBytes
+# Store cache entries uncompressed and restore them with filesystem reflinks
+# (copy-on-write). Near-instant, near-zero-disk cache hits when the cache dir and
+# the build dir share one CoW filesystem (Btrfs/XFS/APFS/ReFS); falls back to
+# plain copies elsewhere. Default: false. See docs/FileClone.md.
+file_clone = false
 
 # See the local docs on more explanations about this mode
 [cache.disk.preprocessor_cache_mode]
@@ -224,6 +229,7 @@ export SCCACHE_MULTILEVEL_WRITE_ERROR_POLICY="all"
 * `SCCACHE_CACHE_SIZE` maximum size of the local on disk cache i.e. `2G` - default is 10G
 * `SCCACHE_DIRECT` enable/disable preprocessor caching (see [the local doc](Local.md))
 * `SCCACHE_LOCAL_RW_MODE` the mode that the cache will operate in (`READ_ONLY` or `READ_WRITE`)
+* `SCCACHE_FILE_CLONE` set to `true`/`on`/`1` to enable uncompressed, reflink (copy-on-write) cache storage (see [the file_clone doc](FileClone.md)). Default is `false`.
 
 #### s3 compatible
 

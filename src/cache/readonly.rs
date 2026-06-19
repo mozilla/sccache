@@ -37,6 +37,18 @@ impl Storage for ReadOnlyStorage {
         Err(anyhow!("Cannot write to read-only storage"))
     }
 
+    /// Reject immediately, skipping the default `put_objects`'s compression of a guaranteed failure.
+    async fn put_objects(
+        &self,
+        _key: &str,
+        _objects: Vec<crate::cache::FileObjectSource>,
+        _stdout: Vec<u8>,
+        _stderr: Vec<u8>,
+        _pool: &tokio::runtime::Handle,
+    ) -> Result<Duration> {
+        Err(anyhow!("Cannot write to read-only storage"))
+    }
+
     /// Check the cache capability.
     ///
     /// The ReadOnlyStorage cache is always read-only.
@@ -163,6 +175,7 @@ mod test {
             super::PreprocessorCacheModeConfig::default(),
             super::CacheMode::ReadWrite,
             basedirs.clone(),
+            false,
         );
 
         let readonly_storage = ReadOnlyStorage(std::sync::Arc::new(disk_cache));
@@ -196,6 +209,15 @@ mod test {
                     .to_string(),
                 "Cannot write to read-only storage"
             );
+            let runtime = tokio::runtime::Handle::current();
+            assert_eq!(
+                storage
+                    .put_objects("test1", vec![], Vec::new(), Vec::new(), &runtime)
+                    .await
+                    .unwrap_err()
+                    .to_string(),
+                "Cannot write to read-only storage"
+            );
         });
     }
 
@@ -221,6 +243,7 @@ mod test {
             super::PreprocessorCacheModeConfig::default(),
             super::CacheMode::ReadWrite,
             vec![],
+            false,
         );
 
         let readonly_storage = ReadOnlyStorage(std::sync::Arc::new(disk_cache));

@@ -413,6 +413,7 @@ impl MultiLevelStorage {
                     preprocessor_cache_mode_config,
                     rw_mode,
                     config.basedirs.clone(),
+                    false, // file_clone: only honoured for a single-level disk cache
                 ));
                 storages.push(disk_storage);
                 trace!("Added disk cache level");
@@ -566,7 +567,7 @@ impl Storage for MultiLevelStorage {
         for (idx, level) in self.levels.iter().enumerate() {
             let start = Instant::now();
             match level.get(key).await {
-                Ok(Cache::Hit(entry)) => {
+                Ok(hit @ (Cache::Hit(_) | Cache::UncompressedHit(_))) => {
                     let duration = start.elapsed();
                     debug!("Cache hit at level {} in {:?}", idx, duration);
 
@@ -645,7 +646,7 @@ impl Storage for MultiLevelStorage {
                         }
                     }
 
-                    return Ok(Cache::Hit(entry));
+                    return Ok(hit);
                 }
                 Ok(Cache::Miss) => {
                     trace!("Cache miss at level {}, trying next level", idx);

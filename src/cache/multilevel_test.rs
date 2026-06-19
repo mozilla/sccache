@@ -59,6 +59,7 @@ fn test_multi_level_storage_get() {
         PreprocessorCacheModeConfig::default(),
         CacheMode::ReadWrite,
         vec![],
+        false,
     );
     let cache2 = DiskCache::new(
         &cache_dir2,
@@ -67,6 +68,7 @@ fn test_multi_level_storage_get() {
         PreprocessorCacheModeConfig::default(),
         CacheMode::ReadWrite,
         vec![],
+        false,
     );
 
     let cache1_storage: Arc<dyn Storage> = Arc::new(cache1);
@@ -131,6 +133,7 @@ fn test_multi_level_storage_backfill_on_hit() {
         PreprocessorCacheModeConfig::default(),
         CacheMode::ReadWrite,
         vec![],
+        false,
     );
     let cache2 = DiskCache::new(
         &cache_dir2,
@@ -139,6 +142,7 @@ fn test_multi_level_storage_backfill_on_hit() {
         PreprocessorCacheModeConfig::default(),
         CacheMode::ReadWrite,
         vec![],
+        false,
     );
 
     let cache1_storage: Arc<dyn Storage> = Arc::new(cache1);
@@ -295,6 +299,7 @@ fn test_disk_plus_remote_to_remote_backfill() {
         PreprocessorCacheModeConfig::default(),
         CacheMode::ReadWrite,
         vec![],
+        false,
     ));
 
     let remote_l1 = Arc::new(InMemoryStorage::new()); // Memcached-like
@@ -398,6 +403,7 @@ fn test_disk_plus_remotes_write_to_all() {
         PreprocessorCacheModeConfig::default(),
         CacheMode::ReadWrite,
         vec![],
+        false,
     ));
 
     let remote_l1 = Arc::new(InMemoryStorage::new());
@@ -861,6 +867,7 @@ fn test_preprocessor_cache_mode() {
         preprocessor_config,
         CacheMode::ReadWrite,
         vec![],
+        false,
     ));
 
     let cache_l1 = Arc::new(InMemoryStorage::new());
@@ -912,6 +919,7 @@ fn test_preprocessor_cache_methods() {
         PreprocessorCacheModeConfig::default(),
         CacheMode::ReadWrite,
         vec![],
+        false,
     ));
 
     let storage = MultiLevelStorage::new(vec![disk_cache as Arc<dyn Storage>]);
@@ -954,6 +962,7 @@ fn test_readonly_level_in_check() {
         PreprocessorCacheModeConfig::default(),
         CacheMode::ReadWrite,
         vec![],
+        false,
     );
 
     // Wrap in ReadOnly
@@ -1339,5 +1348,78 @@ fn test_put_mode_all_skips_readonly() {
             cache_l2.get("test_key").await.unwrap(),
             Cache::Hit(_)
         ));
+    });
+}
+
+struct UncompressedHitStorage {
+    dir: std::path::PathBuf,
+}
+
+#[async_trait]
+impl Storage for UncompressedHitStorage {
+    async fn get(&self, _key: &str) -> Result<Cache> {
+        Ok(Cache::UncompressedHit(
+            crate::cache::UncompressedCacheEntry::new(self.dir.clone()),
+        ))
+    }
+    async fn put(&self, _key: &str, _entry: CacheWrite) -> Result<Duration> {
+        Ok(Duration::ZERO)
+    }
+    fn location(&self) -> String {
+        "UncompressedHit".to_string()
+    }
+    async fn current_size(&self) -> Result<Option<u64>> {
+        Ok(None)
+    }
+    async fn max_size(&self) -> Result<Option<u64>> {
+        Ok(None)
+    }
+    // `get_raw` uses the trait default (`Ok(None)`), so no backfill source is available.
+}
+
+#[test]
+fn test_multilevel_uncompressed_hit_counted_no_backfill() {
+    let runtime = RuntimeBuilder::new_multi_thread()
+        .enable_all()
+        .worker_threads(1)
+        .build()
+        .unwrap();
+
+    let l0 = Arc::new(InMemoryStorage::new());
+    let entry_dir = TempBuilder::new().prefix("uhit").tempdir().unwrap();
+    fs::create_dir(entry_dir.path().join("objects")).unwrap();
+    fs::write(
+        entry_dir
+            .path()
+            .join(crate::lru_disk_cache::DIR_ENTRY_MARKER),
+        b"",
+    )
+    .unwrap();
+    let l1 = Arc::new(UncompressedHitStorage {
+        dir: entry_dir.path().to_path_buf(),
+    });
+
+    let storage =
+        MultiLevelStorage::new(vec![l0.clone() as Arc<dyn Storage>, l1 as Arc<dyn Storage>]);
+
+    runtime.block_on(async {
+        match storage.get("k").await.unwrap() {
+            Cache::UncompressedHit(_) => {}
+            other => panic!("expected UncompressedHit, got {other:?}"),
+        }
+        let stats = storage.stats();
+        assert_eq!(stats.0[0].hits, 0, "L0 must not be credited with a hit");
+        assert_eq!(stats.0[0].misses, 1, "L0 was checked and missed before L1");
+        assert_eq!(
+            stats.0[1].hits, 1,
+            "L1 uncompressed hit must be counted in the per-level hit stat"
+        );
+        assert_eq!(stats.0[1].misses, 0, "L1 hit, so no miss recorded for it");
+        // Allow any (would-be) backfill task to run; none should, since get_raw() is None.
+        sleep(Duration::from_millis(100)).await;
+        assert!(
+            matches!(l0.get("k").await.unwrap(), Cache::Miss),
+            "L0 must not be backfilled from an uncompressed (get_raw=None) level"
+        );
     });
 }
