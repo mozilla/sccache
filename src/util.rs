@@ -381,6 +381,18 @@ pub async fn hash_all(files: &[PathBuf], pool: &tokio::runtime::Handle) -> Resul
     Ok(hashes)
 }
 
+/// Build a tokio runtime suitable for the (short-lived) sccache client.
+///
+/// A multi-threaded runtime would spawn one worker thread per CPU for every
+/// client invocation; on a many-core host running many parallel clients that
+/// adds up to a large number of short-lived threads. A current-thread runtime
+/// is enough for the client's request/response work.
+pub fn new_client_runtime() -> std::io::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+}
+
 /// Calculate the digest of each static library archive in `files` on background threads in
 /// `pool`.
 ///
