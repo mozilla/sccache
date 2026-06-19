@@ -170,6 +170,7 @@ pub trait Storage: Send + Sync {
 pub struct RemoteStorage {
     operator: opendal::Operator,
     basedirs: Vec<Vec<u8>>,
+    rw_mode: CacheMode,
 }
 
 #[cfg(any(
@@ -184,8 +185,12 @@ pub struct RemoteStorage {
     feature = "cos"
 ))]
 impl RemoteStorage {
-    pub fn new(operator: opendal::Operator, basedirs: Vec<Vec<u8>>) -> Self {
-        Self { operator, basedirs }
+    pub fn new(operator: opendal::Operator, basedirs: Vec<Vec<u8>>, rw_mode: CacheMode) -> Self {
+        Self {
+            operator,
+            basedirs,
+            rw_mode,
+        }
     }
 }
 
@@ -247,6 +252,13 @@ impl Storage for RemoteStorage {
                 eprintln!("cache storage read check: {err:?}, but we decide to keep running");
             }
             Err(err) => bail!("cache storage failed to read: {:?}", err),
+        }
+
+        // No need to check write if we are in manually-set read-only mode
+        if self.rw_mode == CacheMode::ReadOnly {
+            let mode = CacheMode::ReadOnly;
+            debug!("storage check result: {mode:?} (manually set)");
+            return Ok(mode);
         }
 
         let can_write = match self.operator.write(path, "Hello, World!").await {
@@ -337,6 +349,10 @@ impl Storage for RemoteStorage {
         trace!("opendal::Operator::put_raw({}, {} bytes)", key, data.len());
         let start = std::time::Instant::now();
 
+        if self.rw_mode == CacheMode::ReadOnly {
+            bail!("storage is read-only");
+        }
+
         self.operator.write(&normalize_key(key), data).await?;
 
         Ok(start.elapsed())
@@ -367,11 +383,12 @@ pub fn build_single_cache(
             connection_string,
             container,
             key_prefix,
+            rw_mode,
         }) => {
             debug!("Init azure cache with container {container}, key_prefix {key_prefix}");
             let operator = AzureBlobCache::build(connection_string, container, key_prefix)
                 .map_err(|err| anyhow!("create azure cache failed: {err:?}"))?;
-            let storage = RemoteStorage::new(operator, basedirs.to_vec());
+            let storage = RemoteStorage::new(operator, basedirs.to_vec(), (*rw_mode).into());
             Ok(Arc::new(storage))
         }
         #[cfg(feature = "gcs")]
@@ -394,16 +411,18 @@ pub fn build_single_cache(
                 credential_url.as_deref(),
             )
             .map_err(|err| anyhow!("create gcs cache failed: {err:?}"))?;
-            let storage = RemoteStorage::new(operator, basedirs.to_vec());
+            let storage = RemoteStorage::new(operator, basedirs.to_vec(), (*rw_mode).into());
             Ok(Arc::new(storage))
         }
         #[cfg(feature = "gha")]
-        CacheType::GHA(config::GHACacheConfig { version, .. }) => {
+        CacheType::GHA(config::GHACacheConfig {
+            version, rw_mode, ..
+        }) => {
             debug!("Init gha cache with version {version}");
 
             let operator = GHACache::build(version)
                 .map_err(|err| anyhow!("create gha cache failed: {err:?}"))?;
-            let storage = RemoteStorage::new(operator, basedirs.to_vec());
+            let storage = RemoteStorage::new(operator, basedirs.to_vec(), (*rw_mode).into());
             Ok(Arc::new(storage))
         }
         #[cfg(feature = "memcached")]
@@ -413,6 +432,7 @@ pub fn build_single_cache(
             password,
             expiration,
             key_prefix,
+            rw_mode,
         }) => {
             debug!("Init memcached cache with url {url}");
 
@@ -424,7 +444,7 @@ pub fn build_single_cache(
                 *expiration,
             )
             .map_err(|err| anyhow!("create memcached cache failed: {err:?}"))?;
-            let storage = RemoteStorage::new(operator, basedirs.to_vec());
+            let storage = RemoteStorage::new(operator, basedirs.to_vec(), (*rw_mode).into());
             Ok(Arc::new(storage))
         }
         #[cfg(feature = "redis")]
@@ -437,6 +457,7 @@ pub fn build_single_cache(
             url,
             ttl,
             key_prefix,
+            rw_mode,
         }) => {
             let storage = match (endpoint, cluster_endpoints, url) {
                 (Some(url), None, None) => {
@@ -472,7 +493,7 @@ pub fn build_single_cache(
                 _ => bail!("Only one of `endpoint`, `cluster_endpoints`, `url` must be set"),
             }
             .map_err(|err| anyhow!("create redis cache failed: {err:?}"))?;
-            let storage = RemoteStorage::new(storage, basedirs.to_vec());
+            let storage = RemoteStorage::new(storage, basedirs.to_vec(), (*rw_mode).into());
             Ok(Arc::new(storage))
         }
         #[cfg(feature = "s3")]
@@ -492,7 +513,7 @@ pub fn build_single_cache(
                 .build()
                 .map_err(|err| anyhow!("create s3 cache failed: {err:?}"))?;
 
-            let storage = RemoteStorage::new(operator, basedirs.to_vec());
+            let storage = RemoteStorage::new(operator, basedirs.to_vec(), c.rw_mode.into());
             Ok(Arc::new(storage))
         }
         #[cfg(feature = "webdav")]
@@ -508,7 +529,7 @@ pub fn build_single_cache(
             )
             .map_err(|err| anyhow!("create webdav cache failed: {err:?}"))?;
 
-            let storage = RemoteStorage::new(operator, basedirs.to_vec());
+            let storage = RemoteStorage::new(operator, basedirs.to_vec(), c.rw_mode.into());
             Ok(Arc::new(storage))
         }
         #[cfg(feature = "oss")]
@@ -526,7 +547,7 @@ pub fn build_single_cache(
             )
             .map_err(|err| anyhow!("create oss cache failed: {err:?}"))?;
 
-            let storage = RemoteStorage::new(operator, basedirs.to_vec());
+            let storage = RemoteStorage::new(operator, basedirs.to_vec(), c.rw_mode.into());
             Ok(Arc::new(storage))
         }
         #[cfg(feature = "cos")]
@@ -539,7 +560,7 @@ pub fn build_single_cache(
             let operator = COSCache::build(&c.bucket, &c.key_prefix, c.endpoint.as_deref())
                 .map_err(|err| anyhow!("create cos cache failed: {err:?}"))?;
 
-            let storage = RemoteStorage::new(operator, basedirs.to_vec());
+            let storage = RemoteStorage::new(operator, basedirs.to_vec(), c.rw_mode.into());
             Ok(Arc::new(storage))
         }
         #[allow(unreachable_patterns)]
@@ -680,7 +701,7 @@ mod test {
         let basedirs = vec![b"/home/user/project".to_vec(), b"/opt/build".to_vec()];
 
         // Wrap with OperatorStorage
-        let storage = RemoteStorage::new(operator, basedirs.clone());
+        let storage = RemoteStorage::new(operator, basedirs.clone(), CacheMode::ReadWrite);
 
         // Verify basedirs are stored and retrieved correctly
         assert_eq!(storage.basedirs(), basedirs.as_slice());
@@ -706,10 +727,37 @@ mod test {
         let basedirs = vec![b"/workspace".to_vec()];
 
         // Wrap with OperatorStorage
-        let storage = RemoteStorage::new(operator, basedirs.clone());
+        let storage = RemoteStorage::new(operator, basedirs.clone(), CacheMode::ReadWrite);
 
         // Verify basedirs work
         assert_eq!(storage.basedirs(), basedirs.as_slice());
         assert_eq!(storage.basedirs().len(), 1);
+    }
+
+    #[test]
+    #[cfg(feature = "redis")]
+    fn test_operator_storage_redis_with_read_only() {
+        // Create Redis operator
+
+        use crate::test::utils::Waiter;
+        let operator = crate::cache::redis::RedisCache::build_single(
+            "redis://localhost:6379",
+            None,
+            None,
+            0,
+            "test-prefix",
+            0,
+        )
+        .expect("Failed to create Redis cache operator");
+
+        // Wrap with OperatorStorage
+        let storage = RemoteStorage::new(operator, vec![], CacheMode::ReadOnly);
+
+        // Verify put fails
+        let result = storage.put("test", CacheWrite::default()).wait();
+        match result {
+            Ok(_) => panic!("expected error, got success {result:?}"),
+            Err(err) => assert_eq!(err.to_string(), "storage is read-only"),
+        }
     }
 }

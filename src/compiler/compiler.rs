@@ -63,6 +63,7 @@ use crate::errors::*;
     feature = "dist-client",
     any(
         all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "linux", target_arch = "aarch64"),
         target_os = "freebsd"
     )
 ))]
@@ -71,6 +72,7 @@ pub const CAN_DIST_DYLIBS: bool = true;
     feature = "dist-client",
     not(any(
         all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "linux", target_arch = "aarch64"),
         target_os = "freebsd"
     ))
 ))]
@@ -557,7 +559,10 @@ where
         let (key, compilation, weak_toolchain_key) = match result {
             Err(e) => {
                 return match e.downcast::<ProcessError>() {
-                    Ok(ProcessError(output)) => Ok((CompileResult::Error, output)),
+                    Ok(ProcessError(output)) => {
+                        debug!("[{}]: process error: {:?}", out_pretty, output);
+                        Ok((CompileResult::Error, output))
+                    }
                     Err(e) => Err(e),
                 };
             }

@@ -37,6 +37,7 @@ pub const INSECURE_DIST_SERVER_TOKEN: &str = "dangerously_insecure_server";
 
 #[cfg(not(any(
     all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "linux", target_arch = "aarch64"),
     target_os = "freebsd"
 )))]
 fn main() {
@@ -46,6 +47,7 @@ fn main() {
 // Only supported on x86_64 Linux machines and on FreeBSD
 #[cfg(any(
     all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "linux", target_arch = "aarch64"),
     target_os = "freebsd"
 ))]
 fn main() {
