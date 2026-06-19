@@ -536,11 +536,10 @@ pub fn get_token_oauth2_code_grant_pkce(
     mut auth_url: Url,
     token_url: &str,
 ) -> Result<String> {
-    // We don't need to create multi-threaded runtime here:
-    // every client will create it's own NUM_THREADS,
-    // and with 96-core server we will have 96 x 96 = 9216 threads
-    // with short live time with default tokio runtime instead of 96 one
-    // with the single-threaded one
+    // We don't need a multi-threaded runtime here: with the default tokio
+    // runtime every client spawns its own NUM_THREADS worker threads, so on a
+    // 96-core server running 96 clients we would get 96 x 96 = 9216
+    // short-lived threads instead of a single one per client.
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
