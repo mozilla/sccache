@@ -82,6 +82,10 @@ number_prefix = "0.4"
 object = "0.37"
 opendal = { version = "0.57.0", optional = true, default-features = false }
 opendal-layer-logging = { version = "0.57.0", optional = true }
+# Not published on crates.io yet, so it is pulled directly from git at the same
+# revision as the patched `opendal`/`opendal-layer-logging` below. Provides
+# `ReqwestTransport`, the replacement for the removed `HttpClientLayer`.
+opendal-http-transport-reqwest = { git = "https://github.com/apache/opendal.git", rev = "931baacfbb73d50e16961ff8d97c0b688c8d054d", optional = true, default-features = false }
 openssl = { version = "0.10.75", optional = true }
 rand = "0.8.4"
 regex = "1.10.3"
@@ -136,6 +140,10 @@ rouille = { version = "3.6", optional = true, default-features = false, features
 syslog = { version = "7", optional = true }
 version-compare = { version = "0.1.1", optional = true }
 
+[patch.crates-io]
+opendal = { git = "https://github.com/apache/opendal.git", rev = "931baacfbb73d50e16961ff8d97c0b688c8d054d" }
+opendal-layer-logging = { git = "https://github.com/apache/opendal.git", rev = "931baacfbb73d50e16961ff8d97c0b688c8d054d" }
+
 [dev-dependencies]
 assert_cmd = "2.0.13"
 cc = "1.0"
@@ -179,17 +187,17 @@ all = [
   "oss",
   "cos",
 ]
-azure = ["opendal/services-azblob", "opendal-layer-logging", "reqwest"]
-cos = ["opendal/services-cos", "opendal-layer-logging", "reqwest"]
+azure = ["opendal/services-azblob", "opendal-layer-logging", "opendal-http-transport-reqwest", "reqwest"]
+cos = ["opendal/services-cos", "opendal-layer-logging", "opendal-http-transport-reqwest", "reqwest"]
 default = ["all"]
-gcs = ["opendal/services-gcs", "opendal-layer-logging", "url", "reqwest"]
-gha = ["opendal/services-ghac", "opendal-layer-logging", "reqwest"]
+gcs = ["opendal/services-gcs", "opendal-layer-logging", "opendal-http-transport-reqwest", "url", "reqwest"]
+gha = ["opendal/services-ghac", "opendal-layer-logging", "opendal-http-transport-reqwest", "reqwest"]
 memcached = ["opendal/services-memcached", "opendal-layer-logging"]
 native-zlib = []
-oss = ["opendal/services-oss", "opendal-layer-logging", "reqwest"]
+oss = ["opendal/services-oss", "opendal-layer-logging", "opendal-http-transport-reqwest", "reqwest"]
 redis = ["url", "opendal/services-redis", "opendal-layer-logging"]
-s3 = ["opendal/services-s3", "opendal-layer-logging", "reqwest"]
-webdav = ["opendal/services-webdav", "opendal-layer-logging", "reqwest"]
+s3 = ["opendal/services-s3", "opendal-layer-logging", "opendal-http-transport-reqwest", "reqwest"]
+webdav = ["opendal/services-webdav", "opendal-layer-logging", "opendal-http-transport-reqwest", "reqwest"]
 # Enable features that will build a vendored version of openssl and
 # statically linked with it, instead of linking against the system-wide openssl
 # dynamically or statically.

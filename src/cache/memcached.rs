@@ -45,9 +45,7 @@ impl MemcachedCache {
             .root(key_prefix)
             .default_ttl(Duration::from_secs(expiration.into()));
 
-        let op = Operator::new(builder)?
-            .layer(LoggingLayer::default())
-            .finish();
+        let op = Operator::new(builder)?.layer(LoggingLayer::default());
         Ok(op)
     }
 }

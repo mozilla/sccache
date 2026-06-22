@@ -15,7 +15,7 @@
 
 use opendal::Operator;
 
-use opendal::layers::HttpClientLayer;
+use opendal::OperationContext;
 use opendal::services::Azblob;
 use opendal_layer_logging::LoggingLayer;
 
@@ -32,9 +32,8 @@ impl AzureBlobCache {
             .root(key_prefix);
 
         let op = Operator::new(builder)?
-            .layer(HttpClientLayer::new(set_user_agent()))
-            .layer(LoggingLayer::default())
-            .finish();
+            .with_context(OperationContext::new().with_http_transport(set_user_agent()))
+            .layer(LoggingLayer::default());
         Ok(op)
     }
 }
