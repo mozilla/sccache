@@ -1021,7 +1021,14 @@ where
             }
             arguments.extend(vec![
                 parsed_args.compilation_flag.clone().into_string().ok()?,
-                path_transformer.as_dist(&parsed_args.input)?,
+                // Match the path the inputs packager ships the preprocessed
+                // content at (CInputsPackager uses cwd.join(input) + simplify_path).
+                // parsed_args.input is relative for out-of-tree builds (e.g. OE's
+                // `../sources/foo.c`); passing it raw made the server look for the
+                // input at a path the package never placed it, failing with
+                // "No such file or directory". Absolutize+simplify so both agree.
+                path_transformer
+                    .as_dist(&dist::pkg::simplify_path(&cwd.join(&parsed_args.input)).ok()?)?,
                 "-o".into(),
                 path_transformer.as_dist(out_file)?,
             ]);
@@ -2476,6 +2483,66 @@ mod test {
         assert_eq!(Cacheable::Yes, cacheable);
         // Ensure that we ran all processes.
         assert_eq!(0, creator.lock().unwrap().children.len());
+    }
+
+    #[test]
+    #[cfg(feature = "dist-client")]
+    fn test_compile_relative_input_dist_command_is_absolute() {
+        // Regression: the dist command must reference the same absolute, simplified
+        // input path the inputs packager ships the preprocessed content at
+        // (CInputsPackager uses cwd.join(input) + simplify_path). For out-of-tree
+        // builds the input is relative (e.g. OE's `../sources/foo.c`); passing it
+        // raw made the build-server look where the input was never placed, failing
+        // with "No such file or directory" (OE xz/glibc out-of-tree compiles).
+        let f = TestFixture::new();
+        let parsed_args = ParsedArguments {
+            input: "../foo.c".into(),
+            double_dash_input: false,
+            language: Language::C,
+            compilation_flag: "-c".into(),
+            depfile: None,
+            outputs: vec![(
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false,
+                },
+            )]
+            .into_iter()
+            .collect(),
+            dependency_args: vec![],
+            preprocessor_args: vec![],
+            common_args: vec![],
+            arch_args: vec![],
+            unhashed_args: vec![],
+            extra_dist_files: vec![],
+            extra_hash_files: vec![],
+            msvc_show_includes: false,
+            profile_generate: false,
+            color_mode: ColorMode::Auto,
+            suppress_rewrite_includes_only: false,
+            too_hard_for_preprocessor_cache_mode: None,
+        };
+        let mut path_transformer = dist::PathTransformer::new();
+        let (_command, dist_command, _cacheable) = generate_compile_commands(
+            &mut path_transformer,
+            &f.bins[0],
+            &parsed_args,
+            f.tempdir.path(),
+            &[],
+            CCompilerKind::Gcc,
+            false,
+            language_to_gcc_arg,
+        )
+        .unwrap();
+        let dist_command = dist_command.expect("relative input must still produce a dist command");
+        // No argument may carry an unresolved `..`: the input must be the simplified
+        // absolute path the packager ships, not the raw relative one.
+        assert!(
+            !dist_command.arguments.iter().any(|a| a.contains("..")),
+            "dist command still references a relative input: {:?}",
+            dist_command.arguments
+        );
     }
 
     #[test]
