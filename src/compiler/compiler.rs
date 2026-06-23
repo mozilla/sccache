@@ -973,7 +973,7 @@ where
                 )
             })?;
 
-        let mut jc = match jres {
+        let jc = match jres {
             dist::RunJobResult::Complete(jc) => jc,
             dist::RunJobResult::JobNotFound => bail!("Job {} not found on server", job_id),
         };
@@ -1039,19 +1039,26 @@ where
         );
 
         if jc.output.code != 0 {
-            // Add server info to help diagnose host-specific failures, e.g. due to flaky hardware.
-            // Failed builds are not cached so this tampering should not cause too much trouble.
-            let server_info = format!("sccache: Job failed on server {}:\n", server_id.addr());
-            jc.output
-                .stderr
-                .splice(0..0, server_info.as_bytes().to_vec());
+            // A non-zero remote result is frequently a distribution artifact
+            // rather than a genuine compiler error: e.g. an object that
+            // .incbin's a binary the inputs packager did not ship (the kernel's
+            // vdso/dtb/embedded-config wrappers), which the build-server cannot
+            // assemble. Fall back to a local recompile via the or_else below - it
+            // either succeeds (confirming a dist-only artifact) or reproduces the
+            // real error locally, so a remote failure never breaks a build that
+            // would compile fine locally. This only affects failing dist
+            // compiles; successful ones are returned unchanged above.
+            bail!(
+                "distributed compile on {} returned exit code {}; recompiling locally",
+                server_id.addr(),
+                jc.output.code
+            );
         }
 
         info!(
-            "[{}]: Distributed compilation finished on {} (exit code {})",
+            "[{}]: Distributed compilation finished on {}",
             out_pretty,
-            server_id.addr(),
-            jc.output.code
+            server_id.addr()
         );
         Ok((DistType::Ok(server_id), jc.output.into()))
     };
