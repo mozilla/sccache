@@ -955,7 +955,11 @@ fn process_preprocessor_line(
 /// Normalize a path, removing things like `.` and `..`.
 ///
 /// CAUTION: This does not resolve symlinks (unlike
-/// [`std::fs::canonicalize`]).
+/// [`std::fs::canonicalize`]). This may cause incorrect or surprising
+/// behavior at times. This should be used carefully. Unfortunately,
+/// [`std::fs::canonicalize`] can be hard to use correctly, since it can often
+/// fail, or on Windows returns annoying device paths. This is a problem Cargo
+/// needs to improve on.
 pub fn normalize_path(path: &Path) -> PathBuf {
     use std::path::Component;
     let mut components = path.components().peekable();
@@ -970,11 +974,18 @@ pub fn normalize_path(path: &Path) -> PathBuf {
         match component {
             Component::Prefix(..) => unreachable!(),
             Component::RootDir => {
-                ret.push(component.as_os_str());
+                ret.push(Component::RootDir);
             }
             Component::CurDir => {}
             Component::ParentDir => {
-                ret.pop();
+                if ret.ends_with(Component::ParentDir) {
+                    ret.push(Component::ParentDir);
+                } else {
+                    let popped = ret.pop();
+                    if !popped && !ret.has_root() {
+                        ret.push(Component::ParentDir);
+                    }
+                }
             }
             Component::Normal(c) => {
                 ret.push(c);
