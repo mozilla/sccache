@@ -307,6 +307,11 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compiler<T> for CCompiler<I> {
         Box::new(CToolchainPackager {
             executable: self.executable.clone(),
             kind: self.compiler.kind(),
+            // `CCompiler` carries no compile environment; the standalone
+            // `--package-toolchain` path keeps resolving against the daemon's
+            // PATH. The dist-compile path threads the task env via
+            // `into_dist_packagers`.
+            env_vars: Vec::new(),
         })
     }
     fn parse_arguments(
@@ -1217,6 +1222,7 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I>
             preprocessed_input,
             executable,
             compiler,
+            env_vars,
             ..
         } = *self;
         trace!("Dist inputs: {:?}", parsed_args.input);
@@ -1232,6 +1238,7 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I>
         let toolchain_packager = Box::new(CToolchainPackager {
             executable,
             kind: compiler.kind(),
+            env_vars,
         });
         let outputs_rewriter = Box::new(NoopOutputsRewriter);
         Ok((inputs_packager, toolchain_packager, outputs_rewriter))
@@ -1323,11 +1330,29 @@ impl pkg::InputsPackager for CInputsPackager {
     }
 }
 
+/// Resolve a program path reported by `-print-prog-name`/`-print-file-name`.
+/// Absolute paths are returned unchanged; a bare program name is resolved
+/// against `path_env` (the compile task's PATH) when supplied, so an OE native
+/// or cross gcc that reports a bare `as` packages the recipe's binutils rather
+/// than the build host's. Falls back to the daemon's PATH when no compile PATH
+/// is available.
+#[cfg(feature = "dist-client")]
+fn resolve_prog_in_path(raw: PathBuf, path_env: Option<&OsStr>) -> Option<PathBuf> {
+    if raw.is_absolute() {
+        Some(raw)
+    } else if let Some(path) = path_env {
+        which::which_in(&raw, Some(path), std::env::current_dir().ok()?).ok()
+    } else {
+        which::which(raw).ok()
+    }
+}
+
 #[cfg(feature = "dist-client")]
 #[allow(unused)]
 struct CToolchainPackager {
     executable: PathBuf,
     kind: CCompilerKind,
+    env_vars: Vec<(OsString, OsString)>,
 }
 
 #[cfg(feature = "dist-client")]
@@ -1344,11 +1369,21 @@ impl pkg::ToolchainPackager for CToolchainPackager {
         package_builder.add_common()?;
         package_builder.add_executable_and_deps(self.executable.clone())?;
 
+        // PATH from the compile task's environment. Resolving sub-tools against
+        // it (rather than the daemon's PATH) is what keeps an OE native or cross
+        // toolchain from packaging the build host's assembler.
+        let path_env = self
+            .env_vars
+            .iter()
+            .find(|(k, _)| k == OsStr::new("PATH"))
+            .map(|(_, v)| v.clone());
+
         // Helper to use -print-file-name and -print-prog-name to look up
         // files by path.
         let named_file = |kind: &str, name: &str| -> Option<PathBuf> {
             let mut output = process::Command::new(&self.executable)
                 .arg(format!("-print-{}-name={}", kind, name))
+                .envs(self.env_vars.iter().cloned())
                 .output()
                 .ok()?;
             debug!(
@@ -1368,14 +1403,11 @@ impl pkg::ToolchainPackager for CToolchainPackager {
                 output.stdout.pop();
             }
 
-            // Create our PathBuf from the raw bytes.  Assume that relative
-            // paths can be found via PATH.
+            // Create our PathBuf from the raw bytes.  Relative paths are
+            // resolved against the compile task's PATH, falling back to the
+            // daemon's PATH when none was captured.
             let path: PathBuf = OsString::from_vec(output.stdout).into();
-            if path.is_absolute() {
-                Some(path)
-            } else {
-                which::which(path).ok()
-            }
+            resolve_prog_in_path(path, path_env.as_deref())
         };
 
         // Helper to add a named file/program by to the package.
@@ -1596,6 +1628,37 @@ mod test {
     use std::{collections::VecDeque, sync::Mutex};
 
     use super::*;
+
+    #[test]
+    #[cfg(feature = "dist-client")]
+    fn test_resolve_prog_in_path_honors_supplied_path() {
+        use crate::test::utils::mk_bin;
+        let dir = tempfile::Builder::new()
+            .prefix("sccache_tc")
+            .tempdir()
+            .unwrap();
+        let prog = mk_bin(dir.path(), "sccache-fake-as").unwrap();
+        let path_env = std::env::join_paths([dir.path()]).unwrap();
+
+        // A bare program name resolves against the supplied compile PATH, not
+        // the daemon's PATH. This is the toolchain-packaging bug: an OE native
+        // or cross gcc reports a bare `as`, which must resolve to the recipe's
+        // binutils on the compile PATH, not the build host's /usr/bin/as.
+        let resolved =
+            resolve_prog_in_path(PathBuf::from("sccache-fake-as"), Some(path_env.as_os_str()));
+        assert_eq!(
+            resolved.map(|p| p.canonicalize().unwrap()),
+            Some(prog.clone())
+        );
+
+        // Without the compile PATH, the daemon PATH cannot find this program.
+        let unresolved = resolve_prog_in_path(PathBuf::from("sccache-fake-as"), None);
+        assert_eq!(unresolved, None);
+
+        // An absolute path passes through untouched.
+        let absolute = resolve_prog_in_path(prog.clone(), Some(path_env.as_os_str()));
+        assert_eq!(absolute, Some(prog));
+    }
 
     #[test]
     fn test_same_content() {
