@@ -587,6 +587,18 @@ pub struct SchedulerStatusResult {
     pub num_servers: usize,
     pub num_cpus: usize,
     pub in_progress: usize,
+    /// Per-server breakdown so a client can see how capacity and load are
+    /// distributed, not just the cluster aggregate.
+    pub servers: Vec<ServerStatusResult>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServerStatusResult {
+    /// The server's socket address, as the scheduler knows it.
+    pub id: String,
+    pub num_cpus: usize,
+    pub in_progress: usize,
 }
 
 // SubmitToolchain

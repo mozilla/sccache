@@ -11,8 +11,8 @@ use sccache::dist::{
     self, AllocJobResult, AssignJobResult, BuilderIncoming, CompileCommand, HeartbeatServerResult,
     InputsReader, JobAlloc, JobAuthorizer, JobComplete, JobId, JobState, RunJobResult,
     SchedulerIncoming, SchedulerOutgoing, SchedulerStatusResult, ServerId, ServerIncoming,
-    ServerNonce, ServerOutgoing, SubmitToolchainResult, TcCache, Toolchain, ToolchainReader,
-    UpdateJobStateResult,
+    ServerNonce, ServerOutgoing, ServerStatusResult, SubmitToolchainResult, TcCache, Toolchain,
+    ToolchainReader, UpdateJobStateResult,
 };
 use sccache::util::BASE64_URL_SAFE_ENGINE;
 use sccache::util::daemonize;
@@ -746,6 +746,14 @@ impl SchedulerIncoming for Scheduler {
             num_servers: servers.len(),
             num_cpus: servers.values().map(|v| v.num_cpus).sum(),
             in_progress: jobs.len(),
+            servers: servers
+                .iter()
+                .map(|(server_id, details)| ServerStatusResult {
+                    id: server_id.addr().to_string(),
+                    num_cpus: details.num_cpus,
+                    in_progress: details.jobs_assigned.len(),
+                })
+                .collect(),
         })
     }
 }
