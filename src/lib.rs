@@ -62,8 +62,6 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const LOGGING_ENV: &str = "SCCACHE_LOG";
 
 pub fn main() {
-    init_logging();
-
     let command = match cmdline::try_parse() {
         Ok(cmd) => cmd,
         Err(e) => match e.downcast::<clap::error::Error>() {
@@ -79,6 +77,10 @@ pub fn main() {
         },
     };
 
+    // Logging is initialized after parsing so the compile-wrapper case can keep
+    // sccache's own log records off the wrapped compiler's stderr.
+    init_logging(&command);
+
     std::process::exit(match commands::run_command(command) {
         Ok(s) => s,
         Err(e) => {
@@ -91,13 +93,42 @@ pub fn main() {
     });
 }
 
-fn init_logging() {
+fn init_logging(command: &cmdline::Command) {
     if env::var(LOGGING_ENV).is_ok() {
         let mut builder = env_logger::Builder::from_env(LOGGING_ENV);
 
         // Enable millisecond precision timestamps if SCCACHE_LOG_MILLIS is set
         if env::var("SCCACHE_LOG_MILLIS").is_ok() {
             builder.format_timestamp_millis();
+        }
+
+        // When sccache runs as a compiler wrapper (`sccache <compiler> ...`) it
+        // shares stderr with the wrapped compiler. Build tools treat any
+        // unexpected stderr on a feature probe as a compiler failure: libtool's
+        // `-fPIC` check sets `pic_flag=""` on non-empty stderr, producing non-PIC
+        // objects that then fail to link into a shared library. sccache's own log
+        // records must never reach that stderr. Send them to SCCACHE_ERROR_LOG
+        // when set; otherwise keep stderr only for an interactive terminal (so
+        // `SCCACHE_LOG=debug sccache gcc ...` at a prompt still shows logs) and
+        // discard them when stderr is captured by a build.
+        if matches!(command, cmdline::Command::Compile { .. }) {
+            use std::io::IsTerminal;
+            let target: Option<Box<dyn std::io::Write + Send + 'static>> =
+                match env::var("SCCACHE_ERROR_LOG") {
+                    Ok(path) if !path.is_empty() => Some(
+                        std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(&path)
+                            .map(|f| Box::new(f) as Box<dyn std::io::Write + Send + 'static>)
+                            .unwrap_or_else(|_| Box::new(std::io::sink())),
+                    ),
+                    _ if !std::io::stderr().is_terminal() => Some(Box::new(std::io::sink())),
+                    _ => None,
+                };
+            if let Some(target) = target {
+                builder.target(env_logger::Target::Pipe(target));
+            }
         }
 
         match builder.try_init() {
