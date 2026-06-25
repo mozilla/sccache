@@ -1183,7 +1183,7 @@ fn remap_generated_filenames(
                                 // Don't use the count as the first character of the file name, because the file name
                                 // may be used as an identifier (via the __FILE__ macro) and identifiers with leading
                                 // digits are not valid in C/C++, i.e. `x_0.cudafe1.cpp` instead of `0.cudafe1.cpp`.
-                                .join("x_".to_owned() + &count + extension)
+                                .join("x_".to_owned() + count.as_str() + extension)
                                 .to_string_lossy()
                                 .to_string()
                         })

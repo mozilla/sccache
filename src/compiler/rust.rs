@@ -2262,7 +2262,7 @@ impl OutputsRewriter for RustOutputsRewriter {
         if let Some(dep_info) = self.dep_info {
             let extra_input_str = extra_inputs
                 .iter()
-                .fold(String::new(), |s, p| s + " " + &p.to_string_lossy());
+                .fold(String::new(), |s, p| s + " " + p.to_string_lossy().as_ref());
             for dep_info_local_path in output_paths {
                 trace!("Comparing with {}", dep_info_local_path.display());
                 if dep_info == *dep_info_local_path {
