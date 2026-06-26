@@ -8,11 +8,11 @@ use sccache::config::{
     INSECURE_DIST_CLIENT_TOKEN, scheduler as scheduler_config, server as server_config,
 };
 use sccache::dist::{
-    self, AllocJobResult, AssignJobResult, BuilderIncoming, CompileCommand, HeartbeatServerResult,
-    InputsReader, JobAlloc, JobAuthorizer, JobComplete, JobId, JobState, RunJobResult,
-    SchedulerIncoming, SchedulerOutgoing, SchedulerStatusResult, ServerId, ServerIncoming,
-    ServerNonce, ServerOutgoing, ServerStatusResult, SubmitToolchainResult, TcCache, Toolchain,
-    ToolchainReader, UpdateJobStateResult,
+    self, AllocJobResult, AssignJobResult, BuilderIncoming, CompileCommand, DeregisterServerResult,
+    HeartbeatServerResult, InputsReader, JobAlloc, JobAuthorizer, JobComplete, JobId, JobState,
+    RunJobResult, SchedulerIncoming, SchedulerOutgoing, SchedulerStatusResult, ServerId,
+    ServerIncoming, ServerNonce, ServerOutgoing, ServerStatusResult, SubmitToolchainResult,
+    TcCache, Toolchain, ToolchainReader, UpdateJobStateResult,
 };
 use sccache::util::BASE64_URL_SAFE_ENGINE;
 use sccache::util::daemonize;
@@ -449,6 +449,14 @@ impl SchedulerIncoming for Scheduler {
                 let mut best_load: f64 = MAX_PER_CORE_LOAD;
                 let now = Instant::now();
                 for (&server_id, details) in servers.iter_mut() {
+                    // A server silent past the heartbeat timeout is dead but
+                    // is only removed by prune_servers (heartbeat / status
+                    // paths), not here. Skip it so a job is never dispatched
+                    // to a node that is gone - which would fail and fall back
+                    // local, silently skewing dist measurements.
+                    if now.duration_since(details.last_seen) > dist::http::HEARTBEAT_TIMEOUT {
+                        continue;
+                    }
                     let load = load_weight(details.jobs_assigned.len(), details.num_cpus);
 
                     if let Some(last_error) = details.last_error {
@@ -682,6 +690,26 @@ impl SchedulerIncoming for Scheduler {
         Ok(HeartbeatServerResult { is_new: true })
     }
 
+    fn handle_deregister_server(&self, server_id: ServerId) -> Result<DeregisterServerResult> {
+        // LOCKS (jobs before servers, matching the alphabetical lock order
+        // used across the scheduler to avoid deadlock).
+        let mut jobs = self.jobs.lock().unwrap();
+        let mut servers = self.servers.lock().unwrap();
+
+        if let Some(details) = servers.remove(&server_id) {
+            info!(
+                "Server {} deregistered on graceful shutdown",
+                server_id.addr()
+            );
+            // Drop any jobs the departing server still held, as prune_servers
+            // does, so the scheduler does not track work no node will finish.
+            for job_id in details.jobs_assigned {
+                jobs.remove(&job_id);
+            }
+        }
+        Ok(DeregisterServerResult { success: true })
+    }
+
     fn handle_update_job_state(
         &self,
         job_id: JobId,
@@ -859,5 +887,131 @@ impl ServerIncoming for Server {
             .do_update_job_state(job_id, JobState::Complete)
             .context("Updating job state failed")?;
         res
+    }
+}
+
+#[cfg(test)]
+mod scheduler_tests {
+    use super::*;
+    use std::net::SocketAddr;
+
+    struct NoopAuthorizer;
+    impl JobAuthorizer for NoopAuthorizer {
+        fn generate_token(&self, _job_id: JobId) -> Result<String> {
+            Ok(String::new())
+        }
+        fn verify_token(&self, _job_id: JobId, _token: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    struct PanicOnAssign;
+    impl SchedulerOutgoing for PanicOnAssign {
+        fn do_assign_job(
+            &self,
+            _server_id: ServerId,
+            _job_id: JobId,
+            _tc: Toolchain,
+            _auth: String,
+        ) -> Result<AssignJobResult> {
+            panic!("a job must never be assigned to a stale server");
+        }
+    }
+
+    struct AssignOk;
+    impl SchedulerOutgoing for AssignOk {
+        fn do_assign_job(
+            &self,
+            _server_id: ServerId,
+            _job_id: JobId,
+            _tc: Toolchain,
+            _auth: String,
+        ) -> Result<AssignJobResult> {
+            Ok(AssignJobResult {
+                state: JobState::Ready,
+                need_toolchain: false,
+            })
+        }
+    }
+
+    fn insert_server(scheduler: &Scheduler, addr: &str, last_seen: Instant) {
+        let server_id = ServerId::new(addr.parse::<SocketAddr>().unwrap());
+        let mut servers = scheduler.servers.lock().unwrap();
+        servers.insert(
+            server_id,
+            ServerDetails {
+                last_seen,
+                last_error: None,
+                jobs_assigned: HashSet::new(),
+                jobs_unclaimed: HashMap::new(),
+                num_cpus: 32,
+                server_nonce: ServerNonce::new(),
+                job_authorizer: Box::new(NoopAuthorizer),
+            },
+        );
+    }
+
+    fn a_toolchain() -> Toolchain {
+        Toolchain {
+            archive_id: "deadbeef".to_owned(),
+        }
+    }
+
+    // A server silent past HEARTBEAT_TIMEOUT is dead but is only removed by
+    // prune_servers, which runs on the heartbeat and status paths - not on
+    // alloc_job. Until then it must never receive a job, or the scheduler
+    // dispatches to a node that is gone and the compile falls back local,
+    // silently skewing a dist measurement.
+    #[test]
+    fn test_alloc_job_skips_server_stale_beyond_heartbeat_timeout() {
+        let scheduler = Scheduler::new();
+        let stale = Instant::now() - (dist::http::HEARTBEAT_TIMEOUT + Duration::from_secs(10));
+        insert_server(&scheduler, "10.42.0.2:10501", stale);
+
+        let res = scheduler
+            .handle_alloc_job(&PanicOnAssign, a_toolchain())
+            .expect("handle_alloc_job should not error");
+
+        assert!(
+            matches!(res, AllocJobResult::Fail { .. }),
+            "a stale server must not be selected for assignment"
+        );
+    }
+
+    // Guard against over-filtering: a server seen within the timeout is alive
+    // and must remain a valid assignment target.
+    #[test]
+    fn test_alloc_job_uses_fresh_server() {
+        let scheduler = Scheduler::new();
+        insert_server(&scheduler, "10.42.0.1:10501", Instant::now());
+
+        let res = scheduler
+            .handle_alloc_job(&AssignOk, a_toolchain())
+            .expect("handle_alloc_job should not error");
+
+        assert!(
+            matches!(res, AllocJobResult::Success { .. }),
+            "a fresh server must be selected for assignment"
+        );
+    }
+
+    // A graceful deregister must drop the server at once, without waiting for
+    // the heartbeat timeout - even though its last_seen is current.
+    #[test]
+    fn test_deregister_server_removes_it_immediately() {
+        let scheduler = Scheduler::new();
+        insert_server(&scheduler, "10.42.0.2:10501", Instant::now());
+
+        let server_id = ServerId::new("10.42.0.2:10501".parse::<SocketAddr>().unwrap());
+        let res = scheduler
+            .handle_deregister_server(server_id)
+            .expect("handle_deregister_server should not error");
+        assert!(res.success);
+
+        let status = scheduler.handle_status().expect("status");
+        assert_eq!(
+            status.num_servers, 0,
+            "a deregistered server must be gone immediately"
+        );
     }
 }

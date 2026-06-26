@@ -208,6 +208,11 @@ pub mod urls {
             .join("/api/v1/scheduler/status")
             .expect("failed to create alloc job url")
     }
+    pub fn scheduler_deregister_server(scheduler_url: &reqwest::Url) -> reqwest::Url {
+        scheduler_url
+            .join("/api/v1/scheduler/deregister_server")
+            .expect("failed to create deregister url")
+    }
 
     pub fn server_assign_job(server_id: ServerId, job_id: JobId) -> reqwest::Url {
         let url = format!(
@@ -259,9 +264,10 @@ mod server {
     };
     use super::urls;
     use crate::dist::{
-        self, AllocJobResult, AssignJobResult, HeartbeatServerResult, InputsReader, JobAuthorizer,
-        JobId, JobState, RunJobResult, SchedulerStatusResult, ServerId, ServerNonce,
-        SubmitToolchainResult, Toolchain, ToolchainReader, UpdateJobStateResult,
+        self, AllocJobResult, AssignJobResult, DeregisterServerResult, HeartbeatServerResult,
+        InputsReader, JobAuthorizer, JobId, JobState, RunJobResult, SchedulerStatusResult,
+        ServerId, ServerNonce, SubmitToolchainResult, Toolchain, ToolchainReader,
+        UpdateJobStateResult,
     };
     use crate::errors::*;
 
@@ -833,6 +839,13 @@ mod server {
                         let res: SchedulerStatusResult = try_or_500_log!(req_id, handler.handle_status());
                         prepare_response(request, &res)
                     },
+                    (POST) (/api/v1/scheduler/deregister_server) => {
+                        let server_id = check_server_auth_or_err!(request);
+                        trace!("Req {}: deregister_server: {:?}", req_id, server_id);
+
+                        let res: DeregisterServerResult = try_or_500_log!(req_id, handler.handle_deregister_server(server_id));
+                        prepare_response(request, &res)
+                    },
                     _ => {
                         warn!("Unknown request {:?}", request);
                         rouille::Response::empty_404()
@@ -868,6 +881,24 @@ mod server {
             let req = self.client.lock().unwrap().post(url);
             bincode_req(req.bearer_auth(auth).bincode(&tc)?)
                 .context("POST to scheduler assign_job failed")
+        }
+    }
+
+    static SHUTDOWN_REQUESTED: atomic::AtomicBool = atomic::AtomicBool::new(false);
+
+    extern "C" fn handle_shutdown_signal(_sig: libc::c_int) {
+        // Async-signal-safe: only an atomic store. The deregister + exit run
+        // on a normal worker thread that polls this flag.
+        SHUTDOWN_REQUESTED.store(true, atomic::Ordering::SeqCst);
+    }
+
+    fn install_shutdown_handler() {
+        // SAFETY: the handler performs only an async-signal-safe atomic store,
+        // which is sound to run from a signal handler.
+        let handler = handle_shutdown_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
+        unsafe {
+            libc::signal(libc::SIGTERM, handler);
+            libc::signal(libc::SIGINT, handler);
         }
     }
 
@@ -926,6 +957,39 @@ mod server {
                 server_nonce,
                 handler,
             } = self;
+            // Graceful shutdown: on SIGTERM/SIGINT, deregister from the
+            // scheduler before exiting so it drops us at once instead of
+            // waiting out the 90s heartbeat timeout. The timeout stays as the
+            // backstop for an ungraceful death (crash / power loss).
+            let deregister_url = urls::scheduler_deregister_server(&scheduler_url);
+            let deregister_auth = scheduler_auth.clone();
+            install_shutdown_handler();
+            thread::spawn(move || {
+                let client = reqwest::blocking::Client::builder()
+                    .pool_max_idle_per_host(0)
+                    .timeout(Duration::from_secs(5))
+                    .build()
+                    .expect("deregister http client must build");
+                loop {
+                    if SHUTDOWN_REQUESTED.load(atomic::Ordering::SeqCst) {
+                        info!("Shutdown signal received; deregistering from scheduler");
+                        let res: Result<DeregisterServerResult> = bincode_req(
+                            client
+                                .post(deregister_url.clone())
+                                .bearer_auth(deregister_auth.clone())
+                                .bincode(&())
+                                .expect("failed to serialize deregister"),
+                        );
+                        match res {
+                            Ok(_) => info!("Deregistered from scheduler"),
+                            Err(e) => error!("Failed to deregister from scheduler: {}", e),
+                        }
+                        std::process::exit(0);
+                    }
+                    thread::sleep(Duration::from_millis(200));
+                }
+            });
+
             let heartbeat_req = HeartbeatServerHttpRequest {
                 num_cpus: num_cpus(),
                 jwt_key: jwt_key.clone(),

@@ -564,6 +564,14 @@ pub struct HeartbeatServerResult {
     pub is_new: bool,
 }
 
+// DeregisterServer
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeregisterServerResult {
+    pub success: bool,
+}
+
 // RunJob
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -685,6 +693,11 @@ pub trait SchedulerIncoming: Send + Sync {
         num_cpus: usize,
         job_authorizer: Box<dyn JobAuthorizer>,
     ) -> ExtResult<HeartbeatServerResult, Error>;
+    // From Server
+    fn handle_deregister_server(
+        &self,
+        server_id: ServerId,
+    ) -> ExtResult<DeregisterServerResult, Error>;
     // From Server
     fn handle_update_job_state(
         &self,
