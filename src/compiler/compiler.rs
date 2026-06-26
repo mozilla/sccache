@@ -877,7 +877,10 @@ where
     let dist_client = match dist_compile_cmd.clone().and(dist_client) {
         Some(dc) => dc,
         None => {
-            debug!("[{}]: Compiling locally", out_pretty);
+            info!(
+                "[{}]: Compiling locally (not eligible for distributed compilation)",
+                out_pretty
+            );
             return compile_cmd
                 .execute(service, &creator)
                 .await
@@ -885,7 +888,7 @@ where
         }
     };
 
-    debug!("[{}]: Attempting distributed compilation", out_pretty);
+    info!("[{}]: Attempting distributed compilation", out_pretty);
     let out_pretty2 = out_pretty.clone();
 
     let local_executable = compile_cmd.get_executable();
@@ -900,6 +903,14 @@ where
             .map(|output| path_transformer.as_dist_abs(&cwd.join(output.path)))
             .collect::<Option<_>>()
             .context("Failed to adapt an output path for distributed compile")?;
+        // The local paths every declared output must occupy once the compile
+        // finishes. Captured before `compilation` is moved into the packagers
+        // below so a remote compile that drops a declared output can be detected
+        // and salvaged (see the missing-output check after the run completes).
+        let expected_output_paths: Vec<PathBuf> = compilation
+            .outputs()
+            .map(|output| cwd.join(output.path))
+            .collect();
         let (inputs_packager, toolchain_packager, outputs_rewriter) =
             compilation.into_dist_packagers(path_transformer)?;
 
@@ -970,7 +981,7 @@ where
                 )
             })?;
 
-        let mut jc = match jres {
+        let jc = match jres {
             dist::RunJobResult::Complete(jc) => jc,
             dist::RunJobResult::JobNotFound => bail!("Job {} not found on server", job_id),
         };
@@ -1036,14 +1047,42 @@ where
         );
 
         if jc.output.code != 0 {
-            // Add server info to help diagnose host-specific failures, e.g. due to flaky hardware.
-            // Failed builds are not cached so this tampering should not cause too much trouble.
-            let server_info = format!("sccache: Job failed on server {}:\n", server_id.addr());
-            jc.output
-                .stderr
-                .splice(0..0, server_info.as_bytes().to_vec());
+            // A non-zero remote result is frequently a distribution artifact
+            // rather than a genuine compiler error: e.g. an object that
+            // .incbin's a binary the inputs packager did not ship (the kernel's
+            // vdso/dtb/embedded-config wrappers), which the build-server cannot
+            // assemble. Fall back to a local recompile via the or_else below - it
+            // either succeeds (confirming a dist-only artifact) or reproduces the
+            // real error locally, so a remote failure never breaks a build that
+            // would compile fine locally. This only affects failing dist
+            // compiles; successful ones are returned unchanged above.
+            bail!(
+                "distributed compile on {} returned exit code {}; recompiling locally",
+                server_id.addr(),
+                jc.output.code
+            );
         }
 
+        // The remote compile returned exit 0 but may have dropped a declared
+        // output: glibc's ldconfig.o/sprof.o omit their `.o.dt` dep file, which
+        // the build-server does not return. Zipping the outputs later would then
+        // fail fatally with no recourse. Treat a missing declared output as a
+        // distribution artifact and fall back to a local recompile via the
+        // or_else below, which reproduces the full output set. Compiles whose
+        // dist output set is complete are unaffected.
+        if let Some(missing) = expected_output_paths.iter().find(|p| !p.exists()) {
+            bail!(
+                "distributed compile on {} did not return expected output {}; recompiling locally",
+                server_id.addr(),
+                missing.display()
+            );
+        }
+
+        info!(
+            "[{}]: Distributed compilation finished on {}",
+            out_pretty,
+            server_id.addr()
+        );
         Ok((DistType::Ok(server_id), jc.output.into()))
     };
 
@@ -3209,6 +3248,7 @@ LLVM version: 6.0",
             test_dist::ErrorAllocJobClient::new(),
             test_dist::ErrorSubmitToolchainClient::new(),
             test_dist::ErrorRunJobClient::new(),
+            test_dist::IncompleteOutputsClient::new(),
         ];
         // Write a dummy input file so the preprocessor cache mode can work
         std::fs::write(f.tempdir.path().join("foo.c"), "whatever").unwrap();
@@ -3642,6 +3682,114 @@ mod test_dist {
 
             let mut inputs = vec![];
             let path_transformer = inputs_packager.write_inputs(&mut inputs).unwrap();
+            let outputs = outputs
+                .into_iter()
+                .map(|name| {
+                    let data = format!("some data in {}", name);
+                    let data = OutputData::try_from_reader(data.as_bytes()).unwrap();
+                    (name, data)
+                })
+                .collect();
+            let result = RunJobResult::Complete(JobComplete {
+                output: self.output.clone(),
+                outputs,
+            });
+            Ok((result, path_transformer))
+        }
+        async fn put_toolchain(
+            &self,
+            _: PathBuf,
+            _: String,
+            _: Box<dyn pkg::ToolchainPackager>,
+        ) -> Result<(Toolchain, Option<(String, PathBuf)>)> {
+            Ok((
+                self.tc.clone(),
+                Some((
+                    "/overridden/compiler".to_owned(),
+                    PathBuf::from("somearchiveid"),
+                )),
+            ))
+        }
+        fn rewrite_includes_only(&self) -> bool {
+            false
+        }
+        fn get_custom_toolchain(&self, _exe: &Path) -> Option<PathBuf> {
+            None
+        }
+    }
+
+    /// A dist client whose remote compile succeeds (exit 0) but whose returned
+    /// output set drops a declared output - the glibc `.o.dt` failure mode,
+    /// where the build-server runs the compile fine yet does not return every
+    /// declared output. The client must detect the missing output and fall back
+    /// to a local recompile rather than failing the build.
+    pub struct IncompleteOutputsClient {
+        has_started: AtomicBool,
+        tc: Toolchain,
+        output: ProcessOutput,
+    }
+
+    impl IncompleteOutputsClient {
+        #[allow(clippy::new_ret_no_self)]
+        pub fn new() -> Arc<dyn dist::Client> {
+            Arc::new(Self {
+                has_started: AtomicBool::default(),
+                tc: Toolchain {
+                    archive_id: "somearchiveid".to_owned(),
+                },
+                output: ProcessOutput::fake_output(0, vec![], vec![]),
+            })
+        }
+    }
+
+    #[async_trait]
+    impl dist::Client for IncompleteOutputsClient {
+        async fn do_alloc_job(&self, tc: Toolchain) -> Result<AllocJobResult> {
+            assert!(
+                !self
+                    .has_started
+                    .swap(true, std::sync::atomic::Ordering::AcqRel)
+            );
+            assert_eq!(self.tc, tc);
+
+            Ok(AllocJobResult::Success {
+                job_alloc: JobAlloc {
+                    auth: "abcd".to_owned(),
+                    job_id: JobId(0),
+                    server_id: ServerId::new(([0, 0, 0, 0], 1).into()),
+                },
+                need_toolchain: true,
+            })
+        }
+        async fn do_get_status(&self) -> Result<SchedulerStatusResult> {
+            unreachable!("fn do_get_status is not used for this test. qed")
+        }
+        async fn do_submit_toolchain(
+            &self,
+            job_alloc: JobAlloc,
+            tc: Toolchain,
+        ) -> Result<SubmitToolchainResult> {
+            assert_eq!(job_alloc.job_id, JobId(0));
+            assert_eq!(self.tc, tc);
+
+            Ok(SubmitToolchainResult::Success)
+        }
+        async fn do_run_job(
+            &self,
+            job_alloc: JobAlloc,
+            command: CompileCommand,
+            outputs: Vec<String>,
+            inputs_packager: Box<dyn pkg::InputsPackager>,
+        ) -> Result<(RunJobResult, PathTransformer)> {
+            assert_eq!(job_alloc.job_id, JobId(0));
+            assert_eq!(command.executable, "/overridden/compiler");
+
+            let mut inputs = vec![];
+            let path_transformer = inputs_packager.write_inputs(&mut inputs).unwrap();
+            // Drop one declared output to mimic a build-server that returned a
+            // successful compile with an incomplete output set.
+            let mut outputs = outputs;
+            outputs.pop();
             let outputs = outputs
                 .into_iter()
                 .map(|name| {

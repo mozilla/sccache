@@ -133,13 +133,20 @@ fn notify_server_startup(name: Option<&OsString>, status: ServerStartup) -> Resu
 }
 
 #[cfg(unix)]
-fn get_signal(status: ExitStatus) -> i32 {
+fn get_signal(status: ExitStatus) -> Option<i32> {
     use std::os::unix::prelude::*;
-    status.signal().expect("must have signal")
+    // None when the process produced neither an exit code nor a terminating
+    // signal - e.g. an ExitStatus synthesized from a distributed-compile result,
+    // or an abnormal wait status. Previously this was `.expect("must have
+    // signal")`, which panicked the compile task (surfacing as a misleading
+    // "Failed to bind socket") and could be tripped repeatedly under load.
+    status.signal()
 }
 #[cfg(windows)]
-fn get_signal(_status: ExitStatus) -> i32 {
-    panic!("no signals on windows")
+fn get_signal(_status: ExitStatus) -> Option<i32> {
+    // On Windows ExitStatus::code() is always Some, so the signal branch is
+    // never reached; return None rather than panicking.
+    None
 }
 
 pub struct DistClientContainer {
@@ -1573,7 +1580,7 @@ where
 
                         match status.code() {
                             Some(code) => res.retcode = Some(code),
-                            None => res.signal = Some(get_signal(status)),
+                            None => res.signal = get_signal(status),
                         }
 
                         res.stdout = stdout;
@@ -1589,7 +1596,7 @@ where
 
                                 match output.status.code() {
                                     Some(code) => res.retcode = Some(code),
-                                    None => res.signal = Some(get_signal(output.status)),
+                                    None => res.signal = get_signal(output.status),
                                 }
                                 res.stdout = output.stdout;
                                 res.stderr = output.stderr;
@@ -2443,6 +2450,26 @@ fn waits_until_zero() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn test_get_signal_handles_signal_and_abnormal_status() {
+        use std::os::unix::process::ExitStatusExt;
+
+        // Terminated by SIGKILL: a real terminating signal is reported.
+        let killed = ExitStatus::from_raw(9);
+        assert_eq!(killed.code(), None);
+        assert_eq!(get_signal(killed), Some(9));
+
+        // A wait status that is neither a normal exit (code) nor a terminating
+        // signal - here WIFSTOPPED (low byte 0x7f). The same neither-code-nor-
+        // signal shape can arise from an ExitStatus synthesized for a
+        // distributed compile. get_signal must return None, not panic
+        // "must have signal" (which used to crash the in-flight compile task).
+        let abnormal = ExitStatus::from_raw(0x7f);
+        assert_eq!(abnormal.code(), None);
+        assert_eq!(get_signal(abnormal), None);
+    }
 
     struct StringWriter {
         buffer: String,
