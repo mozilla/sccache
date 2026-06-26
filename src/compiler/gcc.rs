@@ -927,6 +927,37 @@ where
     run_input_output(cmd, None).await
 }
 
+/// Autoconf and CMake configure-time feature probes must run locally, not
+/// distributed. autoconf compiles `conftest.<ext>`; CMake's `try_compile()`
+/// compiles generated sources inside a `CMakeScratch`/`CMakeTmp`/`TryCompile-*`
+/// scratch directory. These probes are tiny, run by the hundreds during
+/// `do_configure`, and are frequently *designed* to fail (detecting the absence
+/// of a feature). Distributing them ships a network round-trip per probe and,
+/// for the intentionally-failing ones, a dropped-output fallback - hundreds of
+/// wasted dispatches contending with real compiles for build-server slots, for
+/// no benefit: a probe's pass/fail result is identical whether it compiles
+/// locally or remotely, and a sub-second local compile beats the round-trip.
+/// distcc/icecc tolerate this only because their dispatch is cheaper. Detection
+/// keys on the autoconf input name and the CMake scratch directory rather than
+/// the generated probe source names (CheckSymbolExists.c, src.c, ...), which are
+/// not stable across CMake versions. A false positive is harmless: the compile
+/// merely runs locally (still cached), exactly as it would for any non-eligible
+/// recipe.
+#[cfg(feature = "dist-client")]
+fn is_configure_probe(input: &Path, cwd: &Path) -> bool {
+    if input
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .is_some_and(|stem| stem == "conftest")
+    {
+        return true;
+    }
+    cwd.components().any(|component| {
+        let part = component.as_os_str().to_str().unwrap_or_default();
+        part == "CMakeScratch" || part == "CMakeTmp" || part.starts_with("TryCompile-")
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn generate_compile_commands<F>(
     path_transformer: &mut dist::PathTransformer,
@@ -1014,9 +1045,16 @@ where
     //    (notably __has_builtin, evaluated differently under -fpreprocessed)
     //    that diverges from a native build and then breaks every consumer that
     //    -includes the header. distcc refuses PCH for the same reason.
+    // 4. Autoconf/CMake configure feature-probes (conftest.c, CMake try_compile
+    //    sources under a CMakeScratch/CMakeTmp/TryCompile-* dir) run locally:
+    //    they are tiny, run by the hundreds during do_configure, and are often
+    //    designed to fail, so distributing them only wastes build-server slots
+    //    on round-trips whose result is identical to a local compile. See
+    //    is_configure_probe.
     let dist_command = if has_verbose_flag
         || parsed_args.language == Language::Cuda
         || parsed_args.language.is_c_like_header()
+        || is_configure_probe(&parsed_args.input, cwd)
     {
         None
     } else {
@@ -2743,6 +2781,94 @@ mod test {
         let _ = command.execute(&service, &creator).wait();
         assert_eq!(Cacheable::Yes, cacheable);
         assert_eq!(0, creator.lock().unwrap().children.len());
+    }
+
+    #[test]
+    fn test_compile_conftest_never_dist() {
+        // Autoconf compiles `conftest.c` to probe for a feature; the probe is
+        // tiny and often designed to fail. It must run locally, never
+        // distributed, regardless of rewrite_includes_only (dist enabled).
+        let creator = new_creator();
+        let f = TestFixture::new();
+        let parsed_args = ParsedArguments {
+            input: "conftest.c".into(),
+            double_dash_input: false,
+            language: Language::C,
+            compilation_flag: "-c".into(),
+            depfile: None,
+            outputs: vec![(
+                "obj",
+                ArtifactDescriptor {
+                    path: "conftest.o".into(),
+                    optional: false,
+                },
+            )]
+            .into_iter()
+            .collect(),
+            dependency_args: vec![],
+            preprocessor_args: vec![],
+            common_args: vec![],
+            arch_args: vec![],
+            unhashed_args: vec![],
+            extra_dist_files: vec![],
+            extra_hash_files: vec![],
+            msvc_show_includes: false,
+            profile_generate: false,
+            color_mode: ColorMode::Auto,
+            suppress_rewrite_includes_only: false,
+            too_hard_for_preprocessor_cache_mode: None,
+        };
+        let runtime = single_threaded_runtime();
+        let storage = MockStorage::new(None, false);
+        let storage: std::sync::Arc<MockStorage> = std::sync::Arc::new(storage);
+        let service = server::SccacheService::mock_with_storage(storage, runtime.handle().clone());
+        let compiler = &f.bins[0];
+        next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
+        let mut path_transformer = dist::PathTransformer::new();
+        let (command, dist_command, cacheable) = generate_compile_commands(
+            &mut path_transformer,
+            compiler,
+            &parsed_args,
+            f.tempdir.path(),
+            &[],
+            CCompilerKind::Gcc,
+            true,
+            language_to_gcc_arg,
+        )
+        .unwrap();
+        assert!(dist_command.is_none());
+        let _ = command.execute(&service, &creator).wait();
+        assert_eq!(Cacheable::Yes, cacheable);
+        assert_eq!(0, creator.lock().unwrap().children.len());
+    }
+
+    #[test]
+    #[cfg(feature = "dist-client")]
+    fn test_is_configure_probe() {
+        use std::path::Path;
+        // autoconf: conftest.<ext> in any directory.
+        assert!(is_configure_probe(
+            Path::new("conftest.c"),
+            Path::new("/build/foo/1.0/foo-1.0")
+        ));
+        assert!(is_configure_probe(
+            Path::new("conftest.cpp"),
+            Path::new("/build/foo/1.0/foo-1.0")
+        ));
+        // CMake try_compile: generated source inside a scratch directory.
+        assert!(is_configure_probe(
+            Path::new("CheckSymbolExists.c"),
+            Path::new("/build/foo/1.0/build/CMakeFiles/CMakeScratch/TryCompile-aB3xZ9")
+        ));
+        assert!(is_configure_probe(
+            Path::new("src.c"),
+            Path::new("/build/foo/1.0/build/CMakeTmp")
+        ));
+        // A real translation unit in a normal build directory must distribute.
+        assert!(!is_configure_probe(
+            Path::new("list.c"),
+            Path::new("/build/foo/1.0/foo-1.0/src")
+        ));
     }
 
     #[test]
