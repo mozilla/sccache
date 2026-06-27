@@ -2206,8 +2206,9 @@ int value;
     }
 
     // Short-circuit the parameters we don't need to change during tests
-    fn do_single_preprocessor_line_call(
+    fn do_single_preprocessor_line_call_cwd(
         line: &[u8],
+        cwd: &Path,
         include_files: &mut HashMap<PathBuf, String>,
         fs_impl: &impl PreprocessorFSAbstraction,
         skip_system_headers: bool,
@@ -2224,7 +2225,7 @@ int value;
         let total_len = bytes.len();
         process_preprocessor_line(
             input_file,
-            Path::new(""),
+            cwd,
             include_files,
             config,
             std::time::SystemTime::now(),
@@ -2237,6 +2238,21 @@ int value;
             fs_impl,
         )
         .unwrap()
+    }
+
+    fn do_single_preprocessor_line_call(
+        line: &[u8],
+        include_files: &mut HashMap<PathBuf, String>,
+        fs_impl: &impl PreprocessorFSAbstraction,
+        skip_system_headers: bool,
+    ) -> PreprocessedLineAction {
+        do_single_preprocessor_line_call_cwd(
+            line,
+            Path::new(""),
+            include_files,
+            fs_impl,
+            skip_system_headers,
+        )
     }
 
     /// Test cases where we don't access the filesystem
