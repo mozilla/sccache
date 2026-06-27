@@ -913,7 +913,10 @@ fn process_preprocessor_line(
             None => include_path,
         }
     } else {
-        let path_buf = decode_path(include_path)?;
+        let mut path_buf = decode_path(include_path)?;
+        if path_buf.is_relative() {
+            path_buf = cwd.join(path_buf);
+        }
         let normalized = normalize_path(&path_buf);
         if normalized == path_buf {
             // `None` is a marker that the normalization is the same
