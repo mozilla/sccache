@@ -57,6 +57,33 @@ fn test_gcp_arg_check() -> Result<()> {
     Ok(())
 }
 
+/// Running the sccache binary under a name that is not `sccache` and is not a
+/// real compiler on PATH must NOT make sccache wrap itself (which used to recurse
+/// forever via the `<compiler> -vV` detection probe). It should warn and behave
+/// as a normal sccache invocation instead. The test timeout guards the old hang.
+#[cfg(unix)]
+#[test]
+fn test_masquerade_as_self_warns_instead_of_recursing() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempfile::tempdir()?;
+    // A name that is not `sccache` and (almost certainly) not on PATH.
+    let masquerade = tmp.path().join("notacompiler");
+    std::fs::copy(SCCACHE_BIN.as_os_str(), &masquerade)?;
+    std::fs::set_permissions(&masquerade, std::fs::Permissions::from_mode(0o755))?;
+
+    let mut cmd = Command::new(&masquerade);
+    cmd.arg("--version").env("SCCACHE_LOG", "warn");
+    cmd.assert()
+        .success()
+        // It ran as sccache (printed the version) ...
+        .stdout(predicate::str::contains("sccache"))
+        // ... after warning that the name resolved back to sccache itself.
+        .stderr(predicate::str::contains("resolves to sccache itself"));
+
+    Ok(())
+}
+
 #[test]
 #[serial]
 #[cfg(feature = "s3")]
