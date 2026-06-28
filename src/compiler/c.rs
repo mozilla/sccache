@@ -913,7 +913,10 @@ fn process_preprocessor_line(
             None => include_path,
         }
     } else {
-        let path_buf = decode_path(include_path)?;
+        let mut path_buf = decode_path(include_path)?;
+        if path_buf.is_relative() {
+            path_buf = cwd.join(path_buf);
+        }
         let normalized = normalize_path(&path_buf);
         if normalized == path_buf {
             // `None` is a marker that the normalization is the same
@@ -955,7 +958,11 @@ fn process_preprocessor_line(
 /// Normalize a path, removing things like `.` and `..`.
 ///
 /// CAUTION: This does not resolve symlinks (unlike
-/// [`std::fs::canonicalize`]).
+/// [`std::fs::canonicalize`]). This may cause incorrect or surprising
+/// behavior at times. This should be used carefully. Unfortunately,
+/// [`std::fs::canonicalize`] can be hard to use correctly, since it can often
+/// fail, or on Windows returns annoying device paths. This is a problem Cargo
+/// needs to improve on.
 pub fn normalize_path(path: &Path) -> PathBuf {
     use std::path::Component;
     let mut components = path.components().peekable();
@@ -970,11 +977,18 @@ pub fn normalize_path(path: &Path) -> PathBuf {
         match component {
             Component::Prefix(..) => unreachable!(),
             Component::RootDir => {
-                ret.push(component.as_os_str());
+                ret.push(Component::RootDir);
             }
             Component::CurDir => {}
             Component::ParentDir => {
-                ret.pop();
+                if ret.ends_with(Component::ParentDir) {
+                    ret.push(Component::ParentDir);
+                } else {
+                    let popped = ret.pop();
+                    if !popped && !ret.has_root() {
+                        ret.push(Component::ParentDir);
+                    }
+                }
             }
             Component::Normal(c) => {
                 ret.push(c);
@@ -1957,8 +1971,9 @@ mod test {
     }
 
     // Short-circuit the parameters we don't need to change during tests
-    fn do_single_preprocessor_line_call(
+    fn do_single_preprocessor_line_call_cwd(
         line: &[u8],
+        cwd: &Path,
         include_files: &mut HashMap<PathBuf, String>,
         fs_impl: &impl PreprocessorFSAbstraction,
         skip_system_headers: bool,
@@ -1975,7 +1990,7 @@ mod test {
         let total_len = bytes.len();
         process_preprocessor_line(
             input_file,
-            Path::new(""),
+            cwd,
             include_files,
             config,
             std::time::SystemTime::now(),
@@ -1988,6 +2003,21 @@ mod test {
             fs_impl,
         )
         .unwrap()
+    }
+
+    fn do_single_preprocessor_line_call(
+        line: &[u8],
+        include_files: &mut HashMap<PathBuf, String>,
+        fs_impl: &impl PreprocessorFSAbstraction,
+        skip_system_headers: bool,
+    ) -> PreprocessedLineAction {
+        do_single_preprocessor_line_call_cwd(
+            line,
+            Path::new(""),
+            include_files,
+            fs_impl,
+            skip_system_headers,
+        )
     }
 
     /// Test cases where we don't access the filesystem
@@ -2226,6 +2256,212 @@ mod test {
                     "/usr/include/x86_64-linux-gnu/bits/libc-header-start.h",
                 ))
                 .unwrap(),
+            // hash of `b"contents"`
+            "a93900c371d997927c5bc568ea538bed59ae5c960021dcfe7b0b369da5267528",
+        );
+
+        // meson style
+        let mut include_files = HashMap::new();
+        let fs_impl = TestFs {
+            metadata_results: Mutex::new(
+                [(
+                    PathBuf::from("/src/foo.h"),
+                    PreprocessorFileMetadata {
+                        is_dir: false,
+                        is_file: true,
+                        modified: Some(Timestamp::new(12341234, 0)),
+                        ctime_or_creation: None,
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            ),
+            open_results: Mutex::new(
+                [(
+                    PathBuf::from("/src/foo.h"),
+                    Box::new(&b"contents"[..]) as Box<dyn std::io::Read>,
+                )]
+                .into_iter()
+                .collect(),
+            ),
+        };
+        assert_eq!(
+            do_single_preprocessor_line_call_cwd(
+                br#"// # 33 "../src/foo.h" 1"#,
+                Path::new("/build/"),
+                &mut include_files,
+                &fs_impl,
+                false,
+            ),
+            ControlFlow::Continue((21, 21)),
+        );
+        assert_eq!(include_files.len(), 1);
+        assert_eq!(
+            include_files.get(Path::new("/src/foo.h",)).unwrap(),
+            // hash of `b"contents"`
+            "a93900c371d997927c5bc568ea538bed59ae5c960021dcfe7b0b369da5267528",
+        );
+
+        // `normalize_path()` case `^../`
+        let mut include_files = HashMap::new();
+        let fs_impl = TestFs {
+            metadata_results: Mutex::new(
+                [(
+                    PathBuf::from("../src/foo.h"),
+                    PreprocessorFileMetadata {
+                        is_dir: false,
+                        is_file: true,
+                        modified: Some(Timestamp::new(12341234, 0)),
+                        ctime_or_creation: None,
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            ),
+            open_results: Mutex::new(
+                [(
+                    PathBuf::from("../src/foo.h"),
+                    Box::new(&b"contents"[..]) as Box<dyn std::io::Read>,
+                )]
+                .into_iter()
+                .collect(),
+            ),
+        };
+        assert_eq!(
+            do_single_preprocessor_line_call(
+                br#"// # 33 "../src/foo.h" 1"#,
+                &mut include_files,
+                &fs_impl,
+                false,
+            ),
+            ControlFlow::Continue((21, 21)),
+        );
+        assert_eq!(include_files.len(), 1);
+        assert_eq!(
+            include_files.get(Path::new("../src/foo.h",)).unwrap(),
+            // hash of `b"contents"`
+            "a93900c371d997927c5bc568ea538bed59ae5c960021dcfe7b0b369da5267528",
+        );
+
+        // `normalize_path()` case `^../(../)+`
+        let mut include_files = HashMap::new();
+        let fs_impl = TestFs {
+            metadata_results: Mutex::new(
+                [(
+                    PathBuf::from("../../src/foo.h"),
+                    PreprocessorFileMetadata {
+                        is_dir: false,
+                        is_file: true,
+                        modified: Some(Timestamp::new(12341234, 0)),
+                        ctime_or_creation: None,
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            ),
+            open_results: Mutex::new(
+                [(
+                    PathBuf::from("../../src/foo.h"),
+                    Box::new(&b"contents"[..]) as Box<dyn std::io::Read>,
+                )]
+                .into_iter()
+                .collect(),
+            ),
+        };
+        assert_eq!(
+            do_single_preprocessor_line_call(
+                br#"// # 33 "../../src/foo.h" 1"#,
+                &mut include_files,
+                &fs_impl,
+                false,
+            ),
+            ControlFlow::Continue((24, 24)),
+        );
+        assert_eq!(include_files.len(), 1);
+        assert_eq!(
+            include_files.get(Path::new("../../src/foo.h",)).unwrap(),
+            // hash of `b"contents"`
+            "a93900c371d997927c5bc568ea538bed59ae5c960021dcfe7b0b369da5267528",
+        );
+
+        // Without more context, leading `../` should be keeped
+        let mut include_files = HashMap::new();
+        let fs_impl = TestFs {
+            metadata_results: Mutex::new(
+                [(
+                    PathBuf::from("../src/foo.h"),
+                    PreprocessorFileMetadata {
+                        is_dir: false,
+                        is_file: true,
+                        modified: Some(Timestamp::new(12341234, 0)),
+                        ctime_or_creation: None,
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            ),
+            open_results: Mutex::new(
+                [(
+                    PathBuf::from("../src/foo.h"),
+                    Box::new(&b"contents"[..]) as Box<dyn std::io::Read>,
+                )]
+                .into_iter()
+                .collect(),
+            ),
+        };
+        assert_eq!(
+            do_single_preprocessor_line_call(
+                br#"// # 33 "../bar/../src/foo.h" 1"#,
+                &mut include_files,
+                &fs_impl,
+                false,
+            ),
+            ControlFlow::Continue((28, 28)),
+        );
+        assert_eq!(include_files.len(), 1);
+        assert_eq!(
+            include_files.get(Path::new("../src/foo.h",)).unwrap(),
+            // hash of `b"contents"`
+            "a93900c371d997927c5bc568ea538bed59ae5c960021dcfe7b0b369da5267528",
+        );
+
+        // Component::CurDir should be stripped
+        let mut include_files = HashMap::new();
+        let fs_impl = TestFs {
+            metadata_results: Mutex::new(
+                [(
+                    PathBuf::from("foo.h"),
+                    PreprocessorFileMetadata {
+                        is_dir: false,
+                        is_file: true,
+                        modified: Some(Timestamp::new(12341234, 0)),
+                        ctime_or_creation: None,
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            ),
+            open_results: Mutex::new(
+                [(
+                    PathBuf::from("foo.h"),
+                    Box::new(&b"contents"[..]) as Box<dyn std::io::Read>,
+                )]
+                .into_iter()
+                .collect(),
+            ),
+        };
+        assert_eq!(
+            do_single_preprocessor_line_call(
+                br#"// # 33 "./foo.h" 1"#,
+                &mut include_files,
+                &fs_impl,
+                false,
+            ),
+            ControlFlow::Continue((16, 16)),
+        );
+        assert_eq!(include_files.len(), 1);
+        assert_eq!(
+            include_files.get(Path::new("foo.h",)).unwrap(),
             // hash of `b"contents"`
             "a93900c371d997927c5bc568ea538bed59ae5c960021dcfe7b0b369da5267528",
         );
