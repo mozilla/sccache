@@ -173,6 +173,33 @@ impl<'de> Deserialize<'de> for MultiLevelStats {
     }
 }
 
+impl std::ops::AddAssign for LevelStats {
+    fn add_assign(&mut self, rhs: Self) {
+        // name and location identify the level — keep lhs values
+        self.hits += rhs.hits;
+        self.misses += rhs.misses;
+        self.writes += rhs.writes;
+        self.write_failures += rhs.write_failures;
+        self.backfills_from += rhs.backfills_from;
+        self.backfills_to += rhs.backfills_to;
+        self.hit_duration += rhs.hit_duration;
+        self.write_duration += rhs.write_duration;
+    }
+}
+
+impl std::ops::AddAssign for MultiLevelStats {
+    fn add_assign(&mut self, rhs: Self) {
+        let mut rhs_iter = rhs.0.into_iter();
+        for lhs_level in &mut self.0 {
+            if let Some(rhs_level) = rhs_iter.next() {
+                *lhs_level += rhs_level;
+            }
+        }
+        // Append any extra levels present only in rhs
+        self.0.extend(rhs_iter);
+    }
+}
+
 impl LevelStats {
     /// Calculate hit rate as a percentage
     pub fn hit_rate(&self) -> f64 {
@@ -433,26 +460,68 @@ impl MultiLevelStorage {
                     let cache_type = match level_name.to_lowercase().as_str() {
                         #[cfg(feature = "s3")]
                         "s3" => config.cache_configs.s3.clone().map(CacheType::S3),
+                        #[cfg(not(feature = "s3"))]
+                        "s3" => return Err(anyhow!("Cache level 's3' requires the 's3' feature")),
                         #[cfg(feature = "redis")]
                         "redis" => config.cache_configs.redis.clone().map(CacheType::Redis),
+                        #[cfg(not(feature = "redis"))]
+                        "redis" => {
+                            return Err(anyhow!(
+                                "Cache level 'redis' requires the 'redis' feature"
+                            ));
+                        }
                         #[cfg(feature = "memcached")]
                         "memcached" => config
                             .cache_configs
                             .memcached
                             .clone()
                             .map(CacheType::Memcached),
+                        #[cfg(not(feature = "memcached"))]
+                        "memcached" => {
+                            return Err(anyhow!(
+                                "Cache level 'memcached' requires the 'memcached' feature"
+                            ));
+                        }
                         #[cfg(feature = "gcs")]
                         "gcs" => config.cache_configs.gcs.clone().map(CacheType::GCS),
+                        #[cfg(not(feature = "gcs"))]
+                        "gcs" => {
+                            return Err(anyhow!("Cache level 'gcs' requires the 'gcs' feature"));
+                        }
                         #[cfg(feature = "gha")]
                         "gha" => config.cache_configs.gha.clone().map(CacheType::GHA),
+                        #[cfg(not(feature = "gha"))]
+                        "gha" => {
+                            return Err(anyhow!("Cache level 'gha' requires the 'gha' feature"));
+                        }
                         #[cfg(feature = "azure")]
                         "azure" => config.cache_configs.azure.clone().map(CacheType::Azure),
+                        #[cfg(not(feature = "azure"))]
+                        "azure" => {
+                            return Err(anyhow!(
+                                "Cache level 'azure' requires the 'azure' feature"
+                            ));
+                        }
                         #[cfg(feature = "webdav")]
                         "webdav" => config.cache_configs.webdav.clone().map(CacheType::Webdav),
+                        #[cfg(not(feature = "webdav"))]
+                        "webdav" => {
+                            return Err(anyhow!(
+                                "Cache level 'webdav' requires the 'webdav' feature"
+                            ));
+                        }
                         #[cfg(feature = "oss")]
                         "oss" => config.cache_configs.oss.clone().map(CacheType::OSS),
+                        #[cfg(not(feature = "oss"))]
+                        "oss" => {
+                            return Err(anyhow!("Cache level 'oss' requires the 'oss' feature"));
+                        }
                         #[cfg(feature = "cos")]
                         "cos" => config.cache_configs.cos.clone().map(CacheType::COS),
+                        #[cfg(not(feature = "cos"))]
+                        "cos" => {
+                            return Err(anyhow!("Cache level 'cos' requires the 'cos' feature"));
+                        }
                         _ => {
                             return Err(anyhow!("Unknown cache level: '{}'", level_name));
                         }
@@ -673,13 +742,25 @@ impl Storage for MultiLevelStorage {
         Ok(Cache::Miss)
     }
 
+    async fn get_raw(&self, key: &str) -> Result<Option<Bytes>> {
+        for level in &self.levels {
+            if let Some(bytes) = level.get_raw(key).await? {
+                return Ok(Some(bytes));
+            }
+        }
+        Ok(None)
+    }
+
     async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration> {
+        let data: Bytes = entry.finish()?.into();
+        self.put_raw(key, data).await
+    }
+
+    async fn put_raw(&self, key: &str, data: Bytes) -> Result<Duration> {
         if self.levels.is_empty() {
             return Err(anyhow!("No cache levels configured"));
         }
 
-        // Serialize cache entry once
-        let data: Bytes = entry.finish()?.into();
         let key_str = key.to_string();
 
         match self.write_error_policy {

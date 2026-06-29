@@ -25,7 +25,7 @@ use crate::compiler::{
 use crate::mock_command::{
     CommandChild, CommandCreator, CommandCreatorSync, ExitStatusValue, RunCommand, exit_status,
 };
-use crate::util::{OsStrExt, resolve_compiler_avoiding_ccache, run_input_output};
+use crate::util::{OsStrExt, resolve_compiler_avoiding_wrapper, run_input_output};
 use crate::{counted_array, dist, protocol, server};
 use async_trait::async_trait;
 use fs::File;
@@ -182,7 +182,7 @@ impl CCompilerImpl for Nvcc {
         }?;
 
         // Resolve compiler avoiding ccache wrappers to prevent double-caching.
-        let resolved_executable = resolve_compiler_avoiding_ccache(executable, &env_vars);
+        let resolved_executable = resolve_compiler_avoiding_wrapper(executable, &env_vars);
 
         let initialize_cmd_and_args = || {
             let mut command = creator.clone().new_command_sync(&resolved_executable);
@@ -942,7 +942,7 @@ where
     }
 
     // Resolve compiler avoiding ccache wrappers to prevent double-caching.
-    let resolved_executable = resolve_compiler_avoiding_ccache(executable, env_vars);
+    let resolved_executable = resolve_compiler_avoiding_wrapper(executable, env_vars);
 
     let mut nvcc_dryrun_cmd = creator.clone().new_command_sync(&resolved_executable);
 
@@ -1264,7 +1264,7 @@ where
         }
 
         // Resolve compiler avoiding ccache wrappers to prevent double-caching.
-        let resolved_exe = resolve_compiler_avoiding_ccache(exe, env_vars);
+        let resolved_exe = resolve_compiler_avoiding_wrapper(exe, env_vars);
 
         let out = match cacheable {
             Cacheable::No => {

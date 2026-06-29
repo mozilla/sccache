@@ -236,6 +236,8 @@ pub struct AzureCacheConfig {
     pub connection_string: String,
     pub container: String,
     pub key_prefix: String,
+    #[serde(default)]
+    pub rw_mode: CacheModeConfig,
 }
 
 /// Configuration switches for preprocessor cache mode.
@@ -311,12 +313,13 @@ impl Default for DiskCacheConfig {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub enum CacheModeConfig {
     #[serde(rename = "READ_ONLY")]
     ReadOnly,
     #[serde(rename = "READ_WRITE")]
+    #[default]
     ReadWrite,
 }
 
@@ -347,6 +350,8 @@ pub struct GHACacheConfig {
     /// Version for gha cache is a namespace. By setting different versions,
     /// we can avoid mixed caches.
     pub version: String,
+    #[serde(default)]
+    pub rw_mode: CacheModeConfig,
 }
 
 /// Memcached's default value of expiration is 10800s (3 hours), which is too
@@ -383,6 +388,9 @@ pub struct MemcachedCacheConfig {
 
     #[serde(default)]
     pub key_prefix: String,
+
+    #[serde(default)]
+    pub rw_mode: CacheModeConfig,
 }
 
 /// redis has no default TTL - all caches live forever
@@ -427,6 +435,9 @@ pub struct RedisCacheConfig {
 
     #[serde(default)]
     pub key_prefix: String,
+
+    #[serde(default)]
+    pub rw_mode: CacheModeConfig,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -438,6 +449,8 @@ pub struct WebdavCacheConfig {
     pub username: Option<String>,
     pub password: Option<String>,
     pub token: Option<String>,
+    #[serde(default)]
+    pub rw_mode: CacheModeConfig,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -452,6 +465,8 @@ pub struct S3CacheConfig {
     pub use_ssl: Option<bool>,
     pub server_side_encryption: Option<bool>,
     pub enable_virtual_host_style: Option<bool>,
+    #[serde(default)]
+    pub rw_mode: CacheModeConfig,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -462,6 +477,8 @@ pub struct OSSCacheConfig {
     pub key_prefix: String,
     pub endpoint: Option<String>,
     pub no_credentials: bool,
+    #[serde(default)]
+    pub rw_mode: CacheModeConfig,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -471,6 +488,8 @@ pub struct COSCacheConfig {
     #[serde(default)]
     pub key_prefix: String,
     pub endpoint: Option<String>,
+    #[serde(default)]
+    pub rw_mode: CacheModeConfig,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -769,6 +788,7 @@ pub struct FileConfig {
     pub server_startup_timeout_ms: Option<u64>,
     /// Base directories to strip from paths for cache key computation.
     pub basedirs: Vec<String>,
+    pub client_side_mode: bool,
 }
 
 // If the file doesn't exist or we can't read it, log the issue and proceed. If the
@@ -807,11 +827,15 @@ pub fn try_read_config_file<T: DeserializeOwned>(path: &Path) -> Result<Option<T
 pub struct EnvConfig {
     cache: CacheConfigs,
     basedirs: Option<Vec<String>>,
+    client_side_mode: Option<bool>,
+}
+
+fn string_from_env_var(env_var_name: &str) -> Option<String> {
+    env::var(env_var_name).ok().filter(|s| !s.is_empty())
 }
 
 fn key_prefix_from_env_var(env_var_name: &str) -> String {
-    env::var(env_var_name)
-        .ok()
+    string_from_env_var(env_var_name)
         .as_ref()
         .map(|s| s.trim_end_matches('/'))
         .filter(|s| !s.is_empty())
@@ -819,11 +843,22 @@ fn key_prefix_from_env_var(env_var_name: &str) -> String {
         .to_owned()
 }
 
+fn cache_mode_from_env_var(env_var_name: &str) -> Option<CacheModeConfig> {
+    string_from_env_var(env_var_name).and_then(|value| match value.to_uppercase().as_str() {
+        "READ_ONLY" => Some(CacheModeConfig::ReadOnly),
+        "READ_WRITE" => Some(CacheModeConfig::ReadWrite),
+        _ => {
+            warn!("{} must be 'READ_ONLY' or 'READ_WRITE'", env_var_name);
+            None
+        }
+    })
+}
+
 fn number_from_env_var<A: std::str::FromStr>(env_var_name: &str) -> Option<Result<A>>
 where
     <A as FromStr>::Err: std::fmt::Debug,
 {
-    let value = env::var(env_var_name).ok()?;
+    let value = string_from_env_var(env_var_name)?;
 
     value
         .parse::<A>()
@@ -832,8 +867,7 @@ where
 }
 
 fn bool_from_env_var(env_var_name: &str) -> Result<Option<bool>> {
-    env::var(env_var_name)
-        .ok()
+    string_from_env_var(env_var_name)
         .map(|value| match value.to_lowercase().as_str() {
             "true" | "on" | "1" => Ok(true),
             "false" | "off" | "0" => Ok(false),
@@ -847,14 +881,16 @@ fn bool_from_env_var(env_var_name: &str) -> Result<Option<bool>> {
 
 fn config_from_env() -> Result<EnvConfig> {
     // ======= AWS =======
-    let s3 = if let Ok(bucket) = env::var("SCCACHE_BUCKET") {
-        let region = env::var("SCCACHE_REGION").ok();
+    let s3 = if let Some(bucket) = string_from_env_var("SCCACHE_BUCKET") {
+        let region = string_from_env_var("SCCACHE_REGION");
         let no_credentials = bool_from_env_var("SCCACHE_S3_NO_CREDENTIALS")?.unwrap_or(false);
         let use_ssl = bool_from_env_var("SCCACHE_S3_USE_SSL")?;
         let server_side_encryption = bool_from_env_var("SCCACHE_S3_SERVER_SIDE_ENCRYPTION")?;
-        let endpoint = env::var("SCCACHE_ENDPOINT").ok();
+        let endpoint = string_from_env_var("SCCACHE_ENDPOINT");
         let key_prefix = key_prefix_from_env_var("SCCACHE_S3_KEY_PREFIX");
         let enable_virtual_host_style = bool_from_env_var("SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE")?;
+        let rw_mode =
+            cache_mode_from_env_var("SCCACHE_S3_RW_MODE").unwrap_or(CacheModeConfig::ReadWrite);
 
         Some(S3CacheConfig {
             bucket,
@@ -865,6 +901,7 @@ fn config_from_env() -> Result<EnvConfig> {
             use_ssl,
             server_side_encryption,
             enable_virtual_host_style,
+            rw_mode,
         })
     } else {
         None
@@ -879,9 +916,9 @@ fn config_from_env() -> Result<EnvConfig> {
 
     // ======= redis =======
     let redis = match (
-        env::var("SCCACHE_REDIS").ok(),
-        env::var("SCCACHE_REDIS_ENDPOINT").ok(),
-        env::var("SCCACHE_REDIS_CLUSTER_ENDPOINTS").ok(),
+        string_from_env_var("SCCACHE_REDIS"),
+        string_from_env_var("SCCACHE_REDIS_ENDPOINT"),
+        string_from_env_var("SCCACHE_REDIS_CLUSTER_ENDPOINTS"),
     ) {
         (None, None, None) => None,
         (url, endpoint, cluster_endpoints) => {
@@ -889,8 +926,8 @@ fn config_from_env() -> Result<EnvConfig> {
                 .transpose()?
                 .unwrap_or(DEFAULT_REDIS_DB);
 
-            let username = env::var("SCCACHE_REDIS_USERNAME").ok();
-            let password = env::var("SCCACHE_REDIS_PASSWORD").ok();
+            let username = string_from_env_var("SCCACHE_REDIS_USERNAME");
+            let password = string_from_env_var("SCCACHE_REDIS_PASSWORD");
 
             let ttl = number_from_env_var("SCCACHE_REDIS_EXPIRATION")
                 .or_else(|| number_from_env_var("SCCACHE_REDIS_TTL"))
@@ -898,6 +935,9 @@ fn config_from_env() -> Result<EnvConfig> {
                 .unwrap_or(DEFAULT_REDIS_CACHE_TTL);
 
             let key_prefix = key_prefix_from_env_var("SCCACHE_REDIS_KEY_PREFIX");
+
+            let rw_mode = cache_mode_from_env_var("SCCACHE_REDIS_RW_MODE")
+                .unwrap_or(CacheModeConfig::ReadWrite);
 
             Some(RedisCacheConfig {
                 url,
@@ -908,6 +948,7 @@ fn config_from_env() -> Result<EnvConfig> {
                 db,
                 ttl,
                 key_prefix,
+                rw_mode,
             })
         }
     };
@@ -919,11 +960,11 @@ fn config_from_env() -> Result<EnvConfig> {
     }
 
     // ======= memcached =======
-    let memcached = if let Ok(url) =
-        env::var("SCCACHE_MEMCACHED").or_else(|_| env::var("SCCACHE_MEMCACHED_ENDPOINT"))
+    let memcached = if let Some(url) = string_from_env_var("SCCACHE_MEMCACHED")
+        .or_else(|| string_from_env_var("SCCACHE_MEMCACHED_ENDPOINT"))
     {
-        let username = env::var("SCCACHE_MEMCACHED_USERNAME").ok();
-        let password = env::var("SCCACHE_MEMCACHED_PASSWORD").ok();
+        let username = string_from_env_var("SCCACHE_MEMCACHED_USERNAME");
+        let password = string_from_env_var("SCCACHE_MEMCACHED_PASSWORD");
 
         let expiration = number_from_env_var("SCCACHE_MEMCACHED_EXPIRATION")
             .transpose()?
@@ -931,12 +972,16 @@ fn config_from_env() -> Result<EnvConfig> {
 
         let key_prefix = key_prefix_from_env_var("SCCACHE_MEMCACHED_KEY_PREFIX");
 
+        let rw_mode = cache_mode_from_env_var("SCCACHE_MEMCACHED_RW_MODE")
+            .unwrap_or(CacheModeConfig::ReadWrite);
+
         Some(MemcachedCacheConfig {
             url,
             username,
             password,
             expiration,
             key_prefix,
+            rw_mode,
         })
     } else {
         None
@@ -951,43 +996,33 @@ fn config_from_env() -> Result<EnvConfig> {
     }
 
     // ======= GCP/GCS =======
-    if (env::var("SCCACHE_GCS_CREDENTIALS_URL").is_ok()
-        || env::var("SCCACHE_GCS_OAUTH_URL").is_ok()
-        || env::var("SCCACHE_GCS_KEY_PATH").is_ok())
-        && env::var("SCCACHE_GCS_BUCKET").is_err()
+    if (string_from_env_var("SCCACHE_GCS_CREDENTIALS_URL").is_some()
+        || string_from_env_var("SCCACHE_GCS_OAUTH_URL").is_some()
+        || string_from_env_var("SCCACHE_GCS_KEY_PATH").is_some())
+        && string_from_env_var("SCCACHE_GCS_BUCKET").is_none()
     {
         bail!(
             "If setting GCS credentials, SCCACHE_GCS_BUCKET and an auth mechanism need to be set."
         );
     }
 
-    let gcs = env::var("SCCACHE_GCS_BUCKET").ok().map(|bucket| {
+    let gcs = string_from_env_var("SCCACHE_GCS_BUCKET").map(|bucket| {
         let key_prefix = key_prefix_from_env_var("SCCACHE_GCS_KEY_PREFIX");
 
-        if env::var("SCCACHE_GCS_OAUTH_URL").is_ok() {
+        if string_from_env_var("SCCACHE_GCS_OAUTH_URL").is_some() {
             eprintln!("SCCACHE_GCS_OAUTH_URL has been deprecated");
             eprintln!("if you intend to use vm metadata for auth, please set correct service account instead");
         }
 
-        let credential_url = env::var("SCCACHE_GCS_CREDENTIALS_URL").ok();
+        let credential_url = string_from_env_var("SCCACHE_GCS_CREDENTIALS_URL");
 
-        let cred_path = env::var("SCCACHE_GCS_KEY_PATH").ok();
-        let service_account = env::var("SCCACHE_GCS_SERVICE_ACCOUNT").ok();
+        let cred_path = string_from_env_var("SCCACHE_GCS_KEY_PATH");
+        let service_account = string_from_env_var("SCCACHE_GCS_SERVICE_ACCOUNT");
 
-        let rw_mode = match env::var("SCCACHE_GCS_RW_MODE").as_ref().map(String::as_str) {
-            Ok("READ_ONLY") => CacheModeConfig::ReadOnly,
-            Ok("READ_WRITE") => CacheModeConfig::ReadWrite,
-            // TODO: unsure if these should warn during the configuration loading
-            // or at the time when they're actually used to connect to GCS
-            Ok(_) => {
-                warn!("Invalid SCCACHE_GCS_RW_MODE -- defaulting to READ_ONLY.");
-                CacheModeConfig::ReadOnly
-            }
-            _ => {
-                warn!("No SCCACHE_GCS_RW_MODE specified -- defaulting to READ_ONLY.");
-                CacheModeConfig::ReadOnly
-            }
-        };
+        let rw_mode = cache_mode_from_env_var("SCCACHE_GCS_RW_MODE").unwrap_or_else(|| {
+            warn!("No valid SCCACHE_GCS_RW_MODE value was found -- defaulting to READ_ONLY.");
+            CacheModeConfig::ReadOnly
+        });
 
         GCSCacheConfig {
             bucket,
@@ -1000,12 +1035,15 @@ fn config_from_env() -> Result<EnvConfig> {
     });
 
     // ======= GHA =======
-    let gha = if let Ok(version) = env::var("SCCACHE_GHA_VERSION") {
+    let gha_rw_mode: CacheModeConfig =
+        cache_mode_from_env_var("SCCACHE_GHA_RW_MODE").unwrap_or(CacheModeConfig::ReadWrite);
+    let gha = if let Some(version) = string_from_env_var("SCCACHE_GHA_VERSION") {
         // If SCCACHE_GHA_VERSION has been set, we don't need to check
         // SCCACHE_GHA_ENABLED's value anymore.
         Some(GHACacheConfig {
             enabled: true,
             version,
+            rw_mode: gha_rw_mode,
         })
     } else if bool_from_env_var("SCCACHE_GHA_ENABLED")?.unwrap_or(false) {
         // If only SCCACHE_GHA_ENABLED has been set to the true value, enable with
@@ -1013,32 +1051,39 @@ fn config_from_env() -> Result<EnvConfig> {
         Some(GHACacheConfig {
             enabled: true,
             version: String::new(),
+            rw_mode: gha_rw_mode,
         })
     } else {
         None
     };
 
     // ======= Azure =======
-    let azure = if let (Ok(connection_string), Ok(container)) = (
-        env::var("SCCACHE_AZURE_CONNECTION_STRING"),
-        env::var("SCCACHE_AZURE_BLOB_CONTAINER"),
+    let azure = if let (Some(connection_string), Some(container)) = (
+        string_from_env_var("SCCACHE_AZURE_CONNECTION_STRING"),
+        string_from_env_var("SCCACHE_AZURE_BLOB_CONTAINER"),
     ) {
         let key_prefix = key_prefix_from_env_var("SCCACHE_AZURE_KEY_PREFIX");
+        let rw_mode =
+            cache_mode_from_env_var("SCCACHE_AZURE_RW_MODE").unwrap_or(CacheModeConfig::ReadWrite);
+
         Some(AzureCacheConfig {
             connection_string,
             container,
             key_prefix,
+            rw_mode,
         })
     } else {
         None
     };
 
     // ======= WebDAV =======
-    let webdav = if let Ok(endpoint) = env::var("SCCACHE_WEBDAV_ENDPOINT") {
+    let webdav = if let Some(endpoint) = string_from_env_var("SCCACHE_WEBDAV_ENDPOINT") {
         let key_prefix = key_prefix_from_env_var("SCCACHE_WEBDAV_KEY_PREFIX");
-        let username = env::var("SCCACHE_WEBDAV_USERNAME").ok();
-        let password = env::var("SCCACHE_WEBDAV_PASSWORD").ok();
-        let token = env::var("SCCACHE_WEBDAV_TOKEN").ok();
+        let username = string_from_env_var("SCCACHE_WEBDAV_USERNAME");
+        let password = string_from_env_var("SCCACHE_WEBDAV_PASSWORD");
+        let token = string_from_env_var("SCCACHE_WEBDAV_TOKEN");
+        let rw_mode =
+            cache_mode_from_env_var("SCCACHE_WEBDAV_RW_MODE").unwrap_or(CacheModeConfig::ReadWrite);
 
         Some(WebdavCacheConfig {
             endpoint,
@@ -1046,23 +1091,28 @@ fn config_from_env() -> Result<EnvConfig> {
             username,
             password,
             token,
+            rw_mode,
         })
     } else {
         None
     };
 
     // ======= OSS =======
-    let oss = if let Ok(bucket) = env::var("SCCACHE_OSS_BUCKET") {
-        let endpoint = env::var("SCCACHE_OSS_ENDPOINT").ok();
+    let oss = if let Some(bucket) = string_from_env_var("SCCACHE_OSS_BUCKET") {
+        let endpoint = string_from_env_var("SCCACHE_OSS_ENDPOINT");
         let key_prefix = key_prefix_from_env_var("SCCACHE_OSS_KEY_PREFIX");
 
         let no_credentials = bool_from_env_var("SCCACHE_OSS_NO_CREDENTIALS")?.unwrap_or(false);
+
+        let rw_mode =
+            cache_mode_from_env_var("SCCACHE_OSS_RW_MODE").unwrap_or(CacheModeConfig::ReadWrite);
 
         Some(OSSCacheConfig {
             bucket,
             endpoint,
             key_prefix,
             no_credentials,
+            rw_mode,
         })
     } else {
         None
@@ -1079,14 +1129,18 @@ fn config_from_env() -> Result<EnvConfig> {
     }
 
     // ======= COS =======
-    let cos = if let Ok(bucket) = env::var("SCCACHE_COS_BUCKET") {
-        let endpoint = env::var("SCCACHE_COS_ENDPOINT").ok();
+    let cos = if let Some(bucket) = string_from_env_var("SCCACHE_COS_BUCKET") {
+        let endpoint = string_from_env_var("SCCACHE_COS_ENDPOINT");
         let key_prefix = key_prefix_from_env_var("SCCACHE_COS_KEY_PREFIX");
+
+        let rw_mode =
+            cache_mode_from_env_var("SCCACHE_COS_RW_MODE").unwrap_or(CacheModeConfig::ReadWrite);
 
         Some(COSCacheConfig {
             bucket,
             endpoint,
             key_prefix,
+            rw_mode,
         })
     } else {
         None
@@ -1094,9 +1148,7 @@ fn config_from_env() -> Result<EnvConfig> {
 
     // ======= Local =======
     let disk_dir = env::var_os("SCCACHE_DIR").map(PathBuf::from);
-    let disk_sz = env::var("SCCACHE_CACHE_SIZE")
-        .ok()
-        .and_then(|v| parse_size(&v));
+    let disk_sz = string_from_env_var("SCCACHE_CACHE_SIZE").and_then(|v| parse_size(&v));
 
     let mut preprocessor_mode_config = PreprocessorCacheModeConfig::activated();
     let preprocessor_mode_overridden = if let Some(value) = bool_from_env_var("SCCACHE_DIRECT")? {
@@ -1106,18 +1158,11 @@ fn config_from_env() -> Result<EnvConfig> {
         false
     };
 
-    let (disk_rw_mode, disk_rw_mode_overridden) = match env::var("SCCACHE_LOCAL_RW_MODE")
-        .as_ref()
-        .map(String::as_str)
-    {
-        Ok("READ_ONLY") => (CacheModeConfig::ReadOnly, true),
-        Ok("READ_WRITE") => (CacheModeConfig::ReadWrite, true),
-        Ok(_) => {
-            warn!("Invalid SCCACHE_LOCAL_RW_MODE -- defaulting to READ_WRITE.");
-            (CacheModeConfig::ReadWrite, false)
-        }
-        _ => (CacheModeConfig::ReadWrite, false),
-    };
+    let (disk_rw_mode, disk_rw_mode_overridden) =
+        match cache_mode_from_env_var("SCCACHE_LOCAL_RW_MODE") {
+            Some(mode) => (mode, true),
+            _ => (CacheModeConfig::ReadWrite, false),
+        };
 
     let any_overridden = disk_dir.is_some()
         || disk_sz.is_some()
@@ -1135,11 +1180,10 @@ fn config_from_env() -> Result<EnvConfig> {
     };
 
     // Parse multi-level cache configuration
-    let multilevel = if let Ok(chain_str) = env::var("SCCACHE_MULTILEVEL_CHAIN") {
+    let multilevel = if let Some(chain_str) = string_from_env_var("SCCACHE_MULTILEVEL_CHAIN") {
         let chain: Vec<String> = chain_str.split(',').map(|s| s.trim().to_string()).collect();
 
-        let write_error_policy = env::var("SCCACHE_MULTILEVEL_WRITE_ERROR_POLICY")
-            .ok()
+        let write_error_policy = string_from_env_var("SCCACHE_MULTILEVEL_WRITE_ERROR_POLICY")
             .and_then(|s| s.parse::<WriteErrorPolicy>().ok())
             .unwrap_or_default();
 
@@ -1180,7 +1224,13 @@ fn config_from_env() -> Result<EnvConfig> {
             .collect()
     });
 
-    Ok(EnvConfig { cache, basedirs })
+    let client_side_mode = bool_from_env_var("SCCACHE_CLIENT_SIDE")?;
+
+    Ok(EnvConfig {
+        cache,
+        basedirs,
+        client_side_mode,
+    })
 }
 
 // The directories crate changed the location of `config_dir` on macos in version 3,
@@ -1216,6 +1266,7 @@ pub struct Config {
     /// Base directory (or directories) to strip from paths for cache key computation.
     /// Similar to ccache's CCACHE_BASEDIR.
     pub basedirs: Vec<Vec<u8>>,
+    pub client_side_mode: bool,
 }
 
 impl Config {
@@ -1238,6 +1289,7 @@ impl Config {
             dist,
             server_startup_timeout_ms,
             basedirs: file_basedirs,
+            client_side_mode: file_client_side_mode,
         } = file_conf;
         conf_caches.merge(cache);
 
@@ -1247,6 +1299,7 @@ impl Config {
         let EnvConfig {
             cache,
             basedirs: env_basedirs,
+            client_side_mode: env_client_side_mode,
         } = env_conf;
         conf_caches.merge(cache);
 
@@ -1300,6 +1353,15 @@ impl Config {
             debug!("Using basedirs for path normalization: {:?}", basedirs_str);
         }
 
+        let client_side_mode = env_client_side_mode.unwrap_or(file_client_side_mode)
+            // Logging always writes to stderr in the client process, disregarding
+            // SCCACHE_ERROR_LOG; Even if SCCACHE_ERROR_LOG was handled, there would
+            // be write races from multiple processes. Until those are addressed, we
+            // can't leave the client mode enabled alongside logging.
+            && std::env::var_os(crate::LOGGING_ENV).is_none()
+            // Client-side mode is also not compatible with distributed compilation.
+            && dist.scheduler_url.is_none();
+
         let (caches, fallback_cache) = conf_caches.clone().into_fallback();
         Ok(Self {
             cache: caches,
@@ -1308,6 +1370,7 @@ impl Config {
             dist,
             server_startup_timeout,
             basedirs,
+            client_side_mode,
         })
     }
 }
@@ -1556,6 +1619,32 @@ fn test_parse_size() {
 }
 
 #[test]
+fn test_string_from_env_var() {
+    let var_name = "TEST_SCCACHE_VAR";
+    for value in [None, Some(""), Some("foo")] {
+        match value {
+            None => unsafe {
+                std::env::remove_var(var_name);
+            },
+            Some(value) => unsafe {
+                std::env::set_var(var_name, value);
+            },
+        }
+        let result = string_from_env_var(var_name);
+        unsafe {
+            std::env::remove_var(var_name);
+        }
+
+        let expected = match value {
+            None | Some("") => None,
+            Some(value) => Some(value.to_string()),
+        };
+
+        assert_eq!(result, expected);
+    }
+}
+
+#[test]
 fn config_overrides() {
     let env_conf = EnvConfig {
         cache: CacheConfigs {
@@ -1563,6 +1652,7 @@ fn config_overrides() {
                 connection_string: String::new(),
                 container: String::new(),
                 key_prefix: String::new(),
+                rw_mode: CacheModeConfig::ReadWrite,
             }),
             disk: Some(DiskCacheConfig {
                 dir: "/env-cache".into(),
@@ -1582,6 +1672,7 @@ fn config_overrides() {
             ..Default::default()
         },
         basedirs: None,
+        client_side_mode: None,
     };
 
     let file_conf = FileConfig {
@@ -1609,6 +1700,7 @@ fn config_overrides() {
         dist: Default::default(),
         server_startup_timeout_ms: None,
         basedirs: vec![],
+        client_side_mode: false,
     };
 
     assert_eq!(
@@ -1628,6 +1720,7 @@ fn config_overrides() {
                     connection_string: String::new(),
                     container: String::new(),
                     key_prefix: String::new(),
+                    rw_mode: CacheModeConfig::ReadWrite,
                 }),
                 disk: Some(DiskCacheConfig {
                     dir: "/env-cache".into(),
@@ -1661,6 +1754,7 @@ fn config_overrides() {
             dist: Default::default(),
             server_startup_timeout: None,
             basedirs: vec![],
+            client_side_mode: false,
         }
     );
 }
@@ -1672,6 +1766,7 @@ fn config_basedirs_overrides() {
     let env_conf = EnvConfig {
         cache: Default::default(),
         basedirs: vec!["C:/env/basedir".to_string()].into(),
+        client_side_mode: None,
     };
 
     let file_conf = FileConfig {
@@ -1679,6 +1774,7 @@ fn config_basedirs_overrides() {
         dist: Default::default(),
         server_startup_timeout_ms: None,
         basedirs: vec!["C:/file/basedir".to_string()],
+        client_side_mode: false,
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
@@ -1688,6 +1784,7 @@ fn config_basedirs_overrides() {
     let env_conf = EnvConfig {
         cache: Default::default(),
         basedirs: None,
+        client_side_mode: None,
     };
 
     let file_conf = FileConfig {
@@ -1695,6 +1792,7 @@ fn config_basedirs_overrides() {
         dist: Default::default(),
         server_startup_timeout_ms: None,
         basedirs: vec!["C:/file/basedir".to_string()],
+        client_side_mode: false,
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
@@ -1704,6 +1802,7 @@ fn config_basedirs_overrides() {
     let env_conf = EnvConfig {
         cache: Default::default(),
         basedirs: vec![].into(),
+        client_side_mode: None,
     };
 
     let file_conf = FileConfig {
@@ -1711,6 +1810,7 @@ fn config_basedirs_overrides() {
         dist: Default::default(),
         server_startup_timeout_ms: None,
         basedirs: vec!["C:/file/basedir".to_string()],
+        client_side_mode: false,
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
@@ -1720,6 +1820,7 @@ fn config_basedirs_overrides() {
     let env_conf = EnvConfig {
         cache: Default::default(),
         basedirs: vec![].into(),
+        client_side_mode: None,
     };
 
     let file_conf = FileConfig {
@@ -1727,6 +1828,7 @@ fn config_basedirs_overrides() {
         dist: Default::default(),
         server_startup_timeout_ms: None,
         basedirs: vec![],
+        client_side_mode: false,
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
@@ -1740,6 +1842,7 @@ fn config_basedirs_overrides() {
     let env_conf = EnvConfig {
         cache: Default::default(),
         basedirs: vec!["/env/basedir".to_string()].into(),
+        client_side_mode: None,
     };
 
     let file_conf = FileConfig {
@@ -1747,6 +1850,7 @@ fn config_basedirs_overrides() {
         dist: Default::default(),
         server_startup_timeout_ms: None,
         basedirs: vec!["/file/basedir".to_string()],
+        client_side_mode: false,
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
@@ -1756,6 +1860,7 @@ fn config_basedirs_overrides() {
     let env_conf = EnvConfig {
         cache: Default::default(),
         basedirs: None,
+        client_side_mode: None,
     };
 
     let file_conf = FileConfig {
@@ -1763,6 +1868,7 @@ fn config_basedirs_overrides() {
         dist: Default::default(),
         server_startup_timeout_ms: None,
         basedirs: vec!["/file/basedir".to_string()],
+        client_side_mode: false,
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
@@ -1772,6 +1878,7 @@ fn config_basedirs_overrides() {
     let env_conf = EnvConfig {
         cache: Default::default(),
         basedirs: vec![].into(),
+        client_side_mode: None,
     };
 
     let file_conf = FileConfig {
@@ -1779,6 +1886,7 @@ fn config_basedirs_overrides() {
         dist: Default::default(),
         server_startup_timeout_ms: None,
         basedirs: vec!["/file/basedir".to_string()],
+        client_side_mode: false,
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
@@ -1788,6 +1896,7 @@ fn config_basedirs_overrides() {
     let env_conf = EnvConfig {
         cache: Default::default(),
         basedirs: vec![].into(),
+        client_side_mode: None,
     };
 
     let file_conf = FileConfig {
@@ -1795,6 +1904,7 @@ fn config_basedirs_overrides() {
         dist: Default::default(),
         server_startup_timeout_ms: None,
         basedirs: vec![],
+        client_side_mode: false,
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
@@ -1802,6 +1912,7 @@ fn config_basedirs_overrides() {
     let env_conf = EnvConfig {
         cache: Default::default(),
         basedirs: None,
+        client_side_mode: None,
     };
 
     let file_conf = FileConfig {
@@ -1809,6 +1920,7 @@ fn config_basedirs_overrides() {
         dist: Default::default(),
         server_startup_timeout_ms: None,
         basedirs: vec![],
+        client_side_mode: false,
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
@@ -1852,6 +1964,72 @@ fn test_deserialize_basedirs_missing() {
 
     let config: FileConfig = toml::from_str(toml).unwrap();
     assert!(config.basedirs.is_empty());
+}
+
+#[test]
+fn test_cache_mode_from_env_var() {
+    struct CacheEnvCheckInfo {
+        env_var_value: Option<String>,
+        expected_cache_mode: Option<CacheModeConfig>,
+    }
+
+    let env_check_infos = vec![
+        CacheEnvCheckInfo {
+            env_var_value: None,
+            expected_cache_mode: None,
+        },
+        CacheEnvCheckInfo {
+            env_var_value: Some(String::new()),
+            expected_cache_mode: None,
+        },
+        CacheEnvCheckInfo {
+            env_var_value: Some("read_only".to_string()),
+            expected_cache_mode: Some(CacheModeConfig::ReadOnly),
+        },
+        CacheEnvCheckInfo {
+            env_var_value: Some("read_write".to_string()),
+            expected_cache_mode: Some(CacheModeConfig::ReadWrite),
+        },
+        CacheEnvCheckInfo {
+            env_var_value: Some("ReAd_ONly".to_string()),
+            expected_cache_mode: Some(CacheModeConfig::ReadOnly),
+        },
+        CacheEnvCheckInfo {
+            env_var_value: Some("read_WRITE".to_string()),
+            expected_cache_mode: Some(CacheModeConfig::ReadWrite),
+        },
+        CacheEnvCheckInfo {
+            env_var_value: Some("read_only_typo".to_string()),
+            expected_cache_mode: None,
+        },
+        CacheEnvCheckInfo {
+            env_var_value: Some("foo".to_string()),
+            expected_cache_mode: None,
+        },
+        CacheEnvCheckInfo {
+            env_var_value: Some("any_unsupported_value".to_string()),
+            expected_cache_mode: None,
+        },
+    ];
+
+    let var_name = "SCCACHE_ANY_CACHE_MODE_ENV_VAR";
+
+    for info in env_check_infos {
+        unsafe {
+            if let Some(env_var_value) = &info.env_var_value {
+                std::env::set_var(var_name, env_var_value);
+            } else {
+                std::env::remove_var(var_name);
+            }
+        }
+        let cache_mode = cache_mode_from_env_var(var_name);
+
+        unsafe {
+            std::env::remove_var(var_name);
+        }
+
+        assert_eq!(cache_mode, info.expected_cache_mode);
+    }
 }
 
 #[test]
@@ -1967,6 +2145,7 @@ fn test_env_basedirs_with_spaces() {
         dist: Default::default(),
         server_startup_timeout_ms: None,
         basedirs: vec![],
+        client_side_mode: false,
     };
     Config::from_env_and_file_configs(env_conf, file_conf)
         .expect_err("Should fail due to non-absolute path");
@@ -2001,6 +2180,7 @@ fn test_env_basedirs_with_spaces() {
         dist: Default::default(),
         server_startup_timeout_ms: None,
         basedirs: vec![],
+        client_side_mode: false,
     };
     Config::from_env_and_file_configs(env_conf, file_conf)
         .expect_err("Should fail due to non-absolute path");
@@ -2273,6 +2453,7 @@ use_ssl = true
 key_prefix = "s3prefix"
 no_credentials = true
 server_side_encryption = false
+rw_mode = "READ_WRITE"
 
 [cache.webdav]
 endpoint = "http://127.0.0.1:8080"
@@ -2286,6 +2467,7 @@ bucket = "name"
 endpoint = "oss-us-east-1.aliyuncs.com"
 key_prefix = "ossprefix"
 no_credentials = true
+rw_mode = "READ_ONLY"
 
 [cache.cos]
 bucket = "name"
@@ -2315,7 +2497,9 @@ key_prefix = "cosprefix"
                 }),
                 gha: Some(GHACacheConfig {
                     enabled: true,
-                    version: "sccache".to_string()
+                    version: "sccache".to_string(),
+
+                    rw_mode: CacheModeConfig::ReadWrite,
                 }),
                 redis: Some(RedisCacheConfig {
                     url: Some("redis://user:passwd@1.2.3.4:6379/?db=1".to_owned()),
@@ -2326,6 +2510,7 @@ key_prefix = "cosprefix"
                     db: 12,
                     ttl: 24 * 3600,
                     key_prefix: "/my/redis/cache".into(),
+                    rw_mode: CacheModeConfig::ReadWrite,
                 }),
                 memcached: Some(MemcachedCacheConfig {
                     url: "tcp://127.0.0.1:11211".to_owned(),
@@ -2333,6 +2518,7 @@ key_prefix = "cosprefix"
                     password: Some("passwd".to_owned()),
                     expiration: 25 * 3600,
                     key_prefix: "/custom/prefix/if/need".into(),
+                    rw_mode: CacheModeConfig::ReadWrite,
                 }),
                 s3: Some(S3CacheConfig {
                     bucket: "name".to_owned(),
@@ -2343,6 +2529,7 @@ key_prefix = "cosprefix"
                     no_credentials: true,
                     server_side_encryption: Some(false),
                     enable_virtual_host_style: None,
+                    rw_mode: CacheModeConfig::ReadWrite,
                 }),
                 webdav: Some(WebdavCacheConfig {
                     endpoint: "http://127.0.0.1:8080".to_string(),
@@ -2350,17 +2537,20 @@ key_prefix = "cosprefix"
                     username: Some("webdavusername".to_string()),
                     password: Some("webdavpassword".to_string()),
                     token: Some("webdavtoken".to_string()),
+                    rw_mode: CacheModeConfig::ReadWrite,
                 }),
                 oss: Some(OSSCacheConfig {
                     bucket: "name".to_owned(),
                     endpoint: Some("oss-us-east-1.aliyuncs.com".to_owned()),
                     key_prefix: "ossprefix".into(),
                     no_credentials: true,
+                    rw_mode: CacheModeConfig::ReadOnly,
                 }),
                 cos: Some(COSCacheConfig {
                     bucket: "name".to_owned(),
                     endpoint: Some("cos.na-siliconvalley.myqcloud.com".to_owned()),
                     key_prefix: "cosprefix".into(),
+                    rw_mode: CacheModeConfig::ReadWrite,
                 }),
                 multilevel: None,
             },
@@ -2383,6 +2573,7 @@ key_prefix = "cosprefix"
             },
             server_startup_timeout_ms: Some(10000),
             basedirs: vec![],
+            client_side_mode: false,
         }
     );
 }
@@ -2476,6 +2667,7 @@ size = "7g"
             },
             server_startup_timeout_ms: None,
             basedirs: vec![],
+            client_side_mode: false,
         }
     );
 }
@@ -2492,6 +2684,7 @@ fn test_integration_config_normalizes_and_strips() {
     let env_conf = EnvConfig {
         cache: Default::default(),
         basedirs: None,
+        client_side_mode: None,
     };
 
     let file_conf = FileConfig {
@@ -2499,6 +2692,7 @@ fn test_integration_config_normalizes_and_strips() {
         dist: Default::default(),
         server_startup_timeout_ms: None,
         basedirs: vec!["/home/user/project".to_string()],
+        client_side_mode: false,
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
@@ -2525,6 +2719,7 @@ fn test_integration_normalized_path_with_double_slashes() {
     let env_conf = EnvConfig {
         cache: Default::default(),
         basedirs: None,
+        client_side_mode: None,
     };
 
     let file_conf = FileConfig {
@@ -2532,6 +2727,7 @@ fn test_integration_normalized_path_with_double_slashes() {
         dist: Default::default(),
         server_startup_timeout_ms: None,
         basedirs: vec!["/home//user///project/".to_string()],
+        client_side_mode: false,
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
@@ -2554,6 +2750,7 @@ fn test_integration_windows_path_normalization() {
     let env_conf = EnvConfig {
         cache: Default::default(),
         basedirs: None,
+        client_side_mode: None,
     };
 
     let file_conf = FileConfig {
@@ -2561,6 +2758,7 @@ fn test_integration_windows_path_normalization() {
         dist: Default::default(),
         server_startup_timeout_ms: None,
         basedirs: vec!["C:\\Users\\Test\\Project".to_string()],
+        client_side_mode: false,
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
@@ -2584,6 +2782,7 @@ fn test_integration_cow_borrowed_when_no_match() {
     let env_conf = EnvConfig {
         cache: Default::default(),
         basedirs: None,
+        client_side_mode: None,
     };
 
     let file_conf = FileConfig {
@@ -2591,6 +2790,7 @@ fn test_integration_cow_borrowed_when_no_match() {
         dist: Default::default(),
         server_startup_timeout_ms: None,
         basedirs: vec!["/home/user/project".to_string()],
+        client_side_mode: false,
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
@@ -2614,6 +2814,7 @@ fn test_integration_cow_borrowed_when_empty_basedirs() {
     let env_conf = EnvConfig {
         cache: Default::default(),
         basedirs: None,
+        client_side_mode: None,
     };
 
     let file_conf = FileConfig {
@@ -2621,6 +2822,7 @@ fn test_integration_cow_borrowed_when_empty_basedirs() {
         dist: Default::default(),
         server_startup_timeout_ms: None,
         basedirs: vec![],
+        client_side_mode: false,
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
@@ -2643,6 +2845,7 @@ fn test_integration_multiple_basedirs_longest_match() {
     let env_conf = EnvConfig {
         cache: Default::default(),
         basedirs: None,
+        client_side_mode: None,
     };
 
     let file_conf = FileConfig {
@@ -2650,6 +2853,7 @@ fn test_integration_multiple_basedirs_longest_match() {
         dist: Default::default(),
         server_startup_timeout_ms: None,
         basedirs: vec!["/home/user".to_string(), "/home/user/project".to_string()],
+        client_side_mode: false,
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
@@ -2677,6 +2881,7 @@ fn test_integration_paths_with_dots_normalized() {
     let env_conf = EnvConfig {
         cache: Default::default(),
         basedirs: None,
+        client_side_mode: None,
     };
 
     let file_conf = FileConfig {
@@ -2684,6 +2889,7 @@ fn test_integration_paths_with_dots_normalized() {
         dist: Default::default(),
         server_startup_timeout_ms: None,
         basedirs: vec!["/home/user/./project/../project".to_string()],
+        client_side_mode: false,
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
@@ -2707,6 +2913,7 @@ fn test_integration_windows_mixed_slashes() {
     let env_conf = EnvConfig {
         cache: Default::default(),
         basedirs: None,
+        client_side_mode: None,
     };
 
     let file_conf = FileConfig {
@@ -2714,6 +2921,7 @@ fn test_integration_windows_mixed_slashes() {
         dist: Default::default(),
         server_startup_timeout_ms: None,
         basedirs: vec!["C:\\Users\\test\\project".to_string()],
+        client_side_mode: false,
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
@@ -2818,6 +3026,7 @@ fn test_get_cache_levels_single_cache() {
             use_ssl: None,
             server_side_encryption: None,
             enable_virtual_host_style: None,
+            rw_mode: CacheModeConfig::ReadWrite,
         }),
         ..Default::default()
     };

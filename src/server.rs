@@ -14,6 +14,7 @@
 
 use crate::cache::readonly::ReadOnlyStorage;
 use crate::cache::{CacheMode, Storage, storage_from_config};
+use crate::compiler::PreprocessorCacheEntry;
 use crate::compiler::{
     CacheControl, CompileResult, Compiler, CompilerArguments, CompilerHasher, CompilerKind,
     CompilerProxy, DistType, Language, MissType, get_compiler_info,
@@ -24,7 +25,9 @@ use crate::config::Config;
 use crate::dist;
 use crate::jobserver::Client;
 use crate::mock_command::{CommandCreatorSync, ProcessCommandCreator};
-use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
+use crate::protocol::{
+    Compile, CompileFinished, CompileResponse, Request, Response, StorageHandshakeInfo,
+};
 use crate::util;
 #[cfg(feature = "dist-client")]
 use anyhow::Context as _;
@@ -898,6 +901,84 @@ where
                         Message::WithoutBody(Response::ShuttingDown(Box::new(info)))
                     })
                 }
+                Request::StorageHandshake => {
+                    debug!("handle_client: storage_handshake");
+                    let info = StorageHandshakeInfo {
+                        location: me.storage.location(),
+                        cache_type_name: me.storage.cache_type_name().to_owned(),
+                        basedirs: me.storage.basedirs().to_vec(),
+                        preprocessor_cache_mode_config: me.storage.preprocessor_cache_mode_config(),
+                        cache_mode: me.storage.check().await.unwrap_or(CacheMode::ReadWrite),
+                        max_size: me.storage.max_size().await.unwrap_or(None),
+                    };
+                    Ok(Message::WithoutBody(Response::StorageHandshake(info)))
+                }
+                Request::StorageGetPath { key } => {
+                    debug!("handle_client: storage_get_path key={}", key);
+                    Ok(Message::WithoutBody(Response::StorageGetPath(
+                        me.storage.get_path(&key).await,
+                    )))
+                }
+                Request::StorageGetRaw { key } => {
+                    debug!("handle_client: storage_get_raw key={}", key);
+                    let resp = match me.storage.get_raw(&key).await {
+                        Ok(opt) => Response::StorageGetRaw(opt.map(|b| b.to_vec())),
+                        Err(e) => {
+                            warn!("storage_get_raw error: {e:#}");
+                            Response::StorageGetRaw(None)
+                        }
+                    };
+                    Ok(Message::WithoutBody(resp))
+                }
+                Request::StoragePutRaw { key, data } => {
+                    debug!("handle_client: storage_put_raw key={}", key);
+                    let result = me
+                        .storage
+                        .put_raw(&key, data.into())
+                        .await
+                        .map(|_| ())
+                        .map_err(|e| format!("{e:#}"));
+                    Ok(Message::WithoutBody(Response::StoragePutRaw(result)))
+                }
+                Request::StorageGetPreprocessorEntry { key } => {
+                    debug!("handle_client: storage_get_preprocessor_entry key={}", key);
+                    let result = me
+                        .storage
+                        .get_preprocessor_cache_entry(&key)
+                        .await
+                        .map(|opt| {
+                            opt.and_then(|mut seekable| {
+                                use std::io::Read;
+                                let mut buf = vec![];
+                                seekable.read_to_end(&mut buf).ok()?;
+                                Some(buf)
+                            })
+                        })
+                        .map_err(|e| format!("{e:#}"));
+                    Ok(Message::WithoutBody(Response::StorageGetPreprocessorEntry(
+                        result,
+                    )))
+                }
+                Request::StoragePutPreprocessorEntry { key, entry_bytes } => {
+                    debug!("handle_client: storage_put_preprocessor_entry key={}", key);
+                    let result = async {
+                        let entry = PreprocessorCacheEntry::read(&entry_bytes)
+                            .map_err(|e| format!("{e:#}"))?;
+                        me.storage
+                            .put_preprocessor_cache_entry(&key, entry)
+                            .await
+                            .map_err(|e| format!("{e:#}"))
+                    }
+                    .await;
+                    Ok(Message::WithoutBody(Response::StoragePutPreprocessorEntry(
+                        result,
+                    )))
+                }
+                Request::RecordStats(delta) => {
+                    debug!("handle_client: record_stats");
+                    me.merge_stats(*delta).await;
+                    Ok(Message::WithoutBody(Response::RecordStats))
+                }
             }
         })
     }
@@ -1053,6 +1134,16 @@ where
         *self.stats.lock().await = ServerStats::default();
     }
 
+    /// Snapshot and reset the current stats (used by client-side processes before exit).
+    pub async fn take_stats(&self) -> ServerStats {
+        let mut s = self.stats.lock().await;
+        std::mem::take(&mut *s)
+    }
+
+    async fn merge_stats(&self, delta: ServerStats) {
+        *self.stats.lock().await += delta;
+    }
+
     /// Handle a compile request from a client.
     ///
     /// This will handle a compile request entirely, generating a response with
@@ -1069,6 +1160,27 @@ where
             .compiler_info(exe.into(), cwd.clone(), &cmd, &env_vars)
             .await;
         Ok(me.check_compiler(info, cmd, cwd, env_vars).await)
+    }
+
+    /// Run a compile entirely in the current process (used in client-side mode).
+    ///
+    /// Returns the `CompileResponse` variant and, when compilation started, the
+    /// accompanying `CompileFinished` result.
+    pub async fn compile_direct(
+        &self,
+        compile: Compile,
+    ) -> Result<(CompileResponse, Option<CompileFinished>)> {
+        match self.handle_compile(compile).await? {
+            Message::WithBody(Response::Compile(resp), body) => {
+                let finished = match body.await? {
+                    Response::CompileFinished(f) => f,
+                    _ => bail!("unexpected body response from compile_direct"),
+                };
+                Ok((resp, Some(finished)))
+            }
+            Message::WithoutBody(Response::Compile(resp)) => Ok((resp, None)),
+            _ => bail!("unexpected response from handle_compile in compile_direct"),
+        }
     }
 
     /// Look up compiler info from the cache for the compiler `path`.
@@ -1383,12 +1495,12 @@ where
 
                         match compiled {
                             CompileResult::Error => {
-                                debug!("compile result: cache error");
+                                debug!("[{}]: compile result: cache error", out_pretty);
 
                                 stats.cache_errors.increment(&kind, &lang);
                             }
                             CompileResult::CacheHit(duration) => {
-                                debug!("compile result: cache hit");
+                                debug!("[{}]: compile result: cache hit", out_pretty);
 
                                 stats.cache_hits.increment(&kind, &lang);
                                 stats.cache_read_hit_duration += duration;
@@ -1579,6 +1691,17 @@ impl PerLanguageCount {
     }
 }
 
+impl std::ops::AddAssign for PerLanguageCount {
+    fn add_assign(&mut self, rhs: Self) {
+        for (k, v) in rhs.counts {
+            *self.counts.entry(k).or_default() += v;
+        }
+        for (k, v) in rhs.adv_counts {
+            *self.adv_counts.entry(k).or_default() += v;
+        }
+    }
+}
+
 /// Statistics about the server.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ServerStats {
@@ -1629,6 +1752,45 @@ pub struct ServerStats {
     pub dist_errors: u64,
     /// Multi-level cache statistics (if multi-level caching is enabled)
     pub multi_level: Option<crate::cache::multilevel::MultiLevelStats>,
+}
+
+impl std::ops::AddAssign for ServerStats {
+    fn add_assign(&mut self, rhs: Self) {
+        self.compile_requests += rhs.compile_requests;
+        self.requests_unsupported_compiler += rhs.requests_unsupported_compiler;
+        self.requests_not_compile += rhs.requests_not_compile;
+        self.requests_not_cacheable += rhs.requests_not_cacheable;
+        self.requests_executed += rhs.requests_executed;
+        self.cache_errors += rhs.cache_errors;
+        self.cache_hits += rhs.cache_hits;
+        self.cache_misses += rhs.cache_misses;
+        self.cache_timeouts += rhs.cache_timeouts;
+        self.cache_read_errors += rhs.cache_read_errors;
+        self.non_cacheable_compilations += rhs.non_cacheable_compilations;
+        self.forced_recaches += rhs.forced_recaches;
+        self.cache_write_errors += rhs.cache_write_errors;
+        self.cache_writes += rhs.cache_writes;
+        self.cache_write_duration += rhs.cache_write_duration;
+        self.cache_read_hit_duration += rhs.cache_read_hit_duration;
+        self.compilations += rhs.compilations;
+        self.compiler_write_duration += rhs.compiler_write_duration;
+        self.compile_fails += rhs.compile_fails;
+        for (k, v) in rhs.not_cached {
+            *self.not_cached.entry(k).or_default() += v;
+        }
+        for (k, v) in rhs.dist_compiles {
+            *self.dist_compiles.entry(k).or_default() += v;
+        }
+        self.dist_errors += rhs.dist_errors;
+        self.multi_level = match (self.multi_level.take(), rhs.multi_level) {
+            (Some(mut a), Some(b)) => {
+                a += b;
+                Some(a)
+            }
+            (a, None) => a,
+            (None, b) => b,
+        };
+    }
 }
 
 /// Info and stats about the server.
@@ -2212,7 +2374,7 @@ impl Future for ShutdownOrInactive {
 
 /// Helper future which tracks the `ActiveInfo` below. This future will resolve
 /// once all instances of `ActiveInfo` have been dropped.
-struct WaitUntilZero {
+pub(crate) struct WaitUntilZero {
     info: std::sync::Weak<std::sync::Mutex<Info>>,
 }
 
@@ -2236,7 +2398,7 @@ impl Drop for Info {
 
 impl WaitUntilZero {
     #[rustfmt::skip]
-    fn new() -> (WaitUntilZero, ActiveInfo) {
+    pub(crate) fn new() -> (WaitUntilZero, ActiveInfo) {
         let info = Arc::new(std::sync::Mutex::new(Info { waker: None }));
 
         (WaitUntilZero { info: Arc::downgrade(&info) }, ActiveInfo { info })

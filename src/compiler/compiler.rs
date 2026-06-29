@@ -35,7 +35,7 @@ use crate::dist::pkg;
 use crate::lru_disk_cache;
 use crate::mock_command::{CommandChild, CommandCreatorSync, RunCommand, exit_status};
 use crate::server;
-use crate::util::{fmt_duration_as_secs, resolve_compiler_avoiding_ccache, run_input_output};
+use crate::util::{fmt_duration_as_secs, resolve_compiler_avoiding_wrapper, run_input_output};
 use crate::{counted_array, dist};
 use async_trait::async_trait;
 use filetime::FileTime;
@@ -63,6 +63,7 @@ use crate::errors::*;
     feature = "dist-client",
     any(
         all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "linux", target_arch = "aarch64"),
         target_os = "freebsd"
     )
 ))]
@@ -71,6 +72,7 @@ pub const CAN_DIST_DYLIBS: bool = true;
     feature = "dist-client",
     not(any(
         all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "linux", target_arch = "aarch64"),
         target_os = "freebsd"
     ))
 ))]
@@ -196,7 +198,7 @@ impl CompileCommandImpl for SingleCompileCommand {
             cwd,
         } = self;
         // Resolve compiler avoiding ccache wrappers to prevent double-caching.
-        let resolved_executable = resolve_compiler_avoiding_ccache(executable, env_vars);
+        let resolved_executable = resolve_compiler_avoiding_wrapper(executable, env_vars);
         let mut cmd = creator.clone().new_command_sync(&resolved_executable);
         cmd.args(arguments)
             .env_clear()
@@ -557,7 +559,10 @@ where
         let (key, compilation, weak_toolchain_key) = match result {
             Err(e) => {
                 return match e.downcast::<ProcessError>() {
-                    Ok(ProcessError(output)) => Ok((CompileResult::Error, output)),
+                    Ok(ProcessError(output)) => {
+                        debug!("[{}]: process error: {:?}", out_pretty, output);
+                        Ok((CompileResult::Error, output))
+                    }
                     Err(e) => Err(e),
                 };
             }
@@ -1702,7 +1707,7 @@ compiler_version=__VERSION__
 
     // Resolve compiler avoiding ccache wrappers to prevent double-caching.
     let executable = executable.as_ref();
-    let resolved_executable = resolve_compiler_avoiding_ccache(executable, &env);
+    let resolved_executable = resolve_compiler_avoiding_wrapper(executable, &env);
 
     let mut cmd = creator.clone().new_command_sync(&resolved_executable);
     cmd.stdout(Stdio::piped())

@@ -232,6 +232,7 @@ export SCCACHE_MULTILEVEL_WRITE_ERROR_POLICY="all"
 * `SCCACHE_REGION` s3 region, required if using AWS S3
 * `SCCACHE_S3_USE_SSL` s3 endpoint requires TLS, set this to `true`
 * `SCCACHE_S3_KEY_PREFIX` s3 key prefix (optional)
+* `SCCACHE_S3_RW_MODE` allows to use s3 backend in read-only mode if set to `READ_ONLY`
 
 The endpoint used then becomes `${SCCACHE_BUCKET}.s3-{SCCACHE_REGION}.amazonaws.com`.
 If you are not using the default endpoint and `SCCACHE_REGION` is undefined, it
@@ -254,6 +255,7 @@ will default to `us-east-1`.
 * `SCCACHE_REDIS_DB` redis database (optional, default is 0).
 * `SCCACHE_REDIS_EXPIRATION` / `SCCACHE_REDIS_TTL` ttl for redis cache, don't set for default behavior.
 * `SCCACHE_REDIS_KEY_PREFIX` key prefix (optional).
+* `SCCACHE_REDIS_RW_MODE` allows to use redis backend in read-only mode if set to `READ_ONLY`
 
 The full url appears then as `redis://user:passwd@1.2.3.4:6379/?db=1`.
 
@@ -265,6 +267,7 @@ The full url appears then as `redis://user:passwd@1.2.3.4:6379/?db=1`.
 * `SCCACHE_MEMCACHED_PASSWORD` memcached password (optional).
 * `SCCACHE_MEMCACHED_EXPIRATION` ttl for memcached cache, don't set for default behavior.
 * `SCCACHE_MEMCACHED_KEY_PREFIX` key prefix (optional).
+* `SCCACHE_MEMCACHED_RW_MODE` allows to use memcached backend in read-only mode if set to `READ_ONLY`
 
 #### gcs
 
@@ -278,6 +281,7 @@ The full url appears then as `redis://user:passwd@1.2.3.4:6379/?db=1`.
 * `SCCACHE_AZURE_CONNECTION_STRING`
 * `SCCACHE_AZURE_BLOB_CONTAINER`
 * `SCCACHE_AZURE_KEY_PREFIX`
+* `SCCACHE_AZURE_RW_MODE`
 
 #### gha
 
@@ -285,6 +289,7 @@ The full url appears then as `redis://user:passwd@1.2.3.4:6379/?db=1`.
 * `SCCACHE_GHA_RUNTIME_TOKEN` / `ACTIONS_RUNTIME_TOKEN` GitHub Actions access token
 * `SCCACHE_GHA_CACHE_TO` cache key to write
 * `SCCACHE_GHA_CACHE_FROM` comma separated list of cache keys to read from
+* `SCCACHE_GHA_RW_MODE` allows to use GHA cache backend in read-only mode if set to `READ_ONLY`
 
 #### webdav
 
@@ -293,6 +298,7 @@ The full url appears then as `redis://user:passwd@1.2.3.4:6379/?db=1`.
 * `SCCACHE_WEBDAV_USERNAME` a username to authenticate with webdav service (optional).
 * `SCCACHE_WEBDAV_PASSWORD` a password to authenticate with webdav service (optional).
 * `SCCACHE_WEBDAV_TOKEN` a token to authenticate with webdav service (optional) - may be used instead of login & password.
+* `SCCACHE_WEBDAV_RW_MODE` allows to use webdav backend in read-only mode if set to `READ_ONLY`
 
 #### OSS
 
@@ -302,6 +308,7 @@ The full url appears then as `redis://user:passwd@1.2.3.4:6379/?db=1`.
 * `ALIBABA_CLOUD_ACCESS_KEY_ID`
 * `ALIBABA_CLOUD_ACCESS_KEY_SECRET`
 * `SCCACHE_OSS_NO_CREDENTIALS`
+* `SCCACHE_OSS_RW_MODE`
 
 #### Tencent Cloud Object Storage (COS)
 
@@ -310,3 +317,4 @@ The full url appears then as `redis://user:passwd@1.2.3.4:6379/?db=1`.
 * `SCCACHE_COS_KEY_PREFIX`
 * `TENCENTCLOUD_SECRET_ID`
 * `TENCENTCLOUD_SECRET_KEY`
+* `SCCACHE_COS_RW_MODE`

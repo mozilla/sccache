@@ -20,7 +20,10 @@ use std::str;
 
 use crate::errors::*;
 
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 pub use self::toolchain_imp::*;
 
 pub trait ToolchainPackager: Send {
@@ -36,7 +39,10 @@ pub trait OutputsRepackager {
     -> Result<dist::PathTransformer>;
 }
 
-#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+#[cfg(not(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+)))]
 mod toolchain_imp {
     use super::ToolchainPackager;
     use fs_err as fs;
@@ -52,7 +58,10 @@ mod toolchain_imp {
     }
 }
 
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 mod toolchain_imp {
     use super::SimplifyPath;
     use fs_err as fs;
@@ -318,9 +327,9 @@ mod toolchain_imp {
                     // We need to add /lib64/ld-linux-x86-64.so.2 to deps, else we'll get error "No
                     // such file or directory".
                     //
-                    // Workaround: add libname to deps if it's abusolute and exists.
+                    // Workaround: add libname to deps if it's absolute and exists.
                     let libname_path = PathBuf::from(libname);
-                    if libname_path.is_absolute() && libname_path.exists() {
+                    if libname_path.is_absolute() {
                         libs.push(libname_path);
                     }
 

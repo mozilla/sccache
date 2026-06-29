@@ -1331,7 +1331,10 @@ struct CToolchainPackager {
 }
 
 #[cfg(feature = "dist-client")]
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 impl pkg::ToolchainPackager for CToolchainPackager {
     fn write_pkg(self: Box<Self>, f: fs::File) -> Result<()> {
         use std::os::unix::ffi::OsStringExt;
@@ -1759,6 +1762,42 @@ mod test {
             b"/home/user1/project".to_vec(), // This should match (longest)
         ];
         assert_eq!(h1, hash_with_basedirs(preprocessed1, &multi_basedirs));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_hash_key_basedirs_windows_escaped_backslashes() {
+        // On Windows, paths in preprocessor output are C string literals with
+        // escaped backslashes (e.g. MSVC: #line 1 "D:\\dir\\file.c", clang:
+        // # 1 "D:\\dir\\file.c"). The same source compiled from two different
+        // directories must produce the same hash when both are basedirs.
+        let args = ovec!["a", "b", "c"];
+        let preprocessed1 =
+            b"#line 1 \"D:\\\\dev\\\\user1\\\\project\\\\src\\\\main.c\"\nint main() { return 0; }";
+        let preprocessed2 =
+            b"#line 1 \"E:\\\\work\\\\user2\\\\checkout\\\\src\\\\main.c\"\nint main() { return 0; }";
+        // As normalized by Config: lowercase, forward slashes, trailing slash
+        let basedirs = [
+            b"d:/dev/user1/project/".to_vec(),
+            b"e:/work/user2/checkout/".to_vec(),
+        ];
+
+        let hash_with_basedirs = |output: &[u8], dirs: &[Vec<u8>]| {
+            HashKeyParams::new("abcd", Language::C, &args, output)
+                .with_basedirs(dirs)
+                .compute()
+        };
+
+        // Same hash with different absolute (escaped backslash) paths
+        let h1 = hash_with_basedirs(preprocessed1, &basedirs);
+        let h2 = hash_with_basedirs(preprocessed2, &basedirs);
+        assert_eq!(h1, h2);
+
+        // Different hashes without basedirs
+        assert_neq!(
+            HashKeyParams::new("abcd", Language::C, &args, preprocessed1).compute(),
+            HashKeyParams::new("abcd", Language::C, &args, preprocessed2).compute()
+        );
     }
 
     #[test]
