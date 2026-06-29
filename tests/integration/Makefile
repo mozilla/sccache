@@ -95,7 +95,7 @@ help:
 	@echo "Build System Tests:"
 	@echo "  make test-cmake              Run CMake integration test"
 	@echo "  make test-cmake-modules      Run CMake C++20 modules test"
-	@echo "  make test-cmake-modules-v4   Run CMake 4.x C++20 modules test (xfail)"
+	@echo "  make test-cmake-modules-v4   Run CMake 4.x C++20 modules test"
 	@echo "  make test-autotools          Run Autotools integration test"
 	@echo ""
 	@echo "Advanced Tests:"
