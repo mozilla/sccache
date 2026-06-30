@@ -15,7 +15,9 @@
 use crate::cache::CacheMode;
 #[cfg(target_os = "windows")]
 use crate::util::normalize_win_path;
-use directories::ProjectDirs;
+#[cfg(target_os = "macos")]
+use etcetera::app_strategy::Apple;
+use etcetera::app_strategy::{AppStrategy, AppStrategyArgs, choose_app_strategy};
 use fs::File;
 use fs_err as fs;
 #[cfg(any(feature = "dist-client", feature = "dist-server"))]
@@ -97,20 +99,46 @@ const TEN_GIGS: u64 = 10 * 1024 * 1024 * 1024;
 
 pub const INSECURE_DIST_CLIENT_TOKEN: &str = "dangerously_insecure_client";
 
+fn app_strategy_args(app_name: &str) -> AppStrategyArgs {
+    AppStrategyArgs {
+        top_level_domain: String::new(),
+        author: ORGANIZATION.to_owned(),
+        app_name: app_name.to_owned(),
+    }
+}
+
+// Windows known-folder conventions on Windows, XDG everywhere else.
+fn app_strategy(app_name: &str) -> impl AppStrategy {
+    choose_app_strategy(app_strategy_args(app_name))
+        .expect("Unable to determine application directories")
+}
+
+// Legacy `~/Library` locations used by the old `directories` crate on macOS.
+#[cfg(target_os = "macos")]
+fn legacy_macos_strategy(app_name: &str) -> Apple {
+    Apple::new(app_strategy_args(app_name)).expect("Unable to determine application directories")
+}
+
+// Prefer the legacy macOS cache dir if it already exists, else the new one.
+fn default_cache_dir(app_name: &str) -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        let legacy_path = legacy_macos_strategy(app_name).cache_dir();
+        if legacy_path.exists() {
+            return legacy_path;
+        }
+    }
+    app_strategy(app_name).cache_dir()
+}
+
 // Unfortunately this means that nothing else can use the sccache cache dir as
 // this top level directory is used directly to store sccache cached objects...
 pub fn default_disk_cache_dir() -> PathBuf {
-    ProjectDirs::from("", ORGANIZATION, APP_NAME)
-        .expect("Unable to retrieve disk cache directory")
-        .cache_dir()
-        .to_owned()
+    default_cache_dir(APP_NAME)
 }
 // ...whereas subdirectories are used of this one
 pub fn default_dist_cache_dir() -> PathBuf {
-    ProjectDirs::from("", ORGANIZATION, DIST_APP_NAME)
-        .expect("Unable to retrieve dist cache directory")
-        .cache_dir()
-        .to_owned()
+    default_cache_dir(DIST_APP_NAME)
 }
 
 fn default_disk_cache_size() -> u64 {
@@ -1233,27 +1261,23 @@ fn config_from_env() -> Result<EnvConfig> {
     })
 }
 
-// The directories crate changed the location of `config_dir` on macos in version 3,
-// so we also check the config in `preference_dir` (new in that version), which
-// corresponds to the old location, for compatibility with older setups.
 fn config_file(env_var: &str, leaf: &str) -> PathBuf {
     if let Some(env_value) = env::var_os(env_var) {
         return env_value.into();
     }
-    let dirs =
-        ProjectDirs::from("", ORGANIZATION, APP_NAME).expect("Unable to get config directory");
-    // If the new location exists, use that.
-    let path = dirs.config_dir().join(leaf);
-    if path.exists() {
-        return path;
+    // Prefer the legacy macOS config dirs if they already exist. The old
+    // `directories` crate used Application Support (Apple's `data_dir`) and,
+    // for older versions, Preferences (Apple's `config_dir`).
+    #[cfg(target_os = "macos")]
+    {
+        let legacy = legacy_macos_strategy(APP_NAME);
+        for legacy_path in [legacy.in_data_dir(leaf), legacy.in_config_dir(leaf)] {
+            if legacy_path.exists() {
+                return legacy_path;
+            }
+        }
     }
-    // If the old location exists, use that.
-    let path = dirs.preference_dir().join(leaf);
-    if path.exists() {
-        return path;
-    }
-    // Otherwise, use the new location.
-    dirs.config_dir().join(leaf)
+    app_strategy(APP_NAME).in_config_dir(leaf)
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
