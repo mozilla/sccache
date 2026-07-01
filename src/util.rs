@@ -1020,6 +1020,25 @@ fn unhex(b: u8) -> std::io::Result<u8> {
     }
 }
 
+pub fn spawn<F>(future: F) -> tokio_util::task::AbortOnDropHandle<F::Output>
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    tokio_util::task::AbortOnDropHandle::new(tokio::spawn(future))
+}
+
+pub fn spawn_on<F>(
+    handle: &tokio::runtime::Handle,
+    future: F,
+) -> tokio_util::task::AbortOnDropHandle<F::Output>
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    tokio_util::task::AbortOnDropHandle::new(handle.spawn(future))
+}
+
 /// A reverse version of std::ascii::escape_default
 pub fn ascii_unescape_default(s: &[u8]) -> std::io::Result<Vec<u8>> {
     let mut out = Vec::with_capacity(s.len() + 4);
