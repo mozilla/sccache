@@ -37,7 +37,7 @@ use fs::metadata;
 use fs_err as fs;
 use futures::channel::mpsc;
 use futures::future::FutureExt;
-use futures::{Sink, SinkExt, Stream, StreamExt, TryFutureExt, future, stream};
+use futures::{Sink, SinkExt, Stream, StreamExt, TryFutureExt, future};
 use number_prefix::NumberPrefix;
 use serde::{Deserialize, Serialize};
 use std::cell::Cell;
@@ -989,7 +989,6 @@ where
 }
 
 use futures::TryStreamExt;
-use futures::future::Either;
 
 impl<C> SccacheService<C>
 where
@@ -1072,7 +1071,7 @@ where
         }
     }
 
-    fn bind<T>(self, socket: T) -> impl Future<Output = Result<()>> + Send + Sized + 'static
+    async fn bind<T>(self, socket: T) -> Result<()>
     where
         T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
@@ -1086,36 +1085,61 @@ where
         }
         let io = builder.new_framed(socket);
 
-        let (sink, stream) = SccacheTransport {
+        let (sink, mut stream) = SccacheTransport {
             inner: Framed::new(io.sink_err_into().err_into(), BincodeCodec),
         }
         .split();
-        let sink = sink.sink_err_into::<Error>();
+        let mut sink = sink.sink_err_into::<Error>();
+
+        let (reqs_tx, mut reqs_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let me = Arc::new(self);
-        stream
-            .err_into::<Error>()
-            .and_then(move |input| me.clone().call(input))
-            .and_then(move |response| async move {
-                let fut = match response {
-                    Message::WithoutBody(message) => {
-                        let stream = stream::once(async move { Ok(Frame::Message { message }) });
-                        Either::Left(stream)
+
+        let _handle = util::spawn(async move {
+            while let Some(req) = reqs_rx.recv().await {
+                match req {
+                    Ok(req) => {
+                        let res = match util::spawn(me.clone().call(req)).await? {
+                            Ok(res) => res,
+                            Err(err) => {
+                                return Err(err);
+                            }
+                        };
+                        match res {
+                            Message::WithoutBody(message) => {
+                                sink.send(Frame::Message { message }).await?;
+                            }
+                            Message::WithBody(message, body) => {
+                                sink.send(Frame::Message { message }).await?;
+                                sink.send(Frame::Body {
+                                    chunk: Some(util::spawn(body).await??),
+                                })
+                                .await?;
+                                sink.send(Frame::Body { chunk: None }).await?;
+                            }
+                        }
                     }
-                    Message::WithBody(message, body) => {
-                        let stream = stream::once(async move { Ok(Frame::Message { message }) })
-                            .chain(
-                                body.into_stream()
-                                    .map_ok(|chunk| Frame::Body { chunk: Some(chunk) }),
-                            )
-                            .chain(stream::once(async move { Ok(Frame::Body { chunk: None }) }));
-                        Either::Right(stream)
+                    Err(err) => {
+                        return Err(err);
                     }
-                };
-                Ok(Box::pin(fut))
-            })
-            .try_flatten()
-            .forward(sink)
+                }
+            }
+
+            Ok(())
+        });
+
+        while let Some(req) = stream.next().await {
+            match req {
+                Ok(req) => {
+                    reqs_tx.send(Ok(req))?;
+                }
+                Err(err) => {
+                    return Err(err);
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Get dist status.
@@ -1445,8 +1469,12 @@ where
 
         let me = self.clone();
 
-        self.rt
-            .spawn(async move {
+        // This redundant async block exists to reduce whitespace-only
+        // changes when comparing this diff with upstream/main.
+        // TODO: remove this before merging
+        #[allow(clippy::redundant_async_block)]
+        util::spawn_on(&self.rt, async move {
+            async move {
                 let result = match me.dist_client.get_client().await {
                     Ok(client) => std::panic::AssertUnwindSafe(hasher.get_cached_or_compile(
                         &me,
@@ -1651,9 +1679,11 @@ where
                 }
 
                 Ok(res)
-            })
-            .map_err(anyhow::Error::new)
-            .await?
+            }
+            .await
+        })
+        .map_err(anyhow::Error::new)
+        .await?
     }
 }
 
