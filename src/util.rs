@@ -1002,7 +1002,14 @@ pub fn daemonize() -> Result<()> {
 /// More details could be found at https://github.com/mozilla/sccache/pull/1563
 #[cfg(any(feature = "dist-server", feature = "dist-client"))]
 pub fn new_reqwest_blocking_client() -> reqwest::blocking::Client {
-    reqwest::blocking::Client::builder()
+    let mut builder = reqwest::blocking::Client::builder();
+
+    // Query the native store; fallback if it's completely empty
+    if rustls_native_certs::load_native_certs().certs.is_empty() {
+        builder = builder.tls_certs_only(Vec::new());
+    }
+
+    builder
         .pool_max_idle_per_host(0)
         .build()
         .expect("http client must build with success")
