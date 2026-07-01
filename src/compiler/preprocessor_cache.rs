@@ -180,10 +180,10 @@ impl PreprocessorCacheEntry {
         updated: &mut bool,
     ) -> Option<String> {
         // Check newest result first since it's more likely to match.
-        for (digest, includes) in self.results.iter_mut().rev() {
-            let result_matches = Self::result_matches(digest, includes, config, updated);
+        for (result_digest, includes) in self.results.iter_mut().rev() {
+            let result_matches = Self::result_matches(includes, config, updated);
             if result_matches {
-                return Some(digest.clone());
+                return Some(result_digest.clone());
             }
         }
         None
@@ -191,7 +191,6 @@ impl PreprocessorCacheEntry {
 
     /// A result matches if all of its include files exist on disk and have not changed.
     fn result_matches(
-        digest: &str,
         includes: &mut [IncludeEntry],
         config: PreprocessorCacheModeConfig,
         updated: &mut bool,
@@ -265,19 +264,19 @@ impl PreprocessorCacheEntry {
                     }
                 }
             } else {
-                let (new_digest, finder): (String, _) = match Digest::reader_sync_time_macros(file)
-                {
-                    Ok((new_digest, finder)) => (new_digest, finder),
-                    Err(e) => {
-                        debug!(
-                            "{} is in a preprocessor cache entry but can't be read ({})",
-                            path.display(),
-                            e
-                        );
-                        return false;
-                    }
-                };
-                if !finder.found_time_macros() && include.digest != new_digest {
+                let (include_file_digest, finder): (String, _) =
+                    match Digest::reader_sync_time_macros(file) {
+                        Ok((include_file_digest, finder)) => (include_file_digest, finder),
+                        Err(e) => {
+                            debug!(
+                                "{} is in a preprocessor cache entry but can't be read ({})",
+                                path.display(),
+                                e
+                            );
+                            return false;
+                        }
+                    };
+                if !finder.found_time_macros() && include.digest != include_file_digest {
                     return false;
                 }
                 if finder.found_time() {
@@ -294,23 +293,23 @@ impl PreprocessorCacheEntry {
                 // if the (potential) expansion of those macros changes by computing a new
                 // digest comprising the file digest and time information that represents the
                 // macro expansions.
-                let mut new_digest = Digest::new();
-                new_digest.update(digest.as_bytes());
+                let mut normalized_include_digest = Digest::new();
+                normalized_include_digest.update(include_file_digest.as_bytes());
 
                 if finder.found_date() {
                     debug!("found __DATE__ in {}", path.display());
-                    new_digest.delimiter(b"date");
+                    normalized_include_digest.delimiter(b"date");
                     let date = chrono::Local::now().date_naive();
-                    new_digest.update(&date.year().to_le_bytes());
-                    new_digest.update(&date.month().to_le_bytes());
-                    new_digest.update(&date.day().to_le_bytes());
+                    normalized_include_digest.update(&date.year().to_le_bytes());
+                    normalized_include_digest.update(&date.month().to_le_bytes());
+                    normalized_include_digest.update(&date.day().to_le_bytes());
 
                     // If the compiler has support for it, the expansion of __DATE__ will change
                     // according to the value of SOURCE_DATE_EPOCH. Note: We have to hash both
                     // SOURCE_DATE_EPOCH and the current date since we can't be sure that the
                     // compiler honors SOURCE_DATE_EPOCH.
                     if let Ok(source_date_epoch) = std::env::var("SOURCE_DATE_EPOCH") {
-                        new_digest.update(source_date_epoch.as_bytes());
+                        normalized_include_digest.update(source_date_epoch.as_bytes());
                     }
                 }
 
@@ -338,9 +337,10 @@ impl PreprocessorCacheEntry {
                         }
                     };
                     let mtime: chrono::DateTime<chrono::Local> = chrono::DateTime::from(mtime);
-                    new_digest.delimiter(b"timestamp");
-                    new_digest.update(&mtime.naive_local().and_utc().timestamp().to_le_bytes());
-                    include.digest = new_digest.finish();
+                    normalized_include_digest.delimiter(b"timestamp");
+                    normalized_include_digest
+                        .update(&mtime.naive_local().and_utc().timestamp().to_le_bytes());
+                    include.digest = normalized_include_digest.finish();
                     // Signal that the preprocessor cache entry has been updated and needs to be
                     // written to disk.
                     *updated = true;
@@ -637,6 +637,50 @@ mod test {
         assert!(!finder.found_time());
         assert!(!finder.found_timestamp());
         assert!(!finder.found_date());
+    }
+
+    #[test]
+    fn test_preprocessor_cache_timestamp_digest_uses_include_file_digest() {
+        use std::fs;
+
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let header_path = dir.path().join("timestamp.h");
+        let header_contents = b"const char timestamp[] = __TIMESTAMP__;\n";
+
+        fs::write(&header_path, header_contents).unwrap();
+
+        let include_file_digest = Digest::reader_sync(header_contents.as_slice()).unwrap();
+        let mtime = fs::symlink_metadata(&header_path)
+            .unwrap()
+            .modified()
+            .unwrap();
+        let mtime: chrono::DateTime<chrono::Local> = chrono::DateTime::from(mtime);
+        let mut expected_digest = Digest::new();
+        expected_digest.update(include_file_digest.as_bytes());
+        expected_digest.delimiter(b"timestamp");
+        expected_digest.update(&mtime.naive_local().and_utc().timestamp().to_le_bytes());
+        let expected_digest = expected_digest.finish();
+
+        let mut includes = vec![IncludeEntry {
+            path: header_path.into_os_string(),
+            digest: include_file_digest,
+            file_size: header_contents.len() as u64,
+            mtime: None,
+            ctime: None,
+        }];
+        let config = PreprocessorCacheModeConfig::activated();
+        let mut updated = false;
+
+        assert!(PreprocessorCacheEntry::result_matches(
+            &mut includes,
+            config,
+            &mut updated
+        ));
+
+        assert!(updated);
+        assert_eq!(includes[0].digest, expected_digest);
     }
 
     #[test]
