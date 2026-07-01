@@ -21,7 +21,8 @@ use opendal::{
     services::Gcs,
 };
 use reqwest::Client;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use std::fs;
 use url::Url;
 
 use super::http_client::set_user_agent;
@@ -56,7 +57,11 @@ impl GCSCache {
         }
 
         if let Some(path) = cred_path {
-            builder = builder.credential_path(path);
+            if let Some(token) = load_authorized_user_token(path)? {
+                builder = builder.token(token);
+            } else {
+                builder = builder.credential_path(path);
+            }
         }
 
         if let Some(cred_url) = credential_url {
@@ -79,6 +84,103 @@ impl GCSCache {
             .finish();
         Ok(op)
     }
+}
+
+fn load_authorized_user_token(path: &str) -> Result<Option<String>> {
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("failed to read gcs credential file {path:?}"))?;
+
+    let credential: GoogleCredentialFile = serde_json::from_str(&content)
+        .with_context(|| format!("failed to parse gcs credential file {path:?}"))?;
+
+    let GoogleCredentialFile::AuthorizedUser {
+        client_id,
+        client_secret,
+        refresh_token,
+        token_uri,
+    } = credential
+    else {
+        return Ok(None);
+    };
+
+    let token_uri = token_uri
+        .as_deref()
+        .unwrap_or("https://oauth2.googleapis.com/token");
+
+    debug!("gcs: loading access token from authorized_user credential");
+    let token = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| anyhow!("Failed to create runtime for Google ADC token fetch: {e}"))?
+        .block_on(fetch_authorized_user_token(
+            token_uri,
+            &client_id,
+            &client_secret,
+            &refresh_token,
+        ))
+        .map_err(|e| anyhow!("Failed to fetch Google ADC access token: {e}"))?;
+
+    Ok(Some(token))
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type")]
+enum GoogleCredentialFile {
+    #[serde(rename = "authorized_user")]
+    AuthorizedUser {
+        client_id: String,
+        client_secret: String,
+        refresh_token: String,
+        token_uri: Option<String>,
+    },
+    #[serde(other)]
+    Other,
+}
+
+async fn fetch_authorized_user_token(
+    token_uri: &str,
+    client_id: &str,
+    client_secret: &str,
+    refresh_token: &str,
+) -> Result<String> {
+    let user_agent = format!("{}/{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+    let client = Client::builder().user_agent(user_agent).build()?;
+
+    let res = client
+        .post(token_uri)
+        .form(&AuthorizedUserTokenRequest {
+            client_id,
+            client_secret,
+            refresh_token,
+            grant_type: "refresh_token",
+        })
+        .send()
+        .await?;
+
+    if res.status().is_success() {
+        let resp = res.json::<AuthorizedUserToken>().await?;
+        debug!("gcs: authorized_user token load succeeded");
+        Ok(resp.access_token)
+    } else {
+        let status_code = res.status();
+        let content = res.text().await?;
+        Err(anyhow!(
+            "authorized_user token load failed: code: {status_code}, {content}"
+        ))
+    }
+}
+
+#[derive(Serialize)]
+struct AuthorizedUserTokenRequest<'a> {
+    client_id: &'a str,
+    client_secret: &'a str,
+    refresh_token: &'a str,
+    grant_type: &'a str,
+}
+
+#[derive(Deserialize)]
+struct AuthorizedUserToken {
+    access_token: String,
 }
 
 /// Fetch token from TaskCluster for GCS authentication
