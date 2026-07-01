@@ -111,6 +111,19 @@ mod toolchain_imp {
                         libdir.display()
                     )
                 })?;
+                // Split-sysroot toolchains (e.g. the OE buildtools SDK) keep the
+                // loader plus libc/libm in <sysroot>/lib but the compiler's own
+                // dependency libraries (libmpc, libbfd, libsframe, ...) in
+                // <sysroot>/usr/lib. The relocated loader searches both, but ldd
+                // (run against the host) resolves those deps to host paths or
+                // reports them "not found", so they never land where the sandbox
+                // loader looks. Bundle the sysroot usr/lib shared libraries so
+                // every NEEDED lib resolves inside the build sandbox.
+                if let Some(usr_libdir) = sysroot_usr_libdir(&libdir) {
+                    self.add_shared_libraries(&usr_libdir).with_context(|| {
+                        format!("Failed to bundle sysroot usr/lib {}", usr_libdir.display())
+                    })?;
+                }
             }
             let mut remaining = vec![executable];
             while let Some(obj_path) = remaining.pop() {
@@ -188,6 +201,43 @@ mod toolchain_imp {
                 trace!("walkdir add_file {}", entry.path().display());
                 // It's either a file, or a symlink pointing to a file
                 self.add_file(entry.path().to_owned())?;
+            }
+            Ok(())
+        }
+
+        /// Add the shared libraries directly in `dir_path` to the package.
+        ///
+        /// Unlike `add_dir_contents` this is shallow and filtered to files
+        /// whose name looks like an ELF shared object (`*.so`, `*.so.N...`), so
+        /// bundling a large sysroot `usr/lib` pulls in only the runtime
+        /// libraries the relocated loader resolves -- not headers, static
+        /// archives, or subdirectories. Missing directories are a no-op.
+        pub fn add_shared_libraries(&mut self, dir_path: &Path) -> Result<()> {
+            if !dir_path.is_dir() {
+                return Ok(());
+            }
+            for entry in fs::read_dir(dir_path)? {
+                let entry = entry?;
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if !(name.ends_with(".so") || name.contains(".so.")) {
+                    continue;
+                }
+                let file_type = entry.file_type()?;
+                if file_type.is_symlink() {
+                    // A symlink pointing at a regular file; add_file resolves it
+                    // and tarify_path records the link.
+                    if !fs::metadata(entry.path())
+                        .map(|m| m.is_file())
+                        .unwrap_or(false)
+                    {
+                        continue;
+                    }
+                } else if !file_type.is_file() {
+                    continue;
+                }
+                trace!("shared lib add_file {}", entry.path().display());
+                self.add_file(entry.path())?;
             }
             Ok(())
         }
@@ -406,6 +456,33 @@ mod toolchain_imp {
             return None;
         }
         interp.parent().map(Path::to_path_buf)
+    }
+
+    /// Given a relocated interpreter's lib dir (`<sysroot>/lib`), return the
+    /// sibling `<sysroot>/usr/lib` when it exists.
+    ///
+    /// Split-sysroot toolchains (the OE buildtools SDK) keep the compiler's
+    /// dependency libraries there rather than beside the loader; uninative
+    /// sysroots have no `usr/lib`, so this returns `None` and leaves that path
+    /// untouched.
+    fn sysroot_usr_libdir(libdir: &Path) -> Option<PathBuf> {
+        let usr_lib = libdir.parent()?.join("usr").join("lib");
+        usr_lib.is_dir().then_some(usr_lib)
+    }
+
+    #[test]
+    fn test_sysroot_usr_libdir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let libdir = tmp.path().join("sysroot").join("lib");
+        std::fs::create_dir_all(&libdir).unwrap();
+
+        // A uninative sysroot has no usr/lib sibling: leave that path untouched.
+        assert_eq!(sysroot_usr_libdir(&libdir), None);
+
+        // A split sysroot (OE buildtools SDK) has usr/lib: bundle it.
+        let usr_lib = tmp.path().join("sysroot").join("usr").join("lib");
+        std::fs::create_dir_all(&usr_lib).unwrap();
+        assert_eq!(sysroot_usr_libdir(&libdir), Some(usr_lib));
     }
 
     #[test]
