@@ -654,6 +654,15 @@ where
         // We can't cache compilation without an input.
         None => cannot_cache!("no input file"),
     };
+    // Compiler feature-probes compile /dev/null (e.g. OpenSSL's
+    // `-Wa,--help ... -x assembler /dev/null`, which asks the assembler to
+    // print its help). They never produce a real object, so caching aborts
+    // when the missing output can't be zipped and swallows the probe's stdout,
+    // making the caller mis-detect the feature. Refuse to cache so sccache runs
+    // the compiler locally and the probe's output reaches the caller.
+    if Path::new(&input) == Path::new("/dev/null") {
+        cannot_cache!("/dev/null input");
+    }
     let language = match language {
         None => {
             let mut lang = Language::from_file_name(Path::new(&input));
@@ -1497,6 +1506,29 @@ mod test {
             )],
         );
         assert!(preprocessor_args.is_empty());
+    }
+
+    #[test]
+    fn test_parse_arguments_dev_null_input_not_cached() {
+        // OpenSSL's assembler feature-probe compiles /dev/null:
+        //   gcc -Wa,--help -c -o null.o -x assembler /dev/null
+        // -Wa,--help makes the assembler print its help and exit without an
+        // object, so caching aborts when the missing output can't be zipped and
+        // swallows the probe's stdout - the caller then mis-detects
+        // --noexecstack support and emits exec-stack objects. Run it locally.
+        let args = stringvec![
+            "-Wa,--help",
+            "-c",
+            "-o",
+            "null.o",
+            "-x",
+            "assembler",
+            "/dev/null"
+        ];
+        assert_eq!(
+            CompilerArguments::CannotCache("/dev/null input", None),
+            parse_arguments_(args, false)
+        );
     }
 
     #[test]
