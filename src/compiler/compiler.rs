@@ -1087,6 +1087,20 @@ where
         );
 
         if jc.output.code != 0 {
+            // The one-line reason above is logged by the caller at warn; the
+            // remote compiler's own stdout/stderr is the only place the actual
+            // failure (a missing target std, an unshipped input) is visible, and
+            // the local fallback discards it. Emit it at debug so SCCACHE_LOG=debug
+            // surfaces the remote error without a rebuild, while a normal
+            // SCCACHE_LOG=info run stays quiet.
+            debug!(
+                "[{}]: distributed compile on {} exited {}; remote stderr:\n{}\nremote stdout:\n{}",
+                out_pretty,
+                server_id.addr(),
+                jc.output.code,
+                String::from_utf8_lossy(&jc.output.stderr),
+                String::from_utf8_lossy(&jc.output.stdout),
+            );
             // A non-zero remote result is frequently a distribution artifact
             // rather than a genuine compiler error: e.g. an object that
             // .incbin's a binary the inputs packager did not ship (the kernel's
