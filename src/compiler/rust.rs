@@ -2059,6 +2059,24 @@ fn test_maybe_add_cargo_toml() {
     assert!(maybe_add_cargo_toml(&wgpu_lib, true).is_none());
 }
 
+/// Is `dir` a rustc target sysroot lib dir (`<sysroot>/lib/rustlib/<triple>/lib`)?
+///
+/// Such a dir holds the implicit sysroot crates (core, std, alloc, ...) that
+/// rustc injects but that never appear as `--extern` deps, so the crate-dep
+/// filter in `write_inputs` drops them. A cross-compile references the target's
+/// prebuilt std here via `-L`; the remote rustc needs those rlibs, so libs from
+/// this dir shape are shipped unconditionally. Anchored on the `rustlib/*/lib`
+/// tail so an ordinary `-L dependency=target/*/deps` dir still gets filtered.
+#[cfg(feature = "dist-client")]
+fn is_rustlib_target_libdir(dir: &Path) -> bool {
+    dir.file_name().is_some_and(|n| n == "lib")
+        && dir
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::file_name)
+            .is_some_and(|n| n == "rustlib")
+}
+
 #[cfg(feature = "dist-client")]
 impl pkg::InputsPackager for RustInputsPackager {
     #[allow(clippy::cognitive_complexity)] // TODO simplify this method.
@@ -2140,6 +2158,9 @@ impl pkg::InputsPackager for RustInputsPackager {
         let mut tar_crate_libs = vec![];
         for crate_link_path in crate_link_paths {
             let crate_link_path = pkg::simplify_path(&crate_link_path)?;
+            // Ship every rlib from a target sysroot lib dir; its implicit
+            // sysroot crates are absent from the cargo dep-name set below.
+            let ship_all = is_rustlib_target_libdir(&crate_link_path);
             let dir_entries = match fs::read_dir(crate_link_path) {
                 Ok(iter) => iter,
                 Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
@@ -2181,8 +2202,9 @@ impl pkg::InputsPackager for RustInputsPackager {
                         _ => continue,
                     };
                     if let Some((_, ref dep_crate_names)) = rlib_dep_reader_and_names {
-                        // We have a list of crate names we care about, see if this lib is a candidate
-                        if !dep_crate_names.contains(crate_name) {
+                        // We have a list of crate names we care about, see if this lib is a candidate.
+                        // A target rustlib dir is exempt: its sysroot crates never appear as deps.
+                        if !ship_all && !dep_crate_names.contains(crate_name) {
                             continue;
                         }
                     }
@@ -4162,5 +4184,20 @@ proc_macro false
             ArgData::Target(ArgTarget::Name("x86_64-unknown-linux-gnu".to_owned())),
             ArgDisposition::Separated
         )));
+    }
+
+    #[cfg(feature = "dist-client")]
+    #[test]
+    fn test_is_rustlib_target_libdir() {
+        // A target sysroot lib dir (holds the prebuilt std/core rlibs).
+        assert!(is_rustlib_target_libdir(Path::new(
+            "/work/recipe-sysroot/usr/lib/rustlib/aarch64-avocado-linux-gnu/lib"
+        )));
+        // An ordinary cargo dependency search path must stay filtered.
+        assert!(!is_rustlib_target_libdir(Path::new(
+            "/work/git/target/aarch64-avocado-linux-gnu/release/deps"
+        )));
+        // `lib` leaf without a `rustlib` grandparent is not a rustlib dir.
+        assert!(!is_rustlib_target_libdir(Path::new("/usr/lib")));
     }
 }
