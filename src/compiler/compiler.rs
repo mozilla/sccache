@@ -940,6 +940,7 @@ where
         // and salvaged (see the missing-output check after the run completes).
         let expected_output_paths: Vec<PathBuf> = compilation
             .outputs()
+            .filter(|output| !output.optional)
             .map(|output| cwd.join(output.path))
             .collect();
         let (inputs_packager, toolchain_packager, outputs_rewriter) =
