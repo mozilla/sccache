@@ -534,9 +534,9 @@ where
         &self,
         arguments: &[OsString],
         cwd: &Path,
-        _env_vars: &[(OsString, OsString)],
+        env_vars: &[(OsString, OsString)],
     ) -> CompilerArguments<Box<dyn CompilerHasher<T> + 'static>> {
-        match parse_arguments(arguments, cwd) {
+        match parse_arguments(arguments, cwd, env_vars) {
             CompilerArguments::Ok(args) => CompilerArguments::Ok(Box::new(RustHasher {
                 executable: self.executable.clone(), // if rustup exists, this must already contain the true resolved compiler path
                 host: self.host.clone(),
@@ -983,6 +983,23 @@ impl FromArg for ArgTarget {
         ))
     }
 }
+/// Resolve a bare `--target <name>` against `RUST_TARGET_PATH` to the custom
+/// target-spec JSON it refers to, if one exists.
+///
+/// rustc resolves a bare target name by searching each `RUST_TARGET_PATH`
+/// directory for `<name>.json` (built-in targets have no file and are left
+/// alone). sccache-dist ships a target spec only when `--target` is a path, so
+/// a name-form custom target is invisible to the build server and the remote
+/// rustc aborts with "could not find specification for target". Resolving the
+/// name to its JSON path here lets the existing path-form machinery hash and
+/// ship the spec. `env_vars` is the compile's own environment, not the daemon's.
+fn resolve_target_json_in_path(name: &str, env_vars: &[(OsString, OsString)]) -> Option<PathBuf> {
+    let (_, rust_target_path) = env_vars.iter().find(|(k, _)| k == "RUST_TARGET_PATH")?;
+    std::env::split_paths(rust_target_path)
+        .map(|dir| dir.join(format!("{name}.json")))
+        .find(|candidate| candidate.is_file())
+}
+
 impl IntoArg for ArgTarget {
     fn into_arg_os_string(self) -> OsString {
         match self {
@@ -1065,7 +1082,11 @@ counted_array!(static ARGS: [ArgInfo<ArgData>; _] = [
     take_arg!("-o", PathBuf, CanBeSeparated, TooHardPath),
 ]);
 
-fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<ParsedArguments> {
+fn parse_arguments(
+    arguments: &[OsString],
+    cwd: &Path,
+    env_vars: &[(OsString, OsString)],
+) -> CompilerArguments<ParsedArguments> {
     let mut args = vec![];
 
     let mut emit: Option<HashSet<String>> = None;
@@ -1174,7 +1195,15 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
             Some(Target(target)) => match target {
                 ArgTarget::Path(json_path) => target_json = Some(json_path.to_owned()),
                 ArgTarget::Unsure(_) => cannot_cache!("target unsure"),
-                ArgTarget::Name(_) => (),
+                ArgTarget::Name(name) => {
+                    // Keep the name form (rustc records it as the target's
+                    // identity, matching the prebuilt std in the sysroot); we
+                    // ship the spec and repoint RUST_TARGET_PATH for the remote
+                    // instead. Resolving here lets the spec be hashed and shipped.
+                    if let Some(json_path) = resolve_target_json_in_path(name, env_vars) {
+                        target_json = Some(json_path);
+                    }
+                }
             },
             None => {
                 match arg {
@@ -1669,6 +1698,9 @@ where
             .into_iter()
             .chain(abs_externs)
             .chain(abs_staticlibs)
+            // Ship the custom target-spec JSON (if any) so a remote rustc can
+            // load it; without it a distributed compile fails to find the target.
+            .chain(self.parsed_args.target_json.iter().map(|p| cwd.join(p)))
             .collect();
 
         Ok(HashResult {
@@ -1814,6 +1846,18 @@ impl<T: CommandCreatorSync> Compilation<T> for RustCompilation {
                     }
                     "CARGO" | "CARGO_MANIFEST_DIR" => {
                         *v = path_transformer.as_dist(Path::new(v))?;
+                    }
+                    "RUST_TARGET_PATH" => {
+                        // Repoint the target-spec search path at the shipped
+                        // copies so the remote rustc resolves a name-form
+                        // --target the same way the client did. The spec JSON is
+                        // shipped as a compile input above. The server is always
+                        // Linux, so the entries join with ':'.
+                        let mut dist_dirs = Vec::new();
+                        for dir in std::env::split_paths(v) {
+                            dist_dirs.push(path_transformer.as_dist(&dir)?);
+                        }
+                        *v = dist_dirs.join(":");
                     }
                     _ => (),
                 }
@@ -2719,7 +2763,7 @@ mod test {
 
     fn _parse_arguments(arguments: &[String]) -> CompilerArguments<ParsedArguments> {
         let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
-        parse_arguments(&arguments, ".".as_ref())
+        parse_arguments(&arguments, ".".as_ref(), &[])
     }
 
     macro_rules! parses {
@@ -3612,7 +3656,7 @@ proc_macro false
         F: Fn(&Path) -> Result<()>,
     {
         let oargs = args.iter().map(OsString::from).collect::<Vec<OsString>>();
-        let parsed_args = match parse_arguments(&oargs, f.tempdir.path()) {
+        let parsed_args = match parse_arguments(&oargs, f.tempdir.path(), env_vars) {
             CompilerArguments::Ok(parsed_args) => parsed_args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
@@ -4028,5 +4072,95 @@ proc_macro false
             ArgDisposition::Separated
         )));
         assert_eq!(h.target_json, Some(PathBuf::from("/path/to/target.json")));
+    }
+
+    #[test]
+    fn test_parse_target_name_resolved_via_rust_target_path() {
+        // A bare `--target NAME` naming a custom target spec found on
+        // RUST_TARGET_PATH is resolved to that JSON path, so the spec is hashed
+        // and shipped and a remote rustc can load it (OE passes the target by
+        // name and relies on RUST_TARGET_PATH, which the build server lacks).
+        let tmp = tempfile::Builder::new()
+            .prefix("rust-target-path")
+            .tempdir()
+            .unwrap();
+        let spec = tmp.path().join("aarch64-avocado-linux-gnu.json");
+        std::fs::write(&spec, b"{}").unwrap();
+        let env_vars = vec![(
+            OsString::from("RUST_TARGET_PATH"),
+            OsString::from(tmp.path()),
+        )];
+
+        let args = [
+            "--crate-name",
+            "foo",
+            "--crate-type",
+            "lib",
+            "./src/lib.rs",
+            "--emit=dep-info,link",
+            "--out-dir",
+            "/out",
+            "--target",
+            "aarch64-avocado-linux-gnu",
+        ]
+        .iter()
+        .map(OsString::from)
+        .collect::<Vec<_>>();
+
+        let h = match parse_arguments(&args, ".".as_ref(), &env_vars) {
+            CompilerArguments::Ok(a) => a,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+
+        // The spec is recorded for hashing + shipping, but --target keeps its
+        // name form so rustc's target identity still matches the prebuilt std.
+        assert_eq!(h.target_json, Some(spec));
+        assert!(h.arguments.contains(&Argument::WithValue(
+            "--target",
+            ArgData::Target(ArgTarget::Name("aarch64-avocado-linux-gnu".to_owned())),
+            ArgDisposition::Separated
+        )));
+    }
+
+    #[test]
+    fn test_parse_target_name_unresolved_stays_name() {
+        // RUST_TARGET_PATH set but no matching <name>.json: the target stays a
+        // bare name and target_json is None. Guards builtins from being rewritten.
+        let tmp = tempfile::Builder::new()
+            .prefix("rust-target-path")
+            .tempdir()
+            .unwrap();
+        let env_vars = vec![(
+            OsString::from("RUST_TARGET_PATH"),
+            OsString::from(tmp.path()),
+        )];
+
+        let args = [
+            "--crate-name",
+            "foo",
+            "--crate-type",
+            "lib",
+            "./src/lib.rs",
+            "--emit=dep-info,link",
+            "--out-dir",
+            "/out",
+            "--target",
+            "x86_64-unknown-linux-gnu",
+        ]
+        .iter()
+        .map(OsString::from)
+        .collect::<Vec<_>>();
+
+        let h = match parse_arguments(&args, ".".as_ref(), &env_vars) {
+            CompilerArguments::Ok(a) => a,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+
+        assert!(h.target_json.is_none());
+        assert!(h.arguments.contains(&Argument::WithValue(
+            "--target",
+            ArgData::Target(ArgTarget::Name("x86_64-unknown-linux-gnu".to_owned())),
+            ArgDisposition::Separated
+        )));
     }
 }
