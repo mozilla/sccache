@@ -137,6 +137,13 @@ struct CCompilation<I: CCompilerImpl> {
     is_locally_preprocessed: bool,
     #[cfg(feature = "dist-client")]
     preprocessed_input: Vec<u8>,
+    /// R0 instrumentation: wall-time spent running the local preprocessor
+    /// (`cc1 -E`) for this compile during hash-key generation, threaded into
+    /// the per-job dist log so the client-side preprocessing tax is timed
+    /// rather than inferred. `None` when no local preprocessing ran (input was
+    /// already preprocessed, or a preprocessor-cache hit skipped the run).
+    #[cfg(feature = "dist-client")]
+    preprocess_duration: Option<std::time::Duration>,
     executable: PathBuf,
     compiler: I,
     cwd: PathBuf,
@@ -464,6 +471,8 @@ where
             None
         };
 
+        #[cfg(feature = "dist-client")]
+        let mut preprocess_elapsed: Option<std::time::Duration> = None;
         let (preprocessor_output, include_files) = if needs_preprocessing {
             if let Some(preprocessor_key) = &preprocessor_key {
                 if cache_control == CacheControl::Default {
@@ -519,6 +528,8 @@ where
                                         #[cfg(feature = "dist-client")]
                                         preprocessed_input: PREPROCESSING_SKIPPED_COMPILE_POISON
                                             .to_vec(),
+                                        #[cfg(feature = "dist-client")]
+                                        preprocess_duration: None,
                                         executable: self.executable.clone(),
                                         compiler: self.compiler.to_owned(),
                                         cwd: cwd.clone(),
@@ -534,6 +545,8 @@ where
                 }
             }
 
+            #[cfg(feature = "dist-client")]
+            let preprocess_start = std::time::Instant::now();
             let result = self
                 .compiler
                 .preprocess(
@@ -547,6 +560,10 @@ where
                     use_preprocessor_cache_mode,
                 )
                 .await;
+            #[cfg(feature = "dist-client")]
+            {
+                preprocess_elapsed = Some(preprocess_start.elapsed());
+            }
             let out_pretty = self.parsed_args.output_pretty().into_owned();
             let result = result.map_err(|e| {
                 debug!("[{}]: preprocessor failed: {:?}", out_pretty, e);
@@ -677,6 +694,8 @@ where
                 is_locally_preprocessed: true,
                 #[cfg(feature = "dist-client")]
                 preprocessed_input: preprocessor_output,
+                #[cfg(feature = "dist-client")]
+                preprocess_duration: preprocess_elapsed,
                 executable: self.executable.clone(),
                 compiler: self.compiler.clone(),
                 cwd,
@@ -1246,6 +1265,11 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I>
 
     fn is_locally_preprocessed(&self) -> bool {
         self.is_locally_preprocessed
+    }
+
+    #[cfg(feature = "dist-client")]
+    fn preprocess_duration(&self) -> Option<std::time::Duration> {
+        self.preprocess_duration
     }
 
     fn outputs<'a>(&'a self) -> Box<dyn Iterator<Item = FileObjectSource> + 'a> {

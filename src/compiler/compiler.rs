@@ -926,6 +926,13 @@ where
         let (_inflight_guard, in_flight) = DistInflightGuard::enter();
         let dist_started = Instant::now();
         info!("[{}]: dist-job start (in_flight {})", out_pretty, in_flight);
+        // Local preprocessing (`cc1 -E`) already ran during hash-key generation,
+        // before this dist round-trip began; read its duration here so the tax
+        // that skews load onto the colocated node is timed in the per-job line.
+        let ms_preprocess = compilation
+            .preprocess_duration()
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
         let mut dist_compile_cmd =
             dist_compile_cmd.context("Could not create distributed compile command")?;
         debug!("[{}]: Creating distributed compile request", out_pretty);
@@ -1134,10 +1141,11 @@ where
 
         let ms_run_fetch = t_run.elapsed().as_millis();
         info!(
-            "[{}]: dist-job done on {} in {}ms (put_tc {}ms, alloc {}ms, submit {}ms, run+fetch {}ms, in_flight {})",
+            "[{}]: dist-job done on {} in {}ms (preprocess {}ms, put_tc {}ms, alloc {}ms, submit {}ms, run+fetch {}ms, in_flight {})",
             out_pretty,
             server_id.addr(),
             dist_started.elapsed().as_millis(),
+            ms_preprocess,
             ms_put_toolchain,
             ms_alloc,
             ms_submit,
@@ -1210,6 +1218,17 @@ where
 
     fn is_locally_preprocessed(&self) -> bool {
         true
+    }
+
+    /// R0 instrumentation: wall-time the client spent locally preprocessing
+    /// this compile's source (`cc1 -E`) during hash-key generation, when that
+    /// step ran. Threaded into the per-job dist log so the preprocessing tax is
+    /// timed rather than inferred. `None` when no local preprocessing ran
+    /// (input already preprocessed, or a preprocessor-cache hit skipped it), or
+    /// for compilers whose hash step does no local preprocessing.
+    #[cfg(feature = "dist-client")]
+    fn preprocess_duration(&self) -> Option<Duration> {
+        None
     }
 
     /// Returns an iterator over the results of this compilation.
