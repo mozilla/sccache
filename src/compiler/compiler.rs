@@ -850,6 +850,34 @@ where
         .map(move |o| (cacheable, DistType::NoDist, o))
 }
 
+/// R0 instrumentation: number of compiles currently attempting distribution.
+/// Read when a dist job starts so the log shows client-side supply pressure
+/// (a low value while nodes sit idle points at job-supply starvation).
+#[cfg(feature = "dist-client")]
+static DIST_INFLIGHT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// RAII counter for `DIST_INFLIGHT`: increments on `enter` and decrements on
+/// drop, so the count stays correct across every exit of the dist future -
+/// success, `?`, `bail!`, or a dropped future - without a manual decrement in
+/// each error arm and the local-fallback path.
+#[cfg(feature = "dist-client")]
+struct DistInflightGuard;
+
+#[cfg(feature = "dist-client")]
+impl DistInflightGuard {
+    fn enter() -> (Self, usize) {
+        let inflight = DIST_INFLIGHT.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        (DistInflightGuard, inflight)
+    }
+}
+
+#[cfg(feature = "dist-client")]
+impl Drop for DistInflightGuard {
+    fn drop(&mut self) {
+        DIST_INFLIGHT.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 #[cfg(feature = "dist-client")]
 async fn dist_or_local_compile<T>(
     service: &server::SccacheService<T>,
@@ -895,6 +923,9 @@ where
     let local_executable2 = compile_cmd.get_executable();
 
     let do_dist_compile = async move {
+        let (_inflight_guard, in_flight) = DistInflightGuard::enter();
+        let dist_started = Instant::now();
+        info!("[{}]: dist-job start (in_flight {})", out_pretty, in_flight);
         let mut dist_compile_cmd =
             dist_compile_cmd.context("Could not create distributed compile command")?;
         debug!("[{}]: Creating distributed compile request", out_pretty);
@@ -918,9 +949,11 @@ where
             "[{}]: Identifying dist toolchain for {:?}",
             out_pretty, local_executable
         );
+        let t_put_toolchain = Instant::now();
         let (dist_toolchain, maybe_dist_compile_executable) = dist_client
             .put_toolchain(local_executable, weak_toolchain_key, toolchain_packager)
             .await?;
+        let ms_put_toolchain = t_put_toolchain.elapsed().as_millis();
         let mut tc_archive = None;
         if let Some((dist_compile_executable, archive_path)) = maybe_dist_compile_executable {
             dist_compile_cmd.executable = dist_compile_executable;
@@ -928,7 +961,10 @@ where
         }
 
         debug!("[{}]: Requesting allocation", out_pretty);
+        let t_alloc = Instant::now();
         let jares = dist_client.do_alloc_job(dist_toolchain.clone()).await?;
+        let ms_alloc = t_alloc.elapsed().as_millis();
+        let mut ms_submit: u128 = 0;
         let job_alloc = match jares {
             dist::AllocJobResult::Success {
                 job_alloc,
@@ -939,11 +975,13 @@ where
                     out_pretty, dist_toolchain.archive_id, job_alloc.job_id
                 );
 
-                match dist_client
+                let t_submit = Instant::now();
+                let submit_res = dist_client
                     .do_submit_toolchain(job_alloc.clone(), dist_toolchain)
                     .await
-                    .map_err(|e| e.context("Could not submit toolchain"))?
-                {
+                    .map_err(|e| e.context("Could not submit toolchain"))?;
+                ms_submit = t_submit.elapsed().as_millis();
+                match submit_res {
                     dist::SubmitToolchainResult::Success => Ok(job_alloc),
                     dist::SubmitToolchainResult::JobNotFound => {
                         bail!("Job {} not found on server", job_alloc.job_id)
@@ -965,6 +1003,7 @@ where
         let job_id = job_alloc.job_id;
         let server_id = job_alloc.server_id;
         debug!("[{}]: Running job", out_pretty);
+        let t_run = Instant::now();
         let ((job_id, server_id), (jres, path_transformer)) = dist_client
             .do_run_job(
                 job_alloc,
@@ -1078,10 +1117,17 @@ where
             );
         }
 
+        let ms_run_fetch = t_run.elapsed().as_millis();
         info!(
-            "[{}]: Distributed compilation finished on {}",
+            "[{}]: dist-job done on {} in {}ms (put_tc {}ms, alloc {}ms, submit {}ms, run+fetch {}ms, in_flight {})",
             out_pretty,
-            server_id.addr()
+            server_id.addr(),
+            dist_started.elapsed().as_millis(),
+            ms_put_toolchain,
+            ms_alloc,
+            ms_submit,
+            ms_run_fetch,
+            in_flight,
         );
         Ok((DistType::Ok(server_id), jc.output.into()))
     };
