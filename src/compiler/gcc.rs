@@ -1107,13 +1107,18 @@ impl Iterator for ExpandIncludeFile<'_> {
             //     recursively.
             //
             // So here we interpret any I/O errors as "just return this
-            // argument". Currently we don't implement handling of arguments
-            // with quotes, so if those are encountered we just pass the option
-            // through literally anyway.
+            // argument". On a successful read the contents are tokenized using
+            // the same rules GCC and Clang apply (quotes group an argument and
+            // a backslash escapes the next character) and spliced into the
+            // argument stream in place of the original `@file`. Because the
+            // local and distributed commands are later reconstructed from the
+            // parsed (expanded) arguments, the response file never needs to
+            // exist on a remote machine, so such compilations can be both
+            // cached and distributed.
             //
-            // At this time we interpret all `@` arguments above as non
-            // cacheable, so if we fail to interpret this we'll just call the
-            // compiler anyway.
+            // If the read fails we return the original `@file` argument, which
+            // the parser treats as `TooHard` and refuses to cache, so we fall
+            // back to invoking the compiler directly.
             //
             // [1]: https://gcc.gnu.org/onlinedocs/gcc/Overall-Options.html#Overall-Options
             let mut contents = String::new();
@@ -1122,13 +1127,68 @@ impl Iterator for ExpandIncludeFile<'_> {
                 debug!("failed to read @-file `{}`: {}", file.display(), e);
                 return Some(arg);
             }
-            if contents.contains('"') || contents.contains('\'') {
-                return Some(arg);
-            }
-            let new_args = contents.split_whitespace().collect::<Vec<_>>();
-            self.stack.extend(new_args.iter().rev().map(|s| s.into()));
+            let new_args = split_gnu_response_file_args(&contents);
+            self.stack.extend(new_args.into_iter().rev());
         }
     }
+}
+
+/// Split the contents of a GCC/Clang `@response` file into arguments.
+///
+/// This mirrors `llvm::cl::TokenizeGNUCommandLine`, the routine Clang (and,
+/// equivalently, GCC) uses to parse response files:
+///
+///  - Arguments are separated by whitespace.
+///  - A single- or double-quoted string is part of a single argument; the
+///    surrounding quotes are removed and may abut unquoted text (`a"b"c` is one
+///    argument `abc`).
+///  - A backslash escapes the following character, which is taken literally.
+///    Backslashes are literal inside single quotes, but still escape inside
+///    double quotes.
+///  - Empty quoted strings (`""`) produce no argument, matching the compiler.
+pub fn split_gnu_response_file_args(contents: &str) -> Vec<OsString> {
+    let mut args = Vec::new();
+    let mut token = String::new();
+    let mut chars = contents.chars();
+
+    while let Some(c) = chars.next() {
+        match c {
+            c if c.is_whitespace() => {
+                if !token.is_empty() {
+                    args.push(OsString::from(std::mem::take(&mut token)));
+                }
+            }
+            '\\' => {
+                // A backslash escapes the next character, if any.
+                if let Some(next) = chars.next() {
+                    token.push(next);
+                }
+            }
+            '\'' | '"' => {
+                let quote = c;
+                while let Some(qc) = chars.next() {
+                    if qc == quote {
+                        break;
+                    }
+                    // Backslash escapes inside double-quoted strings only.
+                    if quote == '"' && qc == '\\' {
+                        if let Some(next) = chars.next() {
+                            token.push(next);
+                        }
+                    } else {
+                        token.push(qc);
+                    }
+                }
+            }
+            c => token.push(c),
+        }
+    }
+
+    if !token.is_empty() {
+        args.push(OsString::from(token));
+    }
+
+    args
 }
 
 #[cfg(test)]
@@ -2423,6 +2483,88 @@ mod test {
         assert!(preprocessor_args.is_empty());
         assert!(common_args.is_empty());
         assert!(!msvc_show_includes);
+    }
+
+    #[test]
+    fn test_split_gnu_response_file_args() {
+        // Plain whitespace separation, including newlines and tabs.
+        assert_eq!(
+            ovec!["-c", "foo.c", "-o", "foo.o"],
+            split_gnu_response_file_args("-c foo.c\n\t-o  foo.o\n")
+        );
+        // Quotes group an argument and are stripped.
+        assert_eq!(
+            ovec!["-I", "/a path/with spaces", "-DFOO=bar baz"],
+            split_gnu_response_file_args("-I \"/a path/with spaces\" '-DFOO=bar baz'")
+        );
+        // Quotes may abut unquoted text.
+        assert_eq!(
+            ovec!["-DA=a b c"],
+            split_gnu_response_file_args("-DA=\"a b c\"")
+        );
+        // Backslash escapes the next character outside quotes.
+        assert_eq!(
+            ovec!["a b", "c\\d"],
+            split_gnu_response_file_args("a\\ b c\\\\d")
+        );
+        // Backslash escapes inside double quotes but not single quotes.
+        assert_eq!(
+            ovec!["a\"b", "c\\d"],
+            split_gnu_response_file_args("\"a\\\"b\" 'c\\d'")
+        );
+        // Empty quoted strings produce no argument.
+        assert_eq!(
+            ovec!["-c", "foo.c"],
+            split_gnu_response_file_args("-c \"\" foo.c")
+        );
+        // Empty or whitespace-only input produces no arguments.
+        assert!(split_gnu_response_file_args("").is_empty());
+        assert!(split_gnu_response_file_args("   \n\t").is_empty());
+        // A trailing backslash with nothing to escape is dropped.
+        assert_eq!(ovec!["foo"], split_gnu_response_file_args("foo\\"));
+        // A trailing backslash at the end of a double-quoted string is dropped.
+        assert_eq!(ovec!["x"], split_gnu_response_file_args("\"x\\"));
+        // An unterminated quote consumes the rest of the input as one argument.
+        assert_eq!(ovec!["abc"], split_gnu_response_file_args("\"abc"));
+        assert_eq!(ovec!["a b"], split_gnu_response_file_args("'a b"));
+    }
+
+    #[test]
+    fn test_parse_arguments_response_file_with_quotes() {
+        // A response file containing quoted arguments (common with Clang) must
+        // be expanded and remain cacheable.
+        let td = tempfile::Builder::new()
+            .prefix("sccache")
+            .tempdir()
+            .unwrap();
+        File::create(td.path().join("args"))
+            .unwrap()
+            .write_all(b"-c foo.c -o foo.o \"-DGREETING=hello world\"\n")
+            .unwrap();
+        let arg = format!("@{}", td.path().join("args").display());
+        let ParsedArguments {
+            input,
+            language,
+            outputs,
+            common_args,
+            ..
+        } = match parse_arguments_(vec![arg], false) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(Some("foo.c"), input.to_str());
+        assert_eq!(Language::C, language);
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
+        assert_eq!(ovec!["-DGREETING=hello world"], common_args);
     }
 
     #[test]
