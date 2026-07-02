@@ -1981,6 +1981,81 @@ fn can_trim_this(input_path: &Path) -> bool {
         && !ar_path.exists()
 }
 
+/// Return a metadata-only archive for a trimmable rlib: the single-member `ar`
+/// holding its `rust.metadata.bin`, or `None` when the rlib has no embedded
+/// metadata member.
+///
+/// A rustc rlib normally carries its metadata as a `rust.metadata.bin` ar
+/// member, so a dependency only inspected for metadata can ship trimmed. But a
+/// split-metadata sysroot (e.g. an OpenEmbedded target `rustlib/<triple>/lib`,
+/// whose std/core rlibs keep metadata in a sibling `.rmeta` and carry only
+/// object members) has no such member. Callers must ship the whole rlib in
+/// that case -- trimming it to nothing drops the crate and leaves a remote
+/// compile unable to find `std`.
+#[cfg(feature = "dist-client")]
+fn trimmed_rlib_metadata(input_path: &Path) -> Result<Option<Vec<u8>>> {
+    let file = fs::File::open(input_path)?;
+    let mut archive = ar::Archive::new(file);
+    while let Some(entry_result) = archive.next_entry() {
+        let mut entry = entry_result?;
+        if entry.header().identifier() != b"rust.metadata.bin" {
+            continue;
+        }
+        let mut metadata_ar = vec![];
+        {
+            let mut ar_builder = ar::Builder::new(&mut metadata_ar);
+            let header = entry.header().clone();
+            ar_builder.append(&header, &mut entry)?;
+        }
+        return Ok(Some(metadata_ar));
+    }
+    Ok(None)
+}
+
+#[test]
+#[cfg(feature = "dist-client")]
+fn test_trimmed_rlib_metadata() {
+    let tmp = tempfile::Builder::new()
+        .prefix("sccache_trim")
+        .tempdir()
+        .unwrap();
+
+    // A split-metadata rlib (object members only, no rust.metadata.bin), as an
+    // OE target sysroot ships: must not trim to nothing -> None (ship whole).
+    let split = tmp.path().join("libcore-split.rlib");
+    {
+        let mut b = ar::Builder::new(fs::File::create(&split).unwrap());
+        b.append(&ar::Header::new(b"foo.o".to_vec(), 3), &b"abc"[..])
+            .unwrap();
+    }
+    assert!(
+        trimmed_rlib_metadata(&split).unwrap().is_none(),
+        "an rlib without rust.metadata.bin must ship whole, not trim to nothing"
+    );
+
+    // A normal rlib with an embedded rust.metadata.bin -> trim to that member.
+    let embedded = tmp.path().join("libfoo-embedded.rlib");
+    {
+        let mut b = ar::Builder::new(fs::File::create(&embedded).unwrap());
+        b.append(
+            &ar::Header::new(b"rust.metadata.bin".to_vec(), 4),
+            &b"META"[..],
+        )
+        .unwrap();
+        b.append(&ar::Header::new(b"foo.o".to_vec(), 3), &b"abc"[..])
+            .unwrap();
+    }
+    let trimmed = trimmed_rlib_metadata(&embedded).unwrap();
+    assert!(
+        trimmed.is_some(),
+        "an rlib with metadata should trim to Some"
+    );
+    assert!(
+        trimmed.unwrap().windows(4).any(|w| w == b"META"),
+        "the trimmed archive must contain the metadata member"
+    );
+}
+
 #[test]
 #[cfg(feature = "dist-client")]
 fn test_can_trim_this() {
@@ -2245,27 +2320,20 @@ impl pkg::InputsPackager for RustInputsPackager {
 
         for (input_path, dist_input_path) in all_tar_inputs.iter() {
             let mut file_header = pkg::make_tar_header(input_path, dist_input_path)?;
-            let file = fs::File::open(input_path)?;
-            if can_trim_rlibs && can_trim_this(input_path) {
-                let mut archive = ar::Archive::new(file);
-
-                while let Some(entry_result) = archive.next_entry() {
-                    let mut entry = entry_result?;
-                    if entry.header().identifier() != b"rust.metadata.bin" {
-                        continue;
-                    }
-                    let mut metadata_ar = vec![];
-                    {
-                        let mut ar_builder = ar::Builder::new(&mut metadata_ar);
-                        let header = entry.header().clone();
-                        ar_builder.append(&header, &mut entry)?;
-                    }
-                    file_header.set_size(metadata_ar.len() as u64);
-                    file_header.set_cksum();
-                    builder.append(&file_header, metadata_ar.as_slice())?;
-                    break;
-                }
+            let trimmed = if can_trim_rlibs && can_trim_this(input_path) {
+                trimmed_rlib_metadata(input_path)?
             } else {
+                None
+            };
+            if let Some(metadata_ar) = trimmed {
+                file_header.set_size(metadata_ar.len() as u64);
+                file_header.set_cksum();
+                builder.append(&file_header, metadata_ar.as_slice())?;
+            } else {
+                // Either not trimmable, or a split-metadata rlib with no
+                // embedded metadata member -- ship the whole file so the remote
+                // gets the real crate (e.g. an OE target sysroot's std/core).
+                let file = fs::File::open(input_path)?;
                 file_header.set_cksum();
                 builder.append(&file_header, file)?;
             }
