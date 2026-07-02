@@ -190,8 +190,15 @@ mod toolchain_imp {
                 if file_type.is_dir() {
                     continue;
                 } else if file_type.is_symlink() {
-                    let metadata = fs::metadata(entry.path())?;
-                    if !metadata.file_type().is_file() {
+                    // A dangling symlink (e.g. a sysroot-relative link that
+                    // resolves outside the packaged tree, like an OE
+                    // recipe-sysroot-native `usr/bin/sg`) makes metadata fail.
+                    // Skip it rather than aborting the whole best-effort
+                    // package, matching add_shared_libraries below.
+                    if !fs::metadata(entry.path())
+                        .map(|m| m.is_file())
+                        .unwrap_or(false)
+                    {
                         continue;
                     }
                 } else if !file_type.is_file() {
@@ -483,6 +490,35 @@ mod toolchain_imp {
         let usr_lib = tmp.path().join("sysroot").join("usr").join("lib");
         std::fs::create_dir_all(&usr_lib).unwrap();
         assert_eq!(sysroot_usr_libdir(&libdir), Some(usr_lib));
+    }
+
+    #[test]
+    fn test_add_dir_contents_skips_dangling_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        // A real file that must be packaged.
+        let real = root.join("real_file");
+        std::fs::write(&real, b"contents").unwrap();
+
+        // A dangling symlink whose target does not exist -- the shape of an
+        // OE recipe-sysroot-native `usr/bin/sg` that points outside the
+        // packaged tree. Before the fix, fs::metadata on this aborted the
+        // whole toolchain package.
+        let dangling = root.join("dangling_link");
+        symlink("does/not/exist", &dangling).unwrap();
+
+        let mut builder = ToolchainPackageBuilder::new();
+        builder.add_dir_contents(root).unwrap();
+
+        let packaged: Vec<PathBuf> = builder.file_set.values().cloned().collect();
+        assert!(packaged.contains(&real), "real file must still be packaged");
+        assert!(
+            !packaged.contains(&dangling),
+            "dangling symlink must be skipped, not packaged"
+        );
     }
 
     #[test]
