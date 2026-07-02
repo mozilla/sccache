@@ -2281,7 +2281,7 @@ impl OutputsRewriter for RustOutputsRewriter {
                                 local_path.display()
                             )
                         })?;
-                        error!(
+                        trace!(
                             "RE replacing {} with {} in {}",
                             re_str, local_path_str, deps
                         );
@@ -2298,11 +2298,50 @@ impl OutputsRewriter for RustOutputsRewriter {
                     return Ok(());
                 }
             }
-            // We expected there to be dep info, but none of the outputs matched
-            bail!("No outputs matched dep info file {}", dep_info.display());
+            // The compile succeeded on the build server, but none of the
+            // outputs it returned matched the expected dep-info (.d) path. Do
+            // NOT fail the whole distributed compile over the dep file: keep the
+            // object/rlib the server produced and skip the dep-info path
+            // rewrite, instead of discarding a good remote compile and forcing a
+            // local recompile - which stranded every distributed rust compile
+            // back on the client. The dep file only feeds rebuild tracking, and
+            // a bitbake do_compile runs cargo from scratch, so a missing or
+            // unremapped .d is harmless here.
+            warn!(
+                "distributed compile did not return the expected dep info file {}; \
+                 keeping the remote outputs and skipping the dep-info rewrite",
+                dep_info.display()
+            );
         }
         Ok(())
     }
+}
+
+// A successful distributed compile whose returned outputs do not include the
+// expected dep-info file must NOT be failed - the object/rlib is good, and
+// discarding it forces a local recompile that strands every rust compile on the
+// client (measured: 0 of 659 rust compiles distributed, all rebuilt on PC1).
+// The rewriter keeps the remote outputs and returns Ok, only skipping the
+// dep-info path rewrite.
+#[test]
+#[cfg(feature = "dist-client")]
+fn test_rust_outputs_rewriter_tolerates_unmatched_dep_info() {
+    use crate::compiler::OutputsRewriter;
+
+    let rewriter = Box::new(RustOutputsRewriter {
+        dep_info: Some(PathBuf::from("/build/deps/somecrate.d")),
+    });
+    let pt = dist::PathTransformer::new();
+
+    // No output path matches the expected dep-info - the old code bailed here.
+    let res = rewriter.handle_outputs(&pt, &[PathBuf::from("/build/deps/somecrate.rlib")], &[]);
+
+    assert!(
+        res.is_ok(),
+        "an otherwise-successful distributed compile must not be failed just \
+         because its dep-info file was not among the returned outputs: {:?}",
+        res.err()
+    );
 }
 
 #[test]
