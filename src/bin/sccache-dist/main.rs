@@ -389,6 +389,20 @@ pub struct Scheduler {
     jobs: Mutex<BTreeMap<JobId, JobDetail>>,
 
     servers: Mutex<HashMap<ServerId, ServerDetails>>,
+
+    // Cumulative job-lifecycle counters for the between-nodes leak detector
+    // logged once per heartbeat (see the dist-accounting line in
+    // handle_heartbeat_server). Relaxed: diagnostic counters, not
+    // synchronization. Two leak modes are separable from the balance:
+    //   allocated - started - reaped_unclaimed - (unclaimed jobs still live)
+    //     drifting up  => a feed/unclaimed leak (jobs allocated, never claimed).
+    //   started - completed - reaped_started - (started jobs still live)
+    //     drifting up  => a lost-completion leak (the Leak #1 class).
+    jobs_started: AtomicUsize,
+    jobs_completed: AtomicUsize,
+    jobs_reaped_unclaimed: AtomicUsize,
+    jobs_reaped_started: AtomicUsize,
+    jobs_pruned: AtomicUsize,
 }
 
 struct ServerDetails {
@@ -409,6 +423,11 @@ impl Scheduler {
             job_count: AtomicUsize::new(0),
             jobs: Mutex::new(BTreeMap::new()),
             servers: Mutex::new(HashMap::new()),
+            jobs_started: AtomicUsize::new(0),
+            jobs_completed: AtomicUsize::new(0),
+            jobs_reaped_unclaimed: AtomicUsize::new(0),
+            jobs_reaped_started: AtomicUsize::new(0),
+            jobs_pruned: AtomicUsize::new(0),
         }
     }
 
@@ -435,6 +454,8 @@ impl Scheduler {
             let server_details = servers
                 .remove(&server_id)
                 .expect("server went missing from map");
+            self.jobs_pruned
+                .fetch_add(server_details.jobs_assigned.len(), Ordering::Relaxed);
             for job_id in server_details.jobs_assigned {
                 warn!(
                     "Non-terminated job {} was cleaned up in server pruning",
@@ -791,6 +812,8 @@ impl SchedulerIncoming for Scheduler {
                         "The following stale jobs will be de-allocated: {:?}",
                         stale_jobs
                     );
+                    self.jobs_reaped_unclaimed
+                        .fetch_add(stale_jobs.len(), Ordering::Relaxed);
 
                     for job_id in stale_jobs {
                         if !details.jobs_assigned.remove(&job_id) {
@@ -837,11 +860,30 @@ impl SchedulerIncoming for Scheduler {
                         "The following Started jobs had no Complete within {:?} and will be de-allocated: {:?}",
                         STARTED_COMPLETE_TIMEOUT, stale_started
                     );
+                    self.jobs_reaped_started
+                        .fetch_add(stale_started.len(), Ordering::Relaxed);
                     for job_id in stale_started {
                         details.jobs_assigned.remove(&job_id);
                         jobs.remove(&job_id);
                     }
                 }
+
+                // Between-nodes leak detector: one cumulative accounting line
+                // per heartbeat (cheap - ~per-30s per server, NOT per compile).
+                // A rising (allocated - started - reaped_unclaimed - unclaimed
+                // still live) points to a feed/unclaimed leak; a rising (started
+                // - completed - reaped_started - started still live) points to a
+                // lost-completion leak. `live` = current jobs-map size.
+                info!(
+                    "dist-accounting: allocated={} started={} completed={} reaped_unclaimed={} reaped_started={} pruned={} live={}",
+                    self.job_count.load(Ordering::Relaxed),
+                    self.jobs_started.load(Ordering::Relaxed),
+                    self.jobs_completed.load(Ordering::Relaxed),
+                    self.jobs_reaped_unclaimed.load(Ordering::Relaxed),
+                    self.jobs_reaped_started.load(Ordering::Relaxed),
+                    self.jobs_pruned.load(Ordering::Relaxed),
+                    jobs.len(),
+                );
 
                 return Ok(HeartbeatServerResult { is_new: false });
             }
@@ -887,6 +929,8 @@ impl SchedulerIncoming for Scheduler {
             );
             // Drop any jobs the departing server still held, as prune_servers
             // does, so the scheduler does not track work no node will finish.
+            self.jobs_pruned
+                .fetch_add(details.jobs_assigned.len(), Ordering::Relaxed);
             for job_id in details.jobs_assigned {
                 jobs.remove(&job_id);
             }
@@ -935,6 +979,7 @@ impl SchedulerIncoming for Scheduler {
                     let detail = entry.get_mut();
                     detail.state = job_state;
                     detail.since = now;
+                    self.jobs_started.fetch_add(1, Ordering::Relaxed);
                 }
                 (JobState::Started, JobState::Complete) => {
                     let (job_id, _) = entry.remove_entry();
@@ -943,6 +988,7 @@ impl SchedulerIncoming for Scheduler {
                     } else {
                         bail!("Job was marked as finished, but server is not known to scheduler")
                     }
+                    self.jobs_completed.fetch_add(1, Ordering::Relaxed);
                 }
                 (from, to) => bail!("Invalid job state transition from {} to {}", from, to),
             }
@@ -1371,6 +1417,11 @@ mod scheduler_tests {
         assert!(
             !jobs.contains_key(&job_id),
             "the stale Started job must be removed from the jobs map"
+        );
+        assert_eq!(
+            scheduler.jobs_reaped_started.load(Ordering::Relaxed),
+            1,
+            "reaping a stale Started job must increment the leak-detector counter"
         );
     }
 
