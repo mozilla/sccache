@@ -2889,6 +2889,7 @@ version = "0.16.0"
 dependencies = [
  "anyhow",
  "ar",
+ "arc-swap",
  "assert_cmd",
  "async-trait",
  "backon",

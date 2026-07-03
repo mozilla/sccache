@@ -167,6 +167,8 @@ pub struct DistClientConfig {
     toolchain_cache_size: u64,
     toolchains: Vec<config::DistToolchainConfig>,
     rewrite_includes_only: bool,
+    deserialize_offload_threshold: u64,
+    run_job_compression_level: u32,
 }
 
 #[cfg(feature = "dist-client")]
@@ -223,6 +225,8 @@ impl DistClientContainer {
             toolchain_cache_size: config.dist.toolchain_cache_size,
             toolchains: config.dist.toolchains.clone(),
             rewrite_includes_only: config.dist.rewrite_includes_only,
+            deserialize_offload_threshold: config.dist.client_deserialize_offload_threshold,
+            run_job_compression_level: config.dist.run_job_compression_level,
         };
         let state = Self::create_state(config);
         let state = pool.block_on(state);
@@ -388,6 +392,8 @@ impl DistClientContainer {
                     &config.toolchains,
                     auth_token,
                     config.rewrite_includes_only,
+                    config.deserialize_offload_threshold,
+                    config.run_job_compression_level,
                 );
                 let dist_client =
                     try_or_retry_later!(dist_client.context("failure during dist client creation"));
@@ -1066,6 +1072,8 @@ where
                     toolchain_cache_size: 0,
                     toolchains: vec![],
                     rewrite_includes_only: false,
+                    deserialize_offload_threshold: 1024 * 1024,
+                    run_job_compression_level: 1,
                 }),
                 dist_client,
             ))),
