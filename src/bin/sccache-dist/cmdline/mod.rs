@@ -19,6 +19,10 @@ mod parse;
 
 pub use parse::try_parse_from;
 
+// The Scheduler/Server variants carry the full parsed daemon config; this enum
+// is constructed once at startup and matched once, so the size difference is
+// irrelevant and boxing the variants would only add indirection.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum Command {
     Auth(AuthSubcommand),

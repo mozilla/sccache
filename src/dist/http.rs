@@ -1031,11 +1031,11 @@ mod server {
                             if is_new {
                                 info!("Server connected to scheduler");
                             }
-                            thread::sleep(HEARTBEAT_INTERVAL)
+                            thread::sleep(HEARTBEAT_INTERVAL);
                         }
                         Err(e) => {
                             error!(target: "sccache_heartbeat", "Failed to send heartbeat to server: {}", e);
-                            thread::sleep(HEARTBEAT_ERROR_INTERVAL)
+                            thread::sleep(HEARTBEAT_ERROR_INTERVAL);
                         }
                     }
                 }
