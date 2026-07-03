@@ -2198,4 +2198,66 @@ mod test {
             );
         }
     }
+
+    #[test]
+    fn test_collapse_doubled_quotes() {
+        // A genuine cmd.exe-style doubled quote collapses to one quote.
+        assert_eq!(
+            collapse_doubled_quotes("cl.exe \"\"an arg\"\" foo"),
+            "cl.exe \"an arg\" foo"
+        );
+        // A backslash-escaped quote immediately followed by the argument's real
+        // closing quote must NOT be collapsed: doing so unbalances the quotes.
+        assert_eq!(
+            collapse_doubled_quotes("-D \"XD=\\\"xd\\\"\""),
+            "-D \"XD=\\\"xd\\\"\""
+        );
+    }
+
+    #[test]
+    fn test_replace_path_backslashes() {
+        // Ordinary path separators are converted to forward slashes.
+        assert_eq!(
+            replace_path_backslashes("C:\\Program Files\\NVIDIA"),
+            "C:/Program Files/NVIDIA"
+        );
+        // A backslash escaping a quote is preserved so shlex still treats it as
+        // a literal embedded quote rather than a path separator.
+        assert_eq!(
+            replace_path_backslashes("-D \"XD=\\\"xd\\\"\""),
+            "-D \"XD=\\\"xd\\\"\""
+        );
+    }
+
+    #[test]
+    fn test_nvcc_dryrun_line_with_quote_escaped_define_is_parseable() {
+        // Regression test for https://github.com/mozilla/sccache/issues/2470: `nvcc -DXD=\"xd\"`
+        // makes nvcc emit a `--dryrun` subcommand line (here, a `cl.exe` invocation)
+        // containing a CRT-escaped quote inside a quoted argument, e.g.:
+        //   -D "XD=\"xd\""
+        // Before the fix, the Windows line-normalization in
+        // `fold_env_vars_or_split_into_exe_and_args` collapsed the escaped quote
+        // into the argument's real closing quote (via a naive `""` -> `"` replace)
+        // and/or destroyed the escape (via a blanket `\` -> `/` replace), which
+        // unbalanced the quotes and made `shlex::split` return `None` ("Could not
+        // parse shell line").
+        let line = "cl.exe -Fo\"main.obj\" \"-IC:\\Program Files\\NVIDIA\\include\" -D \"XD=\\\"xd\\\"\" -D__CUDACC__=1 \"main.cpp\"";
+
+        let line = collapse_doubled_quotes(line).replace(r"\\?\", "");
+        let line = replace_path_backslashes(&line).replace(r"//?/", "");
+
+        let args = shlex::split(&line).expect("shlex::split should not fail to parse the line");
+        assert_eq!(
+            args,
+            vec![
+                "cl.exe",
+                "-Fomain.obj",
+                "-IC:/Program Files/NVIDIA/include",
+                "-D",
+                "XD=\"xd\"",
+                "-D__CUDACC__=1",
+                "main.cpp",
+            ]
+        );
+    }
 }
