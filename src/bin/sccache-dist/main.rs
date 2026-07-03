@@ -355,11 +355,29 @@ const SERVER_REMEMBER_ERROR_TIMEOUT: Duration = Duration::from_secs(300);
 const RECENT_ERROR_LOAD_PENALTY: f64 = 0.125;
 const UNCLAIMED_PENDING_TIMEOUT: Duration = Duration::from_secs(300);
 const UNCLAIMED_READY_TIMEOUT: Duration = Duration::from_secs(60);
+// A job that entered Started but never reported Complete leaks its
+// jobs_assigned slot: the Ready->Started transition drops it from
+// jobs_unclaimed, so the unclaimed reaper can never see it again, and
+// prune_servers only reclaims a DEAD server's jobs. On a live server, such
+// jobs accumulate until jobs_assigned hits admission_ceiling and load_weight
+// stops routing to the node - the measured PC2-idle-at-37/37 lockout, its
+// completion updates lost while it sat pinned. Reap a Started job the owning
+// server has not completed within this timeout, mirroring prune_servers (dead
+// servers) and the unclaimed reaper (stuck Ready/Pending). The value is far
+// longer than any real remote single-TU compile (a heavy LLVM object is ~60s)
+// yet short enough to reclaim a leaked slot briskly. Reaping only the
+// scheduler's accounting never aborts the client's in-flight compile - that
+// runs over a separate client<->server channel - so an over-eager reap at
+// worst mildly oversubscribes, which admission_ceiling already tolerates.
+const STARTED_COMPLETE_TIMEOUT: Duration = Duration::from_secs(180);
 
 #[derive(Copy, Clone)]
 struct JobDetail {
     server_id: ServerId,
     state: JobState,
+    // When the job entered its current state; used to reap Started jobs whose
+    // Complete update was lost (see STARTED_COMPLETE_TIMEOUT).
+    since: Instant,
 }
 
 // To avoid deadlicking, make sure to do all locking at once (i.e. no further locking in a downward scope),
@@ -699,8 +717,15 @@ impl SchedulerIncoming for Scheduler {
                 job_id, state
             );
             assert!(
-                jobs.insert(job_id, JobDetail { server_id, state })
-                    .is_none()
+                jobs.insert(
+                    job_id,
+                    JobDetail {
+                        server_id,
+                        state,
+                        since: Instant::now(),
+                    }
+                )
+                .is_none()
             );
         }
         let job_alloc = JobAlloc {
@@ -792,6 +817,32 @@ impl SchedulerIncoming for Scheduler {
                     }
                 }
 
+                // Backstop for jobs stuck in Started (see STARTED_COMPLETE_TIMEOUT):
+                // the unclaimed sweep above cannot see them because Ready->Started
+                // drops them from jobs_unclaimed. Reap any this server has held in
+                // Started past the timeout so a lost Complete update cannot leak the
+                // slot forever and eventually lock the node out at its ceiling.
+                let mut stale_started = Vec::new();
+                for &job_id in details.jobs_assigned.iter() {
+                    if let Some(detail) = jobs.get(&job_id) {
+                        if detail.state == JobState::Started
+                            && now.duration_since(detail.since) > STARTED_COMPLETE_TIMEOUT
+                        {
+                            stale_started.push(job_id);
+                        }
+                    }
+                }
+                if !stale_started.is_empty() {
+                    warn!(
+                        "The following Started jobs had no Complete within {:?} and will be de-allocated: {:?}",
+                        STARTED_COMPLETE_TIMEOUT, stale_started
+                    );
+                    for job_id in stale_started {
+                        details.jobs_assigned.remove(&job_id);
+                        jobs.remove(&job_id);
+                    }
+                }
+
                 return Ok(HeartbeatServerResult { is_new: false });
             }
             Some(ref mut details) if details.server_nonce != server_nonce => {
@@ -870,14 +921,20 @@ impl SchedulerIncoming for Scheduler {
             }
 
             match (job_detail.state, job_state) {
-                (JobState::Pending, JobState::Ready) => entry.get_mut().state = job_state,
+                (JobState::Pending, JobState::Ready) => {
+                    let detail = entry.get_mut();
+                    detail.state = job_state;
+                    detail.since = now;
+                }
                 (JobState::Ready, JobState::Started) => {
                     if let Some(details) = server_details {
                         details.jobs_unclaimed.remove(&job_id);
                     } else {
                         warn!("Job state updated, but server is not known to scheduler");
                     }
-                    entry.get_mut().state = job_state;
+                    let detail = entry.get_mut();
+                    detail.state = job_state;
+                    detail.since = now;
                 }
                 (JobState::Started, JobState::Complete) => {
                     let (job_id, _) = entry.remove_entry();
@@ -1236,5 +1293,114 @@ mod scheduler_tests {
             ),
             _ => panic!("expected a successful allocation"),
         }
+    }
+
+    // Register `job_id` on `server_id` as an in-flight Started job whose state
+    // was entered `age` ago, exactly as it sits after a Ready->Started update:
+    // present in jobs_assigned and the jobs map, absent from jobs_unclaimed.
+    fn insert_started_job(
+        scheduler: &Scheduler,
+        server_id: ServerId,
+        job_id: JobId,
+        age: Duration,
+    ) {
+        let mut servers = scheduler.servers.lock().unwrap();
+        let mut jobs_assigned = HashSet::new();
+        jobs_assigned.insert(job_id);
+        servers.insert(
+            server_id,
+            ServerDetails {
+                last_seen: Instant::now(),
+                last_error: None,
+                jobs_assigned,
+                jobs_unclaimed: HashMap::new(),
+                num_cpus: 32,
+                server_nonce: ServerNonce::new(),
+                job_authorizer: Box::new(NoopAuthorizer),
+            },
+        );
+        let mut jobs = scheduler.jobs.lock().unwrap();
+        jobs.insert(
+            job_id,
+            JobDetail {
+                server_id,
+                state: JobState::Started,
+                since: Instant::now() - age,
+            },
+        );
+    }
+
+    // A job stuck in Started (its Complete update lost) must be reaped on the
+    // owning server's next heartbeat, or its jobs_assigned slot leaks until the
+    // node hits admission_ceiling and load_weight locks it out - the measured
+    // PC2-idle-at-37/37 failure. prune_servers reclaims only dead servers and
+    // the unclaimed reaper sees only Ready/Pending, so without a Started
+    // backstop the slot never frees on a live server. Falsifier: dropping the
+    // Started sweep leaves the job assigned after the heartbeat.
+    #[test]
+    fn test_heartbeat_reaps_started_job_past_completion_timeout() {
+        let scheduler = Scheduler::new();
+        let server_id = ServerId::new("10.42.0.2:10501".parse::<SocketAddr>().unwrap());
+        let job_id = JobId(1000);
+        insert_started_job(
+            &scheduler,
+            server_id,
+            job_id,
+            STARTED_COMPLETE_TIMEOUT + Duration::from_secs(10),
+        );
+        let nonce = scheduler
+            .servers
+            .lock()
+            .unwrap()
+            .get(&server_id)
+            .unwrap()
+            .server_nonce
+            .clone();
+
+        scheduler
+            .handle_heartbeat_server(server_id, nonce, 32, Box::new(NoopAuthorizer))
+            .expect("handle_heartbeat_server should not error");
+
+        let servers = scheduler.servers.lock().unwrap();
+        let details = servers.get(&server_id).expect("server still registered");
+        assert!(
+            !details.jobs_assigned.contains(&job_id),
+            "a Started job past the completion timeout must be de-allocated from jobs_assigned"
+        );
+        let jobs = scheduler.jobs.lock().unwrap();
+        assert!(
+            !jobs.contains_key(&job_id),
+            "the stale Started job must be removed from the jobs map"
+        );
+    }
+
+    // Guard against over-reaping: a Started job within the timeout is a compile
+    // in flight, so it must stay assigned and keep counting toward the server's
+    // load.
+    #[test]
+    fn test_heartbeat_keeps_started_job_within_completion_timeout() {
+        let scheduler = Scheduler::new();
+        let server_id = ServerId::new("10.42.0.2:10501".parse::<SocketAddr>().unwrap());
+        let job_id = JobId(1000);
+        insert_started_job(&scheduler, server_id, job_id, Duration::from_secs(0));
+        let nonce = scheduler
+            .servers
+            .lock()
+            .unwrap()
+            .get(&server_id)
+            .unwrap()
+            .server_nonce
+            .clone();
+
+        scheduler
+            .handle_heartbeat_server(server_id, nonce, 32, Box::new(NoopAuthorizer))
+            .expect("handle_heartbeat_server should not error");
+
+        let servers = scheduler.servers.lock().unwrap();
+        let details = servers.get(&server_id).expect("server still registered");
+        assert!(
+            details.jobs_assigned.contains(&job_id),
+            "a Started job within the completion timeout must stay assigned"
+        );
     }
 }
