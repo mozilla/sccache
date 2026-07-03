@@ -994,7 +994,23 @@ impl SchedulerIncoming for Scheduler {
             }
             info!("Job {} updated state to {:?}", job_id, job_state);
         } else {
-            bail!("Unknown job")
+            // Idempotent late update: a Started/Complete update for a job the
+            // scheduler no longer tracks (already reaped, or reclaimed by a
+            // liveness sweep) is a logged no-op success, never an error. Erroring
+            // here fails the server's run_job (which propagates the terminal
+            // update), so the client would discard finished objects and recompile
+            // locally - the reap-then-complete hazard.
+            match job_state {
+                JobState::Started | JobState::Complete => {
+                    info!(
+                        "Late {:?} update for untracked job {} (already reaped); no-op success",
+                        job_state, job_id
+                    );
+                }
+                other => {
+                    warn!("State update to {:?} for unknown job {}", other, job_id);
+                }
+            }
         }
         Ok(UpdateJobStateResult::Success)
     }
@@ -1131,9 +1147,16 @@ impl ServerIncoming for Server {
                 }
             }
         };
-        requester
-            .do_update_job_state(job_id, JobState::Complete)
-            .context("Updating job state failed")?;
+        if let Err(e) = requester.do_update_job_state(job_id, JobState::Complete) {
+            // Do not fail the compile because the scheduler rejected the terminal
+            // update (e.g. the job was reaped mid-compile): the objects are built
+            // and must reach the client rather than being discarded for a local
+            // recompile.
+            warn!(
+                "Completing job {} with the scheduler failed ({:#}); returning results anyway",
+                job_id, e
+            );
+        }
         res
     }
 }
@@ -1452,6 +1475,27 @@ mod scheduler_tests {
         assert!(
             details.jobs_assigned.contains(&job_id),
             "a Started job within the completion timeout must stay assigned"
+        );
+    }
+
+    // A late Complete (or Started) update for a job the scheduler no longer
+    // tracks must be a no-op success, not an error. If it errors, the build
+    // server's run_job (which propagates the terminal update) fails, and the
+    // client discards the finished objects and recompiles locally - the
+    // reap-then-complete hazard that a fixed-timeout reaper can trigger on a
+    // slow-but-successful remote compile.
+    #[test]
+    fn test_late_update_for_reaped_job_is_ok() {
+        let scheduler = Scheduler::new();
+        let server_id = ServerId::new("10.42.0.2:10501".parse::<SocketAddr>().unwrap());
+
+        // No job was ever inserted, so job 1000 is "unknown" to the scheduler,
+        // exactly as it would be after a reap.
+        let res = scheduler.handle_update_job_state(JobId(1000), server_id, JobState::Complete);
+
+        assert!(
+            res.is_ok(),
+            "a Complete update for an untracked (reaped) job must be a logged no-op success, not an error"
         );
     }
 }
