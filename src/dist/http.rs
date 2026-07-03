@@ -150,6 +150,7 @@ mod common {
         pub server_nonce: dist::ServerNonce,
         pub cert_digest: Vec<u8>,
         pub cert_pem: Vec<u8>,
+        pub active_jobs: Vec<dist::JobId>,
     }
 
     #[cfg(feature = "dist-server")]
@@ -163,6 +164,7 @@ mod common {
                     "cert_digest",
                     &BASE64_URL_SAFE_ENGINE.encode(&self.cert_digest),
                 )
+                .field("active_jobs", &self.active_jobs)
                 .finish()
         }
     }
@@ -254,7 +256,7 @@ mod server {
     use std::net::SocketAddr;
     use std::result::Result as StdResult;
     use std::sync::atomic;
-    use std::sync::{LazyLock, Mutex};
+    use std::sync::{Arc, LazyLock, Mutex};
     use std::thread;
     use std::time::Duration;
 
@@ -811,7 +813,7 @@ mod server {
                         let heartbeat_server = try_or_400_log!(req_id, bincode_input(request));
                         trace!(target: "sccache_heartbeat", "Req {}: heartbeat_server: {:?}", req_id, heartbeat_server);
 
-                        let HeartbeatServerHttpRequest { num_cpus, jwt_key, server_nonce, cert_digest, cert_pem } = heartbeat_server;
+                        let HeartbeatServerHttpRequest { num_cpus, jwt_key, server_nonce, cert_digest, cert_pem, active_jobs } = heartbeat_server;
                         try_or_500_log!(req_id, maybe_update_certs(
                             &mut requester.client.lock().unwrap(),
                             &mut server_certificates.lock().unwrap(),
@@ -821,7 +823,8 @@ mod server {
                         let res: HeartbeatServerResult = try_or_500_log!(req_id, handler.handle_heartbeat_server(
                             server_id, server_nonce,
                             num_cpus,
-                            job_authorizer
+                            job_authorizer,
+                            active_jobs
                         ));
                         prepare_response(request, &res)
                     },
@@ -965,6 +968,9 @@ mod server {
                 advertised_num_cpus,
                 handler,
             } = self;
+            // Shared so the heartbeat thread can snapshot the handler's
+            // running-jobs set each beat while the request router still owns it.
+            let handler = Arc::new(handler);
             // Graceful shutdown: on SIGTERM/SIGINT, deregister from the
             // scheduler before exiting so it drops us at once instead of
             // waiting out the 90s heartbeat timeout. The timeout stays as the
@@ -998,13 +1004,12 @@ mod server {
                 }
             });
 
-            let heartbeat_req = HeartbeatServerHttpRequest {
-                num_cpus: advertised_num_cpus,
-                jwt_key: jwt_key.clone(),
-                server_nonce,
-                cert_digest,
-                cert_pem: cert_pem.clone(),
-            };
+            // Values the heartbeat thread rebuilds its request from each beat.
+            // cert_digest and server_nonce are used only here, so move them in;
+            // jwt_key and cert_pem are still needed below, so clone for the thread.
+            let heartbeat_jwt_key = jwt_key.clone();
+            let heartbeat_cert_pem = cert_pem.clone();
+            let heartbeat_handler = Arc::clone(&handler);
             let job_authorizer = JWTJobAuthorizer::new(jwt_key);
             let heartbeat_url = urls::scheduler_heartbeat_server(&scheduler_url);
             let requester = ServerRequester {
@@ -1018,6 +1023,19 @@ mod server {
                 let client = new_reqwest_blocking_client();
                 loop {
                     trace!(target: "sccache_heartbeat", "Performing heartbeat");
+                    // Rebuild the request each beat so active_jobs is a fresh
+                    // snapshot of what this server is running. The scheduler
+                    // reaps a Started job only after two consecutive heartbeats
+                    // omit it, so a stale snapshot could either strand a done
+                    // job or reap a live one.
+                    let heartbeat_req = HeartbeatServerHttpRequest {
+                        num_cpus: advertised_num_cpus,
+                        jwt_key: heartbeat_jwt_key.clone(),
+                        server_nonce: server_nonce.clone(),
+                        cert_digest: cert_digest.clone(),
+                        cert_pem: heartbeat_cert_pem.clone(),
+                        active_jobs: heartbeat_handler.active_jobs(),
+                    };
                     match bincode_req(
                         client
                             .post(heartbeat_url.clone())

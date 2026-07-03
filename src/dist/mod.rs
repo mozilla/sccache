@@ -692,6 +692,7 @@ pub trait SchedulerIncoming: Send + Sync {
         server_nonce: ServerNonce,
         num_cpus: usize,
         job_authorizer: Box<dyn JobAuthorizer>,
+        active_jobs: Vec<JobId>,
     ) -> ExtResult<HeartbeatServerResult, Error>;
     // From Server
     fn handle_deregister_server(
@@ -729,6 +730,10 @@ pub trait ServerIncoming: Send + Sync {
         outputs: Vec<String>,
         inputs_rdr: InputsReader<'_>,
     ) -> ExtResult<RunJobResult, Error>;
+    // Snapshot of the job ids this server is currently running, reported in
+    // every heartbeat so the scheduler can reap only jobs a server no longer
+    // reports (liveness lease), never a genuinely-slow live compile.
+    fn active_jobs(&self) -> Vec<JobId>;
 }
 
 #[cfg(feature = "dist-server")]

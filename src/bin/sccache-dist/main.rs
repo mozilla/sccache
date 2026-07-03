@@ -415,6 +415,11 @@ struct ServerDetails {
     // Jobs assigned that haven't seen a state change. Can only be pending
     // or ready.
     jobs_unclaimed: HashMap<JobId, Instant>,
+    // Job ids this server reported running in its previous heartbeat. A Started
+    // job is reaped only when it is absent from both this set and the incoming
+    // heartbeat's active_jobs (two consecutive misses), so a single dropped or
+    // racing heartbeat never reaps a live compile.
+    last_active_jobs: HashSet<JobId>,
     last_seen: Instant,
     last_error: Option<Instant>,
     num_cpus: usize,
@@ -779,6 +784,7 @@ impl SchedulerIncoming for Scheduler {
         server_nonce: ServerNonce,
         num_cpus: usize,
         job_authorizer: Box<dyn JobAuthorizer>,
+        active_jobs: Vec<JobId>,
     ) -> Result<HeartbeatServerResult> {
         if num_cpus == 0 {
             bail!("Invalid number of CPUs (0) specified in heartbeat")
@@ -853,15 +859,55 @@ impl SchedulerIncoming for Scheduler {
                     }
                 }
 
+                // Primary Started-reap mechanism: the liveness lease. Every
+                // heartbeat carries the ids the server is actively running.
+                // Reap a Started job only once it is absent from BOTH the
+                // incoming active_jobs AND last_active_jobs (the prior beat) -
+                // two consecutive misses - so a genuinely-slow live compile,
+                // which the server reports every beat, is never reaped, and one
+                // dropped or racing heartbeat cannot reap a live job. The
+                // fixed-timeout sweep below stays only as a backstop for a
+                // server that stops heartbeating its running set entirely.
+                let active_set: HashSet<JobId> = active_jobs.into_iter().collect();
+                let mut liveness_reap = Vec::new();
+                for &job_id in details.jobs_assigned.iter() {
+                    if let Some(detail) = jobs.get(&job_id) {
+                        if detail.state == JobState::Started
+                            && !active_set.contains(&job_id)
+                            && !details.last_active_jobs.contains(&job_id)
+                        {
+                            liveness_reap.push(job_id);
+                        }
+                    }
+                }
+                if !liveness_reap.is_empty() {
+                    warn!(
+                        "The following Started jobs were absent from two consecutive heartbeats and will be de-allocated: {:?}",
+                        liveness_reap
+                    );
+                    self.jobs_reaped_started
+                        .fetch_add(liveness_reap.len(), Ordering::Relaxed);
+                    for job_id in liveness_reap {
+                        details.jobs_assigned.remove(&job_id);
+                        jobs.remove(&job_id);
+                    }
+                }
+                details.last_active_jobs = active_set;
+
                 // Backstop for jobs stuck in Started (see STARTED_COMPLETE_TIMEOUT):
                 // the unclaimed sweep above cannot see them because Ready->Started
                 // drops them from jobs_unclaimed. Reap any this server has held in
                 // Started past the timeout so a lost Complete update cannot leak the
                 // slot forever and eventually lock the node out at its ceiling.
+                // Never reap a job the server just reported active (now stored in
+                // last_active_jobs): a genuinely-slow live compile must survive at
+                // any duration, so the backstop only fires once the server has
+                // stopped naming the job in its heartbeats.
                 let mut stale_started = Vec::new();
                 for &job_id in details.jobs_assigned.iter() {
                     if let Some(detail) = jobs.get(&job_id) {
                         if detail.state == JobState::Started
+                            && !details.last_active_jobs.contains(&job_id)
                             && now.duration_since(detail.since) > STARTED_COMPLETE_TIMEOUT
                         {
                             stale_started.push(job_id);
@@ -921,6 +967,7 @@ impl SchedulerIncoming for Scheduler {
                 last_error: None,
                 jobs_assigned: HashSet::new(),
                 jobs_unclaimed: HashMap::new(),
+                last_active_jobs: HashSet::new(),
                 num_cpus,
                 server_nonce,
                 job_authorizer,
@@ -1076,6 +1123,9 @@ pub struct Server {
     builder: Box<dyn BuilderIncoming>,
     cache: Mutex<TcCache>,
     job_toolchains: Mutex<HashMap<JobId, (Toolchain, Instant)>>,
+    // Jobs currently executing a build. Reported in every heartbeat so the
+    // scheduler's liveness lease never reaps a compile still in flight here.
+    running_jobs: Mutex<HashSet<JobId>>,
 }
 
 impl Server {
@@ -1090,7 +1140,22 @@ impl Server {
             builder,
             cache: Mutex::new(cache),
             job_toolchains: Mutex::new(HashMap::new()),
+            running_jobs: Mutex::new(HashSet::new()),
         })
+    }
+}
+
+// Removes a job id from the running set no matter how handle_run_job returns
+// (normal completion, build error, or panic), so a failed build can never
+// leave a phantom entry that makes the scheduler believe the job is still live.
+struct RunningJobGuard<'a> {
+    running_jobs: &'a Mutex<HashSet<JobId>>,
+    job_id: JobId,
+}
+
+impl Drop for RunningJobGuard<'_> {
+    fn drop(&mut self) {
+        self.running_jobs.lock().unwrap().remove(&self.job_id);
     }
 }
 
@@ -1169,6 +1234,12 @@ impl ServerIncoming for Server {
         requester
             .do_update_job_state(job_id, JobState::Started)
             .context("Updating job state failed")?;
+        self.running_jobs.lock().unwrap().insert(job_id);
+        // De-register on every exit path (success, build error, panic).
+        let _running_guard = RunningJobGuard {
+            running_jobs: &self.running_jobs,
+            job_id,
+        };
         let tc = self
             .job_toolchains
             .lock()
@@ -1201,6 +1272,9 @@ impl ServerIncoming for Server {
             );
         }
         res
+    }
+    fn active_jobs(&self) -> Vec<JobId> {
+        self.running_jobs.lock().unwrap().iter().copied().collect()
     }
 }
 
@@ -1258,6 +1332,7 @@ mod scheduler_tests {
                 last_error: None,
                 jobs_assigned: HashSet::new(),
                 jobs_unclaimed: HashMap::new(),
+                last_active_jobs: HashSet::new(),
                 num_cpus: 32,
                 server_nonce: ServerNonce::new(),
                 job_authorizer: Box::new(NoopAuthorizer),
@@ -1351,6 +1426,7 @@ mod scheduler_tests {
                 last_error,
                 jobs_assigned,
                 jobs_unclaimed: HashMap::new(),
+                last_active_jobs: HashSet::new(),
                 num_cpus: 32,
                 server_nonce: ServerNonce::new(),
                 job_authorizer: Box::new(NoopAuthorizer),
@@ -1426,6 +1502,7 @@ mod scheduler_tests {
                 last_error: None,
                 jobs_assigned,
                 jobs_unclaimed: HashMap::new(),
+                last_active_jobs: HashSet::new(),
                 num_cpus: 32,
                 server_nonce: ServerNonce::new(),
                 job_authorizer: Box::new(NoopAuthorizer),
@@ -1460,6 +1537,18 @@ mod scheduler_tests {
             job_id,
             STARTED_COMPLETE_TIMEOUT + Duration::from_secs(10),
         );
+        // Seed the prior-beat active set so the liveness lease grants this job
+        // its grace beat: with the job absent from active_jobs but present in
+        // last_active_jobs, the liveness path skips it, so the reap here can
+        // only come from the age-based backstop this test exercises.
+        scheduler
+            .servers
+            .lock()
+            .unwrap()
+            .get_mut(&server_id)
+            .unwrap()
+            .last_active_jobs
+            .insert(job_id);
         let nonce = scheduler
             .servers
             .lock()
@@ -1470,7 +1559,7 @@ mod scheduler_tests {
             .clone();
 
         scheduler
-            .handle_heartbeat_server(server_id, nonce, 32, Box::new(NoopAuthorizer))
+            .handle_heartbeat_server(server_id, nonce, 32, Box::new(NoopAuthorizer), Vec::new())
             .expect("handle_heartbeat_server should not error");
 
         let servers = scheduler.servers.lock().unwrap();
@@ -1509,8 +1598,11 @@ mod scheduler_tests {
             .server_nonce
             .clone();
 
+        // The server reports the job still running, so both the liveness path
+        // (present in active_jobs) and the age-based backstop (within timeout)
+        // must leave it assigned.
         scheduler
-            .handle_heartbeat_server(server_id, nonce, 32, Box::new(NoopAuthorizer))
+            .handle_heartbeat_server(server_id, nonce, 32, Box::new(NoopAuthorizer), vec![job_id])
             .expect("handle_heartbeat_server should not error");
 
         let servers = scheduler.servers.lock().unwrap();
@@ -1518,6 +1610,96 @@ mod scheduler_tests {
         assert!(
             details.jobs_assigned.contains(&job_id),
             "a Started job within the completion timeout must stay assigned"
+        );
+    }
+
+    // The liveness lease is the primary Started-reap mechanism: a Started job is
+    // reaped only after it is absent from two consecutive heartbeats of the
+    // owning server. A job the server keeps reporting active is never reaped (no
+    // matter how long the compile runs), and a single missed heartbeat is not
+    // enough - guarding both the slow-live-compile false reap the old fixed
+    // timeout caused and an over-eager one-beat reap. Job age stays ~0
+    // throughout, so the STARTED_COMPLETE_TIMEOUT backstop never fires and every
+    // reap decision here is the liveness path.
+    #[test]
+    fn test_liveness_lease_reap() {
+        let scheduler = Scheduler::new();
+        let server_id = ServerId::new("10.42.0.2:10501".parse::<SocketAddr>().unwrap());
+        let job_id = JobId(1000);
+        insert_started_job(&scheduler, server_id, job_id, Duration::from_secs(0));
+        let nonce = scheduler
+            .servers
+            .lock()
+            .unwrap()
+            .get(&server_id)
+            .unwrap()
+            .server_nonce
+            .clone();
+
+        // Reported active across many heartbeats: never reaped.
+        for _ in 0..5 {
+            scheduler
+                .handle_heartbeat_server(
+                    server_id,
+                    nonce.clone(),
+                    32,
+                    Box::new(NoopAuthorizer),
+                    vec![job_id],
+                )
+                .expect("handle_heartbeat_server should not error");
+            let servers = scheduler.servers.lock().unwrap();
+            assert!(
+                servers
+                    .get(&server_id)
+                    .unwrap()
+                    .jobs_assigned
+                    .contains(&job_id),
+                "a job reported active must never be reaped"
+            );
+        }
+
+        // First absent heartbeat: one miss alone must not reap (needs two).
+        scheduler
+            .handle_heartbeat_server(
+                server_id,
+                nonce.clone(),
+                32,
+                Box::new(NoopAuthorizer),
+                Vec::new(),
+            )
+            .expect("handle_heartbeat_server should not error");
+        assert!(
+            scheduler
+                .servers
+                .lock()
+                .unwrap()
+                .get(&server_id)
+                .unwrap()
+                .jobs_assigned
+                .contains(&job_id),
+            "a single absent heartbeat must not reap - the lease needs two consecutive misses"
+        );
+
+        // Second consecutive absent heartbeat: now the job is reaped.
+        scheduler
+            .handle_heartbeat_server(server_id, nonce, 32, Box::new(NoopAuthorizer), Vec::new())
+            .expect("handle_heartbeat_server should not error");
+        {
+            let servers = scheduler.servers.lock().unwrap();
+            let details = servers.get(&server_id).expect("server still registered");
+            assert!(
+                !details.jobs_assigned.contains(&job_id),
+                "two consecutive absent heartbeats must reap the Started job"
+            );
+        }
+        assert!(
+            !scheduler.jobs.lock().unwrap().contains_key(&job_id),
+            "the liveness-reaped job must be removed from the jobs map"
+        );
+        assert_eq!(
+            scheduler.jobs_reaped_started.load(Ordering::Relaxed),
+            1,
+            "the liveness reap must increment the Started-reap counter exactly once"
         );
     }
 
@@ -1564,6 +1746,7 @@ mod scheduler_tests {
                     last_error: None,
                     jobs_assigned,
                     jobs_unclaimed,
+                    last_active_jobs: HashSet::new(),
                     num_cpus: 32,
                     server_nonce: ServerNonce::new(),
                     job_authorizer: Box::new(NoopAuthorizer),
