@@ -47,6 +47,34 @@ use crate::errors::*;
 use super::CacheControl;
 use super::preprocessor_cache::PreprocessorCacheEntry;
 
+/// Live count of local preprocess (`cc1 -E`) invocations, gauged so the PC1
+/// preprocessing wall - the jobserver's cores saturated by preprocessing for
+/// the whole cluster while remote nodes idle - is a measured number rather than
+/// an inference.
+#[cfg(feature = "dist-client")]
+static PREPROC_INFLIGHT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// RAII counter for `PREPROC_INFLIGHT`: increments on `enter`, returning the
+/// concurrency including this one, and decrements on drop so the count stays
+/// correct across every exit of the preprocess future.
+#[cfg(feature = "dist-client")]
+struct PreprocInflightGuard;
+
+#[cfg(feature = "dist-client")]
+impl PreprocInflightGuard {
+    fn enter() -> (Self, usize) {
+        let inflight = PREPROC_INFLIGHT.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        (PreprocInflightGuard, inflight)
+    }
+}
+
+#[cfg(feature = "dist-client")]
+impl Drop for PreprocInflightGuard {
+    fn drop(&mut self) {
+        PREPROC_INFLIGHT.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 /// A generic implementation of the `Compiler` trait for C/C++ compilers.
 #[derive(Clone)]
 pub struct CCompiler<I>
@@ -547,6 +575,8 @@ where
 
             #[cfg(feature = "dist-client")]
             let preprocess_start = std::time::Instant::now();
+            #[cfg(feature = "dist-client")]
+            let (preproc_guard, preproc_concurrency) = PreprocInflightGuard::enter();
             let result = self
                 .compiler
                 .preprocess(
@@ -562,7 +592,14 @@ where
                 .await;
             #[cfg(feature = "dist-client")]
             {
-                preprocess_elapsed = Some(preprocess_start.elapsed());
+                let elapsed = preprocess_start.elapsed();
+                preprocess_elapsed = Some(elapsed);
+                drop(preproc_guard);
+                info!(
+                    "preprocess done in {}ms (concurrent {})",
+                    elapsed.as_millis(),
+                    preproc_concurrency
+                );
             }
             let out_pretty = self.parsed_args.output_pretty().into_owned();
             let result = result.map_err(|e| {
