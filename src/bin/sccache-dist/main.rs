@@ -370,6 +370,11 @@ const UNCLAIMED_READY_TIMEOUT: Duration = Duration::from_secs(60);
 // runs over a separate client<->server channel - so an over-eager reap at
 // worst mildly oversubscribes, which admission_ceiling already tolerates.
 const STARTED_COMPLETE_TIMEOUT: Duration = Duration::from_secs(180);
+// A build server drops its per-job toolchain entry in handle_run_job. An
+// assign whose run_job never arrives (client crash, scheduler restart) would
+// otherwise leak the entry forever, so sweep entries older than this on each
+// assign. Far longer than a legitimate assign->run_job gap.
+const ABANDONED_TOOLCHAIN_TIMEOUT: Duration = Duration::from_secs(600);
 
 #[derive(Copy, Clone)]
 struct JobDetail {
@@ -420,7 +425,15 @@ struct ServerDetails {
 impl Scheduler {
     pub fn new() -> Self {
         Scheduler {
-            job_count: AtomicUsize::new(0),
+            // Seed from wall-clock millis so a scheduler restart does not remint
+            // job ids from 0 and collide with an id a surviving build server
+            // still holds (which would trip the assign-time overwrite path).
+            job_count: AtomicUsize::new(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as usize)
+                    .unwrap_or(0),
+            ),
             jobs: Mutex::new(BTreeMap::new()),
             servers: Mutex::new(HashMap::new()),
             jobs_started: AtomicUsize::new(0),
@@ -1062,7 +1075,7 @@ impl SchedulerIncoming for Scheduler {
 pub struct Server {
     builder: Box<dyn BuilderIncoming>,
     cache: Mutex<TcCache>,
-    job_toolchains: Mutex<HashMap<JobId, Toolchain>>,
+    job_toolchains: Mutex<HashMap<JobId, (Toolchain, Instant)>>,
 }
 
 impl Server {
@@ -1084,13 +1097,23 @@ impl Server {
 impl ServerIncoming for Server {
     fn handle_assign_job(&self, job_id: JobId, tc: Toolchain) -> Result<AssignJobResult> {
         let need_toolchain = !self.cache.lock().unwrap().contains_toolchain(&tc);
-        assert!(
-            self.job_toolchains
-                .lock()
-                .unwrap()
-                .insert(job_id, tc)
-                .is_none()
-        );
+        {
+            let now = Instant::now();
+            let mut toolchains = self.job_toolchains.lock().unwrap();
+            // GC abandoned entries (assigns whose run_job never arrived) so the
+            // map cannot grow without bound.
+            toolchains
+                .retain(|_, (_, since)| now.duration_since(*since) < ABANDONED_TOOLCHAIN_TIMEOUT);
+            // Overwrite rather than assert: after a scheduler restart the job
+            // counter reseeds and a surviving server can still hold a stale entry
+            // for a reused id. Warn and overwrite instead of panicking the worker.
+            if toolchains.insert(job_id, (tc, now)).is_some() {
+                warn!(
+                    "Overwrote a stale toolchain entry for reused job id {}",
+                    job_id
+                );
+            }
+        }
         let state = if need_toolchain {
             JobState::Pending
         } else {
@@ -1113,7 +1136,13 @@ impl ServerIncoming for Server {
             .context("Updating job state failed")?;
         // TODO: need to lock the toolchain until the container has started
         // TODO: can start prepping container
-        let tc = match self.job_toolchains.lock().unwrap().get(&job_id).cloned() {
+        let tc = match self
+            .job_toolchains
+            .lock()
+            .unwrap()
+            .get(&job_id)
+            .map(|(tc, _)| tc.clone())
+        {
             Some(tc) => tc,
             None => return Ok(SubmitToolchainResult::JobNotFound),
         };
@@ -1140,7 +1169,12 @@ impl ServerIncoming for Server {
         requester
             .do_update_job_state(job_id, JobState::Started)
             .context("Updating job state failed")?;
-        let tc = self.job_toolchains.lock().unwrap().remove(&job_id);
+        let tc = self
+            .job_toolchains
+            .lock()
+            .unwrap()
+            .remove(&job_id)
+            .map(|(tc, _)| tc);
         let res = match tc {
             None => Ok(RunJobResult::JobNotFound),
             Some(tc) => {
@@ -1561,6 +1595,18 @@ mod scheduler_tests {
         assert!(
             t.elapsed() < Duration::from_secs(60),
             "the unclaimed clock must be reset to Ready time, not left at the ~120s-old allocation time"
+        );
+    }
+
+    // A scheduler restart must not remint job ids from 0: a new job N would then
+    // collide with an id a surviving build server still holds, tripping the
+    // assign-time overwrite (previously an assert-panic).
+    #[test]
+    fn test_job_count_seeded_nonzero() {
+        let scheduler = Scheduler::new();
+        assert!(
+            scheduler.job_count.load(Ordering::Relaxed) > 0,
+            "job_count must be seeded from a non-zero base so a restart does not reuse ids starting at 0"
         );
     }
 }
