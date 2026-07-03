@@ -914,6 +914,11 @@ mod server {
         jwt_key: Vec<u8>,
         // Randomly generated nonce to allow the scheduler to detect server restarts
         server_nonce: ServerNonce,
+        // Core count advertised to the scheduler's load model. Defaults to the
+        // detected hardware count; a config override lets the colocated node
+        // advertise fewer so load_weight reserves cores for its preprocessing
+        // and toolchain-packaging tax.
+        advertised_num_cpus: usize,
         handler: S,
     }
 
@@ -923,6 +928,7 @@ mod server {
             bind_address: Option<SocketAddr>,
             scheduler_url: reqwest::Url,
             scheduler_auth: String,
+            advertised_num_cpus: usize,
             handler: S,
         ) -> Result<Self> {
             let (cert_digest, cert_pem, privkey_pem) =
@@ -941,6 +947,7 @@ mod server {
                 privkey_pem,
                 jwt_key,
                 server_nonce,
+                advertised_num_cpus,
                 handler,
             })
         }
@@ -955,6 +962,7 @@ mod server {
                 privkey_pem,
                 jwt_key,
                 server_nonce,
+                advertised_num_cpus,
                 handler,
             } = self;
             // Graceful shutdown: on SIGTERM/SIGINT, deregister from the
@@ -991,7 +999,7 @@ mod server {
             });
 
             let heartbeat_req = HeartbeatServerHttpRequest {
-                num_cpus: num_cpus(),
+                num_cpus: advertised_num_cpus,
                 jwt_key: jwt_key.clone(),
                 server_nonce,
                 cert_digest,

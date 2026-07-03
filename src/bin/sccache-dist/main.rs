@@ -16,6 +16,7 @@ use sccache::dist::{
 };
 use sccache::util::BASE64_URL_SAFE_ENGINE;
 use sccache::util::daemonize;
+use sccache::util::num_cpus;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet, btree_map};
 use std::env;
@@ -239,6 +240,7 @@ fn run(command: Command) -> Result<i32> {
             scheduler_url,
             scheduler_auth,
             toolchain_cache_size,
+            num_cpus: advertised_num_cpus,
         }) => {
             let builder: Box<dyn dist::BuilderIncoming> = match builder {
                 #[cfg(not(target_os = "freebsd"))]
@@ -298,11 +300,13 @@ fn run(command: Command) -> Result<i32> {
 
             let server = Server::new(builder, &cache_dir, toolchain_cache_size)
                 .context("Failed to create sccache server instance")?;
+            let advertised_num_cpus = advertised_num_cpus.unwrap_or_else(num_cpus);
             let http_server = dist::http::Server::new(
                 public_addr,
                 bind_address,
                 scheduler_url.to_url(),
                 scheduler_auth,
+                advertised_num_cpus,
                 server,
             )
             .context("Failed to create sccache HTTP server instance")?;
@@ -429,14 +433,17 @@ impl Default for Scheduler {
     }
 }
 
-fn load_weight(job_count: usize, core_count: usize) -> f64 {
+fn admission_ceiling(core_count: usize) -> usize {
     // Oversubscribe cores just a little to make up for network and I/O latency. This formula is
     // not based on hard data but an extrapolation to high core counts of the conventional wisdom
     // that slightly more jobs than cores achieve the shortest compile time. Which is originally
     // about local compiles and this is over the network, so be slightly less conservative.
-    let cores_plus_slack = core_count + 1 + core_count / 8;
+    core_count + 1 + core_count / 8
+}
+
+fn load_weight(job_count: usize, core_count: usize) -> f64 {
     // Note >=, not >, because the question is "can we add another job"?
-    if job_count >= cores_plus_slack {
+    if job_count >= admission_ceiling(core_count) {
         MAX_PER_CORE_LOAD + 1f64 // no new jobs for now
     } else {
         job_count as f64 / core_count as f64
@@ -462,6 +469,7 @@ impl SchedulerIncoming for Scheduler {
                 let mut best = None;
                 let mut best_err = None;
                 let mut best_load: f64 = MAX_PER_CORE_LOAD;
+                let mut best_free: usize = 0;
                 let mut best_err_load: f64 = MAX_PER_CORE_LOAD;
                 let now = Instant::now();
                 for (&server_id, details) in servers.iter_mut() {
@@ -515,12 +523,22 @@ impl SchedulerIncoming for Scheduler {
                                 }
                             }
                         }
-                    } else if load < best_load {
-                        best = Some((server_id, details));
-                        trace!("Selected {:?} as the server with the best load", server_id);
-                        best_load = load;
-                        if load == 0f64 {
-                            break;
+                    } else {
+                        // Deterministic, remote-preferring tie-break, and no early
+                        // break: scan every server so the logged candidate list is
+                        // complete (a truncated list can never expose a misroute) and
+                        // hash-map order never silently decides a both-idle tie. On
+                        // equal load prefer the server with more free admission slots -
+                        // with A1's advertised-cores override the colocated node
+                        // advertises fewer, so the remote node wins the tie and a
+                        // compile burst starts off the already-busy local node.
+                        let free = admission_ceiling(details.num_cpus)
+                            .saturating_sub(details.jobs_assigned.len());
+                        if load < best_load || (load == best_load && free > best_free) {
+                            trace!("Selected {:?} as the server with the best load", server_id);
+                            best = Some((server_id, details));
+                            best_load = load;
+                            best_free = free;
                         }
                     }
                 }

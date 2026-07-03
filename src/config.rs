@@ -1599,6 +1599,13 @@ pub mod server {
         pub scheduler_auth: SchedulerAuth,
         #[serde(default = "default_toolchain_cache_size")]
         pub toolchain_cache_size: u64,
+        // Advertise fewer cores than the hardware so the scheduler de-weights
+        // this node (main.rs load_weight). On the colocated node the real cores
+        // are also spent preprocessing for the whole cluster and packaging
+        // toolchains, which the scheduler cannot see; capping the advertised
+        // count reserves them. None = use the detected hardware count.
+        #[serde(default)]
+        pub num_cpus: Option<usize>,
     }
 
     pub fn from_path(conf_path: &Path) -> Result<Option<Config>> {
