@@ -26,7 +26,7 @@ use std::io;
 use std::iter;
 use std::path::{self, Path, PathBuf};
 use std::process::{ChildStdin, Command, Output, Stdio};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use version_compare::Version;
 
@@ -104,6 +104,28 @@ pub struct OverlayBuilder {
     bubblewrap: PathBuf,
     dir: PathBuf,
     toolchain_dir_map: Mutex<HashMap<Toolchain, DeflatedToolchain>>,
+    // Per-toolchain preparation locks. The gzip+untar of an uncached toolchain
+    // runs under the matching entry lock here, NOT under toolchain_dir_map, so
+    // two requests for different toolchains prepare in parallel while two for
+    // the same uncached toolchain serialize (no half-written dir, no double
+    // unpack).
+    toolchain_prepare_locks: Mutex<HashMap<Toolchain, Arc<Mutex<()>>>>,
+}
+
+// Return the preparation lock for `tc`, creating it on first use. Held only
+// long enough to look up or insert the entry, so distinct toolchains never
+// contend here. Same key yields the same Arc; distinct keys yield distinct
+// Arcs.
+fn get_prepare_lock(
+    locks: &Mutex<HashMap<Toolchain, Arc<Mutex<()>>>>,
+    tc: &Toolchain,
+) -> Arc<Mutex<()>> {
+    locks
+        .lock()
+        .unwrap()
+        .entry(tc.clone())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
 }
 
 impl OverlayBuilder {
@@ -151,6 +173,7 @@ impl OverlayBuilder {
             bubblewrap,
             dir,
             toolchain_dir_map: Mutex::new(HashMap::new()),
+            toolchain_prepare_locks: Mutex::new(HashMap::new()),
         };
         ret.cleanup()?;
         fs::create_dir(&ret.dir).context("Failed to create base directory for builder")?;
@@ -173,75 +196,123 @@ impl OverlayBuilder {
         tc: &Toolchain,
         tccache: &Mutex<TcCache>,
     ) -> Result<OverlaySpec> {
+        let toolchain_dir = self.dir.join("toolchains").join(&tc.archive_id);
+
+        // Fast path: an already-prepared toolchain just bumps its build
+        // counter. The global map lock is held only for this lookup.
+        if let Some(entry) = self.bump_prepared_toolchain(tc, &toolchain_dir) {
+            return self.make_overlay_spec(tc, entry);
+        }
+
+        // Serialize preparation on the per-toolchain lock, NOT the global map
+        // lock, so requests for different toolchains prepare in parallel while
+        // requests for the same uncached toolchain wait here.
+        let prepare_lock = get_prepare_lock(&self.toolchain_prepare_locks, tc);
+        let _prepare_guard = prepare_lock.lock().unwrap();
+
+        // Another request may have prepared this toolchain while we waited on
+        // the prepare lock; re-check before unpacking.
+        if let Some(entry) = self.bump_prepared_toolchain(tc, &toolchain_dir) {
+            return self.make_overlay_spec(tc, entry);
+        }
+
+        trace!("Creating toolchain directory for {}", tc.archive_id);
+        fs::create_dir(&toolchain_dir)?;
+
+        {
+            let mut tccache = tccache.lock().unwrap();
+            let toolchain_rdr = match tccache.get(tc) {
+                Ok(rdr) => rdr,
+                Err(LruError::FileNotInCache) => {
+                    bail!("expected toolchain {}, but not available", tc.archive_id)
+                }
+                Err(e) => {
+                    return Err(Error::from(e).context("failed to get toolchain from cache"));
+                }
+            };
+
+            tar::Archive::new(GzDecoder::new(toolchain_rdr))
+                .unpack(&toolchain_dir)
+                .or_else(|e| {
+                    warn!("Failed to unpack toolchain: {:?}", e);
+                    fs::remove_dir_all(&toolchain_dir)
+                        .context("Failed to remove unpacked toolchain")?;
+                    tccache
+                        .remove(tc)
+                        .context("Failed to remove corrupt toolchain")?;
+                    Err(Error::from(e))
+                })?;
+        }
+
+        let entry = DeflatedToolchain {
+            path: toolchain_dir,
+            build_count: 1,
+            ctime: Instant::now(),
+        };
+
+        // Insert the new entry and pick eviction victims under the global map
+        // lock, but run the remove_dir_all for each victim AFTER dropping it so
+        // filesystem teardown never serializes concurrent preparations.
+        let mut evictions: Vec<Toolchain> = Vec::new();
+        {
+            let mut toolchain_dir_map = self.toolchain_dir_map.lock().unwrap();
+            toolchain_dir_map.insert(tc.clone(), entry.clone());
+            if toolchain_dir_map.len() > tccache.lock().unwrap().len() {
+                let dir_map = toolchain_dir_map.clone();
+                let mut entries: Vec<_> = dir_map.iter().collect();
+                // In the pathological case, creation time for unpacked
+                // toolchains could be the opposite of the least recently
+                // recently used, so we clear out half of the accumulated
+                // toolchains to prevent repeated sort/delete cycles.
+                entries.sort_by_key(|a| (a.1).ctime);
+                entries.truncate(entries.len() / 2);
+                for (victim, _) in entries {
+                    if toolchain_dir_map.remove(victim).is_some() {
+                        evictions.push(victim.clone());
+                    } else {
+                        warn!(
+                            "toolchain {:?} already gone from dir map during eviction",
+                            victim
+                        );
+                    }
+                }
+            }
+        }
+        for victim in evictions {
+            warn!("Removing old un-compressed toolchain: {:?}", victim);
+            fs::remove_dir_all(self.dir.join("toolchains").join(&victim.archive_id))
+                .context("Failed to remove old toolchain directory")?;
+        }
+
+        self.make_overlay_spec(tc, entry)
+    }
+
+    // Bump and return a clone of the prepared-toolchain entry when it is both
+    // recorded in the map and present on disk, else None. Holds the global map
+    // lock only for the lookup and counter bump.
+    fn bump_prepared_toolchain(
+        &self,
+        tc: &Toolchain,
+        toolchain_dir: &Path,
+    ) -> Option<DeflatedToolchain> {
+        let mut toolchain_dir_map = self.toolchain_dir_map.lock().unwrap();
+        if toolchain_dir_map.contains_key(tc) && toolchain_dir.exists() {
+            let entry = toolchain_dir_map
+                .get_mut(tc)
+                .expect("Key missing after checking");
+            entry.build_count += 1;
+            Some(entry.clone())
+        } else {
+            None
+        }
+    }
+
+    fn make_overlay_spec(&self, tc: &Toolchain, entry: DeflatedToolchain) -> Result<OverlaySpec> {
         let DeflatedToolchain {
             path: toolchain_dir,
             build_count: id,
             ctime: _,
-        } = {
-            let mut toolchain_dir_map = self.toolchain_dir_map.lock().unwrap();
-            // Create the toolchain dir (if necessary) while we have an exclusive lock
-            let toolchain_dir = self.dir.join("toolchains").join(&tc.archive_id);
-            if toolchain_dir_map.contains_key(tc) && toolchain_dir.exists() {
-                // TODO: use if let when sccache can use NLL
-                let entry = toolchain_dir_map
-                    .get_mut(tc)
-                    .expect("Key missing after checking");
-                entry.build_count += 1;
-                entry.clone()
-            } else {
-                trace!("Creating toolchain directory for {}", tc.archive_id);
-                fs::create_dir(&toolchain_dir)?;
-
-                let mut tccache = tccache.lock().unwrap();
-                let toolchain_rdr = match tccache.get(tc) {
-                    Ok(rdr) => rdr,
-                    Err(LruError::FileNotInCache) => {
-                        bail!("expected toolchain {}, but not available", tc.archive_id)
-                    }
-                    Err(e) => {
-                        return Err(Error::from(e).context("failed to get toolchain from cache"));
-                    }
-                };
-
-                tar::Archive::new(GzDecoder::new(toolchain_rdr))
-                    .unpack(&toolchain_dir)
-                    .or_else(|e| {
-                        warn!("Failed to unpack toolchain: {:?}", e);
-                        fs::remove_dir_all(&toolchain_dir)
-                            .context("Failed to remove unpacked toolchain")?;
-                        tccache
-                            .remove(tc)
-                            .context("Failed to remove corrupt toolchain")?;
-                        Err(Error::from(e))
-                    })?;
-
-                let entry = DeflatedToolchain {
-                    path: toolchain_dir,
-                    build_count: 1,
-                    ctime: Instant::now(),
-                };
-
-                toolchain_dir_map.insert(tc.clone(), entry.clone());
-                if toolchain_dir_map.len() > tccache.len() {
-                    let dir_map = toolchain_dir_map.clone();
-                    let mut entries: Vec<_> = dir_map.iter().collect();
-                    // In the pathological case, creation time for unpacked
-                    // toolchains could be the opposite of the least recently
-                    // recently used, so we clear out half of the accumulated
-                    // toolchains to prevent repeated sort/delete cycles.
-                    entries.sort_by_key(|a| (a.1).ctime);
-                    entries.truncate(entries.len() / 2);
-                    for (tc, _) in entries {
-                        warn!("Removing old un-compressed toolchain: {:?}", tc);
-                        assert!(toolchain_dir_map.remove(tc).is_some());
-                        fs::remove_dir_all(self.dir.join("toolchains").join(&tc.archive_id))
-                            .context("Failed to remove old toolchain directory")?;
-                    }
-                }
-                entry
-            }
-        };
-
+        } = entry;
         trace!("Creating build directory for {}-{}", tc.archive_id, id);
         let build_dir = self
             .dir
@@ -871,5 +942,54 @@ impl BuilderIncoming for DockerBuilder {
         self.finish_container(&tc, cid);
         debug!("Returning result");
         Ok(res)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tc(id: &str) -> Toolchain {
+        Toolchain {
+            archive_id: id.to_owned(),
+        }
+    }
+
+    // Two requests for the same uncached toolchain must serialize on one
+    // preparation lock (so the gzip+untar happens once, with no half-written
+    // dir), while requests for different toolchains get independent locks and
+    // never block each other. Constructing an OverlayBuilder requires root, so
+    // drive the lock-acquisition invariant that prepare_overlay_dirs relies on
+    // directly.
+    #[test]
+    fn test_prepare_lock_shared_per_key_and_distinct_across_keys() {
+        let locks = Mutex::new(HashMap::new());
+
+        let a1 = get_prepare_lock(&locks, &tc("aaaa"));
+        let a2 = get_prepare_lock(&locks, &tc("aaaa"));
+        let b = get_prepare_lock(&locks, &tc("bbbb"));
+
+        assert!(
+            Arc::ptr_eq(&a1, &a2),
+            "same toolchain key must share one preparation lock"
+        );
+        assert!(
+            !Arc::ptr_eq(&a1, &b),
+            "different toolchain keys must get distinct preparation locks"
+        );
+
+        // The shared lock actually serializes: while a1 is held, a second
+        // acquire of the same Arc blocks, but a different toolchain's lock is
+        // free to take.
+        let guard = a1.lock().unwrap();
+        assert!(
+            a2.try_lock().is_err(),
+            "second acquire of the shared preparation lock must block"
+        );
+        assert!(
+            b.try_lock().is_ok(),
+            "a different toolchain's preparation lock must not block"
+        );
+        drop(guard);
     }
 }

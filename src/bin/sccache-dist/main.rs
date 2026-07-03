@@ -1245,15 +1245,32 @@ impl ServerIncoming for Server {
             Some(tc) => tc,
             None => return Ok(SubmitToolchainResult::JobNotFound),
         };
-        let mut cache = self.cache.lock().unwrap();
-        // TODO: this returns before reading all the data, is that valid?
-        if cache.contains_toolchain(&tc) {
-            return Ok(SubmitToolchainResult::Success);
+        // Fast path: skip the transfer entirely if the toolchain is already
+        // cached. Grab the cache directory while we hold the lock so the temp
+        // file lands on the same filesystem and the final insert is a rename.
+        let tc_cache_dir = {
+            let cache = self.cache.lock().unwrap();
+            // TODO: this returns before reading all the data, is that valid?
+            if cache.contains_toolchain(&tc) {
+                return Ok(SubmitToolchainResult::Success);
+            }
+            cache.path().to_path_buf()
+        };
+        // Stream the upload to a temp file WITHOUT holding the cache lock, so a
+        // slow transfer for one toolchain no longer serializes every other
+        // submit behind the global cache mutex.
+        let mut tmpfile = match tempfile::NamedTempFile::new_in(&tc_cache_dir) {
+            Ok(tmpfile) => tmpfile,
+            Err(_) => return Ok(SubmitToolchainResult::CannotCache),
+        };
+        if io::copy(&mut { tc_rdr }, tmpfile.as_file_mut()).is_err() {
+            return Ok(SubmitToolchainResult::CannotCache);
         }
+        let temp_path = tmpfile.into_temp_path();
+        // Re-acquire the lock ONLY to graft the finished file into the cache.
+        let mut cache = self.cache.lock().unwrap();
         Ok(cache
-            .insert_with(&tc, |mut file| {
-                io::copy(&mut { tc_rdr }, &mut file).map(|_| ())
-            })
+            .insert_at(&tc, &temp_path)
             .map(|_| SubmitToolchainResult::Success)
             .unwrap_or(SubmitToolchainResult::CannotCache))
     }
@@ -1890,5 +1907,41 @@ mod scheduler_tests {
             0,
             "job_count is the 0-based allocated= counter and must start at 0"
         );
+    }
+
+    // The upload transfer in handle_submit_toolchain streams to a temp file
+    // with the cache lock released; only the final graft reacquires the lock.
+    // Drive that graft path directly: a materialized temp file inserts under
+    // its toolchain key, and a file whose contents do not hash to the key is
+    // refused rather than served as a corrupt entry.
+    #[test]
+    fn test_submit_toolchain_no_lock_across_transfer() {
+        use sccache::util::Digest;
+        use std::io::Write;
+
+        let cache_dir = tempfile::TempDir::new().unwrap();
+        let mut cache = TcCache::new(cache_dir.path(), u64::MAX).unwrap();
+
+        // Materialize the upload exactly as the handler does after io::copy.
+        let mut tmpfile = tempfile::NamedTempFile::new_in(cache.path()).unwrap();
+        tmpfile.write_all(b"toolchain-bytes").unwrap();
+        tmpfile.flush().unwrap();
+        let archive_id = Digest::reader_sync(std::fs::File::open(tmpfile.path()).unwrap()).unwrap();
+        let tc = Toolchain { archive_id };
+        let temp_path = tmpfile.into_temp_path();
+
+        assert!(!cache.contains_toolchain(&tc));
+        cache.insert_at(&tc, &temp_path).unwrap();
+        assert!(cache.contains_toolchain(&tc));
+
+        // A temp file that does not hash to the requested key is refused.
+        let mut bad = tempfile::NamedTempFile::new_in(cache.path()).unwrap();
+        bad.write_all(b"not-the-right-bytes").unwrap();
+        bad.flush().unwrap();
+        let wrong_tc = Toolchain {
+            archive_id: "deadbeefcafe".to_owned(),
+        };
+        let bad_path = bad.into_temp_path();
+        assert!(cache.insert_at(&wrong_tc, &bad_path).is_err());
     }
 }
