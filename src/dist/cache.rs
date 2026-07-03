@@ -497,10 +497,12 @@ impl TcCache {
         self.inner
             .insert_file(make_lru_key_path(&tc.archive_id), path)?;
         let verified_archive_id = file_key(self.get(tc)?)?;
-        // TODO: remove created toolchain?
         if verified_archive_id == tc.archive_id {
             Ok(())
         } else {
+            // The grafted file hashes to the wrong key; drop it so a poisoned
+            // entry cannot satisfy a later lookup under the expected key.
+            let _ = self.inner.remove(make_lru_key_path(&tc.archive_id));
             Err(anyhow!("written file does not match expected hash key"))
         }
     }

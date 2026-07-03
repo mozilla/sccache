@@ -217,27 +217,46 @@ impl OverlayBuilder {
         }
 
         trace!("Creating toolchain directory for {}", tc.archive_id);
+        // We hold this toolchain's prepare lock and it is absent from the map, so
+        // any directory on disk is a stale leftover (an interrupted preparation,
+        // or an eviction that pruned the map entry before deleting the dir). Clear
+        // it so create_dir does not fail with AlreadyExists.
+        if toolchain_dir.exists() {
+            fs::remove_dir_all(&toolchain_dir)
+                .context("Failed to remove stale toolchain directory")?;
+        }
         fs::create_dir(&toolchain_dir)?;
 
         {
-            let mut tccache = tccache.lock().unwrap();
-            let toolchain_rdr = match tccache.get(tc) {
-                Ok(rdr) => rdr,
-                Err(LruError::FileNotInCache) => {
-                    bail!("expected toolchain {}, but not available", tc.archive_id)
-                }
-                Err(e) => {
-                    return Err(Error::from(e).context("failed to get toolchain from cache"));
+            // Take an owned handle to the cached archive under the lock, then
+            // release the tccache mutex before untarring. The archive reader used
+            // to borrow the cache guard, which serialized every toolchain's untar
+            // on this one mutex; an owned File lets different toolchains untar in
+            // parallel.
+            let toolchain_file = {
+                let mut tccache = tccache.lock().unwrap();
+                match tccache.get_file(tc) {
+                    Ok(file) => file,
+                    Err(LruError::FileNotInCache) => {
+                        bail!("expected toolchain {}, but not available", tc.archive_id)
+                    }
+                    Err(e) => {
+                        return Err(Error::from(e).context("failed to get toolchain from cache"));
+                    }
                 }
             };
 
-            tar::Archive::new(GzDecoder::new(toolchain_rdr))
+            tar::Archive::new(GzDecoder::new(toolchain_file))
                 .unpack(&toolchain_dir)
                 .or_else(|e| {
                     warn!("Failed to unpack toolchain: {:?}", e);
                     fs::remove_dir_all(&toolchain_dir)
                         .context("Failed to remove unpacked toolchain")?;
+                    // Removing the corrupt archive needs the cache lock again;
+                    // the untar handle is dropped by now, so re-acquire briefly.
                     tccache
+                        .lock()
+                        .unwrap()
                         .remove(tc)
                         .context("Failed to remove corrupt toolchain")?;
                     Err(Error::from(e))
@@ -279,9 +298,41 @@ impl OverlayBuilder {
             }
         }
         for victim in evictions {
+            // Delete each victim under its own preparation lock so a concurrent
+            // request that legitimately re-prepares the same toolchain cannot
+            // create_dir+untar into the path we are deleting. Use try_lock, never
+            // a blocking acquire: we already hold this request's prepare lock, and
+            // blocking on a second prepare lock could deadlock against a racer that
+            // picked us as its own eviction victim. A held lock means a racer is
+            // actively preparing the victim, so skip its deletion.
+            let victim_lock = get_prepare_lock(&self.toolchain_prepare_locks, &victim);
+            let _victim_guard = match victim_lock.try_lock() {
+                Ok(guard) => guard,
+                Err(_) => {
+                    trace!("Skipping eviction of {:?}: being prepared", victim);
+                    continue;
+                }
+            };
+
+            // A racer may have finished re-preparing the victim while we waited on
+            // its lock. Re-verify it is still absent from the map before deleting,
+            // holding the map lock only for the check and never across the
+            // remove_dir_all below (keeps map and prepare locks disjoint).
+            {
+                let toolchain_dir_map = self.toolchain_dir_map.lock().unwrap();
+                if toolchain_dir_map.contains_key(&victim) {
+                    trace!("Skipping eviction of {:?}: re-prepared", victim);
+                    continue;
+                }
+            }
+
             warn!("Removing old un-compressed toolchain: {:?}", victim);
             fs::remove_dir_all(self.dir.join("toolchains").join(&victim.archive_id))
                 .context("Failed to remove old toolchain directory")?;
+
+            // Prune the now-unused preparation lock entry so the map does not grow
+            // without bound as toolchains churn.
+            self.toolchain_prepare_locks.lock().unwrap().remove(&victim);
         }
 
         self.make_overlay_spec(tc, entry)
@@ -991,5 +1042,32 @@ mod tests {
             "a different toolchain's preparation lock must not block"
         );
         drop(guard);
+    }
+
+    // The eviction path in prepare_overlay_dirs deletes a victim only after a
+    // try_lock on the victim's preparation lock succeeds. Constructing an
+    // OverlayBuilder requires root, so drive the try_lock invariant the eviction
+    // loop relies on directly: while a victim is being prepared (its lock held),
+    // try_lock must fail so the victim is skipped; once released, try_lock must
+    // succeed so the stale directory can be removed.
+    #[test]
+    fn test_eviction_skips_victim_while_being_prepared() {
+        let locks = Mutex::new(HashMap::new());
+        let victim = tc("cccc");
+
+        let prepare_lock = get_prepare_lock(&locks, &victim);
+        let held = prepare_lock.lock().unwrap();
+
+        let eviction_view = get_prepare_lock(&locks, &victim);
+        assert!(
+            eviction_view.try_lock().is_err(),
+            "a victim under active preparation must not be evicted"
+        );
+
+        drop(held);
+        assert!(
+            eviction_view.try_lock().is_ok(),
+            "once preparation finishes the victim is free to evict"
+        );
     }
 }

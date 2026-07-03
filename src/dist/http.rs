@@ -288,8 +288,11 @@ mod server {
     pub fn bincode_req<T: serde::de::DeserializeOwned + 'static>(
         req: reqwest::blocking::RequestBuilder,
     ) -> Result<T> {
-        // Keep-alive is left enabled (no `Connection: close`) so the connection
-        // pool can reuse this socket for the next coordination call.
+        // A5: keep-alive is left enabled (no `Connection: close`), so a reused
+        // connection reaches tiny_http, which risks issue #151 (pipeline/body
+        // desync) surfacing as bincode decode errors under soak. Revert point:
+        // re-add `.header(reqwest::header::CONNECTION, "close")` on the request
+        // below.
         let mut res = req.send()?;
         let status = res.status();
         let mut body = vec![];
@@ -1372,7 +1375,17 @@ mod client {
                     let toolchain_file = tokio::fs::File::from_std(toolchain_file.into());
                     let toolchain_file_stream = tokio_util::io::ReaderStream::new(toolchain_file);
                     let body = Body::wrap_stream(toolchain_file_stream);
-                    let req = req.bearer_auth(job_alloc.auth).body(body);
+                    // This path streams the toolchain as an HTTP chunked body (no
+                    // Content-Length). tiny_http's chunked reader has no drop-drain,
+                    // and the server's submit handler has early returns that skip
+                    // reading the body (cache fast-path, JobNotFound), so keep-alive
+                    // here can desync a pooled connection on the server's unread
+                    // early-returns. Submits are rare and huge, so reuse is worth
+                    // ~nothing; force a close.
+                    let req = req
+                        .bearer_auth(job_alloc.auth)
+                        .header(reqwest::header::CONNECTION, "close")
+                        .body(body);
                     bincode_req_fut(req, self.deserialize_offload_threshold).await
                 }
                 Ok(None) => Err(anyhow!("couldn't find toolchain locally")),
