@@ -1053,6 +1053,44 @@ fn select_valid_dryrun_lines(re: &Regex, line: &str) -> Result<String> {
     }
 }
 
+// nvcc's `--dryrun` output quotes subcommand arguments using MSVC/CRT command-line
+// conventions, not POSIX shell quoting, so a literal `"` inside an argument value
+// (e.g. from `-DXD=\"xd\"`) shows up as a backslash-escaped quote immediately
+// followed by the argument's closing quote (e.g. `-D "XD=\"xd\""`). Naively
+// collapsing every `""` pair or converting every `\` to `/` corrupts that escape
+// and either changes the argument's value or unbalances the quotes entirely
+// (see the shlex parse failure this was fixed for). These helpers skip quote
+// characters that are already escaped by a preceding backslash.
+fn collapse_doubled_quotes(line: &str) -> String {
+    let chars: Vec<char> = line.chars().collect();
+    let mut out = String::with_capacity(line.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let prev_is_backslash = i > 0 && chars[i - 1] == '\\';
+        if !prev_is_backslash && chars[i] == '"' && chars.get(i + 1) == Some(&'"') {
+            out.push('"');
+            i += 2;
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+fn replace_path_backslashes(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' && chars.peek() != Some(&'"') {
+            out.push('/');
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 fn fold_env_vars_or_split_into_exe_and_args(
     re: &Regex,
     env_vars: &mut Vec<(OsString, OsString)>,
@@ -1096,11 +1134,8 @@ fn fold_env_vars_or_split_into_exe_and_args(
     // The rest of the lines are subcommands, so parse into a vec of [cmd, args..]
 
     let mut line = if cfg!(target_os = "windows") {
-        let line = line
-            .replace("\"\"", "\"")
-            .replace(r"\\?\", "")
-            .replace('\\', "/")
-            .replace(r"//?/", "");
+        let line = collapse_doubled_quotes(&line).replace(r"\\?\", "");
+        let line = replace_path_backslashes(&line).replace(r"//?/", "");
         match host_compiler {
             NvccHostCompiler::Msvc => line.replace(" -E ", " -P ").replace(" > ", " -Fi"),
             _ => line,
