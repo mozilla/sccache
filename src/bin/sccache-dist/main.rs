@@ -370,10 +370,19 @@ const UNCLAIMED_READY_TIMEOUT: Duration = Duration::from_secs(60);
 // runs over a separate client<->server channel - so an over-eager reap at
 // worst mildly oversubscribes, which admission_ceiling already tolerates.
 const STARTED_COMPLETE_TIMEOUT: Duration = Duration::from_secs(180);
+// Minimum time a job must have been in Started before the liveness lease may
+// reap it for two consecutive absent heartbeats. Must exceed the 30s
+// HEARTBEAT_INTERVAL (src/dist/http.rs) so a reapable job has been Started
+// across at least one full beat period; otherwise a job that transitions to
+// Started between two beats looks vacuously "absent from the prior beat" and
+// could be reaped milliseconds after it starts.
+const LIVENESS_GRACE: Duration = Duration::from_secs(45);
 // A build server drops its per-job toolchain entry in handle_run_job. An
 // assign whose run_job never arrives (client crash, scheduler restart) would
 // otherwise leak the entry forever, so sweep entries older than this on each
-// assign. Far longer than a legitimate assign->run_job gap.
+// assign. Far longer than a legitimate assign->run_job gap. Must stay greater
+// than UNCLAIMED_PENDING_TIMEOUT (300s) + UNCLAIMED_READY_TIMEOUT (60s) so the
+// GC never evicts a still-in-flight job's toolchain entry.
 const ABANDONED_TOOLCHAIN_TIMEOUT: Duration = Duration::from_secs(600);
 
 #[derive(Copy, Clone)]
@@ -388,7 +397,18 @@ struct JobDetail {
 // To avoid deadlicking, make sure to do all locking at once (i.e. no further locking in a downward scope),
 // in alphabetical order
 pub struct Scheduler {
+    // Pure 0-based allocation counter. Logged as allocated= in the
+    // dist-accounting line, where the operator validates the identity
+    // allocated - started - reaped_unclaimed - live == 0, so it must start at
+    // 0. Job id uniqueness across restarts comes from job_id_base, not here.
     job_count: AtomicUsize,
+
+    // Restart-safety base for minted job ids. Seeded from wall-clock millis so
+    // a scheduler restart does not remint ids from 0 and collide with an id a
+    // surviving build server still holds (which would trip the assign-time
+    // overwrite path). Kept separate from job_count so the millis seed does not
+    // pollute the 0-based allocated= counter.
+    job_id_base: usize,
 
     // Currently running jobs, can never be Complete
     jobs: Mutex<BTreeMap<JobId, JobDetail>>,
@@ -430,15 +450,14 @@ struct ServerDetails {
 impl Scheduler {
     pub fn new() -> Self {
         Scheduler {
+            job_count: AtomicUsize::new(0),
             // Seed from wall-clock millis so a scheduler restart does not remint
             // job ids from 0 and collide with an id a surviving build server
             // still holds (which would trip the assign-time overwrite path).
-            job_count: AtomicUsize::new(
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as usize)
-                    .unwrap_or(0),
-            ),
+            job_id_base: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as usize)
+                .unwrap_or(0),
             jobs: Mutex::new(BTreeMap::new()),
             servers: Mutex::new(HashMap::new()),
             jobs_started: AtomicUsize::new(0),
@@ -683,8 +702,9 @@ impl SchedulerIncoming for Scheduler {
                     (None, errored) => errored,
                 };
                 if let Some((server_id, server_details)) = choice {
-                    let job_count = self.job_count.fetch_add(1, Ordering::SeqCst) as u64;
-                    let job_id = JobId(job_count);
+                    let job_id = JobId(
+                        (self.job_id_base + self.job_count.fetch_add(1, Ordering::SeqCst)) as u64,
+                    );
                     assert!(server_details.jobs_assigned.insert(job_id));
                     assert!(
                         server_details
@@ -875,6 +895,7 @@ impl SchedulerIncoming for Scheduler {
                         if detail.state == JobState::Started
                             && !active_set.contains(&job_id)
                             && !details.last_active_jobs.contains(&job_id)
+                            && now.duration_since(detail.since) > LIVENESS_GRACE
                         {
                             liveness_reap.push(job_id);
                         }
@@ -907,10 +928,23 @@ impl SchedulerIncoming for Scheduler {
                 for &job_id in details.jobs_assigned.iter() {
                     if let Some(detail) = jobs.get(&job_id) {
                         if detail.state == JobState::Started
-                            && !details.last_active_jobs.contains(&job_id)
                             && now.duration_since(detail.since) > STARTED_COMPLETE_TIMEOUT
                         {
-                            stale_started.push(job_id);
+                            if details.last_active_jobs.contains(&job_id) {
+                                // Still reported active past the backstop timeout:
+                                // not reaped (a genuinely-slow live compile must
+                                // survive) but likely a wedged build the server
+                                // names forever. Surface it so it is visible in
+                                // logs rather than silently accumulating.
+                                warn!(
+                                    "Started job {} on server {} still reported active past {:?}; possible wedged build",
+                                    job_id,
+                                    server_id.addr(),
+                                    STARTED_COMPLETE_TIMEOUT
+                                );
+                            } else {
+                                stale_started.push(job_id);
+                            }
                         }
                     }
                 }
@@ -1076,9 +1110,9 @@ impl SchedulerIncoming for Scheduler {
                         job_state, job_id
                     );
                 }
-                other => {
-                    warn!("State update to {:?} for unknown job {}", other, job_id);
-                }
+                // A Pending/Ready update for an untracked job is a real anomaly,
+                // not a benign late terminal update, so keep erroring on it.
+                _ => bail!("Unknown job"),
             }
         }
         Ok(UpdateJobStateResult::Success)
@@ -1231,15 +1265,19 @@ impl ServerIncoming for Server {
         outputs: Vec<String>,
         inputs_rdr: InputsReader,
     ) -> Result<RunJobResult> {
-        requester
-            .do_update_job_state(job_id, JobState::Started)
-            .context("Updating job state failed")?;
+        // Register the job and arm the cleanup guard BEFORE telling the
+        // scheduler the job started, so the id is tracked before the scheduler
+        // acts on the Started update (shrinking the vacuous liveness-reap
+        // window). De-registers on every exit path (success, build error,
+        // panic), and the guard's Drop still cleans up if the update fails.
         self.running_jobs.lock().unwrap().insert(job_id);
-        // De-register on every exit path (success, build error, panic).
         let _running_guard = RunningJobGuard {
             running_jobs: &self.running_jobs,
             job_id,
         };
+        requester
+            .do_update_job_state(job_id, JobState::Started)
+            .context("Updating job state failed")?;
         let tc = self
             .job_toolchains
             .lock()
@@ -1618,15 +1656,16 @@ mod scheduler_tests {
     // owning server. A job the server keeps reporting active is never reaped (no
     // matter how long the compile runs), and a single missed heartbeat is not
     // enough - guarding both the slow-live-compile false reap the old fixed
-    // timeout caused and an over-eager one-beat reap. Job age stays ~0
-    // throughout, so the STARTED_COMPLETE_TIMEOUT backstop never fires and every
-    // reap decision here is the liveness path.
+    // timeout caused and an over-eager one-beat reap. Job age is seeded past the
+    // LIVENESS_GRACE floor (45s) but below the STARTED_COMPLETE_TIMEOUT backstop
+    // (180s), so the backstop never fires and every reap decision here is the
+    // liveness path.
     #[test]
     fn test_liveness_lease_reap() {
         let scheduler = Scheduler::new();
         let server_id = ServerId::new("10.42.0.2:10501".parse::<SocketAddr>().unwrap());
         let job_id = JobId(1000);
-        insert_started_job(&scheduler, server_id, job_id, Duration::from_secs(0));
+        insert_started_job(&scheduler, server_id, job_id, Duration::from_secs(60));
         let nonce = scheduler
             .servers
             .lock()
@@ -1700,6 +1739,61 @@ mod scheduler_tests {
             scheduler.jobs_reaped_started.load(Ordering::Relaxed),
             1,
             "the liveness reap must increment the Started-reap counter exactly once"
+        );
+    }
+
+    // The LIVENESS_GRACE floor protects a just-started job: a job that has been
+    // Started for less than the grace must NOT be reaped even after two absent
+    // heartbeats, because a job that transitioned to Started between two beats
+    // is vacuously "absent from the prior beat" and would otherwise be reaped
+    // milliseconds after it started. Falsifier: dropping the grace clause reaps
+    // this job on the second absent heartbeat.
+    #[test]
+    fn test_liveness_lease_does_not_reap_within_grace() {
+        let scheduler = Scheduler::new();
+        let server_id = ServerId::new("10.42.0.2:10501".parse::<SocketAddr>().unwrap());
+        let job_id = JobId(1000);
+        // Aged below LIVENESS_GRACE (45s): a fresh Started job.
+        insert_started_job(&scheduler, server_id, job_id, Duration::from_secs(10));
+        let nonce = scheduler
+            .servers
+            .lock()
+            .unwrap()
+            .get(&server_id)
+            .unwrap()
+            .server_nonce
+            .clone();
+
+        // Two consecutive absent heartbeats: the two-miss condition is met, but
+        // the grace floor must still protect the just-started job.
+        for _ in 0..2 {
+            scheduler
+                .handle_heartbeat_server(
+                    server_id,
+                    nonce.clone(),
+                    32,
+                    Box::new(NoopAuthorizer),
+                    Vec::new(),
+                )
+                .expect("handle_heartbeat_server should not error");
+        }
+
+        {
+            let servers = scheduler.servers.lock().unwrap();
+            let details = servers.get(&server_id).expect("server still registered");
+            assert!(
+                details.jobs_assigned.contains(&job_id),
+                "a job Started within LIVENESS_GRACE must not be reaped even after two absent heartbeats"
+            );
+        }
+        assert!(
+            scheduler.jobs.lock().unwrap().contains_key(&job_id),
+            "a job Started within the grace must remain in the jobs map"
+        );
+        assert_eq!(
+            scheduler.jobs_reaped_started.load(Ordering::Relaxed),
+            0,
+            "no Started reap must occur within the grace floor"
         );
     }
 
@@ -1785,11 +1879,16 @@ mod scheduler_tests {
     // collide with an id a surviving build server still holds, tripping the
     // assign-time overwrite (previously an assert-panic).
     #[test]
-    fn test_job_count_seeded_nonzero() {
+    fn test_job_id_base_seeded_and_counter_zero() {
         let scheduler = Scheduler::new();
         assert!(
-            scheduler.job_count.load(Ordering::Relaxed) > 0,
-            "job_count must be seeded from a non-zero base so a restart does not reuse ids starting at 0"
+            scheduler.job_id_base > 0,
+            "job_id_base must be seeded from a non-zero base so a restart does not reuse ids starting at 0"
+        );
+        assert_eq!(
+            scheduler.job_count.load(Ordering::Relaxed),
+            0,
+            "job_count is the 0-based allocated= counter and must start at 0"
         );
     }
 }
