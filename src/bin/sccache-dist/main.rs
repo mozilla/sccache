@@ -241,6 +241,7 @@ fn run(command: Command) -> Result<i32> {
             scheduler_auth,
             toolchain_cache_size,
             num_cpus: advertised_num_cpus,
+            colocated_reserve_fraction,
         }) => {
             let builder: Box<dyn dist::BuilderIncoming> = match builder {
                 #[cfg(not(target_os = "freebsd"))]
@@ -300,7 +301,14 @@ fn run(command: Command) -> Result<i32> {
 
             let server = Server::new(builder, &cache_dir, toolchain_cache_size)
                 .context("Failed to create sccache server instance")?;
-            let advertised_num_cpus = advertised_num_cpus.unwrap_or_else(num_cpus);
+            let colocated = scheduler_url.to_url().host_str().map(str::to_owned)
+                == Some(public_addr.ip().to_string());
+            let advertised_num_cpus = advertised_cores(
+                advertised_num_cpus,
+                num_cpus(),
+                colocated,
+                colocated_reserve_fraction,
+            );
             let http_server = dist::http::Server::new(
                 public_addr,
                 bind_address,
@@ -447,6 +455,62 @@ fn load_weight(job_count: usize, core_count: usize) -> f64 {
         MAX_PER_CORE_LOAD + 1f64 // no new jobs for now
     } else {
         job_count as f64 / core_count as f64
+    }
+}
+
+/// Default fraction of its cores a colocated build server holds back from the
+/// scheduler, reserving them for the local client's preprocessing and bitbake.
+const DEFAULT_COLOCATED_RESERVE_FRACTION: f64 = 0.35;
+
+/// Resolve the core count a build server advertises to the scheduler. An
+/// explicit `num_cpus` wins; otherwise a server colocated with the scheduler
+/// reserves `reserve_fraction` of its hardware (default
+/// [`DEFAULT_COLOCATED_RESERVE_FRACTION`]) so the load model routes
+/// proportionally more to the pure-remote nodes, while a remote server
+/// advertises all its cores. Computed from the node's own `hw`, so the same
+/// binary and config are portable across cluster topologies.
+fn advertised_cores(
+    explicit: Option<usize>,
+    hw: usize,
+    colocated: bool,
+    reserve_fraction: Option<f64>,
+) -> usize {
+    if let Some(n) = explicit {
+        return n;
+    }
+    if colocated {
+        let fraction = reserve_fraction
+            .unwrap_or(DEFAULT_COLOCATED_RESERVE_FRACTION)
+            .clamp(0.0, 0.9);
+        std::cmp::max(1, (hw as f64 * (1.0 - fraction)).round() as usize)
+    } else {
+        hw
+    }
+}
+
+#[cfg(test)]
+mod advertised_cores_tests {
+    use super::advertised_cores;
+
+    #[test]
+    fn reserves_the_default_fraction_when_colocated() {
+        // 32 cores, colocated, default 0.35 -> round(32 * 0.65) = 21.
+        assert_eq!(advertised_cores(None, 32, true, None), 21);
+    }
+
+    #[test]
+    fn a_remote_server_advertises_all_cores() {
+        assert_eq!(advertised_cores(None, 32, false, None), 32);
+    }
+
+    #[test]
+    fn an_explicit_count_overrides_the_fraction() {
+        assert_eq!(advertised_cores(Some(16), 32, true, None), 16);
+    }
+
+    #[test]
+    fn a_custom_fraction_is_honoured() {
+        assert_eq!(advertised_cores(None, 32, true, Some(0.5)), 16);
     }
 }
 
@@ -803,7 +867,7 @@ impl SchedulerIncoming for Scheduler {
             let mut server_details = servers.get_mut(&server_id);
             if let Some(ref mut details) = server_details {
                 details.last_seen = now;
-            };
+            }
 
             match (job_detail.state, job_state) {
                 (JobState::Pending, JobState::Ready) => entry.get_mut().state = job_state,
@@ -811,14 +875,14 @@ impl SchedulerIncoming for Scheduler {
                     if let Some(details) = server_details {
                         details.jobs_unclaimed.remove(&job_id);
                     } else {
-                        warn!("Job state updated, but server is not known to scheduler")
+                        warn!("Job state updated, but server is not known to scheduler");
                     }
-                    entry.get_mut().state = job_state
+                    entry.get_mut().state = job_state;
                 }
                 (JobState::Started, JobState::Complete) => {
                     let (job_id, _) = entry.remove_entry();
                     if let Some(entry) = server_details {
-                        assert!(entry.jobs_assigned.remove(&job_id))
+                        assert!(entry.jobs_assigned.remove(&job_id));
                     } else {
                         bail!("Job was marked as finished, but server is not known to scheduler")
                     }
