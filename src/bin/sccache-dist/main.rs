@@ -966,6 +966,15 @@ impl SchedulerIncoming for Scheduler {
 
             match (job_detail.state, job_state) {
                 (JobState::Pending, JobState::Ready) => {
+                    // Reset the unclaimed-reservation clock to Ready time rather
+                    // than allocation time, so time spent uploading a toolchain
+                    // (Pending) does not consume the claim budget and a job that
+                    // is still uploading is not reaped as a no-show.
+                    if let Some(details) = server_details {
+                        if let Some(t) = details.jobs_unclaimed.get_mut(&job_id) {
+                            *t = now;
+                        }
+                    }
                     let detail = entry.get_mut();
                     detail.state = job_state;
                     detail.since = now;
@@ -1496,6 +1505,62 @@ mod scheduler_tests {
         assert!(
             res.is_ok(),
             "a Complete update for an untracked (reaped) job must be a logged no-op success, not an error"
+        );
+    }
+
+    // The unclaimed-reservation clock must be reset when a job becomes claimable
+    // (Pending->Ready), so time spent uploading a toolchain does not eat the
+    // claim budget and cause a no-show reap of a job that is still arriving.
+    #[test]
+    fn test_pending_to_ready_resets_unclaimed_clock() {
+        let scheduler = Scheduler::new();
+        let server_id = ServerId::new("10.42.0.2:10501".parse::<SocketAddr>().unwrap());
+        let job_id = JobId(1000);
+        let old = Instant::now() - Duration::from_secs(120);
+        {
+            let mut servers = scheduler.servers.lock().unwrap();
+            let mut jobs_unclaimed = HashMap::new();
+            jobs_unclaimed.insert(job_id, old);
+            let mut jobs_assigned = HashSet::new();
+            jobs_assigned.insert(job_id);
+            servers.insert(
+                server_id,
+                ServerDetails {
+                    last_seen: Instant::now(),
+                    last_error: None,
+                    jobs_assigned,
+                    jobs_unclaimed,
+                    num_cpus: 32,
+                    server_nonce: ServerNonce::new(),
+                    job_authorizer: Box::new(NoopAuthorizer),
+                },
+            );
+            let mut jobs = scheduler.jobs.lock().unwrap();
+            jobs.insert(
+                job_id,
+                JobDetail {
+                    server_id,
+                    state: JobState::Pending,
+                    since: old,
+                },
+            );
+        }
+
+        scheduler
+            .handle_update_job_state(job_id, server_id, JobState::Ready)
+            .expect("Pending->Ready update should succeed");
+
+        let servers = scheduler.servers.lock().unwrap();
+        let t = servers
+            .get(&server_id)
+            .unwrap()
+            .jobs_unclaimed
+            .get(&job_id)
+            .copied()
+            .expect("job must still be unclaimed after reaching Ready");
+        assert!(
+            t.elapsed() < Duration::from_secs(60),
+            "the unclaimed clock must be reset to Ready time, not left at the ~120s-old allocation time"
         );
     }
 }
