@@ -2321,7 +2321,7 @@ impl pkg::InputsPackager for RustInputsPackager {
         let mut builder = tar::Builder::new(wtr);
 
         for (input_path, dist_input_path) in all_tar_inputs.iter() {
-            let mut file_header = pkg::make_tar_header(input_path, dist_input_path)?;
+            let mut file_header = pkg::make_tar_header(input_path)?;
             let trimmed = if can_trim_rlibs && can_trim_this(input_path) {
                 trimmed_rlib_metadata(input_path)?
             } else {
@@ -2329,15 +2329,18 @@ impl pkg::InputsPackager for RustInputsPackager {
             };
             if let Some(metadata_ar) = trimmed {
                 file_header.set_size(metadata_ar.len() as u64);
-                file_header.set_cksum();
-                builder.append(&file_header, metadata_ar.as_slice())?;
+                pkg::append_tar_entry(
+                    &mut builder,
+                    &mut file_header,
+                    dist_input_path,
+                    metadata_ar.as_slice(),
+                )?;
             } else {
                 // Either not trimmable, or a split-metadata rlib with no
                 // embedded metadata member -- ship the whole file so the remote
                 // gets the real crate (e.g. an OE target sysroot's std/core).
                 let file = fs::File::open(input_path)?;
-                file_header.set_cksum();
-                builder.append(&file_header, file)?;
+                pkg::append_tar_entry(&mut builder, &mut file_header, dist_input_path, file)?;
             }
         }
 

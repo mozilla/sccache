@@ -611,10 +611,10 @@ mod toolchain_imp {
     }
 }
 
-pub fn make_tar_header(src: &Path, dest: &str) -> io::Result<tar::Header> {
+pub fn make_tar_header(src: &Path) -> io::Result<tar::Header> {
     let metadata_res = fs::metadata(src);
 
-    let mut file_header = tar::Header::new_ustar();
+    let mut file_header = tar::Header::new_gnu();
     // TODO: test this works
     if let Ok(metadata) = metadata_res {
         // TODO: if the source file is a symlink, I think this does bad things
@@ -630,24 +630,38 @@ pub fn make_tar_header(src: &Path, dest: &str) -> io::Result<tar::Header> {
         file_header.set_mtime(0);
         file_header
             .set_device_major(0)
-            .expect("expected a ustar header");
+            .expect("expected a gnu header");
         file_header
             .set_device_minor(0)
-            .expect("expected a ustar header");
+            .expect("expected a gnu header");
         file_header.set_entry_type(tar::EntryType::file());
     }
 
-    // tar-rs imposes that `set_path` takes a relative path
+    Ok(file_header)
+}
+
+/// Append a file entry to `builder` under the dist path `dest`.
+///
+/// `dest` is an absolute dist path; tar-rs requires a relative path, so the
+/// leading `/` is stripped. Routing through `Builder::append_data` (rather than
+/// `Builder::append` with a pre-set path) makes tar-rs emit a GNU `@LongLink`
+/// long-name entry when `dest` exceeds the ustar `name`/`prefix` limits. Deep
+/// OE build paths (e.g. gcc-runtime's libstdc++-v3 tree) overrun those limits,
+/// and a plain ustar header fails with "provided value is too long when setting
+/// path". `Header::set_size` must already be correct on `header`.
+pub fn append_tar_entry<W: io::Write, R: io::Read>(
+    builder: &mut tar::Builder<W>,
+    header: &mut tar::Header,
+    dest: &str,
+    data: R,
+) -> io::Result<()> {
+    // tar-rs imposes that the entry path is relative.
     assert!(dest.starts_with('/'));
     let dest = dest.trim_start_matches('/');
     assert!(!dest.starts_with('/'));
-    // `set_path` converts its argument to a Path and back to bytes on Windows, so this is
-    // a bit of an inefficient round-trip. Windows path separators will also be normalised
-    // to be like Unix, and the path is (now) relative so there should be no funny results
-    // due to Windows
-    // TODO: should really use a `set_path_str` or similar
-    file_header.set_path(dest)?;
-    Ok(file_header)
+    // `append_data` sets the path (emitting a GNU long-name entry if needed) and
+    // recomputes the checksum before writing the header and `data`.
+    builder.append_data(header, dest, data)
 }
 
 /// Simplify a path to one without any relative components, erroring if it looks
@@ -702,5 +716,51 @@ impl SimplifyPath<'_> {
             }
         }
         Ok(final_path)
+    }
+}
+
+#[cfg(test)]
+mod pkg_tests {
+    use super::*;
+    use std::io::Read;
+
+    #[test]
+    fn test_append_tar_entry_roundtrips_long_path() {
+        // A final path component longer than the ustar name field (100 bytes),
+        // which ustar cannot split across name/prefix, mirroring the deep
+        // gcc-runtime libstdc++-v3 build tree that triggers the failure.
+        let dest = format!(
+            "/build/gcc-runtime/13.4.0/libstdc++-v3/src/c++98/{}.o",
+            "b".repeat(120)
+        );
+        let relative = dest.trim_start_matches('/');
+        assert!(relative.len() > 100);
+
+        // The old ustar-header path could not encode this: set_path errors with
+        // "provided value is too long", which is the bug this change fixes.
+        let mut ustar = tar::Header::new_ustar();
+        assert!(ustar.set_path(relative).is_err());
+
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("input.o");
+        let contents = b"long-path-payload";
+        fs::write(&src, &contents[..]).unwrap();
+
+        let mut buf = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut buf);
+            let mut header = make_tar_header(&src).unwrap();
+            header.set_size(contents.len() as u64);
+            append_tar_entry(&mut builder, &mut header, &dest, &contents[..]).unwrap();
+            builder.into_inner().unwrap();
+        }
+
+        let mut archive = tar::Archive::new(buf.as_slice());
+        let mut entry = archive.entries().unwrap().next().unwrap().unwrap();
+        let entry_path = entry.path().unwrap().to_string_lossy().into_owned();
+        assert_eq!(entry_path, relative);
+        let mut read_back = Vec::new();
+        entry.read_to_end(&mut read_back).unwrap();
+        assert_eq!(read_back, contents);
     }
 }

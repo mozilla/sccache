@@ -1351,10 +1351,14 @@ impl pkg::InputsPackager for CInputsPackager {
                 format!("unable to transform input path {}", input_path.display())
             })?;
 
-            let mut file_header = pkg::make_tar_header(&input_path, &dist_input_path)?;
+            let mut file_header = pkg::make_tar_header(&input_path)?;
             file_header.set_size(preprocessed_input.len() as u64); // The metadata is from non-preprocessed
-            file_header.set_cksum();
-            builder.append(&file_header, preprocessed_input.as_slice())?;
+            pkg::append_tar_entry(
+                &mut builder,
+                &mut file_header,
+                &dist_input_path,
+                preprocessed_input.as_slice(),
+            )?;
         }
 
         for input_path in extra_hash_files.iter().chain(extra_dist_files.iter()) {
@@ -1379,10 +1383,9 @@ impl pkg::InputsPackager for CInputsPackager {
             let mut output = vec![];
             io::copy(&mut file, &mut output)?;
 
-            let mut file_header = pkg::make_tar_header(&input_path, &dist_input_path)?;
+            let mut file_header = pkg::make_tar_header(&input_path)?;
             file_header.set_size(output.len() as u64);
-            file_header.set_cksum();
-            builder.append(&file_header, &*output)?;
+            pkg::append_tar_entry(&mut builder, &mut file_header, &dist_input_path, &*output)?;
         }
 
         // Finish archive
