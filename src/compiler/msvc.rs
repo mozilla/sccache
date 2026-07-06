@@ -475,12 +475,18 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("fastfail", PassThrough),
     msvc_take_arg!("favor:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("feature:", OsString, Concatenated, PassThroughWithSuffix),
+    msvc_flag!("fno-sanitize-address-asan-compat-lib", PassThrough),
+    msvc_flag!("fno-sanitize-address-vcasan-lib", PassThrough),
+    msvc_take_arg!("fno-sanitize-coverage", OsString, Concatenated(b'='), PassThroughWithSuffix),
     msvc_flag!("forceInterlockedFunctions", PassThrough),
     msvc_flag!("forceInterlockedFunctions-", PassThrough),
     msvc_take_arg!("fp:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("fpcvt:", OsString, Concatenated, PassThroughWithSuffix),
+    msvc_flag!("fsanitize-address-asan-compat-lib", PassThrough),
+    msvc_flag!("fsanitize-address-use-after-return", PassThrough),
     msvc_take_arg!("fsanitize-blacklist", PathBuf, Concatenated(b'='), ExtraHashFile),
-    msvc_flag!("fsanitize=address", PassThrough),
+    msvc_take_arg!("fsanitize-coverage", OsString, Concatenated(b'='), PassThroughWithSuffix),
+    msvc_take_arg!("fsanitize=", OsString, Concatenated, PassThroughWithSuffix),
     msvc_flag!("fsyntax-only", SuppressCompilation),
     msvc_take_arg!("guard:cf", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("guard:ehcont", OsString, Concatenated, PassThroughWithSuffix),
@@ -3171,6 +3177,35 @@ mod test {
         assert_eq!(Cacheable::No, cacheable);
         // Ensure that we ran all processes.
         assert_eq!(0, creator.lock().unwrap().children.len());
+    }
+
+    #[test]
+    fn test_parse_fsanitize() {
+        let args = ovec![
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "-fsanitize=address",
+            "-fsanitize=kernel-address",
+            "/fsanitize=fuzzer",
+            "/fsanitize-coverage=edge",
+            "/fno-sanitize-coverage=inline-8bit-counters"
+        ];
+        let ParsedArguments { common_args, .. } = match parse_arguments(args) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {o:?}"),
+        };
+        assert_eq!(
+            ovec![
+                "-fsanitize=address",
+                "-fsanitize=kernel-address",
+                "/fsanitize=fuzzer",
+                "/fsanitize-coverage=edge",
+                "/fno-sanitize-coverage=inline-8bit-counters"
+            ],
+            common_args
+        );
     }
 
     #[test]
