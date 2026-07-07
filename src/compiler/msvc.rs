@@ -1324,7 +1324,7 @@ where
 ///  - https://msdn.microsoft.com/en-us/library/windows/desktop/bb776391(v=vs.85).aspx
 ///  - https://msdn.microsoft.com/en-us/library/windows/desktop/17w5ykft(v=vs.85).aspx
 #[derive(Clone, Debug)]
-struct SplitMsvcResponseFileArgs<'a> {
+pub(crate) struct SplitMsvcResponseFileArgs<'a> {
     /// String slice of the file content that is being parsed.
     /// Slice is mutated as this iterator is executed.
     file_content: &'a str,
