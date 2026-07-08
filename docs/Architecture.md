@@ -64,8 +64,9 @@ the work between them.
 
 The CLI forwards the whole compilation to the daemon. The daemon runs the
 direct-mode preprocessor cache lookup, computes the hash, looks up the object
-cache, runs the compiler on a miss, stores the result, and streams the outputs
-back to the CLI.
+cache, runs the compiler on a miss, and stores the result. It writes the output
+files (e.g. the object file) to disk itself; only the output streams (stdout /
+stderr) and the exit code travel back to the CLI.
 
 ```mermaid
   sequenceDiagram
@@ -160,9 +161,9 @@ Because each CLI process accumulates its own statistics, it flushes them to the
 daemon with `RecordStats` before exiting.
 
 Client-side mode is enabled with the `SCCACHE_CLIENT_SIDE` environment variable
-(or the `client_side_mode` config key). It is the recommended mode and is
-expected to become the only supported configuration in the future, with
-server-side mode eventually removed. It is currently mutually exclusive with:
+(or the `client_side_mode` config key). It is expected to become the only
+supported configuration in the future, with server-side mode eventually
+removed. It is currently mutually exclusive with:
 
 - **error logging** (`SCCACHE_ERROR_LOG`): the client always logs to stderr, and
   multiple concurrent CLI processes would race on the log file, and
