@@ -1995,15 +1995,52 @@ where
             };
         let (extern_hashes, staticlib_hashes, target_json_hash) = inputs;
 
+        trace!(
+            target: "hash_key",
+            "[{}]: source files = {:?}",
+            self.parsed_args.crate_name,
+            source_files.iter().zip(source_hashes.iter()).collect::<Vec<_>>()
+        );
+        trace!(
+            target: "hash_key",
+            "[{}]: externs = {:?}",
+            self.parsed_args.crate_name,
+            abs_externs.iter().zip(extern_hashes.iter()).collect::<Vec<_>>()
+        );
+        trace!(
+            target: "hash_key",
+            "[{}]: staticlibs = {:?}",
+            self.parsed_args.crate_name,
+            abs_staticlibs.iter().zip(staticlib_hashes.iter()).collect::<Vec<_>>()
+        );
+        trace!(
+            target: "hash_key",
+            "[{}]: target json files = {:?}",
+            self.parsed_args.crate_name,
+            target_json_files.iter().zip(target_json_hash.iter()).collect::<Vec<_>>()
+        );
+
         // If you change any of the inputs to the hash, you should change `CACHE_VERSION`.
         let mut m = Digest::new();
         // Hash inputs:
         // 1. A version
         m.update(CACHE_VERSION);
+        trace!(
+            target: "hash_key",
+            "[{}]: cache_version = {:?}",
+            self.parsed_args.crate_name,
+            CACHE_VERSION
+        );
         // 2. compiler_shlibs_digests
         for d in &self.compiler_shlibs_digests {
             m.update(d.as_bytes());
         }
+        trace!(
+            target: "hash_key",
+            "[{}]: compiler_shlibs_digests = {:?}",
+            self.parsed_args.crate_name,
+            self.compiler_shlibs_digests
+        );
         let weak_toolchain_key = rust_dist_toolchain_weak_key(&m, &self.sysroot);
         // 3. The full commandline (self.arguments)
         // TODO: there will be full paths here, it would be nice to
@@ -2044,6 +2081,12 @@ where
                 })
         };
         args.hash(&mut HashToDigest { digest: &mut m });
+        trace!(
+            target: "hash_key",
+            "[{}]: args = {:?}",
+            self.parsed_args.crate_name,
+            args
+        );
         // 4. The digest of all source files (this includes src file from cmdline).
         // 5. The digest of all files listed on the commandline (self.externs).
         // 6. The digest of all static libraries listed on the commandline (self.staticlibs).
@@ -2060,6 +2103,15 @@ where
         //    output. Additionally also has all environment variables starting with `CARGO_`,
         //    since those are not listed in dep-info but affect cacheability.
         env_deps.sort();
+        trace!(
+            target: "hash_key",
+            "[{}]: env_deps = {:?}",
+            self.parsed_args.crate_name,
+            env_deps
+                .iter()
+                .map(|(var, val)| (var, strip_basedirs_os(val, basedirs)))
+                .collect::<Vec<_>>()
+        );
         for (var, val) in env_deps.iter() {
             var.hash(&mut HashToDigest { digest: &mut m });
             m.update(b"=");
@@ -2092,15 +2144,34 @@ where
                 continue;
             }
 
+            trace!(
+                target: "hash_key",
+                "[{}]: env var {:?} = {:?}",
+                self.parsed_args.crate_name,
+                var,
+                strip_basedirs_os(val, basedirs)
+            );
             var.hash(&mut HashToDigest { digest: &mut m });
             m.update(b"=");
             strip_basedirs_os(val, basedirs).hash(&mut HashToDigest { digest: &mut m });
         }
         // 9. The cwd of the compile. This will wind up in the rlib.
-        Path::new(&strip_basedirs_os(cwd.as_os_str(), basedirs))
-            .hash(&mut HashToDigest { digest: &mut m });
+        let hashed_cwd = strip_basedirs_os(cwd.as_os_str(), basedirs);
+        Path::new(&hashed_cwd).hash(&mut HashToDigest { digest: &mut m });
+        trace!(
+            target: "hash_key",
+            "[{}]: cwd = {:?}",
+            self.parsed_args.crate_name,
+            hashed_cwd
+        );
         // 10. The version of the compiler.
         self.version.hash(&mut HashToDigest { digest: &mut m });
+        trace!(
+            target: "hash_key",
+            "[{}]: rustc version = {:?}",
+            self.parsed_args.crate_name,
+            self.version
+        );
 
         // metadata / dep-info don't ever generate binaries, but
         // rustc still makes them appear in the --print
@@ -2230,8 +2301,16 @@ where
             .chain(abs_staticlibs)
             .collect();
 
+        let key = m.finish();
+        trace!(
+            target: "hash_key",
+            "[{}]: final key = {}",
+            self.parsed_args.crate_name,
+            key
+        );
+
         Ok(HashResult {
-            key: m.finish(),
+            key,
             compilation: Box::new(RustCompilation {
                 executable: self.executable.clone(),
                 host: self.host.clone(),

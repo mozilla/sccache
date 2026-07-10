@@ -373,29 +373,42 @@ pub fn preprocessor_cache_entry_hash_key(
     // If you change any of the inputs to the hash, you should change `FORMAT_VERSION`.
     let mut m = Digest::new();
     m.update(compiler_digest.as_bytes());
+    trace!(target: "hash_key", "preprocessor: compiler_digest = {compiler_digest:?}");
     // clang and clang++ have different behavior despite being byte-for-byte identical binaries, so
     // we have to incorporate that into the hash as well.
     m.update(&[plusplus as u8]);
+    trace!(target: "hash_key", "preprocessor: plusplus = {plusplus:?}");
     m.update(&[FORMAT_VERSION]);
+    trace!(target: "hash_key", "preprocessor: format_version = {FORMAT_VERSION:?}");
     m.update(language.as_str().as_bytes());
+    trace!(target: "hash_key", "preprocessor: language = {language:?}");
     // Multi-arch compilations used to be preprocessed in a single pass that
     // missed the code only one architecture sees: don't reuse those entries.
     if multiarch {
         m.update(b"multiarch-per-pass");
     }
+    trace!(target: "hash_key", "preprocessor: multiarch = {multiarch:?}");
     hash_arguments(&mut m, arguments, basedirs);
+    trace!(
+        target: "hash_key",
+        "preprocessor: arguments = {:?}",
+        super::c::hashed_arguments(arguments, basedirs)
+    );
     for hash in extra_hashes {
         m.update(hash.as_bytes());
     }
+    trace!(target: "hash_key", "preprocessor: extra_hashes = {extra_hashes:?}");
     // A hit on a preprocessor cache entry hands back the object cache key that
     // was stored in it, so everything the object key is made of has to be here
     // too or the assembler would be forgotten on that path.
     if let Some(assembler_digest) = assembler_digest {
         m.update(assembler_digest.as_bytes());
     }
+    trace!(target: "hash_key", "preprocessor: assembler_digest = {assembler_digest:?}");
 
     for (var, val) in env_vars.iter() {
         if CACHED_ENV_VARS.contains(var.as_os_str()) {
+            trace!(target: "hash_key", "preprocessor: env var {var:?} = {val:?}");
             var.hash(&mut HashToDigest { digest: &mut m });
             m.update(&b"="[..]);
             val.hash(&mut HashToDigest { digest: &mut m });
@@ -414,6 +427,10 @@ pub fn preprocessor_cache_entry_hash_key(
 
     // Strip basedirs from the input file path if configured
     let buf_to_hash = strip_basedirs(&buf, basedirs);
+    trace!(
+        target: "hash_key",
+        "preprocessor: input_file (basedir-stripped, encoded) = {buf_to_hash:?}"
+    );
     m.update(&buf_to_hash);
     let (digest, finder) = file_digest(input_file, None)
         .with_context(|| format!("while hashing the input file '{}'", input_file.display()))?;
@@ -422,8 +439,11 @@ pub fn preprocessor_cache_entry_hash_key(
         debug!("Found __TIME__ in {}", input_file.display());
         return Ok(None);
     }
+    trace!(target: "hash_key", "preprocessor: input_file content digest = {digest}");
     m.update(digest.as_bytes());
-    Ok(Some(m.finish()))
+    let key = m.finish();
+    trace!(target: "hash_key", "preprocessor: final key = {key}");
+    Ok(Some(key))
 }
 
 /// Digest of the contents of `path`, and the time macros found in it.
