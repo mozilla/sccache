@@ -229,6 +229,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("-gcc-toolchain", OsString, Separated, PassThrough),
     flag!("-gcodeview", PassThroughFlag),
     take_arg!("-include-pch", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
+    take_arg!("-ivfsoverlay", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
     take_arg!("-load", PathBuf, Separated, ExtraHashFile),
     flag!("-mconstructor-aliases", PassThroughFlag),
     take_arg!("-mllvm", OsString, Separated, PassThrough),
@@ -653,6 +654,25 @@ mod test {
     #[test]
     fn test_gcodeview() {
         parses!("-c", "foo.c", "-o", "foo.o", "-Xclang", "-gcodeview");
+    }
+
+    #[test]
+    fn test_ivfsoverlay() {
+        let a = parses!(
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "-Xclang",
+            "-ivfsoverlay",
+            "-Xclang",
+            "/some/overlay.yaml"
+        );
+        assert!(a.common_args.is_empty());
+        assert_eq!(
+            ovec!["-Xclang", "-ivfsoverlay", "-Xclang", "/some/overlay.yaml"],
+            a.preprocessor_args
+        );
     }
 
     #[test]
