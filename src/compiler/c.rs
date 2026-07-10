@@ -1548,6 +1548,18 @@ static CACHED_ENV_VARS: LazyLock<HashSet<&'static OsStr>> = LazyLock::new(|| {
     .collect()
 });
 
+/// The arguments as [`hash_arguments`] hashes them, with the basedirs stripped,
+/// for the `hash_key` trace.
+pub fn hashed_arguments(arguments: &[OsString], basedirs: &[Vec<u8>]) -> Vec<String> {
+    arguments
+        .iter()
+        .map(|arg| {
+            String::from_utf8_lossy(&strip_basedirs_from_arg(arg.as_encoded_bytes(), basedirs))
+                .into_owned()
+        })
+        .collect()
+}
+
 /// Feed the compiler arguments into `m`, with the base directories stripped.
 ///
 /// The arguments are hashed verbatim, so any that spell out an absolute path -
@@ -1704,7 +1716,43 @@ impl<'a> HashKeyParams<'a> {
         let preprocessor_output_to_hash = strip_basedirs(self.preprocessor_output, self.basedirs);
 
         m.update(&preprocessor_output_to_hash);
-        m.finish()
+        let key = m.finish();
+        // A single record: the daemon hashes many compiles at once, and
+        // separate lines would interleave with theirs.
+        trace!(
+            target: "hash_key",
+            "{:?}
+  compiler_digest = {:?}
+  plusplus = {}
+  cache_version = {:?}
+  language = {:?}
+  arguments = {:?}
+  extra_hashes = {:?}
+  assembler_digest = {:?}
+  env = {:?}
+  preprocessor_output = {} bytes (basedir-stripped), digest = {}
+  final key = {}",
+            self.input_file_name,
+            self.compiler_digest,
+            self.plusplus,
+            CACHE_VERSION,
+            self.language,
+            hashed_arguments(self.arguments, self.basedirs),
+            self.extra_hashes,
+            self.assembler_digest,
+            self.env_vars
+                .iter()
+                .filter(|(var, _)| CACHED_ENV_VARS.contains(var.as_os_str()))
+                .collect::<Vec<_>>(),
+            preprocessor_output_to_hash.len(),
+            {
+                let mut d = Digest::new();
+                d.update(&preprocessor_output_to_hash);
+                d.finish()
+            },
+            key
+        );
+        key
     }
 }
 
