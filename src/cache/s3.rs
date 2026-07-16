@@ -26,6 +26,8 @@ pub struct S3Cache {
     endpoint: Option<String>,
     use_ssl: Option<bool>,
     server_side_encryption: Option<bool>,
+    server_side_encryption_aws_kms: Option<bool>,
+    server_side_encryption_kms_key_id: Option<String>,
     enable_virtual_host_style: Option<bool>,
 }
 
@@ -39,6 +41,8 @@ impl S3Cache {
             endpoint: None,
             use_ssl: None,
             server_side_encryption: None,
+            server_side_encryption_aws_kms: None,
+            server_side_encryption_kms_key_id: None,
             enable_virtual_host_style: None,
         }
     }
@@ -56,6 +60,20 @@ impl S3Cache {
     }
     pub fn with_server_side_encryption(mut self, server_side_encryption: Option<bool>) -> Self {
         self.server_side_encryption = server_side_encryption;
+        self
+    }
+    pub fn with_server_side_encryption_aws_kms(
+        mut self,
+        server_side_encryption_aws_kms: Option<bool>,
+    ) -> Self {
+        self.server_side_encryption_aws_kms = server_side_encryption_aws_kms;
+        self
+    }
+    pub fn with_server_side_encryption_kms_key_id(
+        mut self,
+        server_side_encryption_kms_key_id: Option<String>,
+    ) -> Self {
+        self.server_side_encryption_kms_key_id = server_side_encryption_kms_key_id;
         self
     }
     pub fn with_enable_virtual_host_style(
@@ -93,7 +111,14 @@ impl S3Cache {
             builder = builder.endpoint(&endpoint_resolver(endpoint, self.use_ssl)?);
         }
 
-        if self.server_side_encryption.unwrap_or_default() {
+        if let Some(kms_key_id) = &self.server_side_encryption_kms_key_id {
+            // SSE-KMS with a customer-managed KMS key.
+            builder = builder.server_side_encryption_with_customer_managed_kms_key(kms_key_id);
+        } else if self.server_side_encryption_aws_kms.unwrap_or_default() {
+            // SSE-KMS with the AWS-managed KMS key (aws/s3).
+            builder = builder.server_side_encryption_with_aws_managed_kms_key();
+        } else if self.server_side_encryption.unwrap_or_default() {
+            // SSE-S3 with an S3-managed key (AES256).
             builder = builder.server_side_encryption_with_s3_key();
         }
 
