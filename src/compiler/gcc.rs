@@ -1145,15 +1145,20 @@ impl Iterator for ExpandIncludeFile<'_> {
 ///  - A backslash escapes the following character, which is taken literally.
 ///    Backslashes are literal inside single quotes, but still escape inside
 ///    double quotes.
-///  - Empty quoted strings (`""`) produce no argument, matching the compiler.
-pub fn split_gnu_response_file_args(contents: &str) -> Vec<OsString> {
+///  - Empty quoted strings (`""`) produce no argument. This matches Clang;
+///    GCC's `buildargv` would instead emit an empty argument, but a bare `""`
+///    argument is meaningless to a compiler so the difference is immaterial.
+///
+/// Whitespace is restricted to ASCII, matching the compilers' own tokenizers
+/// (a non-ASCII Unicode space inside a filename must not split an argument).
+fn split_gnu_response_file_args(contents: &str) -> Vec<OsString> {
     let mut args = Vec::new();
     let mut token = String::new();
     let mut chars = contents.chars();
 
     while let Some(c) = chars.next() {
         match c {
-            c if c.is_whitespace() => {
+            c if c.is_ascii_whitespace() => {
                 if !token.is_empty() {
                     args.push(OsString::from(std::mem::take(&mut token)));
                 }
