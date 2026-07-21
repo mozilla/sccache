@@ -13,8 +13,8 @@ As defined by the [gcc docs](https://gcc.gnu.org/onlinedocs/gcc-4.6.3/gcc/Overal
 5. The response file may itself contain additional @file options; any such options will be processed recursively.
 
 Implementation details:
-- The gcc implementation in sccache supports all of these **except** #3. If a response file contains **any** quotations (`"` or `'`), the @file arg is treated literally and not removed (and its content not processed).
-- Additionally, sccache will not expand concatenated arguments such as `-include@foo` (see [#150](https://github.com/mozilla/sccache/issues/150#issuecomment-318586953) for more on this).
+- The gcc implementation in sccache supports all of these.
+- sccache will not expand concatenated arguments such as `-include@foo` (see [#150](https://github.com/mozilla/sccache/issues/150#issuecomment-318586953) for more on this).
 - Recursive files are processed depth-first; when an @file option is encountered, its contents are read and each option is evaluated in-place before continuing to options following the @file.
 
 ## MSVC
