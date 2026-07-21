@@ -1095,48 +1095,39 @@ where
 
         let me = Arc::new(self);
 
+        // The reader loop below feeds requests into `reqs_tx`; this task drains
+        // them, calls the service, and writes responses back to the sink.
+        //
+        // `_handle` must stay bound for the lifetime of `bind` (not `let _ =`,
+        // which would drop it immediately): it is an `AbortOnDropHandle`, so
+        // dropping it aborts this task and its in-flight compile subtasks. That
+        // is the cancellation we want once the client disconnects and the reader
+        // loop below exits.
         let _handle = util::spawn(async move {
             while let Some(req) = reqs_rx.recv().await {
-                match req {
-                    Ok(req) => {
-                        let res = match util::spawn(me.clone().call(req)).await? {
-                            Ok(res) => res,
-                            Err(err) => {
-                                return Err(err);
-                            }
-                        };
-                        match res {
-                            Message::WithoutBody(message) => {
-                                sink.send(Frame::Message { message }).await?;
-                            }
-                            Message::WithBody(message, body) => {
-                                sink.send(Frame::Message { message }).await?;
-                                sink.send(Frame::Body {
-                                    chunk: Some(util::spawn(body).await??),
-                                })
-                                .await?;
-                                sink.send(Frame::Body { chunk: None }).await?;
-                            }
-                        }
+                match util::spawn(me.clone().call(req)).await?? {
+                    Message::WithoutBody(message) => {
+                        sink.send(Frame::Message { message }).await?;
                     }
-                    Err(err) => {
-                        return Err(err);
+                    Message::WithBody(message, body) => {
+                        sink.send(Frame::Message { message }).await?;
+                        sink.send(Frame::Body {
+                            chunk: Some(util::spawn(body).await??),
+                        })
+                        .await?;
+                        sink.send(Frame::Body { chunk: None }).await?;
                     }
                 }
             }
 
-            Ok(())
+            Ok::<_, Error>(())
         });
 
+        // Read requests until the client disconnects (stream ends) or the
+        // stream errors. A send error means the handler task above has ended,
+        // so we stop reading in that case too.
         while let Some(req) = stream.next().await {
-            match req {
-                Ok(req) => {
-                    reqs_tx.send(Ok(req))?;
-                }
-                Err(err) => {
-                    return Err(err);
-                }
-            }
+            reqs_tx.send(req?)?;
         }
 
         Ok(())
