@@ -256,6 +256,7 @@ impl RunCommand for AsyncCommand {
         let token = self.jobserver.acquire().await?;
         let mut inner = tokio::process::Command::from(inner);
         let child = inner
+            .kill_on_drop(true)
             .spawn()
             .with_context(|| format!("failed to spawn {:?}", inner))?;
 
