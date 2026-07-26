@@ -438,6 +438,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_take_arg!("clr:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("constexpr:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_flag!("d1nodatetime", PassThrough),
+    msvc_flag!("d20bforceinline", PassThrough),
     msvc_take_arg!("deps", PathBuf, Concatenated, DepFile),
     msvc_take_arg!("diagnostics:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("doc", PathBuf, Concatenated, TooHardPath), // Creates an .xdc file.
