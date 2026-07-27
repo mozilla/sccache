@@ -48,12 +48,20 @@ chain = ["disk", "redis", "s3"]
 write_error_policy = "l0"  # Optional: ignore, l0 (default), or all
 
 #[cache.azure]
-# Azure Storage connection string (see <https://docs.azure.cn/en-us/storage/common/storage-configure-connection-string>)
-connection_string = "BlobEndpoint=https://example.blob.core.windows.net/;SharedAccessSignature=..."
-# Name of container
+# Name of container (required)
 container = "my_container_name"
 # Optional string to prepend to each blob storage key
 key_prefix = ""
+# Shared-key auth: Azure Storage connection string (see
+# <https://docs.azure.cn/en-us/storage/common/storage-configure-connection-string>).
+# Mutually exclusive with the Microsoft Entra ID (passwordless) fields below.
+connection_string = "BlobEndpoint=https://example.blob.core.windows.net/;SharedAccessSignature=..."
+# Microsoft Entra ID (passwordless) auth — set ONE of these instead of a
+# connection string; credentials are read from the ambient AZURE_* environment.
+# See docs/Azure.md.
+# storage_account = "mystorageacct"                         # endpoint synthesized as https://{account}.blob.core.windows.net
+# endpoint = "https://mystorageacct.blob.core.usgovcloudapi.net"  # full endpoint (sovereign clouds / custom DNS); https only (http for loopback)
+# NOTE: an [cache.azure] block with a container but no auth source errors at startup.
 
 [cache.disk]
 dir = "/tmp/.cache/sccache"
@@ -284,10 +292,14 @@ The full url appears then as `redis://user:passwd@1.2.3.4:6379/?db=1`.
 
 #### azure
 
-* `SCCACHE_AZURE_CONNECTION_STRING`
 * `SCCACHE_AZURE_BLOB_CONTAINER`
+* `SCCACHE_AZURE_CONNECTION_STRING` shared-key connection string. Mutually exclusive with the Entra ID variables below.
+* `SCCACHE_AZURE_STORAGE_ACCOUNT` storage account name for Microsoft Entra ID (passwordless) auth; the endpoint `https://{account}.blob.core.windows.net` is synthesized.
+* `SCCACHE_AZURE_ENDPOINT` full blob endpoint override for Entra ID auth (sovereign clouds, custom DNS); must be `https` (plain `http` only for a loopback host); takes precedence over `SCCACHE_AZURE_STORAGE_ACCOUNT`.
 * `SCCACHE_AZURE_KEY_PREFIX`
 * `SCCACHE_AZURE_RW_MODE`
+
+When using Entra ID, credentials are read from the ambient `AZURE_*` environment (`AZURE_TENANT_ID` / `AZURE_CLIENT_ID` / `AZURE_CLIENT_SECRET` for a service principal, `AZURE_FEDERATED_TOKEN_FILE` for workload identity, or IMDS for a managed identity). See [Azure.md](Azure.md).
 
 #### gha
 
