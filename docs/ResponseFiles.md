@@ -34,3 +34,16 @@ Per the [MSVC docs](https://learn.microsoft.com/en-us/cpp/build/reference/cl-com
 The msvc implementation in sccache supports all of these **except** #4, because sccache doesn't accept the `/link` directive. 
 
 Additionally, because `msbuild` generates response files using an encoding other than `utf-8`, all text files under the [WHATWG encoding standard](https://encoding.spec.whatwg.org/) are supported. This includes both `utf-8` and `utf-16`.
+
+## Rust
+
+Per the [Rustc docs](https://doc.rust-lang.org/rustc/command-line-arguments.html#path-load-command-line-flags-from-a-path)
+
+If you specify @path on the command-line, then it will open path and read command line options from it.
+
+These options are:
+- One per line
+- A blank line indicates an empty option
+- The file can use Unix or Windows style line endings
+- Must be encoded as UTF-8
+

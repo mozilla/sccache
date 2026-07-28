@@ -50,7 +50,7 @@ use std::future::Future;
 use std::hash::Hash;
 #[cfg(feature = "dist-client")]
 use std::io;
-use std::io::Read;
+use std::io::{BufReader, Read};
 use std::iter;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -1065,6 +1065,61 @@ counted_array!(static ARGS: [ArgInfo<ArgData>; _] = [
     take_arg!("-o", PathBuf, CanBeSeparated, TooHardPath),
 ]);
 
+/// Split the contents of a rustc `@response` file into arguments.
+///
+/// rustc reads response files by splitting on newlines, trimming whitespace,
+/// and skipping empty lines.  It does not support quoting or backslash escaping
+/// (unlike GCC), and does not recursively expand `@file` directives found
+/// inside a response file.
+///
+/// Rustc reference: https://github.com/rust-lang/rust/blob/main/compiler/rustc_driver_impl/src/args.rs
+fn split_rust_response_file_args(contents: &str) -> Vec<OsString> {
+    contents
+        .lines()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty())
+        .map(OsString::from)
+        .collect()
+}
+
+pub struct ExpandResponseFile<'a> {
+    cwd: &'a Path,
+    stack: Vec<OsString>,
+}
+
+impl<'a> ExpandResponseFile<'a> {
+    pub fn new(cwd: &'a Path, args: &[OsString]) -> Self {
+        ExpandResponseFile {
+            stack: args.iter().rev().map(|a| a.to_owned()).collect(),
+            cwd,
+        }
+    }
+}
+
+impl Iterator for ExpandResponseFile<'_> {
+    type Item = OsString;
+
+    fn next(&mut self) -> Option<OsString> {
+        loop {
+            let arg = self.stack.pop()?;
+            let file = match arg.split_prefix("@") {
+                Some(arg) => self.cwd.join(arg),
+                None => return Some(arg),
+            };
+
+            let mut contents = String::new();
+            let res = fs_err::File::open(&file)
+                .and_then(|f| BufReader::new(f).read_to_string(&mut contents));
+            if let Err(e) = res {
+                debug!("failed to read @-file `{}`: {}", file.display(), e);
+                return Some(arg);
+            }
+            let new_args = split_rust_response_file_args(&contents);
+            self.stack.extend(new_args.into_iter().rev());
+        }
+    }
+}
+
 fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<ParsedArguments> {
     let mut args = vec![];
 
@@ -1087,7 +1142,11 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
     let mut gcno = false;
     let mut target_json = None;
 
-    for (idx, arg) in ArgsIter::new(arguments.iter().cloned(), &ARGS[..]).enumerate() {
+    // Custom iterator to expand `@` arguments which stand for reading a file
+    // and interpreting it as a list of more arguments.
+    let it = ExpandResponseFile::new(cwd, arguments);
+
+    for (idx, arg) in ArgsIter::new(it, &ARGS[..]).enumerate() {
         let arg = try_or_cannot_cache!(arg, "argument parse");
         match arg.get_data() {
             Some(TooHardFlag) | Some(TooHardPath(_)) => {
@@ -3983,5 +4042,65 @@ proc_macro false
             ArgDisposition::Separated
         )));
         assert_eq!(h.target_json, Some(PathBuf::from("/path/to/target.json")));
+    }
+
+    #[test]
+    fn test_split_rust_response_file_args() {
+        // Simple one arg per line.
+        assert_eq!(
+            ovec!["--emit", "link", "foo.rs"],
+            split_rust_response_file_args("--emit\nlink\nfoo.rs\n")
+        );
+        // Lines are trimmed.
+        assert_eq!(
+            ovec!["--emit", "link", "foo.rs"],
+            split_rust_response_file_args("  --emit  \n\tlink\n  foo.rs\n")
+        );
+        // Empty lines are skipped.
+        assert_eq!(
+            ovec!["--emit", "foo.rs"],
+            split_rust_response_file_args("--emit\n\n\nfoo.rs\n")
+        );
+        // Empty input.
+        assert!(split_rust_response_file_args("").is_empty());
+        assert!(split_rust_response_file_args("\n\n  \n\t\n").is_empty());
+        // Carriage returns are trimmed.
+        assert_eq!(
+            ovec!["--emit", "foo.rs"],
+            split_rust_response_file_args("--emit\r\nfoo.rs\r\n")
+        );
+    }
+
+    #[test]
+    fn test_parse_arguments_response_file() {
+        let td = tempfile::Builder::new()
+            .prefix("sccache")
+            .tempdir()
+            .unwrap();
+        File::create(td.path().join("args"))
+            .unwrap()
+            .write_all(b"--emit\nlink,dep-info\nfoo.rs\n--out-dir\nout\n--crate-name\nfoo\n--crate-type\nlib\n")
+            .unwrap();
+        let arg = format!("@{}", td.path().join("args").display());
+        let args: Vec<OsString> = vec![OsString::from(arg)];
+        let result = parse_arguments(&args, td.path());
+        let parsed = match result {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(parsed.output_dir.to_str(), Some("out"));
+        assert!(parsed.dep_info.is_some());
+        assert!(parsed.externs.is_empty());
+    }
+
+    #[test]
+    fn test_parse_arguments_response_file_missing() {
+        // When the @file cannot be read, the raw @-arg passes through.
+        // Without other required flags it becomes the input file, leading
+        // to missing --out-dir / --emit etc.
+        let cwd = Path::new("/nonexistent");
+        let args: Vec<OsString> = vec![OsString::from("@missing_file")];
+        let result = parse_arguments(&args, cwd);
+        assert!(matches!(result, CompilerArguments::CannotCache(..)));
     }
 }
