@@ -77,7 +77,9 @@ fn rust_compile(tmpdir: &Path, sccache_cfg_path: &Path, sccache_cached_cfg_path:
         version = "0.1.0"
         edition = "2021"
         [dependencies]
-        libc = "0.2.169""#,
+        # Pinned: the point of this test is that distributed compilation works,
+        # not that it keeps up with whatever libc published most recently.
+        libc = "=0.2.169""#,
     );
     write_source(
         &cargo_path,
