@@ -464,6 +464,8 @@ pub struct S3CacheConfig {
     pub endpoint: Option<String>,
     pub use_ssl: Option<bool>,
     pub server_side_encryption: Option<bool>,
+    pub server_side_encryption_aws_kms: Option<bool>,
+    pub server_side_encryption_kms_key_id: Option<String>,
     pub enable_virtual_host_style: Option<bool>,
     #[serde(default)]
     pub rw_mode: CacheModeConfig,
@@ -886,6 +888,10 @@ fn config_from_env() -> Result<EnvConfig> {
         let no_credentials = bool_from_env_var("SCCACHE_S3_NO_CREDENTIALS")?.unwrap_or(false);
         let use_ssl = bool_from_env_var("SCCACHE_S3_USE_SSL")?;
         let server_side_encryption = bool_from_env_var("SCCACHE_S3_SERVER_SIDE_ENCRYPTION")?;
+        let server_side_encryption_aws_kms =
+            bool_from_env_var("SCCACHE_S3_SERVER_SIDE_ENCRYPTION_AWS_KMS")?;
+        let server_side_encryption_kms_key_id =
+            string_from_env_var("SCCACHE_S3_SERVER_SIDE_ENCRYPTION_KMS_KEY_ID");
         let endpoint = string_from_env_var("SCCACHE_ENDPOINT");
         let key_prefix = key_prefix_from_env_var("SCCACHE_S3_KEY_PREFIX");
         let enable_virtual_host_style = bool_from_env_var("SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE")?;
@@ -900,6 +906,8 @@ fn config_from_env() -> Result<EnvConfig> {
             endpoint,
             use_ssl,
             server_side_encryption,
+            server_side_encryption_aws_kms,
+            server_side_encryption_kms_key_id,
             enable_virtual_host_style,
             rw_mode,
         })
@@ -2355,6 +2363,44 @@ fn test_s3_no_credentials_valid_false() {
 
 #[test]
 #[serial(config_from_env)]
+#[cfg(feature = "s3")]
+fn test_s3_sse_kms_from_env() {
+    unsafe {
+        env::set_var("SCCACHE_BUCKET", "my-bucket");
+        env::set_var("SCCACHE_S3_SERVER_SIDE_ENCRYPTION_AWS_KMS", "true");
+        env::set_var(
+            "SCCACHE_S3_SERVER_SIDE_ENCRYPTION_KMS_KEY_ID",
+            "arn:aws:kms:us-east-1:111:key/abc",
+        );
+    }
+
+    let cfg = config_from_env();
+
+    unsafe {
+        env::remove_var("SCCACHE_BUCKET");
+        env::remove_var("SCCACHE_S3_SERVER_SIDE_ENCRYPTION_AWS_KMS");
+        env::remove_var("SCCACHE_S3_SERVER_SIDE_ENCRYPTION_KMS_KEY_ID");
+    }
+
+    let env_cfg = cfg.unwrap();
+    match env_cfg.cache.s3 {
+        Some(S3CacheConfig {
+            server_side_encryption_aws_kms,
+            ref server_side_encryption_kms_key_id,
+            ..
+        }) => {
+            assert_eq!(server_side_encryption_aws_kms, Some(true));
+            assert_eq!(
+                server_side_encryption_kms_key_id.as_deref(),
+                Some("arn:aws:kms:us-east-1:111:key/abc")
+            );
+        }
+        None => unreachable!(),
+    }
+}
+
+#[test]
+#[serial(config_from_env)]
 #[cfg(feature = "gcs")]
 fn test_gcs_service_account() {
     unsafe {
@@ -2528,6 +2574,8 @@ key_prefix = "cosprefix"
                     key_prefix: "s3prefix".into(),
                     no_credentials: true,
                     server_side_encryption: Some(false),
+                    server_side_encryption_aws_kms: None,
+                    server_side_encryption_kms_key_id: None,
                     enable_virtual_host_style: None,
                     rw_mode: CacheModeConfig::ReadWrite,
                 }),
@@ -3025,6 +3073,8 @@ fn test_get_cache_levels_single_cache() {
             endpoint: None,
             use_ssl: None,
             server_side_encryption: None,
+            server_side_encryption_aws_kms: None,
+            server_side_encryption_kms_key_id: None,
             enable_virtual_host_style: None,
             rw_mode: CacheModeConfig::ReadWrite,
         }),

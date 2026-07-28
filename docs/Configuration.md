@@ -123,7 +123,12 @@ bucket = "name"
 endpoint = "s3-us-east-1.amazonaws.com"
 use_ssl = true
 key_prefix = "s3prefix"
+# SSE-S3 with an S3-managed key (AES256).
 server_side_encryption = false
+# SSE-KMS with the AWS-managed KMS key (aws/s3).
+server_side_encryption_aws_kms = false
+# SSE-KMS with a customer-managed KMS key (takes precedence when set).
+# server_side_encryption_kms_key_id = "arn:aws:kms:us-east-1:111:key/abc"
 
 [cache.webdav]
 endpoint = "http://192.168.10.42:80/some/webdav.php"
