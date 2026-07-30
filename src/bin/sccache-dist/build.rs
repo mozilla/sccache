@@ -110,11 +110,6 @@ impl OverlayBuilder {
     pub fn new(bubblewrap: PathBuf, dir: PathBuf) -> Result<Self> {
         info!("Creating overlay builder");
 
-        if !nix::unistd::getuid().is_root() || !nix::unistd::geteuid().is_root() {
-            // Not root, or a setuid binary - haven't put enough thought into supporting this, bail
-            bail!("not running as root")
-        }
-
         let out = Command::new(&bubblewrap)
             .arg("--version")
             .check_stdout_trim()
