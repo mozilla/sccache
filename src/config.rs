@@ -1419,12 +1419,7 @@ impl Config {
         }
 
         let client_side_mode = env_client_side_mode.unwrap_or(file_client_side_mode)
-            // Logging always writes to stderr in the client process, disregarding
-            // SCCACHE_ERROR_LOG; Even if SCCACHE_ERROR_LOG was handled, there would
-            // be write races from multiple processes. Until those are addressed, we
-            // can't leave the client mode enabled alongside logging.
-            && std::env::var_os(crate::LOGGING_ENV).is_none()
-            // Client-side mode is also not compatible with distributed compilation.
+            // Client-side mode is not compatible with distributed compilation.
             && dist.scheduler_url.is_none();
 
         let (caches, fallback_cache) = conf_caches.clone().into_fallback();

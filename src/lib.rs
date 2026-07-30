@@ -85,6 +85,14 @@ fn exit(code: i32) -> ! {
 pub fn main() {
     logging::init();
 
+    // Log lines are attributed by pid; this is what a pid can be matched back
+    // to when several processes are logging to the same destination.
+    debug!(
+        "sccache {} invoked as: {:?}",
+        VERSION,
+        std::env::args_os().collect::<Vec<_>>()
+    );
+
     let command = match cmdline::try_parse() {
         Ok(cmd) => cmd,
         Err(e) => match e.downcast::<clap::error::Error>() {

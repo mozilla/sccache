@@ -207,6 +207,137 @@ fn test_error_log_pid_placeholder_gives_a_per_process_file() {
     );
 }
 
+// Client-side mode runs the compile pipeline in each CLI process, so several
+// processes log at once. Check that logging and client-side mode now coexist,
+// and that the result is usable: no torn lines, every line attributable, and
+// the compiler's own diagnostics still on the build's stderr.
+#[test]
+#[serial_test::serial]
+#[cfg(unix)]
+fn test_concurrent_client_side_compiles_log_readably() {
+    const PROCESSES: usize = 4;
+
+    let Some(cc) = ["cc", "gcc", "clang"]
+        .iter()
+        .find_map(|c| which::which(c).ok())
+    else {
+        eprintln!("No C compiler found, skipping test");
+        return;
+    };
+
+    let tempdir = TempDir::new().unwrap();
+    let log_path = tempdir.path().join("sccache.log");
+    let socket = tempdir.path().join("sccache.sock");
+    let sccache_env = |cmd: &mut Command| {
+        cmd.env("SCCACHE_LOG", "trace")
+            .env("SCCACHE_ERROR_LOG", &log_path)
+            .env("SCCACHE_CLIENT_SIDE", "1")
+            .env("SCCACHE_DIR", tempdir.path())
+            .env("SCCACHE_SERVER_UDS", &socket)
+            .env_remove("SCCACHE_LOG_MILLIS");
+    };
+
+    // Start the daemon up front so the clients don't race to bootstrap it.
+    let mut start = Command::new(sccache_bin());
+    sccache_env(start.arg("--start-server"));
+    let started = start.output().unwrap();
+    assert!(
+        started.status.success(),
+        "failed to start server: {}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+
+    // Each process compiles a distinct source, so they all miss the cache and
+    // run the whole pipeline. `#warning` gives us a diagnostic that the
+    // compiler writes to its stderr and sccache has to pass through.
+    let mut children = Vec::new();
+    for i in 0..PROCESSES {
+        let source = tempdir.path().join(format!("test{}.c", i));
+        std::fs::write(
+            &source,
+            format!("#warning \"diagnostic {i}\"\nint f{i}(void) {{ return {i}; }}\n"),
+        )
+        .unwrap();
+
+        let mut cmd = Command::new(sccache_bin());
+        sccache_env(&mut cmd);
+        let child = cmd
+            .arg(&cc)
+            .arg("-c")
+            .arg(&source)
+            .arg("-o")
+            .arg(tempdir.path().join(format!("test{}.o", i)))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        children.push((i, child.id(), child));
+    }
+
+    let regex = log_line_regex();
+    let mut client_pids = Vec::new();
+    for (i, pid, child) in children {
+        let output = child.wait_with_output().unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "compile {} failed:\n{}", i, stderr);
+        // The compiler's diagnostics reach the build even though sccache's own
+        // log output was redirected to a file.
+        assert!(
+            stderr.contains(&format!("diagnostic {}", i)),
+            "compiler diagnostic missing from stderr of compile {}:\n{}",
+            i,
+            stderr
+        );
+        assert!(
+            !stderr.lines().any(|line| regex.is_match(line)),
+            "sccache log output leaked into stderr of compile {}:\n{}",
+            i,
+            stderr
+        );
+        client_pids.push(pid);
+    }
+
+    let mut stop = Command::new(sccache_bin());
+    sccache_env(stop.arg("--stop-server"));
+    let stopped = stop.output().unwrap();
+    assert!(
+        stopped.status.success(),
+        "failed to stop server: {}",
+        String::from_utf8_lossy(&stopped.stderr)
+    );
+
+    let logged = std::fs::read_to_string(&log_path).unwrap();
+
+    // Nothing tore: a line interrupted by a concurrent writer would leave a
+    // fragment that does not start with a well-formed prefix.
+    for line in logged.lines().filter(|line| !line.is_empty()) {
+        assert!(
+            regex.is_match(line),
+            "malformed log line, likely torn by a concurrent writer:\n{}",
+            line
+        );
+    }
+
+    // Every client is present in the log, and identifiable.
+    for pid in &client_pids {
+        assert!(
+            logged
+                .lines()
+                .any(|line| regex
+                    .captures(line)
+                    .is_some_and(|c| c.get(1).unwrap().as_str() == pid.to_string())),
+            "no log lines from client pid {}",
+            pid
+        );
+    }
+
+    // And client-side mode really was in effect: logging no longer disables it.
+    assert!(
+        logged.contains("do_compile_client_side"),
+        "client-side mode was not used"
+    );
+}
+
 #[test]
 #[serial_test::serial]
 fn test_log_millis_flag_with_various_values() {
