@@ -22,11 +22,25 @@
 //!   line can be attributed and `grep`ed for, and
 //! * every physical line is emitted with exactly one `write_all` call, so lines
 //!   are never torn in half by a concurrent writer.
+//!
+//! `SCCACHE_ERROR_LOG` names a file that log output is appended to instead of
+//! going to stderr.  It is honoured by every process: in client-side mode the
+//! CLI, not the daemon, is where the compile pipeline logs from.  Appends to a
+//! file opened with `O_APPEND` are serialised by the kernel, so a shared file
+//! is safe for concurrent processes as long as each line is one write.
 
 use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 
 use env_logger::fmt::Formatter;
+use fs::{File, OpenOptions};
+use fs_err as fs;
 use log::Record;
+
+use crate::errors::*;
+
+/// Environment variable naming a file to append log output to.
+pub const ERROR_LOG_ENV: &str = "SCCACHE_ERROR_LOG";
 
 /// Initialise logging from the `SCCACHE_LOG` environment variable.
 ///
@@ -40,17 +54,51 @@ pub fn init() {
     let millis = std::env::var_os("SCCACHE_LOG_MILLIS").is_some();
     let pid = std::process::id();
 
+    // Note that only the log output is redirected, never file descriptor 2
+    // itself: a CLI process passes the compiler's diagnostics through its own
+    // stderr, and those have to reach the build.  The daemon has no such
+    // constraint and additionally redirects its stderr (see
+    // `commands::run_command`), which is what catches panics and backtraces.
+    let sink: Box<dyn Write + Send> = match error_log_path() {
+        Some(path) => match open_error_log(&path) {
+            Ok(file) => Box::new(file),
+            Err(e) => {
+                // No logger yet, so this cannot go through `log`.
+                eprintln!("sccache: {e}, logging to stderr instead");
+                Box::new(io::stderr())
+            }
+        },
+        None => Box::new(io::stderr()),
+    };
+
     let mut builder = env_logger::Builder::from_env(crate::LOGGING_ENV);
     builder
         .format(move |buf, record| format_record(buf, record, pid, millis))
-        .target(env_logger::Target::Pipe(Box::new(LineWriter::new(
-            Box::new(io::stderr()),
-        ))));
+        .target(env_logger::Target::Pipe(Box::new(LineWriter::new(sink))));
 
     match builder.try_init() {
         Ok(_) => (),
         Err(e) => panic!("Failed to initialize logging: {:?}", e),
     }
+}
+
+/// The file `SCCACHE_ERROR_LOG` points at, if it is set to a non-empty value.
+pub fn error_log_path() -> Option<PathBuf> {
+    match std::env::var_os(ERROR_LOG_ENV) {
+        Some(name) if !name.is_empty() => Some(PathBuf::from(name)),
+        _ => None,
+    }
+}
+
+/// Open the error log for appending, creating it if needed.
+pub fn open_error_log(path: &Path) -> Result<File> {
+    // `O_APPEND` is what makes writes from concurrent processes land one after
+    // the other instead of overwriting each other.
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .with_context(|| format!("Cannot open/write log file '{}'", path.display()))
 }
 
 /// Format one record as `[<timestamp> <LEVEL> <pid> <target>] <message>`.

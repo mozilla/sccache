@@ -208,7 +208,7 @@ Note that some env variables may need sccache server restart to take effect.
   - This option will only applied to newly compressed cache and don't affect existing cache.
   - If you want to be apply to all cache, you should reset cache and make new cache.
 * `SCCACHE_LOG_MILLIS` when set (to any value), enables millisecond precision timestamps in log output instead of the default second precision.
-* `SCCACHE_ERROR_LOG` path to a file where sccache will log errors
+* `SCCACHE_ERROR_LOG` path to a file that log output is appended to instead of being written to stderr. Honored by every sccache process, and safe to share between them: each line is appended with a single write, and carries the pid of the process that emitted it. Use an absolute path — a relative one is resolved against each process' working directory, which under a build means several different files. The daemon additionally redirects its stderr to this file, so that panics and backtraces are captured too.
 * `SCCACHE_LOG` log level, accepting standard env_logger values, see [env_logger documentation](https://docs.rs/env_logger/latest/env_logger/#enabling-logging) for details
 
 ### cache configs

@@ -133,6 +133,54 @@ fn test_log_lines_carry_the_emitting_pid() {
 
 #[test]
 #[serial_test::serial]
+fn test_error_log_receives_the_log_output() {
+    // SCCACHE_ERROR_LOG is honoured by every process, not just the daemon:
+    // in client-side mode the CLI is where the compile pipeline logs from.
+    let tempdir = TempDir::new().unwrap();
+    let log_path = tempdir.path().join("sccache.log");
+
+    let child = Command::new(sccache_bin())
+        .arg("--show-stats")
+        .env("SCCACHE_LOG", "debug")
+        .env("SCCACHE_ERROR_LOG", &log_path)
+        .env("SCCACHE_DIR", tempdir.path())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    let output = child.wait_with_output().unwrap();
+
+    let logged = std::fs::read_to_string(&log_path).unwrap();
+    let regex = log_line_regex();
+    let matching = logged
+        .lines()
+        .filter(|line| {
+            regex
+                .captures(line)
+                .is_some_and(|c| c.get(1).unwrap().as_str() == pid.to_string())
+        })
+        .count();
+    assert!(
+        matching > 0,
+        "no log lines from pid {} in {}:\n{}",
+        pid,
+        log_path.display(),
+        logged
+    );
+
+    // And stderr is left alone for the build's own output.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let leaked: Vec<_> = stderr.lines().filter(|l| regex.is_match(l)).collect();
+    assert!(
+        leaked.is_empty(),
+        "log lines went to stderr as well as the error log:\n{:?}",
+        leaked
+    );
+}
+
+#[test]
+#[serial_test::serial]
 fn test_log_millis_flag_with_various_values() {
     // Test that SCCACHE_LOG_MILLIS accepts any value (not just "1")
     let tempdir = TempDir::new().unwrap();

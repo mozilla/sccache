@@ -24,7 +24,7 @@ use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Respon
 use crate::server::{self, DistInfo, ServerInfo, ServerStartup, ServerStats};
 use crate::util::{daemonize, new_client_runtime, run_input_output};
 use byteorder::{BigEndian, ByteOrder};
-use fs::{File, OpenOptions};
+use fs::File;
 use fs_err as fs;
 use log::Level::Trace;
 use std::env;
@@ -159,23 +159,19 @@ fn redirect_stderr(f: File) {
 /// Create the log file and return an error if cannot be created
 fn create_error_log() -> Result<File> {
     trace!("Create the log file");
-    let name = match env::var("SCCACHE_ERROR_LOG") {
-        Ok(filename) if !filename.is_empty() => filename,
-        _ => {
-            bail!("Cannot read variable 'SCCACHE_ERROR_LOG'");
-        }
+    let path = match crate::logging::error_log_path() {
+        Some(path) => path,
+        None => bail!("Cannot read variable '{}'", crate::logging::ERROR_LOG_ENV),
     };
-
-    let f = match OpenOptions::new().create(true).append(true).open(&name) {
-        Ok(f) => f,
-        Err(_) => {
-            bail!("Cannot open/write log file '{}'", name);
-        }
-    };
-    Ok(f)
+    crate::logging::open_error_log(&path)
 }
 
-/// If `SCCACHE_ERROR_LOG` is set, redirect stderr to it.
+/// Redirect the daemon's stderr into the error log.
+///
+/// Log records already go there directly (see `logging::init`); this catches
+/// what writes to stderr without going through `log`, such as panics and
+/// backtraces.  Only the daemon does this: a CLI process needs its stderr for
+/// the compiler's diagnostics.
 fn redirect_error_log(f: File) -> Result<()> {
     debug!("redirecting stderr into {:?}", f);
     redirect_stderr(f);
