@@ -1,4 +1,4 @@
-// Tests for statistics reporting in client-side mode.
+// Tests for statistics reporting and IPC payload limits in client-side mode.
 //
 // Copyright 2026 Mozilla Foundation
 //
@@ -32,8 +32,8 @@ fn find_c_compiler() -> Option<PathBuf> {
         .find_map(|c| which::which(c).ok())
 }
 
-/// A source file whose cache entry is comfortably larger than the frame limit
-/// used below, so that storing it has to send an oversized request.
+/// A source file whose cache entry is comfortably larger than the small frame
+/// limit used below.
 fn write_source(path: &Path) {
     let mut source = String::from("#include <stddef.h>\n");
     for i in 0..2000 {
@@ -45,6 +45,7 @@ fn write_source(path: &Path) {
 struct Daemon {
     tempdir: TempDir,
     socket: PathBuf,
+    log: PathBuf,
     max_frame_length: Option<&'static str>,
 }
 
@@ -53,6 +54,7 @@ impl Daemon {
         let tempdir = TempDir::new().unwrap();
         let daemon = Daemon {
             socket: tempdir.path().join("sccache.sock"),
+            log: tempdir.path().join("sccache.log"),
             tempdir,
             max_frame_length,
         };
@@ -70,6 +72,8 @@ impl Daemon {
         cmd.env("SCCACHE_CLIENT_SIDE", "1")
             .env("SCCACHE_DIR", self.tempdir.path())
             .env("SCCACHE_SERVER_UDS", &self.socket)
+            .env("SCCACHE_LOG", "debug")
+            .env("SCCACHE_ERROR_LOG", &self.log)
             .env_remove("SCCACHE_MAX_FRAME_LENGTH");
         if let Some(len) = self.max_frame_length {
             cmd.env("SCCACHE_MAX_FRAME_LENGTH", len);
@@ -94,8 +98,7 @@ impl Daemon {
             .unwrap()
     }
 
-    /// The number of C/C++ cache misses the daemon has recorded.
-    fn cache_misses(&self) -> u64 {
+    fn stats(&self) -> serde_json::Value {
         let output = self
             .command()
             .args(["--show-stats", "--stats-format=json"])
@@ -106,10 +109,29 @@ impl Daemon {
             "failed to read stats: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        let stats: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        stats["stats"]["cache_misses"]["counts"]["C/C++"]
+        serde_json::from_slice(&output.stdout).unwrap()
+    }
+
+    /// The number of C/C++ cache misses the daemon has recorded.
+    fn cache_misses(&self) -> u64 {
+        self.stats()["stats"]["cache_misses"]["counts"]["C/C++"]
             .as_u64()
             .unwrap_or(0)
+    }
+
+    fn cache_write_errors(&self) -> u64 {
+        self.stats()["stats"]["cache_write_errors"]
+            .as_u64()
+            .unwrap()
+    }
+
+    /// How many times the daemon tore down a connection over a frame that did
+    /// not fit its limit.
+    fn frame_limit_kills(&self) -> usize {
+        let log = std::fs::read_to_string(&self.log).unwrap_or_default();
+        log.lines()
+            .filter(|line| line.contains("frame size too big"))
+            .count()
     }
 
     fn stop(self) {
@@ -133,25 +155,42 @@ fn test_client_side_records_cache_misses() {
     let daemon = Daemon::start(None);
     assert!(daemon.compile("plain").success());
     assert_eq!(daemon.cache_misses(), 1);
+    assert_eq!(daemon.cache_write_errors(), 0);
     daemon.stop();
 }
 
-// A cache write larger than SCCACHE_MAX_FRAME_LENGTH makes the daemon drop the
-// connection. That used to take the whole invocation's stats delta with it,
-// because the delta was shipped last over that same connection and the failure
-// was ignored: the compile counted a cache miss that never showed up in
-// `--show-stats`. Rust hit this routinely, since rlibs dwarf the 8 MiB default.
+// A cache entry that does not fit a frame used to be sent anyway, and the daemon
+// dropped the connection over it: the entry went uncached, every later RPC on
+// that connection failed, and the stats hand-off at the end of the invocation
+// took the whole delta down with it — the compile counted a cache miss that
+// never reached `--show-stats`. Rust hit this constantly, since rlibs dwarfed
+// the old 8 MiB default limit.
+//
+// The limit is now well above any real entry, and a client that somehow still
+// has an oversized payload declines to send it. The entry goes uncached, and
+// nothing else about the invocation is affected.
 #[test]
 #[serial_test::serial]
-fn test_client_side_records_cache_misses_when_the_connection_breaks() {
+fn test_client_side_survives_an_entry_larger_than_the_frame_limit() {
     if find_c_compiler().is_none() {
         eprintln!("No C compiler found, skipping test");
         return;
     }
 
     let daemon = Daemon::start(Some("4096"));
-    // The compile itself still succeeds; only the cache write fails.
+
+    // The compile succeeds; only the cache write is skipped.
     assert!(daemon.compile("oversized").success());
-    assert_eq!(daemon.cache_misses(), 1);
+    // The connection is still good, so a second invocation works the same way.
+    assert!(daemon.compile("oversized").success());
+
+    assert_eq!(
+        daemon.frame_limit_kills(),
+        0,
+        "the daemon dropped a connection over an oversized frame"
+    );
+    assert_eq!(daemon.cache_misses(), 2);
+    assert_eq!(daemon.cache_write_errors(), 2);
+
     daemon.stop();
 }

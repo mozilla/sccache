@@ -158,7 +158,19 @@ backend exposes a local path; for backends that don't (S3, Redis, …) the CLI
 falls back to fetching the raw bytes with `StorageGetRaw`. Direct-mode entries
 are exchanged with `StorageGetPreprocessorEntry` / `StoragePutPreprocessorEntry`.
 Because each CLI process accumulates its own statistics, it flushes them to the
-daemon with `RecordStats` before exiting.
+daemon with `RecordStats` before exiting. That flush is retried on a fresh
+connection if the compile's connection turns out to be unusable, since otherwise
+an invocation's whole delta — the cache miss it counted included — would be lost
+without a trace.
+
+A cache entry crosses IPC in a single message on the write side, so
+`SCCACHE_MAX_FRAME_LENGTH` bounds the size of an entry that can be stored. It
+defaults to 1 GiB, above anything a compile produces in practice. The daemon
+reports its limit during `StorageHandshake` and the CLI declines to send a
+payload over it: a message that exceeds the limit cannot be resynchronised by
+the transport, so the daemon would have to drop the connection, failing every
+later RPC on it rather than just the one cache write. An entry that does not fit
+is therefore reported as a cache write error and left uncached.
 
 Client-side mode is enabled with the `SCCACHE_CLIENT_SIDE` environment variable
 (or the `client_side_mode` config key). It is expected to become the only

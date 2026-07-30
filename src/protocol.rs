@@ -126,4 +126,7 @@ pub struct StorageHandshakeInfo {
     pub preprocessor_cache_mode_config: PreprocessorCacheModeConfig,
     pub cache_mode: CacheMode,
     pub max_size: Option<u64>,
+    /// The daemon's transport frame limit, so that a client can avoid sending a
+    /// request the daemon would have to drop the connection over.
+    pub max_frame_length: usize,
 }

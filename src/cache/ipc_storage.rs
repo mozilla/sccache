@@ -66,6 +66,27 @@ impl IpcStorage {
             .await
             .context("spawn_blocking panicked")?
     }
+
+    /// Refuse a payload the daemon's transport would reject.
+    ///
+    /// A frame over the daemon's limit doesn't just fail its own request: the
+    /// codec can't resynchronise, so the daemon drops the connection and every
+    /// later RPC on it — including the stats hand-off — goes with it. Failing
+    /// here costs one uncached entry and leaves the connection usable.
+    fn check_frame_size(&self, what: &str, len: usize) -> Result<()> {
+        // The frame holds the whole bincoded request: the payload plus the key
+        // and the encoding's own bytes. The reserve is far more than those need.
+        const RESERVE: usize = 4096;
+
+        let limit = self.handshake.max_frame_length;
+        if len > limit.saturating_sub(RESERVE) {
+            bail!(
+                "{what}: {len} bytes does not fit the daemon's frame limit of {limit}; raise \
+                 SCCACHE_MAX_FRAME_LENGTH and restart the server to cache entries this large"
+            );
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -121,6 +142,7 @@ impl Storage for IpcStorage {
     }
 
     async fn put_raw(&self, key: &str, data: Bytes) -> Result<Duration> {
+        self.check_frame_size("IpcStorage::put_raw", data.len())?;
         let resp = self
             .rpc(Request::StoragePutRaw {
                 key: key.to_owned(),
@@ -194,6 +216,7 @@ impl Storage for IpcStorage {
         entry
             .serialize_to(&mut buf)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
+        self.check_frame_size("IpcStorage::put_preprocessor_cache_entry", buf.len())?;
         let resp = self
             .rpc(Request::StoragePutPreprocessorEntry {
                 key: key.to_owned(),
