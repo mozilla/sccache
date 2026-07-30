@@ -181,6 +181,34 @@ fn test_error_log_receives_the_log_output() {
 
 #[test]
 #[serial_test::serial]
+fn test_error_log_pid_placeholder_gives_a_per_process_file() {
+    let tempdir = TempDir::new().unwrap();
+
+    let child = Command::new(sccache_bin())
+        .arg("--show-stats")
+        .env("SCCACHE_LOG", "debug")
+        .env("SCCACHE_ERROR_LOG", tempdir.path().join("sccache.%p.log"))
+        .env("SCCACHE_DIR", tempdir.path())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    child.wait_with_output().unwrap();
+
+    let log_path = tempdir.path().join(format!("sccache.{}.log", pid));
+    let logged = std::fs::read_to_string(&log_path)
+        .unwrap_or_else(|e| panic!("{}: {}", log_path.display(), e));
+    assert!(
+        logged.lines().any(|line| log_line_regex().is_match(line)),
+        "no log lines in {}:\n{}",
+        log_path.display(),
+        logged
+    );
+}
+
+#[test]
+#[serial_test::serial]
 fn test_log_millis_flag_with_various_values() {
     // Test that SCCACHE_LOG_MILLIS accepts any value (not just "1")
     let tempdir = TempDir::new().unwrap();

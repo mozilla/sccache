@@ -83,11 +83,37 @@ pub fn init() {
 }
 
 /// The file `SCCACHE_ERROR_LOG` points at, if it is set to a non-empty value.
+///
+/// See [`resolve_error_log_path`] for how the value is interpreted.
 pub fn error_log_path() -> Option<PathBuf> {
     match std::env::var_os(ERROR_LOG_ENV) {
-        Some(name) if !name.is_empty() => Some(PathBuf::from(name)),
+        Some(name) if !name.is_empty() => {
+            Some(resolve_error_log_path(Path::new(&name), std::process::id()))
+        }
         _ => None,
     }
+}
+
+/// Expand a `SCCACHE_ERROR_LOG` value into the path to write to.
+///
+/// A shared log file is readable thanks to the pid prefix on every line, but
+/// giving each process its own file sidesteps the interleaving altogether.  Two
+/// ways to ask for that:
+///
+/// * `%p` anywhere in the value is replaced with the pid, and
+/// * a value naming an existing directory becomes `sccache.<pid>.log` in it.
+///
+/// Anything else is used as-is, so the shared-file behaviour is unchanged.
+fn resolve_error_log_path(value: &Path, pid: u32) -> PathBuf {
+    if let Some(value) = value.to_str()
+        && value.contains("%p")
+    {
+        return PathBuf::from(value.replace("%p", &pid.to_string()));
+    }
+    if value.is_dir() {
+        return value.join(format!("sccache.{pid}.log"));
+    }
+    value.to_path_buf()
 }
 
 /// Open the error log for appending, creating it if needed.
@@ -217,6 +243,34 @@ mod tests {
         fn flush(&mut self) -> io::Result<()> {
             Ok(())
         }
+    }
+
+    #[test]
+    fn error_log_path_is_used_as_is_by_default() {
+        assert_eq!(
+            resolve_error_log_path(Path::new("/tmp/sccache.log"), 42),
+            PathBuf::from("/tmp/sccache.log")
+        );
+    }
+
+    #[test]
+    fn error_log_path_expands_pid_placeholder() {
+        assert_eq!(
+            resolve_error_log_path(Path::new("/tmp/sccache.%p.log"), 42),
+            PathBuf::from("/tmp/sccache.42.log")
+        );
+    }
+
+    #[test]
+    fn error_log_path_in_a_directory_gets_a_per_process_name() {
+        let tempdir = tempfile::Builder::new()
+            .prefix("sccache_logging_test")
+            .tempdir()
+            .unwrap();
+        assert_eq!(
+            resolve_error_log_path(tempdir.path(), 42),
+            tempdir.path().join("sccache.42.log")
+        );
     }
 
     #[test]
