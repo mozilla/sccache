@@ -29,7 +29,6 @@ use crate::protocol::{
     Compile, CompileFinished, CompileResponse, Request, Response, StorageHandshakeInfo,
 };
 use crate::util;
-#[cfg(feature = "dist-client")]
 use anyhow::Context as _;
 use bytes::{Bytes, BytesMut, buf::BufMut};
 use filetime::FileTime;
@@ -769,7 +768,10 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
                 let socket = listener.accept().await?;
                 trace!("incoming connection");
                 let conn = service.clone().bind(socket).map_err(|res| {
-                    error!("Failed to bind socket: {}", res);
+                    // `{:#}` so the cause chain comes along: the outer message
+                    // says which half of the connection gave up, the causes say
+                    // why.
+                    error!("Error serving client connection: {:#}", res);
                 });
 
                 // We're not interested if the task panicked; immediately process
@@ -1247,12 +1249,12 @@ where
         // The reader loop below feeds requests into `reqs_tx`; this task drains
         // them, calls the service, and writes responses back to the sink.
         //
-        // `_handle` must stay bound for the lifetime of `bind` (not `let _ =`,
+        // `handle` must stay bound for the lifetime of `bind` (not `let _ =`,
         // which would drop it immediately): it is an `AbortOnDropHandle`, so
         // dropping it aborts this task and its in-flight compile subtasks. That
         // is the cancellation we want once the client disconnects and the reader
         // loop below exits.
-        let _handle = util::spawn(async move {
+        let mut handle = util::spawn(async move {
             while let Some(req) = reqs_rx.recv().await {
                 match util::spawn(me.clone().call(req)).await?? {
                     Message::WithoutBody(message) => {
@@ -1275,13 +1277,30 @@ where
         });
 
         // Read requests until the client disconnects (stream ends) or the
-        // stream errors. A send error means the handler task above has ended,
-        // so we stop reading in that case too.
-        while let Some(req) = stream.next().await {
-            reqs_tx.send(req?)?;
-        }
+        // stream errors.
+        let reader = async {
+            while let Some(req) = stream.next().await {
+                reqs_tx.send(req?)?;
+            }
+            Ok::<_, Error>(())
+        };
+        tokio::pin!(reader);
 
-        Ok(())
+        // Stop as soon as either half is done. Watching the handler matters as
+        // much as watching the reader: the two halves of the connection are
+        // independent, so a handler that has given up — a response too large to
+        // encode, a panic in a request handler — does not close the socket. The
+        // reader would then keep the connection open with nobody left to answer,
+        // and a client blocked reading its response would wait for one that is
+        // never coming. Ending `bind` drops the transport, which closes the
+        // socket, so the client fails instead of hanging.
+        tokio::select! {
+            result = &mut reader => result,
+            result = &mut handle => match result {
+                Ok(result) => result.context("failed while serving the connection"),
+                Err(e) => Err(anyhow!("connection handler task failed: {e}")),
+            },
+        }
     }
 
     /// Get dist status.

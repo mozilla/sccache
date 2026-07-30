@@ -1,4 +1,4 @@
-// Tests for statistics reporting and IPC payload limits in client-side mode.
+// Tests for statistics reporting and IPC payload limits.
 //
 // Copyright 2026 Mozilla Foundation
 //
@@ -19,8 +19,24 @@
 
 use std::env;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::time::{Duration, Instant};
 use tempfile::TempDir;
+
+/// Wait for `child`, returning `None` if it outlives `timeout` (in which case it
+/// is killed, so it cannot outlive the test).
+fn wait_with_timeout(child: &mut Child, timeout: Duration) -> Option<ExitStatus> {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        match child.try_wait().unwrap() {
+            Some(status) => return Some(status),
+            None => std::thread::sleep(Duration::from_millis(50)),
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    None
+}
 
 fn sccache_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_sccache"))
@@ -142,6 +158,13 @@ impl Daemon {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+
+    /// Shut the daemon down without requiring the RPC to succeed, for limits so
+    /// small that even the shutdown response does not fit a frame. The daemon
+    /// still acts on the request; only its reply is lost.
+    fn stop_best_effort(self) {
+        let _ = self.command().arg("--stop-server").output();
+    }
 }
 
 #[test]
@@ -193,4 +216,50 @@ fn test_client_side_survives_an_entry_larger_than_the_frame_limit() {
     assert_eq!(daemon.cache_write_errors(), 2);
 
     daemon.stop();
+}
+
+// A response too large to encode used to hang the client forever. The daemon's
+// handler task gave up on the connection, but the two halves of a connection are
+// independent, so the socket stayed open with nobody left to answer on it, and a
+// client blocked on `read_one_response` waited for a response that was never
+// coming. The request has to fail — the response genuinely cannot be delivered —
+// but it has to fail, not hang.
+#[test]
+#[serial_test::serial]
+fn test_an_undeliverable_response_does_not_hang_the_client() {
+    // Small enough that the daemon cannot encode a stats response.
+    let daemon = Daemon::start(Some("250"));
+
+    let mut child = daemon
+        .command()
+        .args(["--show-stats"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let status = wait_with_timeout(&mut child, Duration::from_secs(30));
+
+    let Some(status) = status else {
+        daemon.stop_best_effort();
+        panic!("--show-stats hung waiting for a response that was never coming");
+    };
+    assert!(
+        !status.success(),
+        "--show-stats reported success without a response"
+    );
+
+    // The daemon survives: only that one connection was torn down.
+    let mut child = daemon
+        .command()
+        .args(["--show-stats"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    assert!(
+        wait_with_timeout(&mut child, Duration::from_secs(30)).is_some(),
+        "the daemon stopped answering after an undeliverable response"
+    );
+
+    daemon.stop_best_effort();
 }
