@@ -38,7 +38,7 @@ use std::os::unix::process::ExitStatusExt;
 use std::os::windows::io::AsRawHandle;
 use std::path::Path;
 use std::process;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use strip_ansi_escapes::Writer;
 use tokio::io::AsyncReadExt;
@@ -759,27 +759,68 @@ where
         args: cmdline.clone(),
         env_vars,
     };
-    let (compile_resp, finished, forwarded_notification) =
-        runtime.block_on(service.compile_direct(compile, &mut *stderr))?;
-    let creator = C::new(jobserver);
-    let exit_code = handle_compile_result(
-        creator,
-        runtime,
-        compile_resp,
-        finished,
-        forwarded_notification,
-        &exe_path,
-        cmdline,
-        cwd,
-        stdout,
-        stderr,
-    )?;
-    // Ship accumulated stats back to the daemon (best-effort; don't fail the build on error).
+    // Whatever the outcome, the stats accumulated so far still have to be
+    // shipped: a failed compile has counted a cache miss, a cache error or a
+    // compile failure that `--show-stats` should report.
+    let result = match runtime.block_on(service.compile_direct(compile, &mut *stderr)) {
+        Ok((compile_resp, finished, forwarded_notification)) => {
+            let creator = C::new(jobserver);
+            handle_compile_result(
+                creator,
+                runtime,
+                compile_resp,
+                finished,
+                forwarded_notification,
+                &exe_path,
+                cmdline,
+                cwd,
+                stdout,
+                stderr,
+            )
+        }
+        Err(e) => Err(e),
+    };
     let delta: ServerStats = runtime.block_on(service.take_stats());
-    if let Ok(mut conn) = conn_arc.lock() {
-        let _ = conn.request(Request::RecordStats(Box::new(delta)));
+    record_stats(&conn_arc, delta);
+    result
+}
+
+/// Merge this process' stats into the daemon's running totals.
+///
+/// The connection used for the compile may already be unusable — the daemon
+/// drops it when a request exceeds `SCCACHE_MAX_FRAME_LENGTH`, which a cache
+/// write of a large entry does — so a failure here says nothing about whether
+/// the daemon is still alive. Retry once on a fresh connection rather than
+/// discarding the delta, and if that fails too, say so instead of letting the
+/// counts disappear silently.
+fn record_stats(conn: &Mutex<ServerConnection>, delta: ServerStats) {
+    fn attempt(conn: &mut ServerConnection, delta: ServerStats) -> Result<()> {
+        match conn.request(Request::RecordStats(Box::new(delta))) {
+            Ok(Response::RecordStats) => Ok(()),
+            Ok(other) => bail!("unexpected response to RecordStats: {other:?}"),
+            Err(e) => Err(e),
+        }
     }
-    Ok(exit_code)
+
+    let first = match conn.lock() {
+        // A poisoned lock means an RPC panicked mid-request, so the connection
+        // is no more trustworthy than a broken one; fall through to the retry.
+        Err(_) => Err(anyhow!("connection mutex was poisoned")),
+        Ok(mut conn) => attempt(&mut conn, delta.clone()),
+    };
+    let Err(e) = first else {
+        return;
+    };
+    debug!("recording stats on the compile connection failed: {e:#}; reconnecting");
+
+    // Don't start a daemon just to record stats: if none is running, there are
+    // no totals left to merge into.
+    let retried = connect_to_server(&get_addr())
+        .map_err(anyhow::Error::from)
+        .and_then(|mut conn| attempt(&mut conn, delta));
+    if let Err(e) = retried {
+        warn!("stats for this compile were not recorded: {e:#}");
+    }
 }
 
 #[derive(serde::Serialize)]
