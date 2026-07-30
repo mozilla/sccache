@@ -41,6 +41,7 @@ mod compiler;
 pub mod config;
 pub mod dist;
 mod jobserver;
+pub mod logging;
 pub mod lru_disk_cache;
 mod mock_command;
 mod net;
@@ -52,8 +53,6 @@ pub mod util;
 // For benches/sccache_bench.rs.
 #[doc(hidden)]
 pub use compiler::PreprocessorCacheEntry;
-
-use std::env;
 
 /// VERSION is the pkg version of sccache.
 ///
@@ -84,7 +83,7 @@ fn exit(code: i32) -> ! {
 }
 
 pub fn main() {
-    init_logging();
+    logging::init();
 
     let command = match cmdline::try_parse() {
         Ok(cmd) => cmd,
@@ -111,20 +110,4 @@ pub fn main() {
             2
         }
     });
-}
-
-fn init_logging() {
-    if env::var(LOGGING_ENV).is_ok() {
-        let mut builder = env_logger::Builder::from_env(LOGGING_ENV);
-
-        // Enable millisecond precision timestamps if SCCACHE_LOG_MILLIS is set
-        if env::var("SCCACHE_LOG_MILLIS").is_ok() {
-            builder.format_timestamp_millis();
-        }
-
-        match builder.try_init() {
-            Ok(_) => (),
-            Err(e) => panic!("Failed to initialize logging: {:?}", e),
-        }
-    }
 }

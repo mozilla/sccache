@@ -19,12 +19,17 @@
 use regex::Regex;
 use std::env;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
 // Get the path to the sccache binary
 fn sccache_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_sccache"))
+}
+
+// Matches the start of a log line: `[<timestamp> <LEVEL> <pid> <target>] `
+fn log_line_regex() -> Regex {
+    Regex::new(r"^\[\d{4}-\d{2}-\d{2}T[\d:.]+Z\s+\w+\s+(\d+)\s+\S+\] ").unwrap()
 }
 
 #[test]
@@ -86,6 +91,44 @@ fn test_log_timestamp_format_with_millis() {
         "Expected timestamp format with milliseconds not found in stderr:\n{}",
         stderr
     );
+}
+
+#[test]
+#[serial_test::serial]
+fn test_log_lines_carry_the_emitting_pid() {
+    // Several sccache processes log to the same destination concurrently, so
+    // every line has to say which process emitted it.
+    let tempdir = TempDir::new().unwrap();
+
+    let child = Command::new(sccache_bin())
+        .arg("--show-stats")
+        .env("SCCACHE_LOG", "debug")
+        .env("SCCACHE_DIR", tempdir.path())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    let output = child.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    let regex = log_line_regex();
+    let mut log_lines = 0;
+    for line in stderr.lines() {
+        // Non-log output (panics, backtraces) is not our concern here.
+        let Some(captures) = regex.captures(line) else {
+            continue;
+        };
+        log_lines += 1;
+        assert_eq!(
+            captures.get(1).unwrap().as_str(),
+            pid.to_string(),
+            "log line attributed to the wrong pid (expected {}):\n{}",
+            pid,
+            line
+        );
+    }
+    assert!(log_lines > 0, "no log lines found in stderr:\n{}", stderr);
 }
 
 #[test]
