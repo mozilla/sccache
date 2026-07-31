@@ -65,8 +65,8 @@ use crate::errors::*;
 /// Strip a basedir prefix from a byte slice, returning the relative portion.
 ///
 /// Basedirs are pre-normalized with trailing `/` (see config.rs), so the
-/// result is a clean relative path. Iteration is in the order basedirs are
-/// listed in config; the first match wins. A value that equals a basedir
+/// result is a clean relative path. When multiple basedirs match, the longest
+/// prefix wins. A value that equals a basedir
 /// minus the trailing `/` (e.g. `cwd == basedir`) also matches and strips
 /// to the empty byte string.
 ///
@@ -83,29 +83,37 @@ fn strip_basedir_prefix<'a>(value: &'a [u8], basedirs: &[Vec<u8>]) -> Cow<'a, [u
 
 #[cfg(not(windows))]
 fn strip_basedir_prefix_impl<'a>(value: &'a [u8], basedirs: &[Vec<u8>]) -> Cow<'a, [u8]> {
-    for basedir in basedirs {
-        if value.starts_with(basedir) {
-            return Cow::Borrowed(&value[basedir.len()..]);
-        }
-        if is_basedir_minus_slash(value, basedir) {
-            return Cow::Borrowed(b"");
-        }
+    let Some(basedir) = basedirs
+        .iter()
+        .filter(|basedir| value.starts_with(basedir) || is_basedir_minus_slash(value, basedir))
+        .max_by_key(|basedir| basedir.len())
+    else {
+        return Cow::Borrowed(value);
+    };
+    if value.starts_with(basedir) {
+        Cow::Borrowed(&value[basedir.len()..])
+    } else {
+        Cow::Borrowed(b"")
     }
-    Cow::Borrowed(value)
 }
 
 #[cfg(windows)]
 fn strip_basedir_prefix_impl<'a>(value: &'a [u8], basedirs: &[Vec<u8>]) -> Cow<'a, [u8]> {
     let normalized = crate::util::normalize_win_path(value);
-    for basedir in basedirs {
-        if normalized.starts_with(basedir) {
-            return Cow::Owned(normalized[basedir.len()..].to_vec());
-        }
-        if is_basedir_minus_slash(&normalized, basedir) {
-            return Cow::Owned(Vec::new());
-        }
+    let Some(basedir) = basedirs
+        .iter()
+        .filter(|basedir| {
+            normalized.starts_with(basedir) || is_basedir_minus_slash(&normalized, basedir)
+        })
+        .max_by_key(|basedir| basedir.len())
+    else {
+        return Cow::Borrowed(value);
+    };
+    if normalized.starts_with(basedir) {
+        Cow::Owned(normalized[basedir.len()..].to_vec())
+    } else {
+        Cow::Owned(Vec::new())
     }
-    Cow::Borrowed(value)
 }
 
 /// Returns true if `value` is `basedir` with the trailing `/` removed.
@@ -141,19 +149,18 @@ fn strip_basedirs_in_arg_impl<'a>(arg: &'a [u8], basedirs: &[Vec<u8>]) -> Cow<'a
 
 #[cfg(windows)]
 fn strip_basedirs_in_arg_impl<'a>(arg: &'a [u8], basedirs: &[Vec<u8>]) -> Cow<'a, [u8]> {
-    let normalized = crate::util::normalize_win_path(arg);
-    match find_and_strip_basedirs(&normalized, basedirs) {
-        // No match: return the original arg (mirrors strip_basedir_prefix).
-        Cow::Borrowed(_) => Cow::Borrowed(arg),
-        // Match: the slice points into the local normalized buffer.
-        Cow::Owned(v) => Cow::Owned(v),
-    }
+    strip_windows_basedirs_in_arg(arg, basedirs)
 }
 
 /// Core matcher used by `strip_basedirs_in_arg_impl`: look up every basedir
 /// in `haystack` at start-of-string / post-`=` / post-`,` boundaries, then
 /// elide the matched ranges.
 fn find_and_strip_basedirs<'a>(haystack: &'a [u8], basedirs: &[Vec<u8>]) -> Cow<'a, [u8]> {
+    let matches = find_basedir_matches(haystack, basedirs);
+    strip_matches(haystack, &matches)
+}
+
+fn find_basedir_matches(haystack: &[u8], basedirs: &[Vec<u8>]) -> Vec<(usize, usize)> {
     let mut matches: Vec<(usize, usize)> = Vec::new();
     for basedir in basedirs {
         let b = basedir.as_slice();
@@ -161,14 +168,31 @@ fn find_and_strip_basedirs<'a>(haystack: &'a [u8], basedirs: &[Vec<u8>]) -> Cow<
             continue;
         }
         for start in memchr::memmem::find_iter(haystack, b) {
-            let is_boundary = start == 0 || matches!(haystack[start - 1], b'=' | b',');
-            if is_boundary {
+            if is_arg_path_boundary(haystack, start) {
                 matches.push((start, start + b.len()));
             }
         }
+        if let Some(basedir_without_slash) = b.strip_suffix(b"/") {
+            for start in memchr::memmem::find_iter(haystack, basedir_without_slash) {
+                let end = start + basedir_without_slash.len();
+                if is_arg_path_boundary(haystack, start)
+                    && (end == haystack.len() || matches!(haystack[end], b'=' | b','))
+                {
+                    matches.push((start, end));
+                }
+            }
+        }
     }
+    filter_overlapping_matches(matches)
+}
+
+fn is_arg_path_boundary(value: &[u8], start: usize) -> bool {
+    start == 0 || matches!(value[start - 1], b'=' | b',')
+}
+
+fn filter_overlapping_matches(mut matches: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
     if matches.is_empty() {
-        return Cow::Borrowed(haystack);
+        return matches;
     }
     // Sort by start ascending; break ties by length descending so the longest
     // match at a given position wins (e.g. `/a/b/` before `/a/` when both are
@@ -184,14 +208,35 @@ fn find_and_strip_basedirs<'a>(haystack: &'a [u8], basedirs: &[Vec<u8>]) -> Cow<
             last_end = e;
         }
     }
-    let mut out = Vec::with_capacity(haystack.len());
-    let mut pos = 0;
-    for (s, e) in filtered {
-        out.extend_from_slice(&haystack[pos..s]);
-        pos = e;
+    filtered
+}
+
+fn strip_matches<'a>(value: &'a [u8], matches: &[(usize, usize)]) -> Cow<'a, [u8]> {
+    if matches.is_empty() {
+        return Cow::Borrowed(value);
     }
-    out.extend_from_slice(&haystack[pos..]);
+    let mut out = Vec::with_capacity(value.len());
+    let mut pos = 0;
+    for &(start, end) in matches {
+        out.extend_from_slice(&value[pos..start]);
+        pos = end;
+    }
+    out.extend_from_slice(&value[pos..]);
     Cow::Owned(out)
+}
+
+/// Match Windows basedirs case-insensitively while preserving the original
+/// non-path bytes in the cache key. Non-ASCII arguments remain location-sensitive
+/// because Unicode case folding can change byte offsets.
+#[cfg(any(windows, test))]
+fn strip_windows_basedirs_in_arg<'a>(value: &'a [u8], basedirs: &[Vec<u8>]) -> Cow<'a, [u8]> {
+    if !value.is_ascii() {
+        return Cow::Borrowed(value);
+    }
+    let normalized = crate::util::normalize_win_path(value);
+    debug_assert_eq!(normalized.len(), value.len());
+    let matches = find_basedir_matches(&normalized, basedirs);
+    strip_matches(value, &matches)
 }
 
 #[cfg(feature = "dist-client")]
@@ -302,6 +347,8 @@ pub struct ParsedArguments {
     ///
     /// For more information, see https://doc.rust-lang.org/rustc/profile-guided-optimization.html
     profile: Option<PathBuf>,
+    /// Profile data and compiler plugins whose contents affect code generation.
+    codegen_input_files: Vec<PathBuf>,
     /// If `-Z profile` has been enabled, we will use a GCC-compatible, gcov-based
     /// coverage implementation.
     ///
@@ -367,7 +414,7 @@ static ALLOWED_EMIT: LazyLock<HashSet<&'static str>> =
     LazyLock::new(|| ["link", "metadata", "dep-info"].iter().copied().collect());
 
 /// Version number for cache key.
-const CACHE_VERSION: &[u8] = b"6";
+const CACHE_VERSION: &[u8] = b"7";
 
 /// Get absolute paths for all source files and env-deps listed in rustc's dep-info output.
 async fn get_source_files_and_env_deps<T>(
@@ -1271,6 +1318,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
     let mut color_mode = ColorMode::Auto;
     let mut has_json = false;
     let mut profile = None;
+    let mut codegen_input_files = Vec::new();
     let mut gcno = false;
     let mut target_json = None;
 
@@ -1331,7 +1379,10 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                 match (opt.as_ref(), value) {
                     ("extra-filename", Some(value)) => extra_filename = Some(value.to_owned()),
                     ("extra-filename", None) => cannot_cache!("extra-filename"),
-                    ("profile-use", Some(v)) => profile = Some(v.clone()),
+                    ("profile-use", Some(v)) => {
+                        profile = Some(v.clone());
+                        codegen_input_files.push(v.into());
+                    }
                     // Incremental compilation makes a mess of sccache's entire world
                     // view. It produces additional compiler outputs that we don't cache,
                     // and just letting rustc do its work in incremental mode is likely
@@ -1344,9 +1395,15 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                     (_, _) => (),
                 }
             }
-            Some(Unstable(ArgUnstable { opt, value })) => match value.as_deref() {
-                Some("y") | Some("yes") | Some("on") | None if opt == "profile" => {
+            Some(Unstable(ArgUnstable { opt, value })) => match (opt.as_ref(), value.as_deref()) {
+                ("profile", Some("y") | Some("yes") | Some("on") | None) => {
                     gcno = true;
+                }
+                ("profile-sample-use", Some(path)) => {
+                    codegen_input_files.push(path.into());
+                }
+                ("llvm-plugins", Some(paths)) => {
+                    codegen_input_files.extend(paths.split_whitespace().map(PathBuf::from));
                 }
                 _ => (),
             },
@@ -1502,6 +1559,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
         crate_name,
         dep_info: dep_info.map(|s| s.into()),
         profile: profile.map(|s| s.into()),
+        codegen_input_files,
         gcno: gcno.map(|s| s.into()),
         emit,
         color_mode,
@@ -1614,17 +1672,29 @@ where
 
         let target_json_hash = hash_all(&target_json_files, pool);
 
+        // Hash PGO data and LLVM plugins. Their paths are normalized below, so their contents
+        // must remain part of the key to distinguish different code-generation inputs.
+        let codegen_input_files = self
+            .parsed_args
+            .codegen_input_files
+            .iter()
+            .map(|path| cwd.join(path))
+            .collect::<Vec<_>>();
+        let codegen_input_hashes = hash_all(&codegen_input_files, pool);
+
         // Perform all hashing operations on the files.
         let (
             (source_files, source_hashes, mut env_deps),
             extern_hashes,
             staticlib_hashes,
             target_json_hash,
+            codegen_input_hashes,
         ) = futures::try_join!(
             source_files_and_hashes_and_env_deps,
             extern_hashes,
             staticlib_hashes,
-            target_json_hash
+            target_json_hash,
+            codegen_input_hashes
         )?;
 
         // If you change any of the inputs to the hash, you should change `CACHE_VERSION`.
@@ -1687,25 +1757,26 @@ where
         // 5. The digest of all files listed on the commandline (self.externs).
         // 6. The digest of all static libraries listed on the commandline (self.staticlibs).
         // 7. The digest of the content of the target json file specified via `--target` (if any).
+        // 8. The digest of PGO data and LLVM plugins (if any).
         for h in source_hashes
             .into_iter()
             .chain(extern_hashes)
             .chain(staticlib_hashes)
             .chain(target_json_hash)
+            .chain(codegen_input_hashes)
         {
             m.update(h.as_bytes());
         }
-        // 8. Environment variables: Hash all environment variables listed in the rustc dep-info
+        // 9. Environment variables: Hash all environment variables listed in the rustc dep-info
         //    output. Additionally also has all environment variables starting with `CARGO_`,
         //    since those are not listed in dep-info but affect cacheability.
         env_deps.sort();
         for (var, val) in env_deps.iter() {
             var.hash(&mut HashToDigest { digest: &mut m });
             m.update(b"=");
-            // Strip basedir prefixes from dep-info env var values (e.g. OUT_DIR)
-            // to enable cross-machine cache hits.
-            let val_bytes = val.as_encoded_bytes();
-            strip_basedir_prefix(val_bytes, basedirs).hash(&mut HashToDigest { digest: &mut m });
+            // rustc reports variables read by env! and option_env! here. Their values can be
+            // embedded verbatim in the artifact, so they must remain location-sensitive.
+            val.hash(&mut HashToDigest { digest: &mut m });
         }
         let mut env_vars: Vec<_> = env_vars
             .iter()
@@ -1744,11 +1815,11 @@ where
             let val_bytes = val.as_encoded_bytes();
             strip_basedir_prefix(val_bytes, basedirs).hash(&mut HashToDigest { digest: &mut m });
         }
-        // 9. The cwd of the compile. This will wind up in the rlib.
+        // 10. The cwd of the compile. This will wind up in the rlib.
         // Strip basedir prefix for cross-machine cache portability.
         let cwd_bytes = cwd.as_os_str().as_encoded_bytes();
         strip_basedir_prefix(cwd_bytes, basedirs).hash(&mut HashToDigest { digest: &mut m });
-        // 10. The version of the compiler.
+        // 11. The version of the compiler.
         self.version.hash(&mut HashToDigest { digest: &mut m });
 
         // Turn arguments into a simple Vec<OsString> to calculate outputs.
@@ -3592,7 +3663,11 @@ proc_macro false
         );
     }
 
-    fn mock_dep_info(creator: &Arc<Mutex<MockCommandCreator>>, dep_srcs: &[&str]) {
+    fn mock_dep_info(
+        creator: &Arc<Mutex<MockCommandCreator>>,
+        dep_srcs: &[&str],
+        env_deps: &[(&str, &str)],
+    ) {
         // Mock the `rustc --emit=dep-info` process by writing
         // a dep-info file.
         let mut sorted_deps = dep_srcs
@@ -3600,6 +3675,10 @@ proc_macro false
             .map(|s| (*s).to_string())
             .collect::<Vec<String>>();
         sorted_deps.sort();
+        let env_deps = env_deps
+            .iter()
+            .map(|(var, val)| ((*var).to_string(), (*val).to_string()))
+            .collect::<Vec<_>>();
         next_command_calls(creator, move |args| {
             let mut dep_info_path = None;
             let mut it = args.iter();
@@ -3614,6 +3693,9 @@ proc_macro false
             writeln!(f, "blah: {}", sorted_deps.iter().join(" "))?;
             for d in sorted_deps.iter() {
                 writeln!(f, "{}:", d)?;
+            }
+            for (var, val) in &env_deps {
+                writeln!(f, "# env-dep:{var}={val}")?;
             }
             Ok(MockChild::new(exit_status(0), "", ""))
         });
@@ -3696,12 +3778,13 @@ proc_macro false
                 color_mode: ColorMode::Auto,
                 has_json: false,
                 profile: None,
+                codegen_input_files: vec![],
                 gcno: None,
                 target_json: None,
             },
         });
         let creator = new_creator();
-        mock_dep_info(&creator, &["foo.rs", "bar.rs"]);
+        mock_dep_info(&creator, &["foo.rs", "bar.rs"], &[]);
         mock_file_names(&creator, &["foo.rlib", "foo.a"]);
         let runtime = single_threaded_runtime();
         let pool = runtime.handle().clone();
@@ -3787,6 +3870,29 @@ proc_macro false
     where
         F: Fn(&Path) -> Result<()>,
     {
+        hash_key_with_env_deps(
+            f,
+            args,
+            env_vars,
+            pre_func,
+            preprocessor_cache_mode,
+            basedirs,
+            &[],
+        )
+    }
+
+    fn hash_key_with_env_deps<F>(
+        f: &TestFixture,
+        args: &[&'static str],
+        env_vars: &[(OsString, OsString)],
+        pre_func: F,
+        preprocessor_cache_mode: bool,
+        basedirs: Vec<Vec<u8>>,
+        env_deps: &[(&str, &str)],
+    ) -> String
+    where
+        F: Fn(&Path) -> Result<()>,
+    {
         let oargs = args.iter().map(OsString::from).collect::<Vec<OsString>>();
         let parsed_args = match parse_arguments(&oargs, f.tempdir.path()) {
             CompilerArguments::Ok(parsed_args) => parsed_args,
@@ -3819,7 +3925,7 @@ proc_macro false
         let runtime = single_threaded_runtime();
         let pool = runtime.handle().clone();
 
-        mock_dep_info(&creator, &["foo.rs"]);
+        mock_dep_info(&creator, &["foo.rs"], env_deps);
         mock_file_names(&creator, &["foo.rlib"]);
         hasher
             .generate_hash_key(
@@ -4232,6 +4338,203 @@ proc_macro false
     }
 
     #[test]
+    fn test_basedirs_preserve_path_sensitive_env_dependencies() {
+        let f1 = TestFixture::new();
+        let f2 = TestFixture::new();
+        let args = &[
+            "--emit",
+            "link",
+            "foo.rs",
+            "--out-dir",
+            "out",
+            "--crate-name",
+            "foo",
+            "--crate-type",
+            "lib",
+        ];
+        let manifest1 = f1.tempdir.path().to_string_lossy().into_owned();
+        let manifest2 = f2.tempdir.path().to_string_lossy().into_owned();
+        let env1 = vec![(
+            OsString::from("CARGO_MANIFEST_DIR"),
+            OsString::from(&manifest1),
+        )];
+        let env2 = vec![(
+            OsString::from("CARGO_MANIFEST_DIR"),
+            OsString::from(&manifest2),
+        )];
+
+        let k1 = hash_key_with_env_deps(
+            &f1,
+            args,
+            &env1,
+            nothing,
+            false,
+            vec![basedir_for(f1.tempdir.path())],
+            &[("CARGO_MANIFEST_DIR", &manifest1)],
+        );
+        let k2 = hash_key_with_env_deps(
+            &f2,
+            args,
+            &env2,
+            nothing,
+            false,
+            vec![basedir_for(f2.tempdir.path())],
+            &[("CARGO_MANIFEST_DIR", &manifest2)],
+        );
+
+        assert_ne!(
+            k1, k2,
+            "env! values reported by rustc must remain location-sensitive"
+        );
+    }
+
+    #[test]
+    fn test_basedirs_hash_profile_use_contents() {
+        fn write_profile_a(path: &Path) -> Result<()> {
+            fs::write(path.join("profile.profdata"), b"profile-a")?;
+            Ok(())
+        }
+
+        fn write_profile_b(path: &Path) -> Result<()> {
+            fs::write(path.join("profile.profdata"), b"profile-b")?;
+            Ok(())
+        }
+
+        let f1 = TestFixture::new();
+        let f2 = TestFixture::new();
+        let args = &[
+            "--emit",
+            "link",
+            "foo.rs",
+            "--out-dir",
+            "out",
+            "--crate-name",
+            "foo",
+            "--crate-type",
+            "lib",
+            "-C",
+            "profile-use=profile.profdata",
+        ];
+        let k1 = hash_key(
+            &f1,
+            args,
+            &[],
+            write_profile_a,
+            false,
+            vec![basedir_for(f1.tempdir.path())],
+        );
+        let k2 = hash_key(
+            &f2,
+            args,
+            &[],
+            write_profile_b,
+            false,
+            vec![basedir_for(f2.tempdir.path())],
+        );
+
+        assert_ne!(k1, k2, "different profile data must produce different keys");
+    }
+
+    #[test]
+    fn test_basedirs_hash_sample_profile_contents() {
+        fn write_profile_a(path: &Path) -> Result<()> {
+            fs::write(path.join("sample.prof"), b"sample-a")?;
+            Ok(())
+        }
+
+        fn write_profile_b(path: &Path) -> Result<()> {
+            fs::write(path.join("sample.prof"), b"sample-b")?;
+            Ok(())
+        }
+
+        let f1 = TestFixture::new();
+        let f2 = TestFixture::new();
+        let args = &[
+            "--emit",
+            "link",
+            "foo.rs",
+            "--out-dir",
+            "out",
+            "--crate-name",
+            "foo",
+            "--crate-type",
+            "lib",
+            "-Z",
+            "profile-sample-use=sample.prof",
+        ];
+        let k1 = hash_key(
+            &f1,
+            args,
+            &[],
+            write_profile_a,
+            false,
+            vec![basedir_for(f1.tempdir.path())],
+        );
+        let k2 = hash_key(
+            &f2,
+            args,
+            &[],
+            write_profile_b,
+            false,
+            vec![basedir_for(f2.tempdir.path())],
+        );
+
+        assert_ne!(
+            k1, k2,
+            "different sample profiles must produce different keys"
+        );
+    }
+
+    #[test]
+    fn test_basedirs_hash_all_llvm_plugins() {
+        fn write_plugins_a(path: &Path) -> Result<()> {
+            fs::write(path.join("first.so"), b"first")?;
+            fs::write(path.join("second.so"), b"second-a")?;
+            Ok(())
+        }
+
+        fn write_plugins_b(path: &Path) -> Result<()> {
+            fs::write(path.join("first.so"), b"first")?;
+            fs::write(path.join("second.so"), b"second-b")?;
+            Ok(())
+        }
+
+        let f1 = TestFixture::new();
+        let f2 = TestFixture::new();
+        let args = &[
+            "--emit",
+            "link",
+            "foo.rs",
+            "--out-dir",
+            "out",
+            "--crate-name",
+            "foo",
+            "--crate-type",
+            "lib",
+            "-Z",
+            "llvm-plugins=first.so second.so",
+        ];
+        let k1 = hash_key(
+            &f1,
+            args,
+            &[],
+            write_plugins_a,
+            false,
+            vec![basedir_for(f1.tempdir.path())],
+        );
+        let k2 = hash_key(
+            &f2,
+            args,
+            &[],
+            write_plugins_b,
+            false,
+            vec![basedir_for(f2.tempdir.path())],
+        );
+
+        assert_ne!(k1, k2, "all LLVM plugin contents must affect the key");
+    }
+
+    #[test]
 
     fn test_strip_basedir_prefix_no_match() {
         let out = super::strip_basedir_prefix(b"/other/path", &[b"/home/runner/".to_vec()]);
@@ -4243,13 +4546,10 @@ proc_macro false
 
     #[test]
 
-    fn test_strip_basedir_prefix_first_match_wins() {
-        // Documents the current contract: iteration is in config order and the
-        // first matching basedir wins. Listing a more-specific basedir before a
-        // less-specific one is the caller's responsibility.
+    fn test_strip_basedir_prefix_longest_match_wins() {
         let basedirs = vec![b"/home/".to_vec(), b"/home/runner/".to_vec()];
         let out = super::strip_basedir_prefix(b"/home/runner/src/foo.rs", &basedirs);
-        assert_eq!(&*out, b"runner/src/foo.rs");
+        assert_eq!(&*out, b"src/foo.rs");
     }
 
     // strip_basedirs_in_arg covers embedded-path arg patterns (mozilla/sccache#2652).
@@ -4273,11 +4573,29 @@ proc_macro false
         assert_eq!(&*out, b"--remap-path-prefix=a=/new");
     }
 
-    // Preserves the real `-Clink-arg=-Wl,...` rustc flag capitalization; that
-    // uppercase gets lowercased by `normalize_win_path` on Windows, so the
-    // assertion only holds on non-Windows. Windows exercises the same
-    // code path via `test_strip_basedirs_in_arg_after_comma_lowercase`.
-    #[cfg(not(windows))]
+    #[test]
+    fn test_strip_basedirs_in_arg_exact_basedir() {
+        let out = super::strip_basedirs_in_arg(
+            b"--remap-path-prefix=/home/user=/new",
+            &[b"/home/user/".to_vec()],
+        );
+        assert_eq!(&*out, b"--remap-path-prefix==/new");
+    }
+
+    #[test]
+    fn test_windows_arg_matching_preserves_non_path_case() {
+        let arg = b"--remap-path-prefix=C:\\Work\\Repo=VIRTUAL";
+        let out = super::strip_windows_basedirs_in_arg(arg, &[b"c:/work/repo/".to_vec()]);
+        assert_eq!(&*out, b"--remap-path-prefix==VIRTUAL");
+    }
+
+    #[test]
+    fn test_windows_non_ascii_arg_remains_location_sensitive() {
+        let arg = b"--remap-path-prefix=C:\\Work\\Repo=\xc4\xb0";
+        let out = super::strip_windows_basedirs_in_arg(arg, &[b"c:/work/repo/".to_vec()]);
+        assert_eq!(&*out, arg);
+    }
+
     #[test]
     fn test_strip_basedirs_in_arg_after_comma() {
         let out = super::strip_basedirs_in_arg(
@@ -4287,8 +4605,6 @@ proc_macro false
         assert_eq!(&*out, b"-Clink-arg=-Wl,-rpath,lib");
     }
 
-    // Lowercase-only mirror of `test_strip_basedirs_in_arg_after_comma` so the
-    // after-`,` boundary match is exercised on every platform.
     #[test]
     fn test_strip_basedirs_in_arg_after_comma_lowercase() {
         let out = super::strip_basedirs_in_arg(

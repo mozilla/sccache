@@ -36,11 +36,11 @@ impl MockStorage {
     ///
     /// # Arguments
     ///
-    /// * `delay` — if `Some`, every `get`/`put` sleeps this long before
+    /// * `delay` - if `Some`, every `get`/`put` sleeps this long before
     ///   returning, to simulate slow storage.
-    /// * `preprocessor_cache_mode` — value returned from
+    /// * `preprocessor_cache_mode` - value returned from
     ///   [`Storage::preprocessor_cache_mode_config`].
-    /// * `basedirs` — the list reported by [`Storage::basedirs`], used when
+    /// * `basedirs` - the list reported by [`Storage::basedirs`], used when
     ///   tests need to exercise basedir-prefix stripping in
     ///   `generate_hash_key`.
     pub(crate) fn new(
