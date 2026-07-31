@@ -528,6 +528,8 @@ pub fn build_single_cache(
                 .with_endpoint(c.endpoint.clone())
                 .with_use_ssl(c.use_ssl)
                 .with_server_side_encryption(c.server_side_encryption)
+                .with_server_side_encryption_aws_kms(c.server_side_encryption_aws_kms)
+                .with_server_side_encryption_kms_key_id(c.server_side_encryption_kms_key_id.clone())
                 .with_enable_virtual_host_style(c.enable_virtual_host_style)
                 .build()
                 .map_err(|err| anyhow!("create s3 cache failed: {err:?}"))?;
