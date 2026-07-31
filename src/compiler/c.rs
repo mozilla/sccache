@@ -694,6 +694,7 @@ const PRAGMA_GCC_PCH_PREPROCESS: &[u8] = b"pragma GCC pch_preprocess";
 const HASH_31_COMMAND_LINE_NEWLINE: &[u8] = b"# 31 \"<command-line>\"\n";
 const HASH_32_COMMAND_LINE_2_NEWLINE: &[u8] = b"# 32 \"<command-line>\" 2\n";
 const INCBIN_DIRECTIVE: &[u8] = b".incbin";
+const COMPRESSED_CLANG_OFFLOAD_BUNDLE_MAGIC: &[u8] = b"CCOB";
 
 /// Remember the include files in the preprocessor output if it can be cached.
 /// Returns `false` if preprocessor cache mode should be disabled.
@@ -706,6 +707,11 @@ fn process_preprocessed_file(
     time_of_compilation: std::time::SystemTime,
     fs_impl: impl PreprocessorFSAbstraction,
 ) -> Result<bool> {
+    if bytes.starts_with(COMPRESSED_CLANG_OFFLOAD_BUNDLE_MAGIC) {
+        debug!("Found compressed Clang offload bundle in preprocessor output");
+        return Ok(false);
+    }
+
     let mut start = 0;
     let mut hash_start = 0;
     let total_len = bytes.len();
@@ -1903,6 +1909,33 @@ mod test {
         assert_eq!(&bytes, &original_bytes);
         assert!(success);
         assert_eq!(include_files.len(), 0);
+    }
+
+    #[test]
+    fn test_process_preprocessed_file_disables_cache_for_compressed_offload_bundle() {
+        let input_file = Path::new("tests/test.hip");
+        let mut bytes = b"CCOB\0\0\0\0\n# 1karg compressed payload".to_vec();
+        let original_bytes = bytes.clone();
+        let mut include_files = HashMap::new();
+
+        let config = PreprocessorCacheModeConfig {
+            use_preprocessor_cache_mode: true,
+            ..Default::default()
+        };
+        let success = process_preprocessed_file(
+            input_file,
+            Path::new(""),
+            &mut bytes,
+            &mut include_files,
+            config,
+            std::time::SystemTime::now(),
+            PanicFs,
+        )
+        .unwrap();
+
+        assert_eq!(bytes, original_bytes);
+        assert!(!success);
+        assert!(include_files.is_empty());
     }
 
     /// A filesystem interface that only panics to test that we don't access it.
