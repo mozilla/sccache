@@ -166,6 +166,8 @@ pub struct SingleCompileCommand {
     pub arguments: Vec<OsString>,
     pub env_vars: Vec<(OsString, OsString)>,
     pub cwd: PathBuf,
+    /// Response file directory to clean up after compilation.
+    pub _response_file_dir: Option<TempDir>,
 }
 
 #[async_trait]
@@ -196,6 +198,7 @@ impl CompileCommandImpl for SingleCompileCommand {
             arguments,
             env_vars,
             cwd,
+            ..
         } = self;
         // Resolve compiler avoiding ccache wrappers to prevent double-caching.
         let resolved_executable = resolve_compiler_avoiding_wrapper(executable, env_vars);
