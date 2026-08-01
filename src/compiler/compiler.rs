@@ -178,6 +178,8 @@ pub struct SingleCompileCommand {
     /// costs a `fork` per compile; in the `false` direction it costs `rustc`
     /// its parallelism limit, which is what the jobserver exists to enforce.
     pub share_jobserver: bool,
+    /// Response file directory to clean up after compilation.
+    pub _response_file_dir: Option<TempDir>,
 }
 
 #[async_trait]
@@ -209,6 +211,7 @@ impl CompileCommandImpl for SingleCompileCommand {
             env_vars,
             cwd,
             share_jobserver,
+            ..
         } = self;
         // Resolve compiler avoiding ccache wrappers to prevent double-caching.
         let resolved_executable = resolve_compiler_avoiding_wrapper(executable, env_vars);
