@@ -123,7 +123,12 @@ bucket = "name"
 endpoint = "s3-us-east-1.amazonaws.com"
 use_ssl = true
 key_prefix = "s3prefix"
+# SSE-S3 with an S3-managed key (AES256).
 server_side_encryption = false
+# SSE-KMS with the AWS-managed KMS key (aws/s3).
+server_side_encryption_aws_kms = false
+# SSE-KMS with a customer-managed KMS key (takes precedence when set).
+# server_side_encryption_kms_key_id = "arn:aws:kms:us-east-1:111:key/abc"
 
 [cache.webdav]
 endpoint = "http://192.168.10.42:80/some/webdav.php"
@@ -172,6 +177,7 @@ Note that some env variables may need sccache server restart to take effect.
 * `SCCACHE_STARTUP_NOTIFY` specify a path to a socket which will be used for server completion notification
 * `SCCACHE_MAX_FRAME_LENGTH` how much data can be transferred between client and server
 * `SCCACHE_NO_DAEMON` set to `1` to disable putting the server to the background
+* `SCCACHE_CLIENT_SIDE` set to `1` to run the compile in the client process and use the daemon only as a gateway to the cache storage (see [the architecture doc](Architecture.md#client-side-mode-sccache_client_side)). This is the recommended mode and is expected to become the only supported configuration in the future. Ignored when `SCCACHE_ERROR_LOG` or distributed compilation is in use.
 * `SCCACHE_CACHE_MULTIARCH` to disable caching of multi architecture builds.
 * `SCCACHE_CACHE_ZSTD_LEVEL` to set zstd compression level of cache. the range is `1-22` and default is `3`.
   - For example, in `10`, it have about 0.9x size with about 1.6x time than default `3` (tested with compiling sccache code)
