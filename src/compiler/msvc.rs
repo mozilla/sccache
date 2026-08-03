@@ -438,6 +438,12 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_take_arg!("clr:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("constexpr:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_flag!("d1nodatetime", PassThrough),
+    // /d2<name> - undocumented back-end codegen switches (e.g. /d2archSSE42,
+    // which Godot uses to enable SSE4.2 autovectorization). Unrecognized args
+    // are classified as Raw, i.e. as input files, so without this entry any
+    // command line carrying one is rejected as "multiple input files" and
+    // silently never cached. They affect codegen, so hash them via the suffix.
+    msvc_take_arg!("d2", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("deps", PathBuf, Concatenated, DepFile),
     msvc_take_arg!("diagnostics:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("doc", PathBuf, Concatenated, TooHardPath), // Creates an .xdc file.
@@ -1863,6 +1869,41 @@ mod test {
         assert!(preprocessor_args.is_empty());
         assert_eq!(common_args, ovec!["-foo", "-bar"]);
         assert!(!msvc_show_includes);
+    }
+
+    #[test]
+    fn test_parse_arguments_d2_codegen_flag() {
+        // /d2<name> back-end codegen switches must parse as flags. Before they
+        // were in the table they fell through to Argument::Raw, i.e. were taken
+        // for a second input file, and the whole command line was rejected as
+        // "multiple input files" - so a build using one (Godot passes
+        // /d2archSSE42 on every x86_64 MSVC compile) cached nothing at all.
+        let args = ovec!["/c", "foo.c", "/d2archSSE42", "/Fofoo.obj"];
+        let ParsedArguments {
+            input,
+            language,
+            outputs,
+            common_args,
+            ..
+        } = match parse_arguments(args) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(Some("foo.c"), input.to_str());
+        assert_eq!(Language::C, language);
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.obj"),
+                    optional: false
+                }
+            )
+        );
+        // Kept in common_args so the switch is part of the cache key - two
+        // objects built with different /d2 switches must not collide.
+        assert_eq!(common_args, ovec!["/d2archSSE42"]);
     }
 
     #[test]
