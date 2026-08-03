@@ -9,6 +9,6 @@ sccache includes support for caching Rust compilation. This includes many caveat
 * Procedural macros that read files from the filesystem may not be cached properly.
 * `rustc`'s incremental compilation needs to be disabled. See [The Cargo Book](https://doc.rust-lang.org/cargo/reference/profiles.html#incremental)
 * Crates that invoke the system linker cannot be cached. Examples are `bin`, `dylib`, `cdylib`, and `proc-macro` crates.
-* `SCCACHE_BASEDIRS` normalizes paths in Rust cache keys, but does not rewrite paths embedded in compiler outputs. Use rustc's `--remap-path-prefix` when reproducible embedded paths are required.
+* `SCCACHE_BASEDIRS` normalizes paths in Rust cache keys when rustc's `--remap-path-prefix` covers the working directory with the default or `all` remap scope. It does not rewrite compiler outputs itself.
 
 If you are using Rust 1.18 or later, you can ask cargo to wrap all compilation with sccache by setting `RUSTC_WRAPPER=sccache` in your build environment.

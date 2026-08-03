@@ -110,7 +110,7 @@ mod test {
 
     #[test]
     fn readonly_storage_is_readonly() {
-        let storage = ReadOnlyStorage(Arc::new(MockStorage::default()));
+        let storage = ReadOnlyStorage(Arc::new(MockStorage::new(None, false)));
         assert_eq!(
             storage.check().now_or_never().unwrap().unwrap(),
             CacheMode::ReadOnly
@@ -119,7 +119,8 @@ mod test {
 
     #[test]
     fn readonly_storage_forwards_preprocessor_cache_mode_config() {
-        let storage_no_preprocessor_cache = ReadOnlyStorage(Arc::new(MockStorage::default()));
+        let storage_no_preprocessor_cache =
+            ReadOnlyStorage(Arc::new(MockStorage::new(None, false)));
         assert!(
             !storage_no_preprocessor_cache
                 .preprocessor_cache_mode_config()
@@ -127,7 +128,7 @@ mod test {
         );
 
         let storage_with_preprocessor_cache =
-            ReadOnlyStorage(Arc::new(MockStorage::new(None, true, vec![])));
+            ReadOnlyStorage(Arc::new(MockStorage::new(None, true)));
         assert!(
             storage_with_preprocessor_cache
                 .preprocessor_cache_mode_config()
@@ -177,7 +178,7 @@ mod test {
             .build()
             .unwrap();
 
-        let storage = ReadOnlyStorage(Arc::new(MockStorage::new(None, true, vec![])));
+        let storage = ReadOnlyStorage(Arc::new(MockStorage::new(None, true)));
         runtime.block_on(async move {
             assert_eq!(
                 storage

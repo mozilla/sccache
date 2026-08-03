@@ -32,44 +32,26 @@ pub struct MockStorage {
 }
 
 impl MockStorage {
-    /// Construct a `MockStorage`.
-    ///
-    /// # Arguments
-    ///
-    /// * `delay` - if `Some`, every `get`/`put` sleeps this long before
-    ///   returning, to simulate slow storage.
-    /// * `preprocessor_cache_mode` - value returned from
-    ///   [`Storage::preprocessor_cache_mode_config`].
-    /// * `basedirs` - the list reported by [`Storage::basedirs`], used when
-    ///   tests need to exercise basedir-prefix stripping in
-    ///   `generate_hash_key`.
-    pub(crate) fn new(
-        delay: Option<Duration>,
-        preprocessor_cache_mode: bool,
-        basedirs: Vec<Vec<u8>>,
-    ) -> MockStorage {
+    /// Create a new `MockStorage`. if `delay` is `Some`, wait for that amount of time before returning from operations.
+    pub(crate) fn new(delay: Option<Duration>, preprocessor_cache_mode: bool) -> MockStorage {
         let (tx, rx) = mpsc::unbounded();
         Self {
             tx,
             rx: Arc::new(Mutex::new(rx)),
             delay,
             preprocessor_cache_mode,
-            basedirs,
+            basedirs: Vec::new(),
         }
+    }
+
+    pub(crate) fn with_basedirs(mut self, basedirs: Vec<Vec<u8>>) -> Self {
+        self.basedirs = basedirs;
+        self
     }
 
     /// Queue up `res` to be returned as the next result from `Storage::get`.
     pub(crate) fn next_get(&self, res: Result<Cache>) {
         self.tx.unbounded_send(res).unwrap();
-    }
-}
-
-impl Default for MockStorage {
-    /// Zero-delay mock with preprocessor cache mode disabled and no basedirs
-    /// configured -- the usual choice for tests that don't care about those
-    /// knobs.
-    fn default() -> Self {
-        Self::new(None, false, vec![])
     }
 }
 
