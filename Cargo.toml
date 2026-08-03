@@ -81,8 +81,8 @@ mime = "0.3"
 number_prefix = "0.4"
 object = "0.37"
 opendal = { version = "0.58.1", optional = true, default-features = false }
-opendal-layer-logging = { version = "0.58.1", optional = true }
 opendal-http-transport-reqwest = { version = "0.58.1", optional = true }
+opendal-layer-logging = { version = "0.58.1", optional = true }
 openssl = { version = "0.10.75", optional = true }
 rand = "0.8.4"
 regex = "1.10.3"
@@ -180,17 +180,53 @@ all = [
   "oss",
   "cos",
 ]
-azure = ["opendal/services-azblob", "opendal-layer-logging", "opendal-http-transport-reqwest", "reqwest"]
-cos = ["opendal/services-cos", "opendal-layer-logging", "opendal-http-transport-reqwest", "reqwest"]
+azure = [
+  "opendal/services-azblob",
+  "opendal-layer-logging",
+  "opendal-http-transport-reqwest",
+  "reqwest",
+]
+cos = [
+  "opendal/services-cos",
+  "opendal-layer-logging",
+  "opendal-http-transport-reqwest",
+  "reqwest",
+]
 default = ["all"]
-gcs = ["opendal/services-gcs", "opendal-layer-logging", "opendal-http-transport-reqwest", "url", "reqwest"]
-gha = ["opendal/services-ghac", "opendal-layer-logging", "opendal-http-transport-reqwest", "reqwest"]
+gcs = [
+  "opendal/services-gcs",
+  "opendal-layer-logging",
+  "opendal-http-transport-reqwest",
+  "url",
+  "reqwest",
+]
+gha = [
+  "opendal/services-ghac",
+  "opendal-layer-logging",
+  "opendal-http-transport-reqwest",
+  "reqwest",
+]
 memcached = ["opendal/services-memcached", "opendal-layer-logging"]
 native-zlib = []
-oss = ["opendal/services-oss", "opendal-layer-logging", "opendal-http-transport-reqwest", "reqwest"]
+oss = [
+  "opendal/services-oss",
+  "opendal-layer-logging",
+  "opendal-http-transport-reqwest",
+  "reqwest",
+]
 redis = ["url", "opendal/services-redis", "opendal-layer-logging"]
-s3 = ["opendal/services-s3", "opendal-layer-logging", "opendal-http-transport-reqwest", "reqwest"]
-webdav = ["opendal/services-webdav", "opendal-layer-logging", "opendal-http-transport-reqwest", "reqwest"]
+s3 = [
+  "opendal/services-s3",
+  "opendal-layer-logging",
+  "opendal-http-transport-reqwest",
+  "reqwest",
+]
+webdav = [
+  "opendal/services-webdav",
+  "opendal-layer-logging",
+  "opendal-http-transport-reqwest",
+  "reqwest",
+]
 # Enable features that will build a vendored version of openssl and
 # statically linked with it, instead of linking against the system-wide openssl
 # dynamically or statically.
