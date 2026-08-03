@@ -16,7 +16,7 @@
 use crate::cache::CacheMode;
 use crate::errors::*;
 use opendal::Operator;
-use opendal::{services::Gcs, OperationContext};
+use opendal::{OperationContext, services::Gcs};
 use opendal_layer_logging::LoggingLayer;
 use reqwest::Client;
 use serde::Deserialize;

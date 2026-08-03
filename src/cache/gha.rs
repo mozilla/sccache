@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use opendal::Operator;
 use opendal::OperationContext;
+use opendal::Operator;
 use opendal::services::Ghac;
 use opendal_layer_logging::LoggingLayer;
 

@@ -11,8 +11,8 @@
 // limitations under the License.
 
 use crate::errors::*;
-use opendal::Operator;
 use opendal::OperationContext;
+use opendal::Operator;
 use opendal::services::Webdav;
 use opendal_layer_logging::LoggingLayer;
 
