@@ -39,7 +39,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        feature: [ azure, gcs, gha, memcached, redis, s3, webdav ]
+        feature: [ azure, gcs, gha, memcached, monitor, redis, s3, webdav ]
     steps:
       - name: Clone repository
         uses: actions/checkout@v5
