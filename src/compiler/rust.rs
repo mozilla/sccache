@@ -4571,22 +4571,24 @@ proc_macro false
                 Some(format!("{prefix}=/workspace").into()),
             )]
         };
+        let joined =
+            |prefix: &str, suffix: &str| Some(Path::new(prefix).join(suffix).into_os_string());
         assert!(super::remap_path(Path::new("/home/user/project"), &remap("/home/user")).is_some());
         assert!(super::remap_path(Path::new("/home/user"), &remap("/home/user=part")).is_none());
         assert_eq!(
             super::remap_path(Path::new("/home/user"), &remap("/")),
-            Some("/workspace/home/user".into())
+            joined("/workspace", "home/user")
         );
         assert_eq!(
             super::remap_path(Path::new("/home/user/project"), &remap("/home/user/")),
-            Some("/workspace/project".into())
+            joined("/workspace", "project")
         );
         assert!(
             super::remap_path(Path::new("/home/username/project"), &remap("/home/user")).is_none()
         );
         assert_eq!(
             super::remap_path(Path::new("/home/a=b/project"), &remap("/home/a=b")),
-            Some("/workspace/project".into())
+            joined("/workspace", "project")
         );
 
         let overlapping = vec![
@@ -4598,7 +4600,7 @@ proc_macro false
         ];
         assert_eq!(
             super::remap_path(Path::new("/home/user/project"), &overlapping),
-            Some("/last/project".into())
+            joined("/last", "project")
         );
 
         let mut diagnostics = remap("/home/user");
