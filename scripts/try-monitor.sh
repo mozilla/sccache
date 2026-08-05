@@ -3,13 +3,14 @@
 # Try out `sccache --monitor` against a throwaway server.
 #
 # Builds sccache with the `monitor` feature, starts a server on its own port
-# with its own cache directory, generates a trickle of compilations in the
-# background so the dashboard has something to plot, and opens the monitor.
+# with its own cache directory, compiles in bursts in the background so the
+# dashboard has something to plot, and opens the monitor.
 #
 # Everything is torn down on exit; your real sccache server and cache are left
 # alone. Press `q` in the dashboard to quit.
 #
 # Usage: scripts/try-monitor.sh [--release] [--port N] [--interval SECS]
+#        JOBS=8 scripts/try-monitor.sh    # compile 8 files at a time
 
 set -euo pipefail
 
@@ -81,29 +82,53 @@ int hit(void) { return 42; }
 EOF
 printf 'int broken(void) {\n' > "$WORK/broken.c"
 
+# Compile several files at a time, so the rates are large enough to see. Cache
+# hits are quick, so a burst of them makes a clear spike.
+JOBS=${JOBS:-4}
+
 # Job control, so that the background loop below becomes the leader of its own
 # process group and `cleanup` can tear the whole thing down at once.
 set -m
 (
+    # A failing compile and a `-E` call are part of the demo, and the sccache
+    # calls run under `wait`; none of that should take the loop down, so drop
+    # the errexit and pipefail inherited from above.
+    set +e +o pipefail
     cd "$WORK"
     i=0
     while true; do
         i=$((i + 1))
-        printf '#include <stdio.h>\nint f%d(void) { return %d; }\n' "$i" "$i" > "miss$i.c"
-        "$SCCACHE" "$CC" -c "miss$i.c" -o "miss$i.o" >/dev/null 2>&1
-        rm -f "miss$i.c" "miss$i.o"
-        # Two cache hits per miss.
-        "$SCCACHE" "$CC" -c hit.c -o hit.o >/dev/null 2>&1
-        "$SCCACHE" "$CC" -c hit.c -o hit.o >/dev/null 2>&1
-        if [ $((i % 7)) -eq 0 ]; then
+
+        # Burst of misses: fresh sources, so each one is compiled and written to
+        # the cache.
+        for j in $(seq 1 "$JOBS"); do
+            printf '#include <stdio.h>\nint f%d_%d(void) { return %d; }\n' \
+                "$i" "$j" "$i" > "miss$i-$j.c"
+            "$SCCACHE" "$CC" -c "miss$i-$j.c" -o "miss$i-$j.o" >/dev/null 2>&1 &
+        done
+        wait
+        rm -f "miss$i-"*.c "miss$i-"*.o
+
+        # Burst of hits: the same source over and over, which is much faster and
+        # shows up as a taller, narrower spike than the misses.
+        for j in $(seq 1 $((JOBS * 3))); do
+            "$SCCACHE" "$CC" -c hit.c -o "hit$j.o" >/dev/null 2>&1 &
+        done
+        wait
+        rm -f hit*.o
+
+        if [ $((i % 3)) -eq 0 ]; then
             # Non-cacheable call: shows up in the Reasons pane.
             "$SCCACHE" "$CC" -E hit.c >/dev/null 2>&1
         fi
-        if [ $((i % 11)) -eq 0 ]; then
+        if [ $((i % 5)) -eq 0 ]; then
             # Failed compilation.
             "$SCCACHE" "$CC" -c broken.c -o broken.o >/dev/null 2>&1
         fi
-        sleep 0.3
+
+        # Idle beat, so the plots have troughs as well as peaks instead of a
+        # flat line at the top.
+        sleep 2
     done
 ) &
 LOAD_PID=$!
