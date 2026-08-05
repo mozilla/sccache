@@ -765,6 +765,7 @@ pub struct DistConfig {
     #[serde(deserialize_with = "deserialize_size_from_str")]
     pub toolchain_cache_size: u64,
     pub rewrite_includes_only: bool,
+    pub force_remote_build: bool,
 }
 
 impl Default for DistConfig {
@@ -776,6 +777,7 @@ impl Default for DistConfig {
             toolchains: Default::default(),
             toolchain_cache_size: default_toolchain_cache_size(),
             rewrite_includes_only: false,
+            force_remote_build: false,
         }
     }
 }
@@ -2618,6 +2620,7 @@ key_prefix = "cosprefix"
                 toolchains: vec![],
                 toolchain_cache_size: 5368709120,
                 rewrite_includes_only: false,
+                force_remote_build: false,
             },
             server_startup_timeout_ms: Some(10000),
             basedirs: vec![],
