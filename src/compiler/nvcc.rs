@@ -1134,7 +1134,7 @@ fn fold_env_vars_or_split_into_exe_and_args(
     // The rest of the lines are subcommands, so parse into a vec of [cmd, args..]
 
     let mut line = if cfg!(target_os = "windows") {
-        let line = collapse_doubled_quotes(&line).replace(r"\\?\", "");
+        let line = collapse_doubled_quotes(line).replace(r"\\?\", "");
         let line = replace_path_backslashes(&line).replace(r"//?/", "");
         match host_compiler {
             NvccHostCompiler::Msvc => line.replace(" -E ", " -P ").replace(" > ", " -Fi"),
