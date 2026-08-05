@@ -73,6 +73,7 @@ fn test_rust_cargo_basedirs_cross_dir_cache_hit() -> Result<()> {
         Command::new(CARGO.as_os_str())
             .args(["build", "--lib"])
             .envs(test.env.iter().cloned())
+            .env("CARGO_INSTALL_ROOT", crate_dir.join("install"))
             .env("CARGO_TARGET_DIR", crate_dir.join("target"))
             .env(
                 "RUSTFLAGS",

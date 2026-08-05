@@ -125,20 +125,19 @@ fn normalize_arg_value<'a>(
 }
 
 fn remap_scope_is_all(arguments: &[(OsString, Option<OsString>)]) -> bool {
-    let mut scopes = arguments.iter().filter_map(|(flag, value)| {
-        if flag == "--remap-path-scope" {
-            return value.as_ref()?.to_str();
-        }
-        if flag == "-Z" {
-            return value.as_ref()?.to_str()?.strip_prefix("remap-path-scope=");
-        }
-        flag.to_str()?.strip_prefix("--remap-path-scope=")
-    });
-    scopes.next().is_none_or(|first| {
-        iter::once(first)
-            .chain(scopes)
-            .any(|scope| scope.split(',').any(|scope| scope == "all"))
-    })
+    arguments
+        .iter()
+        .filter_map(|(flag, value)| {
+            if flag == "--remap-path-scope" {
+                return value.as_ref()?.to_str();
+            }
+            if flag == "-Z" {
+                return value.as_ref()?.to_str()?.strip_prefix("remap-path-scope=");
+            }
+            flag.to_str()?.strip_prefix("--remap-path-scope=")
+        })
+        .last()
+        .is_none_or(|scope| scope.split(',').any(|scope| scope == "all"))
 }
 
 fn remap_path(path: &Path, arguments: &[(OsString, Option<OsString>)]) -> Option<OsString> {
@@ -167,6 +166,7 @@ fn is_path_cargo_env(var: &OsString) -> bool {
         var.to_str(),
         Some(
             "CARGO_HOME"
+                | "CARGO_INSTALL_ROOT"
                 | "CARGO_MANIFEST_DIR"
                 | "CARGO_MANIFEST_PATH"
                 | "CARGO_TARGET_DIR"
@@ -349,7 +349,7 @@ static ALLOWED_EMIT: LazyLock<HashSet<&'static str>> =
     LazyLock::new(|| ["link", "metadata", "dep-info"].iter().copied().collect());
 
 /// Version number for cache key.
-const CACHE_VERSION: &[u8] = b"7";
+const CACHE_VERSION: &[u8] = b"8";
 
 /// Get absolute paths for all source files and env-deps listed in rustc's dep-info output.
 async fn get_source_files_and_env_deps<T>(
@@ -1162,6 +1162,7 @@ counted_array!(static ARGS: [ArgInfo<ArgData>; _] = [
     take_arg!("--pretty", OsString, CanBeSeparated(b'='), NotCompilation),
     take_arg!("--print", OsString, CanBeSeparated(b'='), NotCompilation),
     take_arg!("--remap-path-prefix", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("--remap-path-scope", OsString, CanBeSeparated(b'='), PassThrough),
     take_arg!("--sysroot", PathBuf, CanBeSeparated(b'='), TooHardPath),
     take_arg!("--target", ArgTarget, CanBeSeparated(b'='), Target),
     take_arg!("--unpretty", OsString, CanBeSeparated(b'='), NotCompilation),
@@ -1652,10 +1653,12 @@ where
             };
             for (arg, value) in rest.into_iter().chain(sortables) {
                 let arg_bytes = arg.as_encoded_bytes();
-                if value.is_none()
-                    && let Some(remapped) = remap_path(Path::new(arg), &os_string_arguments)
-                {
-                    hash_arg(true, remapped.as_encoded_bytes());
+                if value.is_none() {
+                    if let Some(remapped) = remap_path(Path::new(arg), &os_string_arguments) {
+                        hash_arg(true, remapped.as_encoded_bytes());
+                    } else {
+                        hash_arg(false, arg_bytes);
+                    }
                 } else {
                     hash_arg(false, arg_bytes);
                 }
@@ -1667,13 +1670,49 @@ where
                 }
             }
         }
-        // 4. The digest of all source files (this includes src file from cmdline).
+        // 4. The effective path and digest of all source files (this includes src file from cmdline).
         // 5. The digest of all files listed on the commandline (self.externs).
         // 6. The digest of all static libraries listed on the commandline (self.staticlibs).
         // 7. The digest of the content of the target json file specified via `--target` (if any).
-        for h in source_hashes
+        let mut source_inputs = source_files
+            .iter()
+            .zip(source_hashes)
+            .map(|(path, hash)| {
+                if let Some(remapped) = remap_path(path, &os_string_arguments) {
+                    (true, remapped, path.as_os_str().to_owned(), hash)
+                } else {
+                    (
+                        false,
+                        path.as_os_str().to_owned(),
+                        path.as_os_str().to_owned(),
+                        hash,
+                    )
+                }
+            })
+            .collect::<Vec<_>>();
+        source_inputs.sort();
+        for index in 0..source_inputs.len() {
+            let (normalized, path, original_path, hash) = &source_inputs[index];
+            let previous_is_duplicate = index > 0
+                && normalized == &source_inputs[index - 1].0
+                && path == &source_inputs[index - 1].1;
+            let next_is_duplicate =
+                source_inputs
+                    .get(index + 1)
+                    .is_some_and(|(other_normalized, other_path, _, _)| {
+                        normalized == other_normalized && path == other_path
+                    });
+            let has_duplicate_path = previous_is_duplicate || next_is_duplicate;
+            normalized.hash(&mut HashToDigest { digest: &mut m });
+            path.hash(&mut HashToDigest { digest: &mut m });
+            has_duplicate_path.hash(&mut HashToDigest { digest: &mut m });
+            if has_duplicate_path {
+                original_path.hash(&mut HashToDigest { digest: &mut m });
+            }
+            m.update(hash.as_bytes());
+        }
+        for h in extern_hashes
             .into_iter()
-            .chain(extern_hashes)
             .chain(staticlib_hashes)
             .chain(target_json_hash)
         {
@@ -1698,6 +1737,26 @@ where
             .cloned()
             .collect();
         env_vars.sort();
+        // Procedural macros can read inherited environment variables without reporting them in
+        // rustc dep-info. They can be explicit externs or resolved from a crate search path.
+        let normalize_cargo_paths = !basedirs.is_empty()
+            && remap_path(&cwd, &os_string_arguments).is_some()
+            && env_vars.iter().any(|(var, _)| is_path_cargo_env(var))
+            && self.parsed_args.externs.is_empty()
+            && !self.parsed_args.crate_link_paths.iter().any(|path| {
+                fs::read_dir(path)
+                    .map(|mut entries| {
+                        entries.any(|entry| {
+                            entry.map_or(true, |entry| {
+                                entry
+                                    .path()
+                                    .extension()
+                                    .is_some_and(|ext| ext == DLL_EXTENSION)
+                            })
+                        })
+                    })
+                    .unwrap_or(true)
+            });
         for (var, val) in env_vars.iter() {
             if !var.starts_with("CARGO_") {
                 continue;
@@ -1720,7 +1779,7 @@ where
             var.hash(&mut HashToDigest { digest: &mut m });
             m.update(b"=");
             let val_bytes = val.as_encoded_bytes();
-            let normalized = if is_path_cargo_env(var) {
+            let normalized = if normalize_cargo_paths && is_path_cargo_env(var) {
                 strip_basedir_prefix(val_bytes, basedirs)
             } else {
                 Cow::Borrowed(val_bytes)
@@ -1961,6 +2020,17 @@ impl<T: CommandCreatorSync> Compilation<T> for RustCompilation {
                         }
                     }
                 };
+            }
+
+            if !path_transformer.is_identity()
+                && arguments
+                    .iter()
+                    .any(|argument| argument.flag_str() == Some("--remap-path-prefix"))
+            {
+                debug!(
+                    "Distributed Rust compilation does not support path remaps with a non-identity path transformer"
+                );
+                return None;
             }
 
             let mut dist_arguments = vec![];
@@ -2908,6 +2978,69 @@ release: 1.66.1
 LLVM version: 15.0.2
 "#;
 
+    #[cfg(feature = "dist-client")]
+    fn remapped_compilation(root: &Path) -> RustCompilation {
+        RustCompilation {
+            executable: root.join("rustc"),
+            host: "x86_64-unknown-linux-gnu".to_owned(),
+            sysroot: root.join("sysroot"),
+            rlib_dep_reader: None,
+            arguments: vec![
+                Argument::Raw(root.join("src/lib.rs").into_os_string()),
+                Argument::WithValue(
+                    "--remap-path-prefix",
+                    ArgData::PassThrough(format!("{}=/workspace", root.display()).into()),
+                    ArgDisposition::Separated,
+                ),
+            ],
+            inputs: vec![root.join("src/lib.rs")],
+            outputs: HashMap::new(),
+            crate_link_paths: vec![],
+            crate_name: "test".to_owned(),
+            crate_types: CrateTypes {
+                rlib: true,
+                staticlib: false,
+            },
+            dep_info: None,
+            cwd: root.to_owned(),
+            env_vars: vec![],
+        }
+    }
+
+    #[cfg(all(feature = "dist-client", unix))]
+    #[test]
+    fn test_distribute_remap_with_identity_path_transformer() {
+        let compilation = remapped_compilation(Path::new("/work"));
+        let mut path_transformer = dist::PathTransformer::new();
+        let (_, dist_command, _) = <RustCompilation as Compilation<
+            Arc<Mutex<MockCommandCreator>>,
+        >>::generate_compile_commands(
+            &compilation, &mut path_transformer, false
+        )
+        .unwrap();
+        let dist_command = dist_command.unwrap();
+        assert!(
+            dist_command
+                .arguments
+                .windows(2)
+                .any(|args| args == ["--remap-path-prefix", "/work=/workspace"])
+        );
+    }
+
+    #[cfg(all(feature = "dist-client", windows))]
+    #[test]
+    fn test_remap_falls_back_with_non_identity_path_transformer() {
+        let compilation = remapped_compilation(Path::new("C:\\work"));
+        let mut path_transformer = dist::PathTransformer::new();
+        let (_, dist_command, _) = <RustCompilation as Compilation<
+            Arc<Mutex<MockCommandCreator>>,
+        >>::generate_compile_commands(
+            &compilation, &mut path_transformer, false
+        )
+        .unwrap();
+        assert!(dist_command.is_none());
+    }
+
     #[test]
     #[allow(clippy::cognitive_complexity)]
     fn test_parse_arguments_simple() {
@@ -3747,10 +3880,17 @@ proc_macro false
             false.hash(&mut HashToDigest { digest: &mut m });
             arg.as_bytes().hash(&mut HashToDigest { digest: &mut m });
         }
-        // bar.rs (source file, from dep-info)
-        m.update(empty_digest.as_bytes());
-        // foo.rs (source file, from dep-info)
-        m.update(empty_digest.as_bytes());
+        // Source files, sorted by effective path.
+        for source in ["bar.rs", "foo.rs"] {
+            false.hash(&mut HashToDigest { digest: &mut m });
+            f.tempdir
+                .path()
+                .join(source)
+                .into_os_string()
+                .hash(&mut HashToDigest { digest: &mut m });
+            false.hash(&mut HashToDigest { digest: &mut m });
+            m.update(empty_digest.as_bytes());
+        }
         // bar.rlib (extern crate, from externs)
         m.update(empty_digest.as_bytes());
         // libbaz.a (static library, from staticlibs), containing a single
@@ -3797,7 +3937,7 @@ proc_macro false
             pre_func,
             preprocessor_cache_mode,
             vec![],
-            &[],
+            (&[], &["foo.rs"]),
         )
     }
 
@@ -3811,7 +3951,15 @@ proc_macro false
     where
         F: Fn(&Path) -> Result<()>,
     {
-        hash_key_with_env_deps(f, args, env_vars, pre_func, false, basedirs, &[])
+        hash_key_with_env_deps(
+            f,
+            args,
+            env_vars,
+            pre_func,
+            false,
+            basedirs,
+            (&[], &["foo.rs"]),
+        )
     }
 
     fn hash_key_with_env_deps<F>(
@@ -3821,7 +3969,7 @@ proc_macro false
         pre_func: F,
         preprocessor_cache_mode: bool,
         basedirs: Vec<Vec<u8>>,
-        env_deps: &[(&str, &str)],
+        dep_info: (&[(&str, &str)], &[&str]),
     ) -> String
     where
         F: Fn(&Path) -> Result<()>,
@@ -3858,7 +4006,7 @@ proc_macro false
         let runtime = single_threaded_runtime();
         let pool = runtime.handle().clone();
 
-        mock_dep_info(&creator, &["foo.rs"], env_deps);
+        mock_dep_info(&creator, dep_info.1, dep_info.0);
         mock_file_names(&creator, &["foo.rlib"]);
         hasher
             .generate_hash_key(
@@ -4194,6 +4342,155 @@ proc_macro false
     }
 
     #[test]
+    fn test_basedirs_keep_unremapped_source_paths() {
+        let f1 = TestFixture::new();
+        let f2 = TestFixture::new();
+        f1.touch("external.rs").unwrap();
+        let external = f1.tempdir.path().join("external.rs");
+        let external = external.to_str().unwrap();
+
+        let key = |f: &TestFixture| {
+            let remap = format!("{}=/workspace", f.tempdir.path().display());
+            let mut args = BASEDIR_ARGS.to_vec();
+            args.extend(["--remap-path-prefix", &remap]);
+            hash_key_with_env_deps(
+                f,
+                &args,
+                &[],
+                nothing,
+                false,
+                vec![basedir_for(f.tempdir.path())],
+                (&[], &["foo.rs", external]),
+            )
+        };
+
+        assert_ne!(key(&f1), key(&f2));
+    }
+
+    #[test]
+    fn test_basedirs_preserve_duplicate_remap_source_identity() {
+        let f = TestFixture::new();
+        let first_dir = f.tempdir.path().join("first");
+        let second_dir = f.tempdir.path().join("second");
+        fs::create_dir_all(&first_dir).unwrap();
+        fs::create_dir_all(&second_dir).unwrap();
+        let first_source = first_dir.join("source.rs");
+        let second_source = second_dir.join("source.rs");
+        let first_source_str = first_source.to_str().unwrap();
+        let second_source_str = second_source.to_str().unwrap();
+        let first_remap = format!("{}=/workspace", first_dir.display());
+        let second_remap = format!("{}=/workspace", second_dir.display());
+        let mut args = BASEDIR_ARGS.to_vec();
+        args.extend([
+            "--remap-path-prefix",
+            &first_remap,
+            "--remap-path-prefix",
+            &second_remap,
+        ]);
+
+        let key = |first_contents: &str, second_contents: &str| {
+            hash_key_with_env_deps(
+                &f,
+                &args,
+                &[],
+                |_| {
+                    fs::write(&first_source, first_contents)?;
+                    fs::write(&second_source, second_contents)?;
+                    Ok(())
+                },
+                false,
+                vec![basedir_for(f.tempdir.path())],
+                (&[], &["foo.rs", first_source_str, second_source_str]),
+            )
+        };
+
+        assert_ne!(key("first", "second"), key("second", "first"));
+    }
+
+    #[test]
+    fn test_basedirs_preserve_cargo_paths_with_external_crates() {
+        let f1 = TestFixture::new();
+        let f2 = TestFixture::new();
+        let dependency_name = "dependency.rlib";
+        f1.touch(dependency_name).unwrap();
+        f2.touch(dependency_name).unwrap();
+
+        let key = |f: &TestFixture| {
+            let remap = format!("{}=/workspace", f.tempdir.path().display());
+            let dependency = format!(
+                "dependency={}",
+                f.tempdir.path().join(dependency_name).display()
+            );
+            let mut args = BASEDIR_ARGS
+                .iter()
+                .map(|arg| (*arg).to_owned())
+                .collect::<Vec<_>>();
+            args.extend([
+                "--remap-path-prefix".to_owned(),
+                remap,
+                "--extern".to_owned(),
+                dependency,
+            ]);
+            let args = args.iter().map(String::as_str).collect::<Vec<_>>();
+            hash_key_with_env_deps(
+                f,
+                &args,
+                &[(
+                    "CARGO_MANIFEST_DIR".into(),
+                    f.tempdir.path().as_os_str().to_owned(),
+                )],
+                nothing,
+                false,
+                vec![basedir_for(f.tempdir.path())],
+                (&[], &["foo.rs"]),
+            )
+        };
+
+        assert_ne!(key(&f1), key(&f2));
+    }
+
+    #[test]
+    fn test_basedirs_preserve_cargo_paths_with_dynamic_crate_search() {
+        let f1 = TestFixture::new();
+        let f2 = TestFixture::new();
+        for f in [&f1, &f2] {
+            let deps = f.tempdir.path().join("deps");
+            fs::create_dir(&deps).unwrap();
+            File::create(deps.join(format!("proc_macro.{DLL_EXTENSION}"))).unwrap();
+        }
+
+        let key = |f: &TestFixture| {
+            let remap = format!("{}=/workspace", f.tempdir.path().display());
+            let dependency_path = format!("dependency={}", f.tempdir.path().join("deps").display());
+            let mut args = BASEDIR_ARGS
+                .iter()
+                .map(|arg| (*arg).to_owned())
+                .collect::<Vec<_>>();
+            args.extend([
+                "--remap-path-prefix".to_owned(),
+                remap,
+                "-L".to_owned(),
+                dependency_path,
+            ]);
+            let args = args.iter().map(String::as_str).collect::<Vec<_>>();
+            hash_key_with_env_deps(
+                f,
+                &args,
+                &[(
+                    "CARGO_MANIFEST_DIR".into(),
+                    f.tempdir.path().as_os_str().to_owned(),
+                )],
+                nothing,
+                false,
+                vec![basedir_for(f.tempdir.path())],
+                (&[], &["foo.rs"]),
+            )
+        };
+
+        assert_ne!(key(&f1), key(&f2));
+    }
+
+    #[test]
     fn test_basedirs_preserve_path_sensitive_env_dependencies() {
         let f1 = TestFixture::new();
         let f2 = TestFixture::new();
@@ -4212,7 +4509,7 @@ proc_macro false
             nothing,
             false,
             vec![basedir_for(f1.tempdir.path())],
-            &[("CARGO_MANIFEST_DIR", &manifest1)],
+            (&[("CARGO_MANIFEST_DIR", &manifest1)], &["foo.rs"]),
         );
         let k2 = hash_key_with_env_deps(
             &f2,
@@ -4221,7 +4518,7 @@ proc_macro false
             nothing,
             false,
             vec![basedir_for(f2.tempdir.path())],
-            &[("CARGO_MANIFEST_DIR", &manifest2)],
+            (&[("CARGO_MANIFEST_DIR", &manifest2)], &["foo.rs"]),
         );
 
         assert_ne!(k1, k2);
@@ -4265,6 +4562,7 @@ proc_macro false
             b"/other/path"
         );
         assert!(super::is_path_cargo_env(&"CARGO_MANIFEST_DIR".into()));
+        assert!(super::is_path_cargo_env(&"CARGO_INSTALL_ROOT".into()));
         assert!(!super::is_path_cargo_env(&"CARGO_PKG_DESCRIPTION".into()));
 
         let remap = |prefix: &str| {
@@ -4279,12 +4577,40 @@ proc_macro false
             super::remap_path(Path::new("/home/user"), &remap("/")),
             Some("/workspace/home/user".into())
         );
+        assert_eq!(
+            super::remap_path(Path::new("/home/user/project"), &remap("/home/user/")),
+            Some("/workspace/project".into())
+        );
+        assert!(
+            super::remap_path(Path::new("/home/username/project"), &remap("/home/user")).is_none()
+        );
+        assert_eq!(
+            super::remap_path(Path::new("/home/a=b/project"), &remap("/home/a=b")),
+            Some("/workspace/project".into())
+        );
+
+        let overlapping = vec![
+            ("--remap-path-prefix".into(), Some("/home=/first".into())),
+            (
+                "--remap-path-prefix".into(),
+                Some("/home/user=/last".into()),
+            ),
+        ];
+        assert_eq!(
+            super::remap_path(Path::new("/home/user/project"), &overlapping),
+            Some("/last/project".into())
+        );
 
         let mut diagnostics = remap("/home/user");
         diagnostics.push(("--remap-path-scope=diagnostics".into(), None));
         assert!(super::remap_path(Path::new("/home/user/project"), &diagnostics).is_none());
-        diagnostics.push(("--remap-path-scope=all".into(), None));
-        assert!(super::remap_path(Path::new("/home/user/project"), &diagnostics).is_some());
+        let mut all = remap("/home/user");
+        all.push(("--remap-path-scope=all".into(), None));
+        assert!(super::remap_path(Path::new("/home/user/project"), &all).is_some());
+        all.push(("-Z".into(), Some("remap-path-scope=diagnostics".into())));
+        assert!(super::remap_path(Path::new("/home/user/project"), &all).is_none());
+        all.push(("--remap-path-scope=all".into(), None));
+        assert!(super::remap_path(Path::new("/home/user/project"), &all).is_some());
     }
 
     #[cfg(windows)]
@@ -4365,6 +4691,41 @@ proc_macro false
             ArgData::PassThrough(OsString::from("/root=~")),
             ArgDisposition::Separated
         )));
+    }
+
+    #[test]
+    fn test_parse_remap_path_scope() {
+        for h in [
+            parses!(
+                "--crate-name",
+                "foo",
+                "--crate-type",
+                "lib",
+                "./src/lib.rs",
+                "--emit=dep-info,link",
+                "--out-dir",
+                "/out",
+                "--remap-path-scope",
+                "all"
+            ),
+            parses!(
+                "--crate-name",
+                "foo",
+                "--crate-type",
+                "lib",
+                "./src/lib.rs",
+                "--emit=dep-info,link",
+                "--out-dir",
+                "/out",
+                "--remap-path-scope=all"
+            ),
+        ] {
+            assert!(h.arguments.contains(&Argument::WithValue(
+                "--remap-path-scope",
+                ArgData::PassThrough(OsString::from("all")),
+                ArgDisposition::Separated
+            )));
+        }
     }
 
     #[test]
