@@ -349,7 +349,7 @@ static ALLOWED_EMIT: LazyLock<HashSet<&'static str>> =
     LazyLock::new(|| ["link", "metadata", "dep-info"].iter().copied().collect());
 
 /// Version number for cache key.
-const CACHE_VERSION: &[u8] = b"8";
+const CACHE_VERSION: &[u8] = b"7";
 
 /// Get absolute paths for all source files and env-deps listed in rustc's dep-info output.
 async fn get_source_files_and_env_deps<T>(
