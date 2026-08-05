@@ -690,6 +690,7 @@ pub fn parse_arguments(
                 | Some(ClangModuleOutput(_))
                 | Some(ExtraHashFileClangModuleFile(_))
                 | Some(ModuleOnlyFlag)
+                | Some(ExtraHashFileRequiringPath(_))
                 | Some(TooHard(_)) => cannot_cache!(
                     arg.flag_str()
                         .unwrap_or("Can't handle complex arguments through clang",)

@@ -638,6 +638,83 @@ int main(int argc, char** argv) {
     });
 }
 
+/// The randstruct seed file decides struct field ordering. Nothing about it reaches
+/// the preprocessor, so two builds differing only in the seed preprocess to the same
+/// bytes, and so without hashing its contents they share an object and one of them gets a
+/// struct layout the compiler never chose for it, which Is Bad.
+fn test_randomize_layout_seed_file_changes(compiler: Compiler, tempdir: &Path) {
+    let Compiler {
+        name,
+        exe,
+        env_vars,
+    } = compiler;
+    println!("test_randomize_layout_seed_file_changes: {}", name);
+
+    const SRC: &str = "randlayout.c";
+    const SEED: &str = "randstruct.seed";
+    write_source(
+        tempdir,
+        SRC,
+        "struct __attribute__((randomize_layout)) S { int a; long b; char c; void *d; };
+int off(void) { return __builtin_offsetof(struct S, d); }
+int main(int argc, char** argv) {
+  return 0;
+}
+",
+    );
+    write_source(tempdir, SEED, "seed one aaaaaaaaaaaaaaaaaaaaaaaaaaaa\n");
+
+    // Older compilers do not support randstruct at all. Probe the compiler
+    // directly, so the probe does not populate the cache we are about to measure.
+    let probe = Command::new(&exe)
+        .args(["-fsyntax-only", SRC])
+        .arg(format!("-frandomize-layout-seed-file={}", SEED))
+        .current_dir(tempdir)
+        .envs(env_vars.clone())
+        .output()
+        .expect("Failed to probe for randstruct support");
+    if !probe.status.success() {
+        println!("  compiler does not support randstruct, skipping");
+        return;
+    }
+    zero_stats();
+
+    let mut args = compile_cmdline(name, exe, SRC, OUTPUT, Vec::new());
+    args.push(format!("-frandomize-layout-seed-file={}", SEED).into());
+
+    let compile = |env_vars: Vec<(OsString, OsString)>| {
+        sccache_command()
+            .args(&args)
+            .current_dir(tempdir)
+            .envs(env_vars)
+            .assert()
+            .success();
+    };
+
+    trace!("compile with the first seed");
+    compile(env_vars.clone());
+    get_stats(|info| {
+        assert_eq!(0, info.stats.cache_hits.all());
+        assert_eq!(1, info.stats.cache_misses.all());
+    });
+
+    trace!("compile again unchanged");
+    compile(env_vars.clone());
+    get_stats(|info| {
+        assert_eq!(1, info.stats.cache_hits.all());
+        assert_eq!(1, info.stats.cache_misses.all());
+    });
+
+    // The source is untouched, so only the seed distinguishes this compilation.
+    trace!("compile with a changed seed");
+    write_source(tempdir, SEED, "seed two bbbbbbbbbbbbbbbbbbbbbbbbbbbb\n");
+    compile(env_vars);
+    get_stats(|info| {
+        assert_eq!(1, info.stats.cache_hits.all());
+        assert_eq!(2, info.stats.cache_misses.all());
+    });
+}
+
 /// `.include` pulls in assembly source, which is likewise absent from preprocessor
 /// output, and which can name further files of its own. Every file reachable that
 /// way has to reach the cache key, however deep.
@@ -957,6 +1034,9 @@ fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path, preprocessor_ca
         test_incbin_embedded_file_changes(compiler.clone(), tempdir);
         test_include_transitive_dependency_changes(compiler.clone(), tempdir);
         test_incbin_unresolvable_operand_not_cacheable(compiler.clone(), tempdir);
+    }
+    if compiler.name == "clang" {
+        test_randomize_layout_seed_file_changes(compiler.clone(), tempdir);
     }
     if compiler.name == "clang++" {
         test_clang_multicall(compiler.clone(), tempdir);

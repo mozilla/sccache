@@ -27,7 +27,7 @@ use crate::dist::pkg;
 use crate::mock_command::CommandCreatorSync;
 use crate::util::{
     Digest, HashToDigest, MetadataCtimeExt, TimeMacroFinder, Timestamp, decode_path, encode_path,
-    hash_all, strip_basedirs,
+    strip_basedirs,
 };
 use async_trait::async_trait;
 use fs_err as fs;
@@ -378,7 +378,28 @@ where
     ) -> Result<HashResult<T>> {
         let start_of_compilation = std::time::SystemTime::now();
 
-        let extra_hashes = hash_all(&self.parsed_args.extra_hash_files, &pool.clone()).await?;
+        // An argument may name a file whose contents the compiler reads directly,
+        // making it an input the preprocessor never reports. A file we cannot hash
+        // leaves us unable to tell what the compilation depends on, so it must not
+        // be cached.
+        let mut cacheable = Cacheable::Yes;
+        let mut extra_hashes = Vec::with_capacity(self.parsed_args.extra_hash_files.len());
+        for path in &self.parsed_args.extra_hash_files {
+            match Digest::file(path, pool).await {
+                Ok(hash) => extra_hashes.push(hash),
+                Err(e) => {
+                    debug!(
+                        "[{}]: Not cacheable: cannot hash {:?}: {}",
+                        self.parsed_args.output_pretty(),
+                        path,
+                        e
+                    );
+                    cacheable = Cacheable::No;
+                    break;
+                }
+            }
+        }
+
         // Create an argument vector containing both preprocessor and arch args, to
         // use in creating a hash key
         let mut preprocessor_and_arch_args = self.parsed_args.preprocessor_args.clone();
@@ -409,9 +430,13 @@ where
         let needs_preprocessing = self.parsed_args.language.needs_c_preprocessing();
 
         let use_preprocessor_cache_mode = if needs_preprocessing {
+            // Preprocessor cache mode maps include files to a hash key computed
+            // elsewhere, so it must not record one for a compilation whose key we
+            // already know is untrustworthy.
             let can_use_preprocessor_cache_mode = preprocessor_cache_mode_config
                 .use_preprocessor_cache_mode
-                && !too_hard_for_preprocessor_cache_mode;
+                && !too_hard_for_preprocessor_cache_mode
+                && cacheable == Cacheable::Yes;
 
             let mut use_preprocessor_cache_mode = can_use_preprocessor_cache_mode;
 
@@ -619,8 +644,6 @@ where
         // they are not part of the preprocessor output and have to be hashed
         // separately. `.include` names assembly source, which can name further
         // files in turn, so the queue grows as those are read.
-        let mut extra_hashes = extra_hashes;
-        let mut cacheable = Cacheable::Yes;
         let mut pending: VecDeque<_> = find_asm_dependencies(&preprocessor_output).into();
         let mut included = HashSet::new();
         while let Some(dependency) = pending.pop_front() {
@@ -1712,6 +1735,18 @@ static CACHED_ENV_VARS: LazyLock<HashSet<&'static OsStr>> = LazyLock::new(|| {
         "WATCHOS_DEPLOYMENT_TARGET",
         "SDKROOT",
         "CCC_OVERRIDE_OPTIONS",
+        // Selects which cc1/as the driver runs, so it changes the generated code
+        // without changing the driver binary we hash.
+        "COMPILER_PATH",
+        // Turns on -fcompare-debug, which changes what the compiler does.
+        "GCC_COMPARE_DEBUG",
+        // Adds include directories. Preprocessing reflects these, but preprocessor
+        // cache mode skips preprocessing and would keep matching the files it
+        // recorded before the search path changed.
+        "CPATH",
+        "C_INCLUDE_PATH",
+        "CPLUS_INCLUDE_PATH",
+        "OBJC_INCLUDE_PATH",
     ]
     .iter()
     .map(OsStr::new)

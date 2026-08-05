@@ -161,6 +161,11 @@ ArgData! { pub
     Coverage,
     ModuleOnlyFlag,
     ExtraHashFile(PathBuf),
+    // For arguments naming a file whose contents are an input, where the value is
+    // a path only when it contains a directory separator; otherwise the compiler
+    // resolves the bare name against a search path of its own that we cannot
+    // reproduce. Used by -fplugin and -specs.
+    ExtraHashFileRequiringPath(PathBuf),
     // Only valid for clang, but this needs to be here since clang shares gcc's arg parsing.
     // For -fmodule-file which can be either "path" or "name=path"
     ExtraHashFileClangModuleFile(OsString),
@@ -186,6 +191,9 @@ counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     flag!("--save-temps=cwd", TooHardFlag),
     flag!("--save-temps=obj", TooHardFlag),
     take_arg!("--serialize-diagnostics", PathBuf, Separated, SerializeDiagnostics),
+    // A spec file rewrites the command line, so it can change anything about the
+    // compilation while the arguments we hash stay the same.
+    take_arg!("--specs", PathBuf, CanBeConcatenated(b'='), ExtraHashFileRequiringPath),
     take_arg!("--sysroot", PathBuf, Separated, PassThroughPath),
     take_arg!("-A", OsString, Separated, PassThrough),
     take_arg!("-B", PathBuf, CanBeSeparated, PassThroughPath),
@@ -227,7 +235,11 @@ counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     flag!("-fno-profile-generate", TooHardFlag),
     flag!("-fno-profile-use", TooHardFlag),
     flag!("-fno-working-directory", PreprocessorArgumentFlag),
-    flag!("-fplugin=libcc1plugin", TooHardFlag),
+    // A plugin's code runs as part of the compilation, so its contents are an
+    // input rather than just the path naming it. This also covers the one plugin
+    // that used to be singled out here, libcc1plugin, which is passed as a bare
+    // name and so lands in the same bucket as any other name we cannot resolve.
+    take_arg!("-fplugin", PathBuf, CanBeConcatenated(b'='), ExtraHashFileRequiringPath),
     flag!("-fprofile-arcs", ProfileGenerate),
     flag!("-fprofile-generate", ProfileGenerate),
     take_arg!("-fprofile-use", OsString, Concatenated, TooHard),
@@ -260,6 +272,7 @@ counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     flag!("-save-temps", TooHardFlag),
     flag!("-save-temps=cwd", TooHardFlag),
     flag!("-save-temps=obj", TooHardFlag),
+    take_arg!("-specs", PathBuf, CanBeConcatenated(b'='), ExtraHashFileRequiringPath),
     take_arg!("-std", OsString, Concatenated(b'='), Standard),
     take_arg!("-stdlib", OsString, Concatenated(b'='), PreprocessorArgument),
     flag!("-trigraphs", PreprocessorArgumentFlag),
@@ -420,6 +433,7 @@ where
                 serialize_diagnostics = Some(path.clone());
             }
             Some(ExtraHashFile(_))
+            | Some(ExtraHashFileRequiringPath(_))
             | Some(ExtraHashFileClangModuleFile(_))
             | Some(PassThroughFlag)
             | Some(PreprocessorArgumentFlag)
@@ -502,6 +516,19 @@ where
                 extra_hash_files.push(cwd.join(path));
                 &mut common_args
             }
+            Some(ExtraHashFileRequiringPath(path)) => {
+                // Without a directory separator the compiler resolves this name
+                // itself, against its plugin directory or its spec search path. We
+                // cannot reproduce that, and guessing at the working directory
+                // could hash an unrelated file that happens to share the name.
+                // (Note: ccache queries the compiler with -print-file-name to resolve
+                // spec files, we settle for not caching.)
+                if path.components().count() < 2 {
+                    cannot_cache!("file argument without a path");
+                }
+                extra_hash_files.push(cwd.join(path));
+                &mut common_args
+            }
             Some(ExtraHashFileClangModuleFile(val)) => {
                 // -fmodule-file can be either "path" or "name=path"
                 let val_str = val.to_string_lossy();
@@ -571,6 +598,7 @@ where
             | Some(ClangModuleOutput(_))
             | Some(TooHardFlag)
             | Some(XClang(_))
+            | Some(ExtraHashFileRequiringPath(_))
             | Some(TooHard(_)) => cannot_cache!(
                 arg.flag_str()
                     .unwrap_or("Can't handle complex arguments through clang",)
@@ -1807,6 +1835,72 @@ mod test {
             CompilerArguments::CannotCache("multiple input files", Some("[\"-fPIC\"]".to_string())),
             parse_arguments_clang(args, false)
         );
+    }
+
+    /// A gcc plugin's code runs as part of the compilation, so the object depends
+    /// on the plugin's contents, not just on the path naming it.
+    #[test]
+    fn test_parse_arguments_fplugin_hashes_the_plugin() {
+        for args in [
+            stringvec!["-c", "foo.c", "-o", "foo.o", "-fplugin=./plugin.so"],
+            stringvec!["-c", "foo.c", "-o", "foo.o", "-fplugin", "./plugin.so"],
+            stringvec![
+                "-c",
+                "foo.c",
+                "-o",
+                "foo.o",
+                "-fplugin=scripts/gcc-plugins/structleak_plugin.so"
+            ],
+        ] {
+            let a = match parse_arguments_(args.clone(), false) {
+                CompilerArguments::Ok(a) => a,
+                o => panic!("Got unexpected parse result: {o:?} for {args:?}"),
+            };
+            assert_eq!(1, a.extra_hash_files.len(), "{args:?}");
+        }
+    }
+
+    /// A spec file rewrites the command line, so its contents are an input even
+    /// though the arguments we hash do not change with it.
+    #[test]
+    fn test_parse_arguments_specs_hashes_the_spec_file() {
+        for args in [
+            stringvec!["-c", "foo.c", "-o", "foo.o", "-specs=./hardened.spec"],
+            stringvec!["-c", "foo.c", "-o", "foo.o", "-specs", "./hardened.spec"],
+            stringvec![
+                "-c",
+                "foo.c",
+                "-o",
+                "foo.o",
+                "--specs=/usr/lib/rpm/cc1.spec"
+            ],
+        ] {
+            let a = match parse_arguments_(args.clone(), false) {
+                CompilerArguments::Ok(a) => a,
+                o => panic!("Got unexpected parse result: {o:?} for {args:?}"),
+            };
+            assert_eq!(1, a.extra_hash_files.len(), "{args:?}");
+        }
+    }
+
+    /// A plugin or spec file named without a path is resolved by the compiler
+    /// against a search path of its own, so there is nothing for us to hash.
+    /// libcc1plugin is one of these.
+    #[test]
+    fn test_parse_arguments_file_argument_without_path_refused() {
+        for arg in [
+            "-fplugin=libcc1plugin",
+            "-fplugin=structleak_plugin.so",
+            "-specs=hardened.spec",
+        ] {
+            let args = stringvec!["-c", "foo.c", "-o", "foo.o", arg];
+            match parse_arguments_(args, false) {
+                CompilerArguments::CannotCache(reason, None) => {
+                    assert_eq!(reason, "file argument without a path", "{arg}");
+                }
+                o => panic!("Got unexpected parse result: {o:?} for {arg}"),
+            }
+        }
     }
 
     #[test]
