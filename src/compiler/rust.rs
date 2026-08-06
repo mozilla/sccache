@@ -585,10 +585,7 @@ where
                 .context("Failed to parse output of rustup which rustc")?;
 
             let proxied_compiler = PathBuf::from(stdout.trim());
-            trace!(
-                "proxy: rustup which rustc produced: {:?}",
-                &proxied_compiler
-            );
+            trace!("proxy: rustup which rustc produced: {:?}", proxied_compiler);
             // TODO: Delegate FS access to a thread pool if possible
             let attr = fs::metadata(proxied_compiler.as_path())
                 .context("Failed to obtain metadata of the resolved, true rustc")?;
@@ -725,7 +722,7 @@ impl RustupProxy {
                 let stdout = String::from_utf8(rustup_candidate_check.stdout)
                     .map_err(|_e| anyhow!("Response of `rustup --version` is not valid UTF-8"))?;
                 Ok(if stdout.trim().starts_with("rustup ") {
-                    trace!("PROXY rustup --version produced: {}", &stdout);
+                    trace!("PROXY rustup --version produced: {}", stdout);
                     Self::new(&proxy_executable).map(Some)
                 } else {
                     Err(anyhow!("Unexpected output or `rustup --version`"))
@@ -1238,14 +1235,13 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
             None => {
                 match arg {
                     Argument::Raw(ref val) => {
-                        if idx == 0 {
-                            if let Some(value) = val.to_str() {
-                                if value == "rustc" {
-                                    // If the first argument is rustc, it's likely called via clippy-driver,
-                                    // so it's not actually an input file, which means we should discount it.
-                                    continue;
-                                }
-                            }
+                        if idx == 0
+                            && let Some(value) = val.to_str()
+                            && value == "rustc"
+                        {
+                            // If the first argument is rustc, it's likely called via clippy-driver,
+                            // so it's not actually an input file, which means we should discount it.
+                            continue;
                         }
                         if input.is_some() {
                             // Can't cache compilations with multiple inputs.
@@ -1873,10 +1869,10 @@ impl<T: CommandCreatorSync> Compilation<T> for RustCompilation {
             }
             // OUT_DIR was changed during transformation, check if this compilation is relying on anything
             // inside it - if so, disallow distributed compilation (there are sometimes hardcoded paths present)
-            if let Some(out_dir) = changed_out_dir {
-                if self.inputs.iter().any(|input| input.starts_with(&out_dir)) {
-                    return None;
-                }
+            if let Some(out_dir) = changed_out_dir
+                && self.inputs.iter().any(|input| input.starts_with(&out_dir))
+            {
+                return None;
             }
 
             // Add any necessary path transforms - although we haven't packaged up inputs yet, we've
@@ -1892,7 +1888,7 @@ impl<T: CommandCreatorSync> Compilation<T> for RustCompilation {
                 if remapped_disks.contains(&dist_path) {
                     continue;
                 }
-                dist_arguments.push(format!("--remap-path-prefix={}={}", &dist_path, local_path));
+                dist_arguments.push(format!("--remap-path-prefix={}={}", dist_path, local_path));
                 remapped_disks.insert(dist_path);
             }
 
@@ -2103,18 +2099,17 @@ impl pkg::InputsPackager for RustInputsPackager {
                         "Cannot distribute dylib input {} on this platform",
                         input_path.display()
                     )
-                } else if ext == RLIB_EXTENSION || ext == RMETA_EXTENSION {
-                    if let Some((ref rlib_dep_reader, ref mut dep_crate_names)) =
+                } else if (ext == RLIB_EXTENSION || ext == RMETA_EXTENSION)
+                    && let Some((ref rlib_dep_reader, ref mut dep_crate_names)) =
                         rlib_dep_reader_and_names
-                    {
-                        dep_crate_names.extend(
-                            rlib_dep_reader
-                                .discover_rlib_deps(&env_vars, &input_path)
-                                .with_context(|| {
-                                    format!("Failed to read deps of {}", input_path.display())
-                                })?,
-                        );
-                    }
+                {
+                    dep_crate_names.extend(
+                        rlib_dep_reader
+                            .discover_rlib_deps(&env_vars, &input_path)
+                            .with_context(|| {
+                                format!("Failed to read deps of {}", input_path.display())
+                            })?,
+                    );
                 }
             }
 
@@ -2137,10 +2132,10 @@ impl pkg::InputsPackager for RustInputsPackager {
             tar_inputs.push((input_path, dist_input_path));
         }
 
-        if log_enabled!(Trace) {
-            if let Some((_, ref dep_crate_names)) = rlib_dep_reader_and_names {
-                trace!("Identified dependency crate names: {:?}", dep_crate_names);
-            }
+        if log_enabled!(Trace)
+            && let Some((_, ref dep_crate_names)) = rlib_dep_reader_and_names
+        {
+            trace!("Identified dependency crate names: {:?}", dep_crate_names);
         }
 
         // Given the link paths, find the things we need to send over the wire to the remote machine. If
@@ -2409,7 +2404,7 @@ src/bin/sccache-dist/token_check.rs:
         dep_info: Some(depinfo_file.clone()),
     });
     let () = ror
-        .handle_outputs(&pt, &[depinfo_file.clone()], &[])
+        .handle_outputs(&pt, std::slice::from_ref(&depinfo_file), &[])
         .unwrap();
 
     let mut s = String::new();
@@ -2586,10 +2581,10 @@ impl RlibDepReader {
 
         {
             let mut cache = self.cache.lock().unwrap();
-            if let Some(deps_detail) = cache.get(rlib) {
-                if rlib_mtime == deps_detail.mtime {
-                    return Ok(deps_detail.deps.clone());
-                }
+            if let Some(deps_detail) = cache.get(rlib)
+                && rlib_mtime == deps_detail.mtime
+            {
+                return Ok(deps_detail.deps.clone());
             }
         }
 

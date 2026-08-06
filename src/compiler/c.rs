@@ -460,71 +460,63 @@ where
         };
 
         let (preprocessor_output, include_files) = if needs_preprocessing {
-            if let Some(preprocessor_key) = &preprocessor_key {
-                if cache_control == CacheControl::Default {
-                    if let Some(mut seekable) = storage
-                        .get_preprocessor_cache_entry(preprocessor_key)
-                        .await?
+            if let Some(preprocessor_key) = &preprocessor_key
+                && cache_control == CacheControl::Default
+                && let Some(mut seekable) = storage
+                    .get_preprocessor_cache_entry(preprocessor_key)
+                    .await?
+            {
+                let mut buf = vec![];
+                seekable.read_to_end(&mut buf)?;
+                let mut preprocessor_cache_entry = PreprocessorCacheEntry::read(&buf)?;
+                let mut updated = false;
+                let hit = preprocessor_cache_entry
+                    .lookup_result_digest(preprocessor_cache_mode_config, &mut updated);
+
+                let mut update_failed = false;
+                if updated {
+                    // Time macros have been found, we need to update
+                    // the preprocessor cache entry. See [`PreprocessorCacheEntry::result_matches`].
+                    debug!("Preprocessor cache updated because of time macros: {preprocessor_key}");
+
+                    if let Err(e) = storage
+                        .put_preprocessor_cache_entry(preprocessor_key, preprocessor_cache_entry)
+                        .await
                     {
-                        let mut buf = vec![];
-                        seekable.read_to_end(&mut buf)?;
-                        let mut preprocessor_cache_entry = PreprocessorCacheEntry::read(&buf)?;
-                        let mut updated = false;
-                        let hit = preprocessor_cache_entry
-                            .lookup_result_digest(preprocessor_cache_mode_config, &mut updated);
+                        debug!("Failed to update preprocessor cache: {}", e);
+                        update_failed = true;
+                    }
+                }
 
-                        let mut update_failed = false;
-                        if updated {
-                            // Time macros have been found, we need to update
-                            // the preprocessor cache entry. See [`PreprocessorCacheEntry::result_matches`].
-                            debug!(
-                                "Preprocessor cache updated because of time macros: {preprocessor_key}"
-                            );
-
-                            if let Err(e) = storage
-                                .put_preprocessor_cache_entry(
-                                    preprocessor_key,
-                                    preprocessor_cache_entry,
-                                )
-                                .await
-                            {
-                                debug!("Failed to update preprocessor cache: {}", e);
-                                update_failed = true;
-                            }
-                        }
-
-                        if !update_failed {
-                            if let Some(key) = hit {
-                                debug!("Preprocessor cache hit: {preprocessor_key}");
-                                // A compiler binary may be a symlink to another and
-                                // so has the same digest, but that means
-                                // the toolchain will not contain the correct path
-                                // to invoke the compiler! Add the compiler
-                                // executable path to try and prevent this
-                                let weak_toolchain_key = format!(
-                                    "{}-{}",
-                                    self.executable.to_string_lossy(),
-                                    self.executable_digest
-                                );
-                                return Ok(HashResult {
-                                    key,
-                                    compilation: Box::new(CCompilation {
-                                        parsed_args: self.parsed_args.clone(),
-                                        is_locally_preprocessed: false,
-                                        #[cfg(feature = "dist-client")]
-                                        preprocessed_input: PREPROCESSING_SKIPPED_COMPILE_POISON
-                                            .to_vec(),
-                                        executable: self.executable.clone(),
-                                        compiler: self.compiler.to_owned(),
-                                        cwd: cwd.clone(),
-                                        env_vars: env_vars.clone(),
-                                    }),
-                                    weak_toolchain_key,
-                                });
-                            } else {
-                                debug!("Preprocessor cache miss: {preprocessor_key}");
-                            }
-                        }
+                if !update_failed {
+                    if let Some(key) = hit {
+                        debug!("Preprocessor cache hit: {preprocessor_key}");
+                        // A compiler binary may be a symlink to another and
+                        // so has the same digest, but that means
+                        // the toolchain will not contain the correct path
+                        // to invoke the compiler! Add the compiler
+                        // executable path to try and prevent this
+                        let weak_toolchain_key = format!(
+                            "{}-{}",
+                            self.executable.to_string_lossy(),
+                            self.executable_digest
+                        );
+                        return Ok(HashResult {
+                            key,
+                            compilation: Box::new(CCompilation {
+                                parsed_args: self.parsed_args.clone(),
+                                is_locally_preprocessed: false,
+                                #[cfg(feature = "dist-client")]
+                                preprocessed_input: PREPROCESSING_SKIPPED_COMPILE_POISON.to_vec(),
+                                executable: self.executable.clone(),
+                                compiler: self.compiler.to_owned(),
+                                cwd: cwd.clone(),
+                                env_vars: env_vars.clone(),
+                            }),
+                            weak_toolchain_key,
+                        });
+                    } else {
+                        debug!("Preprocessor cache miss: {preprocessor_key}");
                     }
                 }
             }
@@ -553,7 +545,7 @@ where
 
             let mut preprocessor_result = result.or_else(move |err| {
                 // Errors remove all traces of potential output.
-                debug!("removing files {:?}", &outputs);
+                debug!("removing files {:?}", outputs);
 
                 let v: std::result::Result<(), std::io::Error> =
                     outputs.values().try_for_each(|output| {
@@ -638,22 +630,22 @@ where
         .compute();
 
         // Cache the preprocessing step
-        if let Some(preprocessor_key) = preprocessor_key {
-            if !include_files.is_empty() {
-                let mut preprocessor_cache_entry = PreprocessorCacheEntry::new();
-                let mut files: Vec<_> = include_files
-                    .into_iter()
-                    .map(|(path, digest)| (digest, path))
-                    .collect();
-                files.sort_unstable_by(|a, b| a.1.cmp(&b.1));
-                preprocessor_cache_entry.add_result(start_of_compilation, &key, files);
+        if let Some(preprocessor_key) = preprocessor_key
+            && !include_files.is_empty()
+        {
+            let mut preprocessor_cache_entry = PreprocessorCacheEntry::new();
+            let mut files: Vec<_> = include_files
+                .into_iter()
+                .map(|(path, digest)| (digest, path))
+                .collect();
+            files.sort_unstable_by(|a, b| a.1.cmp(&b.1));
+            preprocessor_cache_entry.add_result(start_of_compilation, &key, files);
 
-                if let Err(e) = storage
-                    .put_preprocessor_cache_entry(&preprocessor_key, preprocessor_cache_entry)
-                    .await
-                {
-                    debug!("Failed to update preprocessor cache: {}", e);
-                }
+            if let Err(e) = storage
+                .put_preprocessor_cache_entry(&preprocessor_key, preprocessor_cache_entry)
+                .await
+            {
+                debug!("Failed to update preprocessor cache: {}", e);
             }
         }
 
@@ -1160,19 +1152,19 @@ fn include_is_too_new(
 ) -> bool {
     // The comparison using >= is intentional, due to a possible race between
     // starting compilation and writing the include file.
-    if let Some(mtime) = meta.modified {
-        if mtime >= time_of_compilation.into() {
-            debug!("Include file {} is too new", path.display());
-            return true;
-        }
+    if let Some(mtime) = meta.modified
+        && mtime >= time_of_compilation.into()
+    {
+        debug!("Include file {} is too new", path.display());
+        return true;
     }
 
     // The same >= logic as above applies to the change time of the file.
-    if let Some(ctime) = meta.ctime_or_creation {
-        if ctime >= time_of_compilation.into() {
-            debug!("Include file {} is too new", path.display());
-            return true;
-        }
+    if let Some(ctime) = meta.ctime_or_creation
+        && ctime >= time_of_compilation.into()
+    {
+        debug!("Include file {} is too new", path.display());
+        return true;
     }
 
     false
