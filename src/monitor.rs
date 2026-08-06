@@ -34,7 +34,9 @@ use number_prefix::NumberPrefix;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Alignment, Constraint, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::symbols::Marker;
 use ratatui::text::{Line, Span};
+use ratatui::widgets::canvas::{Canvas, Points};
 use ratatui::widgets::{
     Block, BorderType, Cell, Clear, Gauge, LineGauge, Paragraph, Row, Sparkline, Table, Tabs, Wrap,
 };
@@ -253,6 +255,9 @@ struct App {
     hist_requests: VecDeque<u64>,
     hist_hits: VecDeque<u64>,
     hist_misses: VecDeque<u64>,
+    /// Cache size in bytes, one entry per sample. Unlike the rates this is an
+    /// absolute figure, so it survives a `z`.
+    hist_size: VecDeque<u64>,
     updates: u64,
     last_update: Option<Instant>,
     error: Option<String>,
@@ -277,6 +282,7 @@ impl App {
             hist_requests: VecDeque::with_capacity(HISTORY),
             hist_hits: VecDeque::with_capacity(HISTORY),
             hist_misses: VecDeque::with_capacity(HISTORY),
+            hist_size: VecDeque::with_capacity(HISTORY),
             updates: 0,
             last_update: None,
             error: None,
@@ -435,6 +441,12 @@ impl App {
                     None => {}
                 }
                 self.prev = Some((now, stats.clone()));
+                if let Some(size) = info.cache_size {
+                    if self.hist_size.len() == HISTORY {
+                        self.hist_size.pop_front();
+                    }
+                    self.hist_size.push_back(size);
+                }
                 self.info = Some(*info);
                 self.updates += 1;
                 self.last_update = Some(now);
@@ -894,6 +906,37 @@ impl App {
         );
     }
 
+    /// Plot how the cache has filled up. Absolute bytes rather than a rate, so
+    /// unlike the overview plots this one keeps its shape across a `z`.
+    fn draw_cache_trend(&self, frame: &mut Frame<'_>, area: Rect) {
+        let width = area.width.saturating_sub(2) as usize;
+        let data: Vec<u64> = self
+            .hist_size
+            .iter()
+            .rev()
+            .take(width)
+            .rev()
+            .copied()
+            .collect();
+        let heading = match (data.first(), data.last()) {
+            (Some(&first), Some(&last)) => format!(
+                "cache size — now {}, {}{} over {} samples",
+                fmt_bytes(Some(last)),
+                if last >= first { "+" } else { "-" },
+                fmt_bytes(Some(last.abs_diff(first))),
+                data.len(),
+            ),
+            _ => "cache size".to_string(),
+        };
+        frame.render_widget(
+            Sparkline::default()
+                .block(titled(&heading))
+                .data(data)
+                .style(Style::default().fg(Color::Blue)),
+            area,
+        );
+    }
+
     fn draw_cache(&self, frame: &mut Frame<'_>, area: Rect) {
         let block = titled("Cache");
         let Some(info) = self.info.as_ref() else {
@@ -909,20 +952,30 @@ impl App {
             .multi_level
             .as_ref()
             .is_some_and(|m| !m.0.is_empty());
-        let [top, bottom] = if has_levels {
-            Layout::vertical([Constraint::Length(9), Constraint::Min(0)]).areas(area)
-        } else {
-            Layout::vertical([Constraint::Min(0), Constraint::Length(0)]).areas(area)
+        // A local cache has a size and a ceiling worth drawing; a remote one
+        // usually reports neither, so it keeps the plain gauge.
+        let usage = match (info.cache_size, info.max_cache_size) {
+            (Some(size), Some(max)) if max > 0 && info.cache_location.starts_with("Local disk") => {
+                Some((size, max))
+            }
+            _ => None,
         };
+        let levels_height = match info.stats.multi_level.as_ref().filter(|_| has_levels) {
+            // Border, header, and a line per level.
+            Some(levels) => 3 + levels.0.len() as u16,
+            None => 0,
+        };
+        let (top_height, trend_height) = match usage {
+            // Enough for the pie plus its legend, and a plot of the fill.
+            Some(_) => (Constraint::Length(12), Constraint::Min(0)),
+            None => (Constraint::Min(0), Constraint::Length(0)),
+        };
+        let [top, trend, bottom] =
+            Layout::vertical([top_height, trend_height, Constraint::Length(levels_height)])
+                .areas(area);
 
         let inner = block.inner(top);
         frame.render_widget(block, top);
-        let [gauge_area, text_area] =
-            Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(inner);
-        frame.render_widget(
-            cache_gauge(info.cache_size, info.max_cache_size),
-            gauge_area,
-        );
 
         let mut lines = vec![
             Line::from(vec![kv("location", info.cache_location.clone())]),
@@ -931,27 +984,60 @@ impl App {
                 Span::raw("   "),
                 kv("max", fmt_bytes(info.max_cache_size)),
             ]),
-            Line::from(vec![kv(
-                "preprocessor cache mode",
-                if info.use_preprocessor_cache_mode {
-                    "yes"
-                } else {
-                    "no"
-                },
-            )]),
-            Line::from(vec![kv(
-                "base directories",
-                if info.basedirs.is_empty() {
-                    "(none)".to_string()
-                } else {
-                    info.basedirs.join(", ")
-                },
-            )]),
         ];
+        if let Some((size, max)) = usage {
+            lines.push(Line::from(vec![kv(
+                "free",
+                fmt_bytes(Some(max.saturating_sub(size))),
+            )]));
+        }
+        lines.push(Line::from(vec![kv(
+            "preprocessor cache mode",
+            if info.use_preprocessor_cache_mode {
+                "yes"
+            } else {
+                "no"
+            },
+        )]));
+        lines.push(Line::from(vec![kv(
+            "base directories",
+            if info.basedirs.is_empty() {
+                "(none)".to_string()
+            } else {
+                info.basedirs.join(", ")
+            },
+        )]));
         // `ServerInfo::version` is stamped by the server process, matching the
         // `server v…` shown in the status bar.
         lines.push(Line::from(vec![kv("server version", info.version.clone())]));
-        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), text_area);
+
+        match usage.and_then(|(size, max)| pie_width(inner).map(|w| (size, max, w))) {
+            Some((size, max, width)) => {
+                let [pie, _gap, text_area] = Layout::horizontal([
+                    Constraint::Length(width),
+                    Constraint::Length(2),
+                    Constraint::Min(20),
+                ])
+                .areas(inner);
+                draw_pie(frame, pie, size, max);
+                frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), text_area);
+            }
+            // Nothing to scale against, or too small for the pie: fall back to
+            // the one-line gauge.
+            None => {
+                let [gauge_area, text_area] =
+                    Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(inner);
+                frame.render_widget(
+                    cache_gauge(info.cache_size, info.max_cache_size),
+                    gauge_area,
+                );
+                frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), text_area);
+            }
+        }
+
+        if usage.is_some() {
+            self.draw_cache_trend(frame, trend);
+        }
 
         if let Some(levels) = info.stats.multi_level.as_ref().filter(|_| has_levels) {
             let header = Row::new(
@@ -1255,18 +1341,98 @@ fn cache_gauge(size: Option<u64>, max: Option<u64>) -> Gauge<'static> {
         (Some(_), None) => format!("cache {}", fmt_bytes(size)),
         _ => "cache size unknown".to_string(),
     };
-    let colour = if ratio >= 0.9 {
+    Gauge::default()
+        .ratio(ratio)
+        .label(label)
+        .gauge_style(Style::default().fg(fill_colour(ratio)))
+        .use_unicode(true)
+}
+
+/// How full is too full: the same scale for the gauge and the pie.
+fn fill_colour(ratio: f64) -> Color {
+    if ratio >= 0.9 {
         Color::Red
     } else if ratio >= 0.7 {
         Color::Yellow
     } else {
         Color::Blue
-    };
-    Gauge::default()
-        .ratio(ratio)
-        .label(label)
-        .gauge_style(Style::default().fg(colour))
-        .use_unicode(true)
+    }
+}
+
+/// Width to give the pie column, or `None` when the pane is too small for one.
+///
+/// Braille cells are twice as tall as they are wide, so a 2:1 area comes out
+/// round; one line goes to the legend underneath.
+fn pie_width(inner: Rect) -> Option<u16> {
+    let plot_height = inner.height.checked_sub(1)?;
+    if plot_height < 5 || inner.width < 46 {
+        return None;
+    }
+    let width = (plot_height * 2).min(inner.width / 2).min(30);
+    (width >= 10).then_some(width)
+}
+
+/// Draw the cache fill as a two-slice pie with a legend under it.
+fn draw_pie(frame: &mut Frame<'_>, area: Rect, size: u64, max: u64) {
+    let [plot, legend] = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
+    let ratio = (size as f64 / max as f64).clamp(0.0, 1.0);
+    let colour = fill_colour(ratio);
+    let (used, free) = pie_points(plot, ratio);
+    frame.render_widget(
+        Canvas::default()
+            .marker(Marker::Braille)
+            .x_bounds([-1.0, 1.0])
+            .y_bounds([-1.0, 1.0])
+            .paint(|ctx| {
+                ctx.draw(&Points {
+                    coords: &free,
+                    color: Color::DarkGray,
+                });
+                ctx.draw(&Points {
+                    coords: &used,
+                    color: colour,
+                });
+            }),
+        plot,
+    );
+    // Kept short: the column is only as wide as the pie, and the byte figures
+    // are already spelled out beside it.
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("█", Style::default().fg(colour)),
+            Span::raw(format!(" {:.2} % full", ratio * 100.0)),
+        ]))
+        .alignment(Alignment::Center),
+        legend,
+    );
+}
+
+/// Rasterise a two-slice pie: the used slice starts at twelve o'clock and runs
+/// clockwise. One point per braille dot of `area`, in canvas coordinates.
+fn pie_points(area: Rect, ratio: f64) -> (Vec<(f64, f64)>, Vec<(f64, f64)>) {
+    let (nx, ny) = (area.width as usize * 2, area.height as usize * 4);
+    let mut used = Vec::new();
+    let mut free = Vec::new();
+    for iy in 0..ny {
+        let y = -1.0 + 2.0 * (iy as f64 + 0.5) / ny as f64;
+        for ix in 0..nx {
+            let x = -1.0 + 2.0 * (ix as f64 + 0.5) / nx as f64;
+            if x * x + y * y > 1.0 {
+                continue;
+            }
+            // `atan2(x, y)` is zero at twelve o'clock and grows clockwise.
+            let mut angle = x.atan2(y);
+            if angle < 0.0 {
+                angle += std::f64::consts::TAU;
+            }
+            if angle / std::f64::consts::TAU < ratio {
+                used.push((x, y));
+            } else {
+                free.push((x, y));
+            }
+        }
+    }
+    (used, free)
 }
 
 fn fmt_bytes(bytes: Option<u64>) -> String {

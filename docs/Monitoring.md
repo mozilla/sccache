@@ -44,7 +44,7 @@ server being stopped and restarted underneath it.
 | Overview | Overall hit rate, cache fill, per-second rates, the full counter list, and average cache-write / compile / cache-read-hit times. Sparklines plot compile requests, hits and misses per second. |
 | Languages | Hits, misses, hit rate and errors per language, with a hit/miss bar. Press `a` for the per-compiler (advanced) breakdown. |
 | Reasons | Why compilations were not cached, and which distributed servers ran compilations, each with its share of the total. |
-| Cache | Cache location, size against the configured maximum, base directories, preprocessor cache mode, and a per-level table when [multi-level caching](MultiLevel.md) is enabled. |
+| Cache | Cache location, size against the configured maximum, base directories, preprocessor cache mode, and a per-level table when [multi-level caching](MultiLevel.md) is enabled. A local disk cache also gets a used/free pie and a plot of how the cache has filled up; a remote one, whose size and ceiling are usually unknown, keeps a one-line gauge. |
 | Dist | Distributed-compilation status: scheduler URL, scheduler status, and failed distributed compilations. Only polled while this pane is open, since it can involve a round trip to the scheduler. |
 
 ## Keys
