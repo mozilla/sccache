@@ -360,14 +360,15 @@ impl DistSystem {
         wait_for_http(scheduler_url, Duration::from_millis(100), MAX_STARTUP_WAIT);
         wait_for(
             || {
-                let status = self.scheduler_status();
+                let status = self.get_scheduler_status();
                 if matches!(
                     status,
                     SchedulerStatusResult {
                         num_servers: 0,
                         num_cpus: _,
-                        in_progress: 0
-                    }
+                        in_progress: 0,
+                        ref servers
+                    } if servers.is_empty()
                 ) {
                     Ok(())
                 } else {
@@ -534,15 +535,14 @@ impl DistSystem {
         wait_for_http(url, Duration::from_millis(100), MAX_STARTUP_WAIT);
         wait_for(
             || {
-                let status = self.scheduler_status();
-                if matches!(
-                    status,
-                    SchedulerStatusResult {
-                        num_servers: 1,
-                        num_cpus: _,
-                        in_progress: 0
-                    }
-                ) {
+                let status = self.get_scheduler_status();
+                if let SchedulerStatusResult {
+                    num_servers: 1,
+                    num_cpus: _,
+                    in_progress: 0,
+                    servers: _,
+                } = &status
+                {
                     Ok(())
                 } else {
                     Err(format!("{:?}", status))
@@ -558,7 +558,7 @@ impl DistSystem {
         HTTPUrl::from_url(reqwest::Url::parse(&url).unwrap())
     }
 
-    fn scheduler_status(&self) -> SchedulerStatusResult {
+    pub fn get_scheduler_status(&self) -> SchedulerStatusResult {
         let res = reqwest::blocking::get(dist::http::urls::scheduler_status(
             &self.scheduler_url().to_url(),
         ))

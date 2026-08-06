@@ -742,10 +742,20 @@ impl SchedulerIncoming for Scheduler {
 
         self.prune_servers(&mut servers, &mut jobs);
 
+        let server_list: Vec<dist::BuildServerStatus> = servers
+            .iter()
+            .map(|(server_id, details)| dist::BuildServerStatus {
+                address: server_id.addr().to_string(),
+                num_cpus: details.num_cpus,
+                in_progress: details.jobs_assigned.len(),
+            })
+            .collect();
+
         Ok(SchedulerStatusResult {
             num_servers: servers.len(),
             num_cpus: servers.values().map(|v| v.num_cpus).sum(),
             in_progress: jobs.len(),
+            servers: server_list,
         })
     }
 }
