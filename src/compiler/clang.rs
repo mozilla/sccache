@@ -223,6 +223,14 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("-fprofile-instr-use", PathBuf, Concatenated(b'='), ClangProfileUse),
     // Note: this overrides the -fprofile-use option in gcc.rs.
     take_arg!("-fprofile-use", PathBuf, Concatenated(b'='), ClangProfileUse),
+    // The seed file's contents decide struct field ordering, so two builds that
+    // differ only in this file must not share an object.
+    take_arg!(
+        "-frandomize-layout-seed-file",
+        PathBuf,
+        Concatenated(b'='),
+        ExtraHashFile
+    ),
     take_arg!("-fsanitize-blacklist", PathBuf, Concatenated(b'='), ExtraHashFile),
     take_arg!("-fsanitize-ignorelist", PathBuf, Concatenated(b'='), ExtraHashFile),
     flag!("-fuse-ctor-homing", PassThroughFlag),
@@ -1009,6 +1017,42 @@ mod test {
             ovec![std::env::current_dir().unwrap().join("plugin.so")],
             a.extra_hash_files
         );
+    }
+
+    /// The seed file decides struct field ordering under randstruct, so two builds
+    /// differing only in its contents must not share an object.
+    #[test]
+    fn test_parse_frandomize_layout_seed_file() {
+        let a = parses!(
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "-frandomize-layout-seed-file=seed.txt"
+        );
+        assert_eq!(
+            ovec!["-frandomize-layout-seed-file=seed.txt"],
+            a.common_args
+        );
+        assert_eq!(
+            ovec![std::env::current_dir().unwrap().join("seed.txt")],
+            a.extra_hash_files
+        );
+    }
+
+    /// The string form carries its value in the argument itself, which is already
+    /// hashed, so it must not be mistaken for the file form.
+    #[test]
+    fn test_parse_frandomize_layout_seed_string_not_a_file() {
+        let a = parses!(
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "-frandomize-layout-seed=abcdef"
+        );
+        assert!(a.extra_hash_files.is_empty());
+        assert_eq!(ovec!["-frandomize-layout-seed=abcdef"], a.common_args);
     }
 
     #[test]
