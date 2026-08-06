@@ -1053,6 +1053,44 @@ fn select_valid_dryrun_lines(re: &Regex, line: &str) -> Result<String> {
     }
 }
 
+// nvcc's `--dryrun` output quotes subcommand arguments using MSVC/CRT command-line
+// conventions, not POSIX shell quoting, so a literal `"` inside an argument value
+// (e.g. from `-DXD=\"xd\"`) shows up as a backslash-escaped quote immediately
+// followed by the argument's closing quote (e.g. `-D "XD=\"xd\""`). Naively
+// collapsing every `""` pair or converting every `\` to `/` corrupts that escape
+// and either changes the argument's value or unbalances the quotes entirely
+// (see the shlex parse failure this was fixed for). These helpers skip quote
+// characters that are already escaped by a preceding backslash.
+fn collapse_doubled_quotes(line: &str) -> String {
+    let chars: Vec<char> = line.chars().collect();
+    let mut out = String::with_capacity(line.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let prev_is_backslash = i > 0 && chars[i - 1] == '\\';
+        if !prev_is_backslash && chars[i] == '"' && chars.get(i + 1) == Some(&'"') {
+            out.push('"');
+            i += 2;
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+fn replace_path_backslashes(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' && chars.peek() != Some(&'"') {
+            out.push('/');
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 fn fold_env_vars_or_split_into_exe_and_args(
     re: &Regex,
     env_vars: &mut Vec<(OsString, OsString)>,
@@ -1096,11 +1134,8 @@ fn fold_env_vars_or_split_into_exe_and_args(
     // The rest of the lines are subcommands, so parse into a vec of [cmd, args..]
 
     let mut line = if cfg!(target_os = "windows") {
-        let line = line
-            .replace("\"\"", "\"")
-            .replace(r"\\?\", "")
-            .replace('\\', "/")
-            .replace(r"//?/", "");
+        let line = collapse_doubled_quotes(line).replace(r"\\?\", "");
+        let line = replace_path_backslashes(&line).replace(r"//?/", "");
         match host_compiler {
             NvccHostCompiler::Msvc => line.replace(" -E ", " -P ").replace(" > ", " -Fi"),
             _ => line,
@@ -2197,5 +2232,67 @@ mod test {
                 parse_arguments_nvc(stringvec![format!("{arg_with_separator}flamegraph.json")])
             );
         }
+    }
+
+    #[test]
+    fn test_collapse_doubled_quotes() {
+        // A genuine cmd.exe-style doubled quote collapses to one quote.
+        assert_eq!(
+            collapse_doubled_quotes("cl.exe \"\"an arg\"\" foo"),
+            "cl.exe \"an arg\" foo"
+        );
+        // A backslash-escaped quote immediately followed by the argument's real
+        // closing quote must NOT be collapsed: doing so unbalances the quotes.
+        assert_eq!(
+            collapse_doubled_quotes("-D \"XD=\\\"xd\\\"\""),
+            "-D \"XD=\\\"xd\\\"\""
+        );
+    }
+
+    #[test]
+    fn test_replace_path_backslashes() {
+        // Ordinary path separators are converted to forward slashes.
+        assert_eq!(
+            replace_path_backslashes("C:\\Program Files\\NVIDIA"),
+            "C:/Program Files/NVIDIA"
+        );
+        // A backslash escaping a quote is preserved so shlex still treats it as
+        // a literal embedded quote rather than a path separator.
+        assert_eq!(
+            replace_path_backslashes("-D \"XD=\\\"xd\\\"\""),
+            "-D \"XD=\\\"xd\\\"\""
+        );
+    }
+
+    #[test]
+    fn test_nvcc_dryrun_line_with_quote_escaped_define_is_parseable() {
+        // Regression test for https://github.com/mozilla/sccache/issues/2470: `nvcc -DXD=\"xd\"`
+        // makes nvcc emit a `--dryrun` subcommand line (here, a `cl.exe` invocation)
+        // containing a CRT-escaped quote inside a quoted argument, e.g.:
+        //   -D "XD=\"xd\""
+        // Before the fix, the Windows line-normalization in
+        // `fold_env_vars_or_split_into_exe_and_args` collapsed the escaped quote
+        // into the argument's real closing quote (via a naive `""` -> `"` replace)
+        // and/or destroyed the escape (via a blanket `\` -> `/` replace), which
+        // unbalanced the quotes and made `shlex::split` return `None` ("Could not
+        // parse shell line").
+        let line = "cl.exe -Fo\"main.obj\" \"-IC:\\Program Files\\NVIDIA\\include\" -D \"XD=\\\"xd\\\"\" -D__CUDACC__=1 \"main.cpp\"";
+
+        let line = collapse_doubled_quotes(line).replace(r"\\?\", "");
+        let line = replace_path_backslashes(&line).replace(r"//?/", "");
+
+        let args = shlex::split(&line).expect("shlex::split should not fail to parse the line");
+        assert_eq!(
+            args,
+            vec![
+                "cl.exe",
+                "-Fomain.obj",
+                "-IC:/Program Files/NVIDIA/include",
+                "-D",
+                "XD=\"xd\"",
+                "-D__CUDACC__=1",
+                "main.cpp",
+            ]
+        );
     }
 }
