@@ -507,8 +507,8 @@ fn handle_compile_finished(
 /// Handle `response`, the response from sending a `Compile` request to the server.
 ///
 /// If the server returned `CompileStarted`, reads the follow-up `CompileFinished`
-/// from `conn`, falling back to local execution if the server disconnects
-/// unexpectedly.  Delegates to `handle_compile_result` for the final dispatch.
+/// from `conn`. A read failure is returned by default; the explicit server-I/O
+/// fallback setting permits local execution instead.
 #[allow(clippy::too_many_arguments)]
 fn handle_compile_response<T>(
     creator: T,
@@ -532,25 +532,13 @@ where
                 Ok(Response::CompileFinished(result)) => Some(result),
                 Ok(_) => bail!("unexpected response from server"),
                 Err(e) => {
-                    match e.downcast_ref::<io::Error>() {
-                        Some(io_e) if io_e.kind() == io::ErrorKind::UnexpectedEof => {
-                            eprintln!(
-                                "sccache: warning: The server looks like it shut down \
-                                 unexpectedly, compiling locally instead"
-                            );
-                        }
-                        _ => {
-                            //TODO: something better here?
-                            if ignore_all_server_io_errors() {
-                                eprintln!(
-                                    "sccache: warning: error reading compile response from server \
-                                     compiling locally instead"
-                                );
-                            } else {
-                                return Err(e)
-                                    .context("error reading compile response from server");
-                            }
-                        }
+                    if ignore_all_server_io_errors() {
+                        eprintln!(
+                            "sccache: warning: error reading compile response from server; \
+                             compiling locally instead"
+                        );
+                    } else {
+                        return Err(e).context("error reading compile response from server");
                     }
                     None
                 }
@@ -586,7 +574,7 @@ where
             if let Some(finished) = finished {
                 return handle_compile_finished(finished, stdout, stderr);
             }
-            // Server disconnected before sending CompileFinished; fall back to local compilation.
+            // The explicit server-I/O fallback permits local compilation here.
         }
         CompileResponse::UnsupportedCompiler(s) => {
             debug!("Server sent UnsupportedCompiler: {:?}", s);
@@ -957,7 +945,9 @@ mod test {
         CommandCreator, ExitStatusValue, MockChild, MockCommandCreator, exit_status,
     };
     use crate::net::Connection;
+    use serial_test::serial;
     use std::sync::{Arc, Mutex};
+    use temp_env::{with_var, with_var_unset};
 
     fn make_runtime() -> Runtime {
         tokio::runtime::Builder::new_current_thread()
@@ -991,11 +981,7 @@ mod test {
         }
     }
 
-    /// A mid-compile server disconnect: the server sends CompileStarted then drops the
-    /// connection before CompileFinished.  handle_compile_response must fall back to
-    /// local compilation rather than panic.
-    #[test]
-    fn test_handle_compile_response_disconnect_falls_back_to_local() {
+    fn handle_disconnected_compile() -> Result<i32> {
         let mut runtime = make_runtime();
         let client = Client::new_num(1);
         let creator = Arc::new(Mutex::new(MockCommandCreator::new(&client)));
@@ -1018,7 +1004,7 @@ mod test {
         let mut stdout = vec![];
         let mut stderr = vec![];
 
-        let code = handle_compile_response(
+        handle_compile_response(
             creator,
             &mut runtime,
             &mut conn,
@@ -1028,6 +1014,33 @@ mod test {
             cwd,
             &mut stdout,
             &mut stderr,
+        )
+    }
+
+    /// The default behavior documented in the README is to fail when the client loses
+    /// communication with the server.
+    #[test]
+    #[serial(server_io_error_env)]
+    fn test_handle_compile_response_disconnect_is_error_by_default() {
+        let error = with_var_unset(
+            "SCCACHE_IGNORE_SERVER_IO_ERROR",
+            handle_disconnected_compile,
+        )
+        .unwrap_err();
+
+        assert!(
+            format!("{error:#}").contains("error reading compile response from server"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
+    #[serial(server_io_error_env)]
+    fn test_handle_compile_response_disconnect_can_fall_back_to_local() {
+        let code = with_var(
+            "SCCACHE_IGNORE_SERVER_IO_ERROR",
+            Some("1"),
+            handle_disconnected_compile,
         )
         .unwrap();
 
