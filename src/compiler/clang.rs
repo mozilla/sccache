@@ -212,6 +212,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("-fmodule-output", OsString, Concatenated, ClangModuleOutput),
     flag!("-fmodules-reduced-bmi", PassThroughFlag),
     flag!("-fno-color-diagnostics", NoDiagnosticsColorFlag),
+    flag!("-fno-cxx-modules", PassThroughFlag),
     flag!("-fno-pch-timestamp", PassThroughFlag),
     flag!("-fno-profile-instr-generate", TooHardFlag),
     flag!("-fno-profile-instr-use", TooHardFlag),
