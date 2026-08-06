@@ -742,10 +742,12 @@ impl App {
         let data: Vec<u64> = hist.iter().rev().take(width).rev().copied().collect();
         let peak = data.iter().copied().max().unwrap_or(0) as f64 / 100.0;
         let heading = format!("{title} — now {current:.2}, peak {peak:.2}");
+        let (scaled, ticks) = scale_to_ticks(&data, area.height.saturating_sub(2));
         frame.render_widget(
             Sparkline::default()
                 .block(titled(&heading))
-                .data(data)
+                .data(scaled)
+                .max(ticks)
                 .style(Style::default().fg(colour)),
             area,
         );
@@ -963,10 +965,12 @@ impl App {
             ),
             _ => "cache growth".to_string(),
         };
+        let (scaled, ticks) = scale_to_ticks(&data, area.height.saturating_sub(2));
         frame.render_widget(
             Sparkline::default()
                 .block(titled(&heading))
-                .data(data)
+                .data(scaled)
+                .max(ticks)
                 .style(Style::default().fg(Color::Blue)),
             area,
         );
@@ -1363,6 +1367,28 @@ fn sep() -> Span<'static> {
 
 fn kv<S: Into<String>>(name: &str, value: S) -> Span<'static> {
     Span::raw(format!("{name} {}", value.into()))
+}
+
+/// Scale a window of samples onto bar heights, in eighths of a cell, and
+/// return them with the ceiling to hand `Sparkline::max`.
+///
+/// Left to itself the widget scales by the largest sample and renders anything
+/// that rounds down to zero as a blank cell, so an idle stretch comes out as a
+/// gap and the plot reads as separate islands. Mapping the range onto
+/// `1..=ticks` instead keeps the lowest bar under every sample, so the baseline
+/// is continuous. Only the floor moves: the tallest sample still fills the
+/// pane, and the heading carries the real figures.
+fn scale_to_ticks(window: &[u64], height: u16) -> (Vec<u64>, u64) {
+    let ticks = u64::from(height.max(1)) * 8;
+    let peak = window.iter().copied().max().unwrap_or(0);
+    let scaled = window
+        .iter()
+        .map(|&value| match peak {
+            0 => 1,
+            peak => 1 + value * (ticks - 1) / peak,
+        })
+        .collect();
+    (scaled, ticks)
 }
 
 /// A right-aligned cell, the shape every numeric column in here wants.
