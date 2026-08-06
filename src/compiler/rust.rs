@@ -4342,6 +4342,33 @@ proc_macro false
     }
 
     #[test]
+    fn test_basedirs_stable_across_absolute_source_arguments() {
+        let f1 = TestFixture::new();
+        let f2 = TestFixture::new();
+        let key = |f: &TestFixture| {
+            let source = f.tempdir.path().join("foo.rs");
+            let source = source.to_str().unwrap();
+            let remap = format!("{}=/workspace", f.tempdir.path().display());
+            let args = [
+                "--emit",
+                "link",
+                source,
+                "--out-dir",
+                "out",
+                "--crate-name",
+                "foo",
+                "--crate-type",
+                "lib",
+                "--remap-path-prefix",
+                &remap,
+            ];
+            hash_key_with_basedirs(f, &args, &[], nothing, vec![basedir_for(f.tempdir.path())])
+        };
+
+        assert_eq!(key(&f1), key(&f2));
+    }
+
+    #[test]
     fn test_basedirs_keep_unremapped_source_paths() {
         let f1 = TestFixture::new();
         let f2 = TestFixture::new();
@@ -4528,6 +4555,8 @@ proc_macro false
     fn test_normalize_path_arguments() {
         let basedirs = [b"/home/user/".to_vec()];
         for (flag, value, expected) in [
+            ("--remap-path-prefix", "/home/user", "/home/user"),
+            ("--remap-path-prefix", "/other=/new", "/other=/new"),
             ("--remap-path-prefix", "/home/user=/new", "=/new"),
             ("--remap-path-prefix", "/home/user/src=/new", "src=/new"),
             (
@@ -4605,6 +4634,9 @@ proc_macro false
 
         let mut diagnostics = remap("/home/user");
         diagnostics.push(("--remap-path-scope=diagnostics".into(), None));
+        assert!(super::remap_path(Path::new("/home/user/project"), &diagnostics).is_none());
+        let mut diagnostics = remap("/home/user");
+        diagnostics.push(("--remap-path-scope".into(), Some("diagnostics".into())));
         assert!(super::remap_path(Path::new("/home/user/project"), &diagnostics).is_none());
         let mut all = remap("/home/user");
         all.push(("--remap-path-scope=all".into(), None));
