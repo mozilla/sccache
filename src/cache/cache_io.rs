@@ -263,12 +263,16 @@ impl CacheWrite {
         .await?
     }
 
-    /// Add an object containing the contents of `from` to this cache entry at `name`.
-    /// If `mode` is `Some`, store the file entry with that mode.
-    pub fn put_object<T>(&mut self, name: &str, from: &mut T, mode: Option<u32>) -> Result<()>
-    where
-        T: Read,
-    {
+    /// The zstd compression level used for the blobs of a cache entry.
+    fn compression_level() -> i32 {
+        std::env::var("SCCACHE_CACHE_ZSTD_LEVEL")
+            .ok()
+            .and_then(|value| value.parse::<i32>().ok())
+            .unwrap_or(3)
+    }
+
+    /// Start a new zip entry at `name`, storing it with `mode` if it is `Some`.
+    fn start_object(&mut self, name: &str, mode: Option<u32>) -> Result<()> {
         // We're going to declare the compression method as "stored",
         // but we're actually going to store zstd-compressed blobs.
         let opts = FileOptions::default().compression_method(CompressionMethod::Stored);
@@ -279,13 +283,17 @@ impl CacheWrite {
         };
         self.zip
             .start_file(name, opts)
-            .context("Failed to start cache entry object")?;
+            .context("Failed to start cache entry object")
+    }
 
-        let compression_level = std::env::var("SCCACHE_CACHE_ZSTD_LEVEL")
-            .ok()
-            .and_then(|value| value.parse::<i32>().ok())
-            .unwrap_or(3);
-        zstd::stream::copy_encode(from, &mut self.zip, compression_level)?;
+    /// Add an object containing the contents of `from` to this cache entry at `name`.
+    /// If `mode` is `Some`, store the file entry with that mode.
+    pub fn put_object<T>(&mut self, name: &str, from: &mut T, mode: Option<u32>) -> Result<()>
+    where
+        T: Read,
+    {
+        self.start_object(name, mode)?;
+        zstd::stream::copy_encode(from, &mut self.zip, Self::compression_level())?;
         Ok(())
     }
 
@@ -298,10 +306,25 @@ impl CacheWrite {
     }
 
     fn put_bytes(&mut self, name: &str, bytes: &[u8]) -> Result<()> {
-        if !bytes.is_empty() {
-            let mut cursor = Cursor::new(bytes);
-            return self.put_object(name, &mut cursor, None);
+        if bytes.is_empty() {
+            return Ok(());
         }
+        self.start_object(name, None)?;
+
+        // The size of the input is known up front here, so tell zstd about it. It then
+        // sizes its compression context for the actual input instead of for the default
+        // window size, which avoids zeroing a multi-megabyte workspace for the handful of
+        // bytes of stdout/stderr that a compilation typically produces.
+        let mut encoder =
+            zstd::stream::write::Encoder::new(&mut self.zip, Self::compression_level())
+                .context("Failed to create cache entry compressor")?;
+        encoder
+            .set_pledged_src_size(Some(bytes.len() as u64))
+            .context("Failed to set cache entry compressor input size")?;
+        encoder.write_all(bytes)?;
+        encoder
+            .finish()
+            .context("Failed to finish cache entry compressor")?;
         Ok(())
     }
 
