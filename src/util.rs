@@ -897,18 +897,74 @@ impl Hasher for HashToDigest<'_> {
     }
 }
 
-/// Pipe `cmd`'s stdio to `/dev/null`, unless a specific env var is set.
+/// Close file descriptors inherited from the client (fd >= 3), releasing the
+/// build pipes whose lingering write-ends cause mozilla/sccache#1011.
+///
+/// Must only be called immediately after daemonizing (see `daemonize`).
 #[cfg(not(windows))]
-pub fn daemonize() -> Result<()> {
+fn close_client_inherited_fds() {
+    use std::env;
+
+    // Escape hatch: allow disabling the fd sweep for debugging.
+    if env::var("SCCACHE_NO_FD_HYGIENE").ok().as_deref() == Some("1") {
+        return;
+    }
+
+    // On macOS/BSD close_fds closes each descriptor directly (async-signal-safe);
+    // we intentionally close rather than set-CLOEXEC because no exec follows and
+    // the inherited pipe write-ends must actually be released to fix #1011.
+    //
+    // SAFETY: we are immediately after daemonix's fork, so exactly one thread
+    // exists; no live Rust object owns an fd >= 3 here -- daemonix has already
+    // dup2'd the log (or /dev/null) onto stderr and dropped the original File
+    // plus closed its /dev/null fd -- and the listening socket and
+    // SCCACHE_STARTUP_NOTIFY connection are opened later. Closing 3.. only
+    // releases fds inherited from the client (ninja jobserver / cmake|tee pipes).
+    unsafe {
+        close_fds::close_open_fds(3, &[]);
+    }
+}
+
+/// Daemonize the current process, optionally redirecting stderr to `log_file`.
+///
+/// If `log_file` is `Some`, the daemon's stderr is redirected to that file;
+/// otherwise stderr goes to `/dev/null` (the pre-existing default).
+///
+/// When `close_inherited_fds` is true, all file descriptors >= 3 are closed
+/// immediately after daemonizing (before the server binds its socket). The
+/// cache server is lazily fork+exec'd by a compile-job client and inherits the
+/// client's open fds -- e.g. ninja's jobserver pipe or a `cmake ... | tee`
+/// stdout pipe. Because the long-lived daemon keeps those write-ends open, the
+/// writer never observes EOF, producing a 0%-CPU deadlock
+/// (mozilla/sccache#1011). Callers that own live fds at daemonize time (e.g.
+/// sccache-dist, which has already built a reqwest client owning runtime/epoll
+/// fds) must pass `false`, since blindly closing those fds would be unsound.
+///
+/// When `SCCACHE_NO_DAEMON=1` the process does not daemonize and stays a
+/// foreground child attached to the client, so inherited fds are deliberately
+/// NOT closed (the #1011 hang is then only theoretically reachable in that
+/// debug mode). Setting `SCCACHE_NO_FD_HYGIENE=1` is an escape hatch that skips
+/// the fd sweep even when daemonizing.
+#[cfg(not(windows))]
+pub fn daemonize(log_file: Option<File>, close_inherited_fds: bool) -> Result<()> {
     use crate::jobserver::discard_inherited_jobserver;
-    use daemonix::Daemonize;
+    use daemonix::{Daemonize, Stdio};
     use std::env;
     use std::mem;
 
     match env::var("SCCACHE_NO_DAEMON") {
         Ok(ref val) if val == "1" => {}
         _ => {
-            Daemonize::new().start().context("failed to daemonize")?;
+            let stderr = log_file
+                .map(|f| Stdio::from(f.into_file()))
+                .unwrap_or_else(Stdio::devnull);
+            Daemonize::new()
+                .stderr(stderr)
+                .start()
+                .context("failed to daemonize")?;
+            if close_inherited_fds {
+                close_client_inherited_fds();
+            }
         }
     }
 
@@ -984,10 +1040,25 @@ pub fn daemonize() -> Result<()> {
     }
 }
 
-/// This is a no-op on Windows.
+/// There is no daemon to fork on Windows, so this only redirects stderr to
+/// `log_file` (if any). No inherited-fd closing is needed on Windows, so
+/// `_close_inherited_fds` is unused.
 #[cfg(windows)]
-pub fn daemonize() -> Result<()> {
+pub fn daemonize(log_file: Option<File>, _close_inherited_fds: bool) -> Result<()> {
+    if let Some(log_file) = log_file {
+        redirect_stderr(log_file);
+    }
     Ok(())
+}
+
+#[cfg(windows)]
+fn redirect_stderr(f: File) {
+    use std::os::windows::io::IntoRawHandle;
+    use windows_sys::Win32::System::Console::{STD_ERROR_HANDLE, SetStdHandle};
+    // Ignore errors here.
+    unsafe {
+        SetStdHandle(STD_ERROR_HANDLE, f.into_file().into_raw_handle() as _);
+    }
 }
 
 /// Disable connection pool to avoid broken connection between runtime
@@ -1979,5 +2050,92 @@ mod tests {
             .await
             .unwrap();
         assert_ne!(h1, h2);
+    }
+
+    /// Regression test for mozilla/sccache#1011: the daemon must close file
+    /// descriptors inherited from the client (fd >= 3) so the write-ends of
+    /// pipes like ninja's jobserver or `cmake ... | tee` see EOF.
+    ///
+    /// We fork so the fd-closing sweep does not affect the test harness's own
+    /// descriptors. The child performs only async-signal-safe work: the sweep
+    /// itself, an `fcntl(F_GETFD)` probe on the inherited write-end (which must
+    /// return -1 with errno EBADF once closed), and a probe on fd 2 (stderr,
+    /// which must survive the sweep -- guarding an off-by-one in `minfd`).
+    #[cfg(unix)]
+    #[test]
+    fn test_daemonize_closes_inherited_fds() {
+        // Create a pipe; both ends are fds >= 3 in the test process.
+        let mut fds = [0 as libc::c_int; 2];
+        // SAFETY: `fds` is a valid two-element array for libc::pipe.
+        let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
+        assert_eq!(rc, 0, "pipe() failed");
+        let (read_fd, write_fd) = (fds[0], fds[1]);
+        assert!(
+            read_fd >= 3 && write_fd >= 3,
+            "expected inherited-style fds"
+        );
+
+        // SAFETY: fork() in a test; the child only does async-signal-safe work.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork() failed");
+
+        if pid == 0 {
+            // Child: close all fds >= 3 (as daemonize does), then verify the
+            // inherited write-end is closed (fcntl -> -1 with errno EBADF) and
+            // that stderr (fd 2) survives the sweep. Async-signal-safe only:
+            // no allocation, no env reads, no Rust runtime.
+            // SAFETY: async-signal-safe operations only.
+            unsafe {
+                close_fds::close_open_fds(3, &[]);
+
+                // fd 2 (stderr) must survive the sweep (guards a minfd off-by-one).
+                if libc::fcntl(2, libc::F_GETFD) < 0 {
+                    libc::_exit(2);
+                }
+
+                // The inherited write-end must now be closed: fcntl fails with EBADF.
+                let ret = libc::fcntl(write_fd, libc::F_GETFD);
+                let errno = {
+                    #[cfg(any(target_os = "linux", target_os = "android"))]
+                    {
+                        *libc::__errno_location()
+                    }
+                    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+                    {
+                        *libc::__error()
+                    }
+                };
+                libc::_exit(if ret == -1 && errno == libc::EBADF {
+                    0
+                } else {
+                    1
+                });
+            }
+        }
+
+        // Parent: reap the child and check its exit status.
+        let mut status: libc::c_int = 0;
+        // SAFETY: valid pid and status pointer.
+        let waited = unsafe { libc::waitpid(pid, &mut status, 0) };
+        assert_eq!(waited, pid, "waitpid() failed");
+
+        // Close our own copies of the pipe fds.
+        // SAFETY: fds are valid and owned by this process.
+        unsafe {
+            libc::close(read_fd);
+            libc::close(write_fd);
+        }
+
+        assert!(
+            libc::WIFEXITED(status),
+            "child did not exit normally (status={status})"
+        );
+        // Exit codes: 0 = success; 1 = inherited fd not closed (or wrong errno);
+        // 2 = fd 2 (stderr) was incorrectly closed by the sweep.
+        assert_eq!(
+            libc::WEXITSTATUS(status),
+            0,
+            "fd hygiene sweep behaved incorrectly (child exit code)"
+        );
     }
 }
