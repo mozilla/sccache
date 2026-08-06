@@ -1451,6 +1451,7 @@ static CACHED_ENV_VARS: LazyLock<HashSet<&'static OsStr>> = LazyLock::new(|| {
         // One can set it to different values for different invocations
         // to prevent cache reuse between them.
         "SCCACHE_C_CUSTOM_CACHE_BUSTER",
+        "CPATH",
         "MACOSX_DEPLOYMENT_TARGET",
         "IPHONEOS_DEPLOYMENT_TARGET",
         "TVOS_DEPLOYMENT_TARGET",
@@ -1679,6 +1680,28 @@ mod test {
             assert_neq!(h1, h2);
             assert_neq!(h2, h3);
         }
+    }
+
+    #[test]
+    fn test_hash_key_cpath_differs() {
+        let args = ovec!["a", "b", "c"];
+        let vars1 = vec![(
+            OsString::from("CPATH"),
+            OsString::from("/first/include"),
+        )];
+        let vars2 = vec![(
+            OsString::from("CPATH"),
+            OsString::from("/second/include"),
+        )];
+
+        let h1 = HashKeyParams::new("abcd", Language::C, &args, b"hello world")
+            .with_env_vars(&vars1)
+            .compute();
+        let h2 = HashKeyParams::new("abcd", Language::C, &args, b"hello world")
+            .with_env_vars(&vars2)
+            .compute();
+
+        assert_neq!(h1, h2);
     }
 
     #[test]
