@@ -877,14 +877,22 @@ impl Storage for MultiLevelStorage {
     }
 
     async fn check(&self) -> Result<CacheMode> {
-        let mut result = CacheMode::ReadWrite;
+        // The composite is writable when any level is writable: put()
+        // already skips read-only levels on writes, so a read-only level
+        // must not demote the whole chain (e.g. a writable local disk in
+        // front of a read-only shared remote). Only a chain in which
+        // every level is read-only is itself read-only.
+        let mut result = CacheMode::ReadOnly;
+        if self.levels.is_empty() {
+            return Ok(CacheMode::ReadWrite);
+        }
         for (idx, level) in self.levels.iter().enumerate() {
             match level.check().await {
                 Ok(CacheMode::ReadOnly) => {
-                    result = CacheMode::ReadOnly;
                     debug!("Cache level {} is read-only", idx);
                 }
                 Ok(CacheMode::ReadWrite) => {
+                    result = CacheMode::ReadWrite;
                     trace!("Cache level {} is read-write", idx);
                 }
                 Err(e) => {
@@ -893,6 +901,7 @@ impl Storage for MultiLevelStorage {
                 }
             }
         }
+        debug!("Multi-level cache mode: {:?}", result);
         Ok(result)
     }
 
