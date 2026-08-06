@@ -39,6 +39,59 @@ fn test_rust_cargo_build() -> Result<()> {
 
 #[test]
 #[serial]
+fn test_rust_cargo_basedirs_cross_dir_cache_hit() -> Result<()> {
+    let work = tempfile::Builder::new()
+        .prefix("sccache_basedirs_xdir")
+        .tempdir()
+        .context("tempdir")?;
+    // On macOS `/var/...` is a symlink to `/private/var/...` and cargo reports
+    // the resolved target for CARGO_MANIFEST_DIR. Basedirs are compared by
+    // byte prefix, so the user-supplied path must be in the same canonical
+    // form. Windows `fs::canonicalize` returns `\\?\`-prefixed UNC paths that
+    // cargo does not emit, so only canonicalize on Unix.
+    #[cfg(unix)]
+    let work_root = fs::canonicalize(work.path())?;
+    #[cfg(not(unix))]
+    let work_root = work.path().to_path_buf();
+    let crate_a = work_root.join("a");
+    let crate_b = work_root.join("b");
+    for crate_dir in [&crate_a, &crate_b] {
+        fs::create_dir_all(crate_dir.join("src"))?;
+        fs::write(
+            crate_dir.join("Cargo.toml"),
+            "[package]\nname = \"basedirs-test\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+        )?;
+        fs::write(crate_dir.join("src/lib.rs"), "pub fn value() -> u8 { 1 }\n")?;
+    }
+
+    let sep = if cfg!(windows) { ';' } else { ':' };
+    let basedirs = format!("{}{sep}{}", crate_a.display(), crate_b.display());
+    let test = SccacheTest::new(None)?;
+    restart_sccache(&test, Some(vec![("SCCACHE_BASEDIRS".into(), basedirs)]))?;
+
+    for crate_dir in [&crate_a, &crate_b] {
+        Command::new(CARGO.as_os_str())
+            .args(["build", "--lib"])
+            .envs(test.env.iter().cloned())
+            .env("CARGO_INSTALL_ROOT", crate_dir.join("install"))
+            .env("CARGO_TARGET_DIR", crate_dir.join("target"))
+            .env(
+                "RUSTFLAGS",
+                format!("--remap-path-prefix={}=/workspace", crate_dir.display()),
+            )
+            .current_dir(crate_dir)
+            .assert()
+            .try_success()?;
+    }
+
+    test.show_stats()?
+        .try_stdout(predicates::str::contains(r#""cache_hits":{"counts":{"Rust":1}"#).from_utf8())?
+        .try_success()?;
+    Ok(())
+}
+
+#[test]
+#[serial]
 fn test_rust_cargo_build_readonly() -> Result<()> {
     test_rust_cargo_cmd_readonly("build", SccacheTest::new(None)?)
 }

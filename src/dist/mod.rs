@@ -103,6 +103,9 @@ mod path_transform {
                 dist_to_local_path: HashMap::new(),
             }
         }
+        pub fn is_identity(&self) -> bool {
+            false
+        }
         pub fn as_dist_abs(&mut self, p: &Path) -> Option<String> {
             if !p.is_absolute() {
                 return None;
@@ -190,6 +193,7 @@ mod path_transform {
     #[test]
     fn test_basic() {
         let mut pt = PathTransformer::new();
+        assert!(!pt.is_identity());
         assert_eq!(pt.as_dist(Path::new("C:/a")).unwrap(), "/prefix/disk-C/a");
         assert_eq!(
             pt.as_dist(Path::new(r#"C:\a\b.c"#)).unwrap(),
@@ -276,6 +280,9 @@ mod path_transform {
         pub fn new() -> Self {
             PathTransformer
         }
+        pub fn is_identity(&self) -> bool {
+            true
+        }
         pub fn as_dist_abs(&mut self, p: &Path) -> Option<String> {
             if !p.is_absolute() {
                 return None;
@@ -291,6 +298,11 @@ mod path_transform {
         pub fn to_local(&self, p: &str) -> Option<PathBuf> {
             Some(PathBuf::from(p))
         }
+    }
+
+    #[test]
+    fn test_identity() {
+        assert!(PathTransformer::new().is_identity());
     }
 }
 
