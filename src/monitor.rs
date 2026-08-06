@@ -255,9 +255,15 @@ struct App {
     hist_requests: VecDeque<u64>,
     hist_hits: VecDeque<u64>,
     hist_misses: VecDeque<u64>,
-    /// Cache size in bytes, one entry per sample. Unlike the rates this is an
-    /// absolute figure, so it survives a `z`.
-    hist_size: VecDeque<u64>,
+    /// Timestamped cache size in bytes, one entry per sample, used to work out
+    /// how fast the cache is filling and when it will be full.
+    hist_size: VecDeque<(Instant, u64)>,
+    /// Bytes per second added to the cache, one entry per sample.
+    hist_growth: VecDeque<u64>,
+    /// How often the cache was seen to shrink, and by how much in total. The
+    /// LRU trims the cache at its ceiling, so this is what "full" looks like.
+    trims: u64,
+    trimmed: u64,
     updates: u64,
     last_update: Option<Instant>,
     error: Option<String>,
@@ -283,6 +289,9 @@ impl App {
             hist_hits: VecDeque::with_capacity(HISTORY),
             hist_misses: VecDeque::with_capacity(HISTORY),
             hist_size: VecDeque::with_capacity(HISTORY),
+            hist_growth: VecDeque::with_capacity(HISTORY),
+            trims: 0,
+            trimmed: 0,
             updates: 0,
             last_update: None,
             error: None,
@@ -442,10 +451,25 @@ impl App {
                 }
                 self.prev = Some((now, stats.clone()));
                 if let Some(size) = info.cache_size {
+                    if let Some(&(at, previous)) = self.hist_size.back() {
+                        let dt = now.duration_since(at).as_secs_f64();
+                        if size < previous {
+                            // The LRU trimmed the cache: it was at its ceiling.
+                            self.trims += 1;
+                            self.trimmed += previous - size;
+                        }
+                        if dt > 0.0 {
+                            let growth = (size.saturating_sub(previous)) as f64 / dt;
+                            if self.hist_growth.len() == HISTORY {
+                                self.hist_growth.pop_front();
+                            }
+                            self.hist_growth.push_back(growth.round() as u64);
+                        }
+                    }
                     if self.hist_size.len() == HISTORY {
                         self.hist_size.pop_front();
                     }
-                    self.hist_size.push_back(size);
+                    self.hist_size.push_back((now, size));
                 }
                 self.info = Some(*info);
                 self.updates += 1;
@@ -906,27 +930,38 @@ impl App {
         );
     }
 
-    /// Plot how the cache has filled up. Absolute bytes rather than a rate, so
-    /// unlike the overview plots this one keeps its shape across a `z`.
+    /// Average bytes per second the cache has grown over the samples still in
+    /// the window, and how long that window covers. Negative after a trim.
+    fn cache_growth(&self) -> Option<(f64, Duration)> {
+        let &(first_at, first) = self.hist_size.front()?;
+        let &(last_at, last) = self.hist_size.back()?;
+        let window = last_at.duration_since(first_at);
+        if window.is_zero() {
+            return None;
+        }
+        Some(((last as f64 - first as f64) / window.as_secs_f64(), window))
+    }
+
+    /// Plot how fast the cache is filling. The size itself only ever climbs
+    /// until the LRU trims it, so its own plot is a staircase; the rate rises
+    /// and falls with what the build is writing.
     fn draw_cache_trend(&self, frame: &mut Frame<'_>, area: Rect) {
         let width = area.width.saturating_sub(2) as usize;
         let data: Vec<u64> = self
-            .hist_size
+            .hist_growth
             .iter()
             .rev()
             .take(width)
             .rev()
             .copied()
             .collect();
-        let heading = match (data.first(), data.last()) {
-            (Some(&first), Some(&last)) => format!(
-                "cache size — now {}, {}{} over {} samples",
-                fmt_bytes(Some(last)),
-                if last >= first { "+" } else { "-" },
-                fmt_bytes(Some(last.abs_diff(first))),
-                data.len(),
+        let heading = match (data.last(), data.iter().max()) {
+            (Some(&now), Some(&peak)) => format!(
+                "cache growth — now {}/s, peak {}/s",
+                fmt_bytes(Some(now)),
+                fmt_bytes(Some(peak)),
             ),
-            _ => "cache size".to_string(),
+            _ => "cache growth".to_string(),
         };
         frame.render_widget(
             Sparkline::default()
@@ -990,6 +1025,37 @@ impl App {
                 "free",
                 fmt_bytes(Some(max.saturating_sub(size))),
             )]));
+            if let Some((rate, window)) = self.cache_growth() {
+                lines.push(Line::from(vec![kv(
+                    "growth",
+                    format!(
+                        "{}/s over the last {}",
+                        fmt_bytes(Some(rate.max(0.0) as u64)),
+                        fmt_eta(window.as_secs_f64()),
+                    ),
+                )]));
+                // Once the LRU has started trimming, the cache is full and
+                // stays there; the projection would only ever read "~0 s".
+                if rate > 0.0 && self.trims == 0 && max > size {
+                    lines.push(Line::from(vec![kv(
+                        "full in",
+                        format!("~{}", fmt_eta((max - size) as f64 / rate)),
+                    )]));
+                }
+            }
+            if self.trims > 0 {
+                lines.push(Line::from(vec![
+                    kv(
+                        "trimmed",
+                        format!(
+                            "{} times, {} freed",
+                            self.trims,
+                            fmt_bytes(Some(self.trimmed))
+                        ),
+                    ),
+                    Span::styled(" (at its ceiling)", Style::default().fg(Color::DarkGray)),
+                ]));
+            }
         }
         lines.push(Line::from(vec![kv(
             "preprocessor cache mode",
@@ -1451,6 +1517,21 @@ fn fmt_interval(interval: Duration) -> String {
         format!("{}ms", interval.as_millis())
     } else {
         format!("{secs:.1}s")
+    }
+}
+
+/// A coarse duration for projections, where minutes of precision on an
+/// estimate measured in hours would be false confidence.
+fn fmt_eta(secs: f64) -> String {
+    if !secs.is_finite() || secs >= 99.0 * 86_400.0 {
+        return "a very long time".to_string();
+    }
+    let s = secs as u64;
+    match s {
+        0..=59 => format!("{s} s"),
+        60..=3599 => format!("{} min", s / 60),
+        3600..=86_399 => format!("{} h {} min", s / 3600, (s % 3600) / 60),
+        _ => format!("{} d {} h", s / 86_400, (s % 86_400) / 3600),
     }
 }
 
