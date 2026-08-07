@@ -124,6 +124,12 @@ fn read_to_end_of_time(path: &Path, mut file: File, tx: &Sender<LogEvent>) -> bo
                 }
                 let mut line = std::mem::take(&mut partial);
                 line.push_str(buf.trim_end_matches(['\n', '\r']));
+                // Logging is initialised before the daemon redirects its
+                // stderr, so a server started from a terminal writes the
+                // colour codes env_logger picked for a tty into the file.
+                // Drop them: the pane colours lines by level itself, and the
+                // escapes would otherwise show up as text.
+                let line = strip_ansi_escapes::strip_str(&line);
                 if skip_partial_line {
                     skip_partial_line = false;
                 } else {
