@@ -33,25 +33,8 @@ done
 cd "$(dirname "$0")/.."
 ROOT=$(pwd)
 
-echo "==> building sccache --features monitor ($PROFILE)"
-if [ "$PROFILE" = release ]; then
-    cargo build --release --features monitor
-else
-    cargo build --features monitor
-fi
 SCCACHE="$ROOT/target/$PROFILE/sccache"
-
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/sccache-monitor-demo.XXXXXX")
-export SCCACHE_DIR="$WORK/cache"
-export SCCACHE_SERVER_PORT="$PORT"
-export SCCACHE_CACHE_SIZE=200M
-# Keep the server around even while the load generator is idle.
-export SCCACHE_IDLE_TIMEOUT=0
-# Give the Logs pane something to follow.
-export SCCACHE_ERROR_LOG="$WORK/sccache.log"
-export SCCACHE_LOG=${SCCACHE_LOG:-debug}
-unset SCCACHE_SERVER_UDS
-
 LOAD_PID=
 
 cleanup() {
@@ -62,10 +45,38 @@ cleanup() {
         # compile it had already started running.
         kill -- -"$LOAD_PID" 2>/dev/null || kill "$LOAD_PID" 2>/dev/null
     fi
-    "$SCCACHE" --stop-server >/dev/null 2>&1
+    [ -x "$SCCACHE" ] && "$SCCACHE" --stop-server >/dev/null 2>&1
     rm -rf "$WORK"
 }
+# Installed before anything else can fail, so a bad build does not leave the
+# work directory behind.
 trap cleanup EXIT
+
+# Nothing but this script writes to the terminal: the dashboard sends only the
+# cells that changed, so a stray line from anything sharing the terminal sits
+# in the middle of a pane until something repaints over it. Every subprocess
+# therefore goes to a file, shown only if that subprocess fails.
+SETUP_LOG="$WORK/setup.log"
+
+echo "==> building sccache --features monitor ($PROFILE)"
+BUILD=(cargo build --features monitor)
+if [ "$PROFILE" = release ]; then
+    BUILD=(cargo build --release --features monitor)
+fi
+if ! "${BUILD[@]}" >"$SETUP_LOG" 2>&1; then
+    cat "$SETUP_LOG" >&2
+    exit 1
+fi
+
+export SCCACHE_DIR="$WORK/cache"
+export SCCACHE_SERVER_PORT="$PORT"
+export SCCACHE_CACHE_SIZE=200M
+# Keep the server around even while the load generator is idle.
+export SCCACHE_IDLE_TIMEOUT=0
+# Give the Logs pane something to follow.
+export SCCACHE_ERROR_LOG="$WORK/sccache.log"
+export SCCACHE_LOG=${SCCACHE_LOG:-debug}
+unset SCCACHE_SERVER_UDS
 
 CC=${CC:-cc}
 if ! command -v "$CC" >/dev/null; then
@@ -75,7 +86,13 @@ fi
 
 echo "==> starting a server on 127.0.0.1:$PORT with cache in $SCCACHE_DIR"
 echo "==> logging to $SCCACHE_ERROR_LOG at $SCCACHE_LOG level"
-"$SCCACHE" --start-server
+# The daemon inherits these until it redirects its own stderr, and a client
+# that has to report a bad config says so on stderr, so send both to the log
+# rather than the terminal the dashboard is about to take over.
+if ! "$SCCACHE" --start-server >>"$SETUP_LOG" 2>&1 </dev/null; then
+    cat "$SETUP_LOG" >&2
+    exit 1
+fi
 
 # Background load: a mix of misses (fresh sources), hits (recompiling the same
 # source), a non-cacheable call (-E) and a compile failure, so that every pane
@@ -139,7 +156,7 @@ set -m
         # flat line at the top.
         sleep 2
     done
-) >/dev/null 2>&1 &
+) >/dev/null 2>&1 </dev/null &
 LOAD_PID=$!
 # Back to the default, so the monitor keeps the terminal's foreground group.
 set +m
