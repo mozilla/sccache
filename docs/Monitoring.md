@@ -92,7 +92,9 @@ lines to scroll back through. It does not need the file to exist yet — it will
 pick it up when it appears — and if the file is truncated or replaced it starts
 over rather than going quiet. Lines are coloured by level, and a line with no
 level of its own, such as the middle of a panic backtrace, keeps the colour of
-the line above it.
+the line above it. Any colour codes already in the file are stripped: logging is
+set up before the daemon redirects its stderr, so a server started from a
+terminal writes the escapes env_logger chose for a tty into the log.
 
 Note that the monitor silences *its own* logging while the dashboard is up.
 Otherwise a `SCCACHE_LOG` exported for the whole shell would have this process
