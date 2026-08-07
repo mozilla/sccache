@@ -270,6 +270,8 @@ struct App {
     help: bool,
     /// `z` was pressed once; a second `z` zeroes the statistics.
     confirm_zero: bool,
+    /// Repaint every cell on the next frame, rather than just what changed.
+    repaint: bool,
     /// Latest snapshot, and the previous one used for rate computation.
     info: Option<ServerInfo>,
     prev: Option<(Instant, ServerStats)>,
@@ -327,6 +329,7 @@ impl App {
             paused: false,
             help: false,
             confirm_zero: false,
+            repaint: false,
             info: None,
             prev: None,
             dist: None,
@@ -360,6 +363,15 @@ impl App {
             // to keep the clocks in the status bar ticking: a full repaint at
             // the input poll rate is wasteful, especially over ssh.
             if dirty || drawn.elapsed() >= REDRAW_INTERVAL {
+                // Only what changed is sent to the terminal, so anything else
+                // that writes to the same terminal — a build running in the
+                // window, a stray warning — leaves text in cells we believe we
+                // have already painted, and it stays there. Ctrl-L clears and
+                // redraws the lot, the way it does in every other full-screen
+                // program.
+                if std::mem::take(&mut self.repaint) {
+                    terminal.clear()?;
+                }
                 terminal.draw(|frame| self.draw(frame))?;
                 dirty = false;
                 drawn = Instant::now();
@@ -409,6 +421,7 @@ impl App {
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => return Ok(false),
             KeyCode::Char('c' | 'd') if ctrl => return Ok(false),
+            KeyCode::Char('l') if ctrl => self.repaint = true,
             KeyCode::Char('?') | KeyCode::F(1) => self.help = !self.help,
             KeyCode::Char('a') => self.advanced = !self.advanced,
             KeyCode::Char('r') => {
@@ -1506,6 +1519,7 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect) {
         Line::from("  p, Space              pause/resume polling"),
         Line::from("  +/-                   double/halve the poll interval"),
         Line::from("  z z                   zero the server's statistics (twice to confirm)"),
+        Line::from("  Ctrl-L                redraw, if something else wrote over the screen"),
         Line::from("  ?, F1                 close this help"),
         Line::from(""),
         Line::from("In the Logs pane".to_string()).style(Style::default().fg(Color::Cyan).bold()),
@@ -1521,7 +1535,7 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect) {
     let [area] = Layout::horizontal([Constraint::Length(74)])
         .flex(Flex::Center)
         .areas(area);
-    let [area] = Layout::vertical([Constraint::Length(22)])
+    let [area] = Layout::vertical([Constraint::Length(23)])
         .flex(Flex::Center)
         .areas(area);
     frame.render_widget(Clear, area);

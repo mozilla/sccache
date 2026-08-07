@@ -59,6 +59,7 @@ server being stopped and restarted underneath it.
 | `p`, `Space` | pause / resume polling |
 | `+` / `-` | double / halve the poll interval (200 ms to 60 s) |
 | `z` `z` | zero the server's statistics; the second `z` confirms, any other key cancels |
+| `Ctrl-L` | redraw everything |
 | `?`, `F1` | help |
 
 In the Logs pane:
@@ -99,6 +100,20 @@ terminal writes the escapes env_logger chose for a tty into the log.
 Note that the monitor silences *its own* logging while the dashboard is up.
 Otherwise a `SCCACHE_LOG` exported for the whole shell would have this process
 writing log lines onto the terminal it is drawing the dashboard on.
+
+## Sharing a terminal
+
+The dashboard sends only the cells that changed, which is what keeps it cheap
+over ssh, but it also means anything *else* writing to the same terminal leaves
+text sitting in cells the monitor believes it has already painted. A build in
+the same window is the usual culprit: every sccache client writes its warnings
+to that terminal's stderr, and they land on top of the display. `Ctrl-L`
+redraws everything, the same as it does in `less` or `htop`; running the monitor
+in a window of its own avoids the problem altogether.
+
+The monitor keeps its own output off the screen: it silences this process's
+logging while the dashboard is up, since `SCCACHE_LOG` is usually exported for a
+whole shell rather than one command.
 
 ## How the numbers are derived
 
