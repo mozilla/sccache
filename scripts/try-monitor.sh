@@ -47,6 +47,9 @@ export SCCACHE_SERVER_PORT="$PORT"
 export SCCACHE_CACHE_SIZE=200M
 # Keep the server around even while the load generator is idle.
 export SCCACHE_IDLE_TIMEOUT=0
+# Give the Logs pane something to follow.
+export SCCACHE_ERROR_LOG="$WORK/sccache.log"
+export SCCACHE_LOG=${SCCACHE_LOG:-debug}
 unset SCCACHE_SERVER_UDS
 
 LOAD_PID=
@@ -71,6 +74,7 @@ if ! command -v "$CC" >/dev/null; then
 fi
 
 echo "==> starting a server on 127.0.0.1:$PORT with cache in $SCCACHE_DIR"
+echo "==> logging to $SCCACHE_ERROR_LOG at $SCCACHE_LOG level"
 "$SCCACHE" --start-server
 
 # Background load: a mix of misses (fresh sources), hits (recompiling the same
@@ -94,6 +98,11 @@ set -m
     # calls run under `wait`; none of that should take the loop down, so drop
     # the errexit and pipefail inherited from above.
     set +e +o pipefail
+    # Job control is on so that this subshell leads its own process group, but
+    # inside it the shell would announce every background compile ("[1] 1234",
+    # "[1]+ Done"). Those land on the terminal the dashboard is drawing on and
+    # corrupt it, so turn the announcements off again here.
+    set +m
     cd "$WORK"
     i=0
     while true; do
@@ -130,11 +139,14 @@ set -m
         # flat line at the top.
         sleep 2
     done
-) &
+) >/dev/null 2>&1 &
 LOAD_PID=$!
 # Back to the default, so the monitor keeps the terminal's foreground group.
 set +m
 
-echo "==> opening the dashboard (q to quit, ? for help, 1-5 for panes)"
+echo "==> opening the dashboard (q to quit, ? for help, 1-6 for panes)"
 sleep 1
-"$SCCACHE" --monitor --monitor-interval "$INTERVAL"
+# Send the monitor's own stderr to the log rather than the screen: a panic or
+# a stray warning painted over the dashboard is unreadable, and this way it
+# shows up in the Logs pane instead.
+"$SCCACHE" --monitor --monitor-interval "$INTERVAL" 2>>"$SCCACHE_ERROR_LOG"
