@@ -31,17 +31,7 @@ use crate::cache::oss::OSSCache;
 use crate::cache::redis::RedisCache;
 #[cfg(feature = "s3")]
 use crate::cache::s3::S3Cache;
-#[cfg(any(
-    feature = "azure",
-    feature = "gcs",
-    feature = "gha",
-    feature = "memcached",
-    feature = "redis",
-    feature = "s3",
-    feature = "webdav",
-    feature = "oss",
-    feature = "cos"
-))]
+#[cfg(any_cache_remote)]
 use crate::cache::utils::normalize_key;
 #[cfg(feature = "webdav")]
 use crate::cache::webdav::WebdavCache;
@@ -175,34 +165,14 @@ pub trait Storage: Send + Sync {
 }
 
 /// Wrapper for opendal::Operator that adds basedirs support
-#[cfg(any(
-    feature = "azure",
-    feature = "gcs",
-    feature = "gha",
-    feature = "memcached",
-    feature = "redis",
-    feature = "s3",
-    feature = "webdav",
-    feature = "oss",
-    feature = "cos"
-))]
+#[cfg(any_cache_remote)]
 pub struct RemoteStorage {
     operator: opendal::Operator,
     basedirs: Vec<Vec<u8>>,
     rw_mode: CacheMode,
 }
 
-#[cfg(any(
-    feature = "azure",
-    feature = "gcs",
-    feature = "gha",
-    feature = "memcached",
-    feature = "redis",
-    feature = "s3",
-    feature = "webdav",
-    feature = "oss",
-    feature = "cos"
-))]
+#[cfg(any_cache_remote)]
 impl RemoteStorage {
     pub fn new(operator: opendal::Operator, basedirs: Vec<Vec<u8>>, rw_mode: CacheMode) -> Self {
         Self {
@@ -214,17 +184,7 @@ impl RemoteStorage {
 }
 
 /// Implement storage for operator.
-#[cfg(any(
-    feature = "azure",
-    feature = "gcs",
-    feature = "gha",
-    feature = "memcached",
-    feature = "redis",
-    feature = "s3",
-    feature = "webdav",
-    feature = "oss",
-    feature = "cos"
-))]
+#[cfg(any_cache_remote)]
 #[async_trait]
 impl Storage for RemoteStorage {
     async fn get(&self, key: &str) -> Result<Cache> {
@@ -380,17 +340,7 @@ impl Storage for RemoteStorage {
 
 /// Build a single cache storage from CacheType
 /// Helper function used by storage_from_config for both single and multi-level caches
-#[cfg(any(
-    feature = "azure",
-    feature = "gcs",
-    feature = "gha",
-    feature = "memcached",
-    feature = "redis",
-    feature = "s3",
-    feature = "webdav",
-    feature = "oss",
-    feature = "cos"
-))]
+#[cfg(any_cache_remote)]
 pub fn build_single_cache(
     cache_type: &CacheType,
     basedirs: &[Vec<u8>],
@@ -603,17 +553,7 @@ pub fn storage_from_config(
     }
 
     // Single cache or fallback to disk (backward compatible path)
-    #[cfg(any(
-        feature = "azure",
-        feature = "gcs",
-        feature = "gha",
-        feature = "memcached",
-        feature = "redis",
-        feature = "s3",
-        feature = "webdav",
-        feature = "oss",
-        feature = "cos"
-    ))]
+    #[cfg(any_cache_remote)]
     if let Some(cache_type) = &config.cache {
         debug!("Configuring single cache from CacheType");
         return build_single_cache(cache_type, &config.basedirs, pool);
