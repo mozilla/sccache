@@ -60,9 +60,11 @@ impl FromStr for StatsFormat {
 pub enum Command {
     /// Show cache statistics and exit.
     ShowStats(StatsFormat, bool),
-    /// Watch cache statistics in a terminal dashboard, polling every `interval`.
+    /// Watch cache statistics in a terminal dashboard, polling every
+    /// `interval` and following `log` if there is one.
     Monitor {
         interval: Duration,
+        log: Option<PathBuf>,
     },
     /// Run background server.
     InternalStartServer,
@@ -153,6 +155,10 @@ fn get_clap_command() -> clap::Command {
                 .value_name("SECS")
                 .value_parser(clap::value_parser!(f64))
                 .default_value("1"),
+            flag_infer_long("monitor-log")
+                .help("log file for `--monitor` to follow [default: $SCCACHE_ERROR_LOG]")
+                .value_name("FILE")
+                .value_parser(clap::value_parser!(PathBuf)),
             flag_infer_long("start-server")
                 .help("start background server")
                 .action(ArgAction::SetTrue),
@@ -306,8 +312,19 @@ pub fn try_parse() -> Result<Command> {
                          {MAX_MONITOR_INTERVAL} seconds"
                     );
                 }
+                // The server logs to wherever its stderr was redirected, so
+                // the same variable that told it where to write tells us where
+                // to read.
+                let log = matches
+                    .get_one::<PathBuf>("monitor-log")
+                    .cloned()
+                    .or_else(|| match env::var_os("SCCACHE_ERROR_LOG") {
+                        Some(path) if !path.is_empty() => Some(PathBuf::from(path)),
+                        _ => None,
+                    });
                 Ok(Command::Monitor {
                     interval: Duration::from_secs_f64(secs),
+                    log,
                 })
             } else if matches.get_flag("start-server") {
                 Ok(Command::StartServer)
