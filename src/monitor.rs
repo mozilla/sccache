@@ -24,8 +24,11 @@
 //! server being watched won't shut down on its own. Press `p` to pause polling
 //! if that matters.
 
+mod tail;
+
 use std::collections::{HashMap, VecDeque};
 use std::io;
+use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -47,6 +50,7 @@ use crate::errors::*;
 use crate::protocol::{Request, Response};
 use crate::server::{DistInfo, PerLanguageCount, ServerInfo, ServerStats};
 use crate::util::fmt_duration_as_secs;
+use tail::LogEvent;
 
 /// How many samples of history to keep for the sparklines.
 const HISTORY: usize = 512;
@@ -59,13 +63,18 @@ const MESSAGE_TTL: Duration = Duration::from_secs(4);
 /// elapsed times in the status bar keep moving.
 const REDRAW_INTERVAL: Duration = Duration::from_millis(500);
 
-const TABS: [&str; 5] = ["Overview", "Languages", "Reasons", "Cache", "Dist"];
+const TABS: [&str; 6] = ["Overview", "Languages", "Reasons", "Cache", "Dist", "Logs"];
+
+/// How many log lines to keep. Enough to scroll back through a build's worth of
+/// output without letting a chatty `SCCACHE_LOG=trace` grow without bound.
+const LOG_LINES: usize = 10_000;
 
 /// Run the monitor until the user quits.
-pub fn run(addr: crate::net::SocketAddr, interval: Duration) -> Result<()> {
+pub fn run(addr: crate::net::SocketAddr, interval: Duration, log: Option<PathBuf>) -> Result<()> {
     let interval = interval.clamp(MIN_INTERVAL, MAX_INTERVAL);
     let (cmd_tx, cmd_rx) = mpsc::channel();
     let (sample_tx, sample_rx) = mpsc::channel();
+    let (log_tx, log_rx) = mpsc::channel();
 
     let addr_display = addr.to_string();
     // The handle is dropped on purpose: the poller can be blocked in a request
@@ -77,11 +86,25 @@ pub fn run(addr: crate::net::SocketAddr, interval: Duration) -> Result<()> {
         .name("sccache-monitor-poll".into())
         .spawn(move || poll_loop(addr, interval, cmd_rx, sample_tx))?;
 
-    let mut app = App::new(addr_display, interval);
+    if let Some(path) = log.clone() {
+        // Same reasoning as the poller: nothing to join, let the process reap
+        // it when the UI is done.
+        tail::spawn(path, log_tx)?;
+    }
+
+    let mut app = App::new(addr_display, interval, log);
     install_panic_hook();
+    // This process logs to its own stderr, which is the terminal the dashboard
+    // is drawing on, so anything logged lands on top of the display and stays
+    // there. `SCCACHE_LOG` is usually exported for a whole shell rather than a
+    // single command, so silence our own logging while the UI owns the screen;
+    // the server's log is a separate file, and the Logs pane shows it.
+    let log_level = log::max_level();
+    log::set_max_level(log::LevelFilter::Off);
     let terminal = ratatui::init();
-    let result = app.main_loop(terminal, &cmd_tx, &sample_rx);
+    let result = app.main_loop(terminal, &cmd_tx, &sample_rx, &log_rx);
     ratatui::restore();
+    log::set_max_level(log_level);
 
     let _ = cmd_tx.send(Cmd::Quit);
     result
@@ -268,10 +291,33 @@ struct App {
     last_update: Option<Instant>,
     error: Option<String>,
     message: Option<(String, Instant)>,
+    logs: LogView,
+}
+
+/// The Logs pane: what has been read from the server's log file, and where the
+/// reader is looking.
+struct LogView {
+    /// The file being followed, if one was configured.
+    path: Option<PathBuf>,
+    lines: VecDeque<LogLine>,
+    /// Lines scrolled back from the end. Zero means sitting on the tail.
+    scroll: usize,
+    /// Whether new lines pull the view along with them.
+    follow: bool,
+    /// Hide anything less severe than this.
+    min_level: Option<log::Level>,
+    /// Why there is nothing to show, when there is nothing to show.
+    status: Option<String>,
+}
+
+/// A log line and the level it was written at.
+struct LogLine {
+    text: String,
+    level: log::Level,
 }
 
 impl App {
-    fn new(addr: String, interval: Duration) -> Self {
+    fn new(addr: String, interval: Duration, log: Option<PathBuf>) -> Self {
         App {
             addr,
             interval,
@@ -296,6 +342,7 @@ impl App {
             last_update: None,
             error: None,
             message: None,
+            logs: LogView::new(log),
         }
     }
 
@@ -304,6 +351,7 @@ impl App {
         mut terminal: DefaultTerminal,
         cmds: &Sender<Cmd>,
         samples: &Receiver<Sample>,
+        logs: &Receiver<LogEvent>,
     ) -> Result<()> {
         let mut dirty = true;
         let mut drawn = Instant::now();
@@ -323,21 +371,26 @@ impl App {
                 // Anything the terminal reports (a resize in particular) needs
                 // a repaint, whether or not we act on it.
                 dirty = true;
-                if let Event::Key(key) = event::read()? {
-                    if key.kind == KeyEventKind::Press && !self.on_key(key, cmds)? {
-                        return Ok(());
-                    }
+                if let Event::Key(key) = event::read()?
+                    && key.kind == KeyEventKind::Press
+                    && !self.on_key(key, cmds)?
+                {
+                    return Ok(());
                 }
             }
             while let Ok(sample) = samples.try_recv() {
                 self.ingest(sample);
                 dirty = true;
             }
-            if let Some((_, at)) = self.message {
-                if at.elapsed() > MESSAGE_TTL {
-                    self.message = None;
-                    dirty = true;
-                }
+            while let Ok(event) = logs.try_recv() {
+                self.logs.ingest(event);
+                dirty = true;
+            }
+            if let Some((_, at)) = self.message
+                && at.elapsed() > MESSAGE_TTL
+            {
+                self.message = None;
+                dirty = true;
             }
         }
     }
@@ -348,6 +401,11 @@ impl App {
         // Zeroing is irreversible, so it takes two presses of `z` in a row;
         // any other key cancels the pending confirmation.
         let confirming = std::mem::take(&mut self.confirm_zero);
+        // The Logs pane takes the keys that only mean something there before
+        // they reach the global bindings.
+        if TABS[self.tab] == "Logs" && self.on_log_key(key) {
+            return Ok(true);
+        }
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => return Ok(false),
             KeyCode::Char('c' | 'd') if ctrl => return Ok(false),
@@ -382,13 +440,46 @@ impl App {
             KeyCode::BackTab | KeyCode::Left | KeyCode::Char('h') => {
                 self.select_tab((self.tab + TABS.len() - 1) % TABS.len(), cmds);
             }
-            KeyCode::Char(c @ '1'..='5') => {
+            KeyCode::Char(c @ '1'..='6') => {
                 let idx = c as usize - '1' as usize;
                 self.select_tab(idx, cmds);
             }
             _ => {}
         }
         Ok(true)
+    }
+
+    /// Handle the keys that belong to the Logs pane. Returns whether the key
+    /// was one of them.
+    fn on_log_key(&mut self, key: KeyEvent) -> bool {
+        // A screenful, near enough: the pane is most of the window.
+        const PAGE: usize = 20;
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => self.logs.scroll_back(1),
+            KeyCode::Down | KeyCode::Char('j') => self.logs.scroll_forward(1),
+            KeyCode::PageUp => self.logs.scroll_back(PAGE),
+            KeyCode::PageDown => self.logs.scroll_forward(PAGE),
+            KeyCode::Home => self.logs.jump_to_start(),
+            KeyCode::End => self.logs.jump_to_tail(),
+            KeyCode::Char('f') => {
+                self.logs.follow = !self.logs.follow;
+                if self.logs.follow {
+                    self.logs.scroll = 0;
+                }
+                let following = self.logs.follow;
+                self.note(if following {
+                    "following the log"
+                } else {
+                    "stopped following"
+                });
+            }
+            KeyCode::Char('e') => {
+                let note = self.logs.cycle_level();
+                self.note(note);
+            }
+            _ => return false,
+        }
+        true
     }
 
     fn select_tab(&mut self, tab: usize, cmds: &Sender<Cmd>) {
@@ -502,6 +593,132 @@ impl App {
     }
 }
 
+impl LogView {
+    fn new(path: Option<PathBuf>) -> Self {
+        LogView {
+            path,
+            lines: VecDeque::new(),
+            scroll: 0,
+            follow: true,
+            min_level: None,
+            status: None,
+        }
+    }
+
+    fn ingest(&mut self, event: LogEvent) {
+        match event {
+            LogEvent::Lines(lines) => {
+                self.status = None;
+                for text in lines {
+                    // A line with no level of its own continues the one before
+                    // it: panics and backtraces run over several lines and
+                    // should not lose their colour halfway down.
+                    let level = level_of(&text)
+                        .or_else(|| self.lines.back().map(|l| l.level))
+                        .unwrap_or(log::Level::Info);
+                    if self.lines.len() == LOG_LINES {
+                        self.lines.pop_front();
+                        // Keep the viewport over the same lines as they slide.
+                        self.scroll = self.scroll.saturating_sub(1);
+                    }
+                    self.lines.push_back(LogLine { text, level });
+                }
+                if self.follow {
+                    self.scroll = 0;
+                }
+            }
+            LogEvent::Rotated => {
+                self.lines.clear();
+                self.scroll = 0;
+                self.status = Some("the log file was truncated or replaced".to_string());
+            }
+            LogEvent::Waiting(reason) => {
+                if self.lines.is_empty() {
+                    self.status = Some(reason);
+                }
+            }
+        }
+    }
+
+    /// The lines that pass the level filter, oldest first.
+    fn visible(&self) -> Vec<&LogLine> {
+        self.lines
+            .iter()
+            .filter(|line| match self.min_level {
+                Some(min) => line.level <= min,
+                None => true,
+            })
+            .collect()
+    }
+
+    /// Scroll back by `lines`, which stops following the tail.
+    fn scroll_back(&mut self, lines: usize) {
+        self.scroll = (self.scroll + lines).min(self.visible().len());
+        self.follow = false;
+    }
+
+    /// Scroll forward by `lines`, resuming the tail on arrival.
+    fn scroll_forward(&mut self, lines: usize) {
+        self.scroll = self.scroll.saturating_sub(lines);
+        if self.scroll == 0 {
+            self.follow = true;
+        }
+    }
+
+    fn jump_to_tail(&mut self) {
+        self.scroll = 0;
+        self.follow = true;
+    }
+
+    fn jump_to_start(&mut self) {
+        self.scroll = self.visible().len();
+        self.follow = false;
+    }
+
+    /// Cycle the level filter: everything, then progressively less.
+    fn cycle_level(&mut self) -> String {
+        self.min_level = match self.min_level {
+            None => Some(log::Level::Debug),
+            Some(log::Level::Debug) => Some(log::Level::Info),
+            Some(log::Level::Info) => Some(log::Level::Warn),
+            Some(log::Level::Warn) => Some(log::Level::Error),
+            Some(_) => None,
+        };
+        // The filter changes what "scrolled back N lines" points at; the tail
+        // is the one position that always makes sense.
+        self.jump_to_tail();
+        format!("showing {}", self.level_label())
+    }
+
+    fn level_label(&self) -> String {
+        match self.min_level {
+            None => "all levels".to_string(),
+            Some(level) => format!("{level} and worse"),
+        }
+    }
+}
+
+/// The level env_logger wrote a line at, if it wrote one.
+///
+/// The format is `[timestamp LEVEL module] message`, so only the start of the
+/// line is worth searching: a message that happens to mention `ERROR` should
+/// not turn the line red.
+fn level_of(line: &str) -> Option<log::Level> {
+    let head = line.get(..line.len().min(64)).unwrap_or(line);
+    for (name, level) in [
+        ("ERROR", log::Level::Error),
+        ("WARN", log::Level::Warn),
+        ("INFO", log::Level::Info),
+        ("DEBUG", log::Level::Debug),
+        ("TRACE", log::Level::Trace),
+    ] {
+        if head.contains(name) {
+            return Some(level);
+        }
+    }
+    None
+}
+
 fn push(hist: &mut VecDeque<u64>, value: f64) {
     // Sparklines take integers; keep two decimals of resolution.
     if hist.len() == HISTORY {
@@ -531,6 +748,7 @@ impl App {
             "Reasons" => self.draw_reasons(frame, body),
             "Cache" => self.draw_cache(frame, body),
             "Dist" => self.draw_dist(frame, body),
+            "Logs" => self.draw_logs(frame, body),
             _ => self.draw_overview(frame, body),
         }
         self.draw_footer(frame, footer);
@@ -1177,6 +1395,66 @@ impl App {
         }
     }
 
+    fn draw_logs(&self, frame: &mut Frame<'_>, area: Rect) {
+        let Some(path) = self.logs.path.as_ref() else {
+            frame.render_widget(
+                Paragraph::new(LOG_HELP.lines().map(Line::from).collect::<Vec<_>>())
+                    .block(titled("Logs"))
+                    .wrap(Wrap { trim: false }),
+                area,
+            );
+            return;
+        };
+
+        let lines = self.logs.visible();
+        let heading = format!(
+            "Logs — {} · {} lines · {} · {}",
+            path.display(),
+            lines.len(),
+            self.logs.level_label(),
+            if self.logs.follow {
+                "following"
+            } else {
+                "paused, End to catch up"
+            },
+        );
+        let block = titled(&heading);
+        if lines.is_empty() {
+            let empty = if !self.logs.lines.is_empty() {
+                // There is a log; the filter is simply hiding all of it.
+                format!(
+                    "no lines at {} — press e to widen the filter",
+                    self.logs.level_label()
+                )
+            } else if let Some(reason) = self.logs.status.as_deref() {
+                format!("waiting for {}: {reason}", path.display())
+            } else {
+                format!(
+                    "nothing to show yet — is the server running with SCCACHE_LOG set?\n\n{LOG_HELP}"
+                )
+            };
+            frame.render_widget(
+                placeholder(&empty).block(block).wrap(Wrap { trim: false }),
+                area,
+            );
+            return;
+        }
+
+        // A screenful of lines, shifted back from the newest by `scroll`.
+        // Clamping the start rather than the end keeps the pane full when the
+        // reader scrolls past the oldest line we still hold.
+        let height = block.inner(area).height as usize;
+        let start = lines.len().saturating_sub(height + self.logs.scroll);
+        let end = (start + height).min(lines.len());
+        let text: Vec<Line<'_>> = lines[start..end]
+            .iter()
+            .map(|line| {
+                Line::from(line.text.as_str()).style(Style::default().fg(level_colour(line.level)))
+            })
+            .collect();
+        frame.render_widget(Paragraph::new(text).block(block), area);
+    }
+
     fn draw_dist(&self, frame: &mut Frame<'_>, area: Rect) {
         let block = titled("Distributed compilation");
         let text = match &self.dist {
@@ -1222,13 +1500,19 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect) {
     let lines = vec![
         Line::from("Keys".to_string()).style(Style::default().fg(Color::Cyan).bold()),
         Line::from("  q, Esc, Ctrl-C/D      quit"),
-        Line::from("  1-5, Tab, ←/→, h/l    switch pane"),
+        Line::from("  1-6, Tab, ←/→, h/l    switch pane"),
         Line::from("  a                     per-compiler instead of per-language counts"),
         Line::from("  r                     poll now, even while paused"),
         Line::from("  p, Space              pause/resume polling"),
         Line::from("  +/-                   double/halve the poll interval"),
         Line::from("  z z                   zero the server's statistics (twice to confirm)"),
         Line::from("  ?, F1                 close this help"),
+        Line::from(""),
+        Line::from("In the Logs pane".to_string()).style(Style::default().fg(Color::Cyan).bold()),
+        Line::from("  ↑/↓, k/j, PgUp/PgDn   scroll, which stops following"),
+        Line::from("  Home / End            oldest line / back to following the tail"),
+        Line::from("  f                     follow the tail or stop"),
+        Line::from("  e                     cycle the level filter"),
         Line::from(""),
         Line::from("The monitor is an ordinary client of the running server. Each poll"),
         Line::from("resets the server's idle-shutdown timer, so a watched server will not"),
@@ -1237,7 +1521,7 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect) {
     let [area] = Layout::horizontal([Constraint::Length(74)])
         .flex(Flex::Center)
         .areas(area);
-    let [area] = Layout::vertical([Constraint::Length(16)])
+    let [area] = Layout::vertical([Constraint::Length(22)])
         .flex(Flex::Center)
         .areas(area);
     frame.render_widget(Clear, area);
@@ -1367,6 +1651,28 @@ fn sep() -> Span<'static> {
 
 fn kv<S: Into<String>>(name: &str, value: S) -> Span<'static> {
     Span::raw(format!("{name} {}", value.into()))
+}
+
+/// What to tell someone who opened the Logs pane with no log to show.
+const LOG_HELP: &str = "\
+The server logs by having its stderr redirected to a file, so start it with one
+and point the monitor at it:
+
+    SCCACHE_ERROR_LOG=/tmp/sccache.log SCCACHE_LOG=debug sccache --start-server
+    sccache --monitor --monitor-log /tmp/sccache.log
+
+`--monitor-log` defaults to $SCCACHE_ERROR_LOG, so exporting that in the shell
+you run the monitor from is enough. The file is followed as it grows, and
+picked up whenever it appears, so the monitor can be started first.";
+
+fn level_colour(level: log::Level) -> Color {
+    match level {
+        log::Level::Error => Color::Red,
+        log::Level::Warn => Color::Yellow,
+        log::Level::Info => Color::Reset,
+        log::Level::Debug => Color::Gray,
+        log::Level::Trace => Color::DarkGray,
+    }
 }
 
 /// Scale a window of samples onto bar heights, in eighths of a cell, and
