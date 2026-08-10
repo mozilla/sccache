@@ -57,9 +57,15 @@ fn test_rust_cargo_basedirs_cross_dir_cache_hit() -> Result<()> {
     let crate_b = work_root.join("b");
     for crate_dir in [&crate_a, &crate_b] {
         fs::create_dir_all(crate_dir.join("src"))?;
+        let lib_path = crate_dir
+            .join("src/lib.rs")
+            .to_string_lossy()
+            .replace('\\', "/");
         fs::write(
             crate_dir.join("Cargo.toml"),
-            "[package]\nname = \"basedirs-test\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+            format!(
+                "[package]\nname = \"basedirs-test\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[lib]\npath = {lib_path:?}\n"
+            ),
         )?;
         fs::write(crate_dir.join("src/lib.rs"), "pub fn value() -> u8 { 1 }\n")?;
     }

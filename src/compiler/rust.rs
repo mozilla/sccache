@@ -175,20 +175,31 @@ fn is_path_cargo_env(var: &OsString) -> bool {
     ) || var.as_encoded_bytes().starts_with(b"CARGO_BIN_EXE_")
 }
 
+fn omits_dep_info_target(flag: &OsString, value: Option<&OsString>) -> bool {
+    flag == "-Z"
+        && value.and_then(|value| value.to_str()).is_some_and(|value| {
+            value.split_once('=').map_or(value, |(name, _)| name) == "dep-info-omit-d-target"
+        })
+}
+
+#[derive(Clone, Debug)]
+struct DepInfoTemplate {
+    target_dependencies: String,
+    tail: String,
+}
+
 fn rewrite_dep_info_targets(
     dep_info: &Path,
     outputs: &HashMap<String, ArtifactDescriptor>,
     cwd: &Path,
+    template: &DepInfoTemplate,
 ) -> Result<()> {
     let dep_info = cwd.join(dep_info);
     let deps = fs::read_to_string(&dep_info).context("Failed to read cached Rust dep-info")?;
-    let mut rewritten = String::with_capacity(deps.len());
-    let mut matched_output = false;
-    let mut scanning_output_targets = true;
+    let mut output_targets = Vec::new();
 
     for line in deps.split_inclusive('\n') {
-        if !scanning_output_targets || line.trim().is_empty() {
-            rewritten.push_str(line);
+        if line.trim().is_empty() {
             continue;
         }
 
@@ -232,22 +243,28 @@ fn rewrite_dep_info_targets(
                 }
             }
         }
-        let Some((separator, _, output)) = matched else {
-            if !matched_output {
+        let Some((_, _, output)) = matched else {
+            if output_targets.is_empty() {
                 bail!(
                     "No output targets matched cached Rust dep-info {}",
                     dep_info.display()
                 );
             }
-            scanning_output_targets = false;
-            rewritten.push_str(line);
-            continue;
+            break;
         };
 
-        matched_output = true;
-        rewritten.push_str(&output.path.to_string_lossy());
-        rewritten.push_str(&line[separator..]);
+        output_targets.push(output);
     }
+
+    let mut rewritten = String::with_capacity(deps.len());
+    for (index, output) in output_targets.iter().enumerate() {
+        rewritten.push_str(&output.path.to_string_lossy());
+        rewritten.push_str(&template.target_dependencies);
+        if index + 1 < output_targets.len() {
+            rewritten.push('\n');
+        }
+    }
+    rewritten.push_str(&template.tail);
 
     if rewritten != deps {
         let parent = dep_info
@@ -433,6 +450,8 @@ pub struct RustCompilation {
     crate_types: CrateTypes,
     /// If dependency info is being emitted, the name of the dep info file.
     dep_info: Option<PathBuf>,
+    /// Dependency records generated locally for the current invocation.
+    dep_info_template: Option<DepInfoTemplate>,
     /// The current working directory
     cwd: PathBuf,
     /// The environment variables
@@ -462,7 +481,7 @@ async fn get_source_files_and_env_deps<T>(
     cwd: &Path,
     env_vars: &[(OsString, OsString)],
     pool: &tokio::runtime::Handle,
-) -> Result<(Vec<PathBuf>, Vec<(OsString, OsString)>)>
+) -> Result<(Vec<PathBuf>, Vec<(OsString, OsString)>, DepInfoTemplate)>
 where
     T: CommandCreatorSync,
 {
@@ -494,7 +513,7 @@ where
         })
         .await?;
 
-    parsed.map(move |(files, env_deps)| {
+    parsed.map(move |(files, env_deps, template)| {
         trace!(
             "[{}]: got {} source files and {} env-deps from dep-info in {}",
             crate_name,
@@ -504,13 +523,16 @@ where
         );
         // Just to make sure we capture temp_dir.
         drop(temp_dir);
-        (files, env_deps)
+        (files, env_deps, template)
     })
 }
 
 /// Parse dependency info from `file` and return a Vec of files mentioned.
 /// Treat paths as relative to `cwd`.
-fn parse_dep_file<T, U>(file: T, cwd: U) -> Result<(Vec<PathBuf>, Vec<(OsString, OsString)>)>
+fn parse_dep_file<T, U>(
+    file: T,
+    cwd: U,
+) -> Result<(Vec<PathBuf>, Vec<(OsString, OsString)>, DepInfoTemplate)>
 where
     T: AsRef<Path>,
     U: AsRef<Path>,
@@ -518,7 +540,25 @@ where
     let mut f = fs::File::open(file.as_ref())?;
     let mut deps = String::new();
     f.read_to_string(&mut deps)?;
-    Ok((parse_dep_info(&deps, cwd), parse_env_dep_info(&deps)))
+    let (target_line, tail) = deps
+        .split_once('\n')
+        .context("Rust dep-info has no target line")?;
+    let target = file.as_ref().to_string_lossy();
+    let mut target_dependencies = target_line
+        .strip_prefix(&*target)
+        .filter(|suffix| suffix.starts_with(": "))
+        .context("Rust dep-info target does not match requested path")?
+        .to_owned();
+    target_dependencies.push('\n');
+    let source_files = parse_dep_info(&format!("target{target_dependencies}"), cwd);
+    Ok((
+        source_files,
+        parse_env_dep_info(&deps),
+        DepInfoTemplate {
+            target_dependencies,
+            tail: tail.to_owned(),
+        },
+    ))
 }
 
 fn parse_dep_info<T>(dep_info: &str, cwd: T) -> Vec<PathBuf>
@@ -1655,7 +1695,8 @@ where
         let filtered_arguments = os_string_arguments
             .iter()
             .filter_map(|(arg, val)| {
-                if arg == "--emit" || arg == "--out-dir" {
+                if arg == "--emit" || arg == "--out-dir" || omits_dep_info_target(arg, val.as_ref())
+                {
                     None
                 } else {
                     Some((arg, val))
@@ -1667,7 +1708,7 @@ where
         // Find all the source files and hash them
         let source_hashes_pool = pool.clone();
         let source_files_and_hashes_and_env_deps = async {
-            let (source_files, env_deps) = get_source_files_and_env_deps(
+            let (source_files, env_deps, dep_info_template) = get_source_files_and_env_deps(
                 creator,
                 &self.parsed_args.crate_name,
                 &self.executable,
@@ -1678,7 +1719,7 @@ where
             )
             .await?;
             let source_hashes = hash_all(&source_files, &source_hashes_pool).await?;
-            Ok((source_files, source_hashes, env_deps))
+            Ok((source_files, source_hashes, env_deps, dep_info_template))
         };
 
         // Hash the contents of the externs listed on the commandline.
@@ -1723,7 +1764,7 @@ where
 
         // Perform all hashing operations on the files.
         let (
-            (source_files, source_hashes, mut env_deps),
+            (source_files, source_hashes, mut env_deps, dep_info_template),
             extern_hashes,
             staticlib_hashes,
             target_json_hash,
@@ -2033,6 +2074,7 @@ where
             .chain(abs_externs)
             .chain(abs_staticlibs)
             .collect();
+        let dep_info_template = dep_info.as_ref().map(|_| dep_info_template);
 
         Ok(HashResult {
             key: m.finish(),
@@ -2047,6 +2089,7 @@ where
                 crate_name: self.parsed_args.crate_name.clone(),
                 crate_types: self.parsed_args.crate_types.clone(),
                 dep_info,
+                dep_info_template,
                 cwd,
                 env_vars,
                 #[cfg(feature = "dist-client")]
@@ -2235,7 +2278,11 @@ impl<T: CommandCreatorSync> Compilation<T> for RustCompilation {
 
     fn postprocess_cache_hit(&self, cwd: &Path) -> Result<()> {
         if let Some(dep_info) = &self.dep_info {
-            rewrite_dep_info_targets(dep_info, &self.outputs, cwd)?;
+            let template = self
+                .dep_info_template
+                .as_ref()
+                .context("Missing local Rust dep-info template")?;
+            rewrite_dep_info_targets(dep_info, &self.outputs, cwd, template)?;
         }
         Ok(())
     }
@@ -3116,6 +3163,7 @@ LLVM version: 15.0.2
                 staticlib: false,
             },
             dep_info: None,
+            dep_info_template: None,
             cwd: root.to_owned(),
             env_vars: vec![],
         }
@@ -3632,6 +3680,36 @@ abc def.rs:
 
     #[cfg(not(windows))]
     #[test]
+    fn test_parse_dep_file_with_colon_space_target() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let dep_dir = tempdir.path().join("a: b");
+        fs::create_dir(&dep_dir).unwrap();
+        let dep_file = dep_dir.join("deps.d");
+        fs::write(
+            &dep_file,
+            format!("{}: source.rs\n\nsource.rs:\n", dep_file.display()),
+        )
+        .unwrap();
+
+        let (files, _, template) = parse_dep_file(&dep_file, tempdir.path()).unwrap();
+
+        assert_eq!(vec![tempdir.path().join("source.rs")], files);
+        assert_eq!(": source.rs\n", template.target_dependencies);
+        assert_eq!("\nsource.rs:\n", template.tail);
+    }
+
+    #[test]
+    fn test_omits_dep_info_target() {
+        let z_flag = OsString::from("-Z");
+        let omit_target = OsString::from("dep-info-omit-d-target");
+        let omit_target_value = OsString::from("dep-info-omit-d-target=yes");
+        assert!(omits_dep_info_target(&z_flag, Some(&omit_target)));
+        assert!(omits_dep_info_target(&z_flag, Some(&omit_target_value)));
+        assert!(!omits_dep_info_target(&z_flag, None));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
     fn test_parse_dep_info_cwd() {
         let deps = "foo: baz.rs abc.rs bar.rs
 
@@ -3858,7 +3936,12 @@ proc_macro false
             }
             let dep_info_path = dep_info_path.unwrap();
             let mut f = File::create(dep_info_path)?;
-            writeln!(f, "blah: {}", sorted_deps.iter().join(" "))?;
+            writeln!(
+                f,
+                "{}: {}",
+                Path::new(dep_info_path).display(),
+                sorted_deps.iter().join(" ")
+            )?;
             for d in sorted_deps.iter() {
                 writeln!(f, "{}:", d)?;
             }
@@ -4421,9 +4504,9 @@ proc_macro false
         let dep_info = PathBuf::from("new/out/foo.d");
         fs::create_dir_all(tempdir.path().join("new/out")).unwrap();
         #[cfg(windows)]
-        let cached_targets = "C:foo.d: src/lib.rs\n\nC:libfoo.rlib: src/lib.rs\n\nsrc/lib.rs:\n\n";
+        let cached_targets = "C:foo.d: /old/source/lib.rs\n\nC:libfoo.rlib: /old/source/lib.rs\n\n/old/source/lib.rs:\n\n";
         #[cfg(not(windows))]
-        let cached_targets = "/old/a: b/out/foo.d: src/lib.rs\n\n/old/a: b/out/libfoo.rlib: src/lib.rs\n\nsrc/lib.rs:\n\n";
+        let cached_targets = "/old/a: b/out/foo.d: /old/source/lib.rs\n\n/old/a: b/out/libfoo.rlib: /old/source/lib.rs\n\n/old/source/lib.rs:\n\n";
         fs::write(
             tempdir.path().join(&dep_info),
             format!("{cached_targets}# env-dep:OUT_DIR=/tmp/foo.d: value\n"),
@@ -4450,12 +4533,17 @@ proc_macro false
                 },
             ),
         ]);
+        let template = DepInfoTemplate {
+            target_dependencies: ": /new/source/lib.rs\n".to_owned(),
+            tail: "\n/new/source/lib.rs:\n\n# env-dep:OUT_DIR=/new/out\n# checksum:123 file_len:1 /new/source/lib.rs\n"
+                .to_owned(),
+        };
 
-        rewrite_dep_info_targets(&dep_info, &outputs, tempdir.path()).unwrap();
+        rewrite_dep_info_targets(&dep_info, &outputs, tempdir.path(), &template).unwrap();
 
         assert_eq!(
             fs::read_to_string(tempdir.path().join(&dep_info)).unwrap(),
-            "new/a: b/out/foo.d: src/lib.rs\n\nnew/a: b/out/libfoo.rlib: src/lib.rs\n\nsrc/lib.rs:\n\n# env-dep:OUT_DIR=/tmp/foo.d: value\n"
+            "new/a: b/out/foo.d: /new/source/lib.rs\n\nnew/a: b/out/libfoo.rlib: /new/source/lib.rs\n\n/new/source/lib.rs:\n\n# env-dep:OUT_DIR=/new/out\n# checksum:123 file_len:1 /new/source/lib.rs\n"
         );
         assert!(
             fs::metadata(tempdir.path().join(dep_info))
@@ -4482,8 +4570,12 @@ proc_macro false
                 optional: false,
             },
         )]);
+        let template = DepInfoTemplate {
+            target_dependencies: ": src/lib.rs\n".to_owned(),
+            tail: "\nsrc/lib.rs:\n".to_owned(),
+        };
 
-        assert!(rewrite_dep_info_targets(&dep_info, &outputs, tempdir.path()).is_err());
+        assert!(rewrite_dep_info_targets(&dep_info, &outputs, tempdir.path(), &template).is_err());
     }
 
     fn basedir_for(path: &Path) -> Vec<u8> {
