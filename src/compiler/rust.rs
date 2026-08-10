@@ -171,7 +171,6 @@ fn is_path_cargo_env(var: &OsString) -> bool {
                 | "CARGO_MANIFEST_PATH"
                 | "CARGO_TARGET_DIR"
                 | "CARGO_TARGET_TMPDIR"
-                | "CARGO_WORKSPACE_DIR"
         )
     ) || var.as_encoded_bytes().starts_with(b"CARGO_BIN_EXE_")
 }
@@ -4592,6 +4591,7 @@ proc_macro false
         );
         assert!(super::is_path_cargo_env(&"CARGO_MANIFEST_DIR".into()));
         assert!(super::is_path_cargo_env(&"CARGO_INSTALL_ROOT".into()));
+        assert!(!super::is_path_cargo_env(&"CARGO_WORKSPACE_DIR".into()));
         assert!(!super::is_path_cargo_env(&"CARGO_PKG_DESCRIPTION".into()));
 
         let remap = |prefix: &str| {
