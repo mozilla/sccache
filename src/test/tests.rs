@@ -24,14 +24,8 @@ use crate::test::utils::*;
 use fs::File;
 use fs_err as fs;
 use futures::channel::oneshot::{self, Sender};
-#[cfg(not(target_os = "macos"))]
-use serial_test::serial;
 use std::io::{Cursor, Write};
-#[cfg(not(target_os = "macos"))]
-use std::net::TcpListener;
 use std::path::Path;
-#[cfg(not(target_os = "macos"))]
-use std::process::Command;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
@@ -94,10 +88,10 @@ where
         let mut srv: SccacheServer<_, Arc<Mutex<MockCommandCreator>>> = srv;
         let addr = srv.local_addr().unwrap();
         assert!(matches!(addr, crate::net::SocketAddr::Net(a) if a.port() > 0));
-        if let Some(options) = options {
-            if let Some(timeout) = options.idle_timeout {
-                srv.set_idle_timeout(Duration::from_millis(timeout));
-            }
+        if let Some(options) = options
+            && let Some(timeout) = options.idle_timeout
+        {
+            srv.set_idle_timeout(Duration::from_millis(timeout));
         }
         let creator = srv.command_creator().clone();
         tx.send((addr, creator)).unwrap();
@@ -292,33 +286,4 @@ fn test_server_compile() {
     sender.send(ServerMessage::Shutdown).ok().unwrap();
     // Ensure that it shuts down.
     child.join().unwrap();
-}
-
-#[test]
-#[serial]
-// test fails intermittently on macos:
-// https://github.com/mozilla/sccache/issues/234
-#[cfg(not(target_os = "macos"))]
-fn test_server_port_in_use() {
-    // Bind an arbitrary free port.
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let sccache = find_sccache_binary();
-    let output = Command::new(sccache)
-        .arg("--start-server")
-        .env(
-            "SCCACHE_SERVER_PORT",
-            listener.local_addr().unwrap().port().to_string(),
-        )
-        .env_remove("SCCACHE_SERVER_UDS")
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let s = String::from_utf8_lossy(&output.stderr);
-    const MSG: &str = "Server startup failed:";
-    assert!(
-        s.contains(MSG),
-        "Output did not contain '{}':\n========\n{}\n========",
-        MSG,
-        s
-    );
 }

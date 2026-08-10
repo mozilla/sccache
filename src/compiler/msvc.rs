@@ -811,38 +811,38 @@ pub fn parse_arguments(
             }
         }
     }
-    if language == Language::Cxx {
-        if let Some(obj) = outputs.get("obj") {
-            // MSVC can produce "type library headers"[1], with the extensions "tlh" and "tli".
-            // These files can be used in later compilation steps to interact with COM interfaces.
-            //
-            // These files are only created when the `#import` directive is used.
-            // Figuring out if an import directive is used would require parsing C++, which would be a lot of work.
-            // To avoid that problem, we just optionally cache these headers if they happen to be produced.
-            // This isn't perfect, but it is easy!
-            //
-            // [1]: https://learn.microsoft.com/en-us/cpp/preprocessor/hash-import-directive-cpp?view=msvc-170#_predir_the_23import_directive_header_files_created_by_import
-            let tlh = obj.path.with_extension("tlh");
-            let tli = obj.path.with_extension("tli");
+    if language == Language::Cxx
+        && let Some(obj) = outputs.get("obj")
+    {
+        // MSVC can produce "type library headers"[1], with the extensions "tlh" and "tli".
+        // These files can be used in later compilation steps to interact with COM interfaces.
+        //
+        // These files are only created when the `#import` directive is used.
+        // Figuring out if an import directive is used would require parsing C++, which would be a lot of work.
+        // To avoid that problem, we just optionally cache these headers if they happen to be produced.
+        // This isn't perfect, but it is easy!
+        //
+        // [1]: https://learn.microsoft.com/en-us/cpp/preprocessor/hash-import-directive-cpp?view=msvc-170#_predir_the_23import_directive_header_files_created_by_import
+        let tlh = obj.path.with_extension("tlh");
+        let tli = obj.path.with_extension("tli");
 
-            // Primary type library header
-            outputs.insert(
-                "tlh",
-                ArtifactDescriptor {
-                    path: tlh,
-                    optional: true,
-                },
-            );
+        // Primary type library header
+        outputs.insert(
+            "tlh",
+            ArtifactDescriptor {
+                path: tlh,
+                optional: true,
+            },
+        );
 
-            // Secondary type library header
-            outputs.insert(
-                "tli",
-                ArtifactDescriptor {
-                    path: tli,
-                    optional: true,
-                },
-            );
-        }
+        // Secondary type library header
+        outputs.insert(
+            "tli",
+            ArtifactDescriptor {
+                path: tli,
+                optional: true,
+            },
+        );
     }
     // -Fd is not taken into account unless -Zi or -ZI are given
     // Clang is currently unable to generate PDB files
@@ -923,7 +923,7 @@ fn normpath(path: &str) -> String {
             let o = OsString::from_wide(&wchars[4..wchars.len() - 1]);
             o.into_string()
                 .map(|s| s.replace('\\', "/"))
-                .map_err(|_| io::Error::new(io::ErrorKind::Other, "Error converting string"))
+                .map_err(|_| io::Error::other("Error converting string"))
         })
         .unwrap_or_else(|_| path.replace('\\', "/"))
 }
