@@ -638,7 +638,11 @@ where
                 };
 
                 let hit = CompileResult::CacheHit(duration);
-                match entry.extract_objects(filtered_outputs, &pool).await {
+                let extraction = entry
+                    .extract_objects(filtered_outputs, &pool)
+                    .await
+                    .and_then(|()| compilation.postprocess_cache_hit(&cwd));
+                match extraction {
                     Ok(()) => Ok(CacheLookupResult::Success(hit, output)),
                     Err(e) => {
                         if e.downcast_ref::<DecompressionFailure>().is_some() {
@@ -1110,6 +1114,11 @@ where
 
     fn is_locally_preprocessed(&self) -> bool {
         true
+    }
+
+    /// Adjust extracted outputs for the current invocation after a cache hit.
+    fn postprocess_cache_hit(&self, _cwd: &Path) -> Result<()> {
+        Ok(())
     }
 
     /// Returns an iterator over the results of this compilation.

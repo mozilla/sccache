@@ -76,13 +76,25 @@ fn test_rust_cargo_basedirs_cross_dir_cache_hit() -> Result<()> {
             .env("CARGO_INSTALL_ROOT", crate_dir.join("install"))
             .env("CARGO_TARGET_DIR", crate_dir.join("target"))
             .env(
-                "RUSTFLAGS",
+                "CARGO_ENCODED_RUSTFLAGS",
                 format!("--remap-path-prefix={}=/workspace", crate_dir.display()),
             )
             .current_dir(crate_dir)
             .assert()
             .try_success()?;
     }
+
+    let dep_info = fs::read_dir(crate_b.join("target/debug/deps"))?
+        .find_map(|entry| {
+            let path = entry.ok()?.path();
+            path.extension()
+                .is_some_and(|extension| extension == "d")
+                .then_some(path)
+        })
+        .context("missing dep-info for second checkout")?;
+    let dep_info = fs::read_to_string(dep_info)?;
+    assert!(!dep_info.contains(crate_a.to_string_lossy().as_ref()));
+    assert!(dep_info.contains(crate_b.to_string_lossy().as_ref()));
 
     test.show_stats()?
         .try_stdout(predicates::str::contains(r#""cache_hits":{"counts":{"Rust":1}"#).from_utf8())?

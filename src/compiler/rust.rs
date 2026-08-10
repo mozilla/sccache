@@ -50,7 +50,7 @@ use std::future::Future;
 use std::hash::Hash;
 #[cfg(feature = "dist-client")]
 use std::io;
-use std::io::{BufReader, Read};
+use std::io::{BufReader, Read, Write};
 use std::iter;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -136,7 +136,7 @@ fn remap_scope_is_all(arguments: &[(OsString, Option<OsString>)]) -> bool {
             }
             flag.to_str()?.strip_prefix("--remap-path-scope=")
         })
-        .last()
+        .next_back()
         .is_none_or(|scope| scope.split(',').any(|scope| scope == "all"))
 }
 
@@ -173,6 +173,109 @@ fn is_path_cargo_env(var: &OsString) -> bool {
                 | "CARGO_TARGET_TMPDIR"
         )
     ) || var.as_encoded_bytes().starts_with(b"CARGO_BIN_EXE_")
+}
+
+fn rewrite_dep_info_targets(
+    dep_info: &Path,
+    outputs: &HashMap<String, ArtifactDescriptor>,
+    cwd: &Path,
+) -> Result<()> {
+    let dep_info = cwd.join(dep_info);
+    let deps = fs::read_to_string(&dep_info).context("Failed to read cached Rust dep-info")?;
+    let mut rewritten = String::with_capacity(deps.len());
+    let mut matched_output = false;
+    let mut scanning_output_targets = true;
+
+    for line in deps.split_inclusive('\n') {
+        if !scanning_output_targets || line.trim().is_empty() {
+            rewritten.push_str(line);
+            continue;
+        }
+
+        let mut matched = None;
+        for (name, output) in outputs {
+            let marker = format!("{name}: ");
+            for (marker_start, _) in line.match_indices(&marker) {
+                let is_boundary = if marker_start == 0 {
+                    true
+                } else {
+                    let previous = line.as_bytes()[marker_start - 1];
+                    #[cfg(windows)]
+                    let is_separator = matches!(previous, b'/' | b'\\');
+                    #[cfg(not(windows))]
+                    let is_separator = previous == b'/';
+                    #[cfg(windows)]
+                    let is_drive_relative = marker_start == 2
+                        && previous == b':'
+                        && line.as_bytes()[0].is_ascii_alphabetic();
+                    #[cfg(not(windows))]
+                    let is_drive_relative = false;
+                    is_separator || is_drive_relative
+                };
+                if !is_boundary {
+                    continue;
+                }
+
+                let separator = marker_start + name.len();
+                if let Some((best_separator, best_name_len, _)) = matched {
+                    if separator != best_separator {
+                        bail!(
+                            "Ambiguous output target in cached Rust dep-info {}",
+                            dep_info.display()
+                        );
+                    }
+                    if name.len() > best_name_len {
+                        matched = Some((separator, name.len(), output));
+                    }
+                } else {
+                    matched = Some((separator, name.len(), output));
+                }
+            }
+        }
+        let Some((separator, _, output)) = matched else {
+            if !matched_output {
+                bail!(
+                    "No output targets matched cached Rust dep-info {}",
+                    dep_info.display()
+                );
+            }
+            scanning_output_targets = false;
+            rewritten.push_str(line);
+            continue;
+        };
+
+        matched_output = true;
+        rewritten.push_str(&output.path.to_string_lossy());
+        rewritten.push_str(&line[separator..]);
+    }
+
+    if rewritten != deps {
+        let parent = dep_info
+            .parent()
+            .context("Cached Rust dep-info has no parent directory")?;
+        let permissions = fs::metadata(&dep_info)?.permissions();
+        let mut temp = tempfile::NamedTempFile::new_in(parent)
+            .context("Failed to create temporary Rust dep-info")?;
+        temp.write_all(rewritten.as_bytes())?;
+        #[cfg(not(windows))]
+        temp.as_file().set_permissions(permissions.clone())?;
+        #[cfg(windows)]
+        if permissions.readonly() {
+            let mut writable = permissions.clone();
+            writable.set_readonly(false);
+            fs::set_permissions(&dep_info, writable)?;
+        }
+        if let Err(error) = temp.persist(&dep_info) {
+            #[cfg(windows)]
+            if permissions.readonly() {
+                let _ = fs::set_permissions(&dep_info, permissions);
+            }
+            return Err(error.error).context("Failed to replace cached Rust dep-info");
+        }
+        #[cfg(windows)]
+        fs::set_permissions(&dep_info, permissions)?;
+    }
+    Ok(())
 }
 
 #[cfg(feature = "dist-client")]
@@ -1511,6 +1614,26 @@ where
     ) -> Result<HashResult<T>> {
         trace!("[{}]: generate_hash_key", self.parsed_args.crate_name);
         let basedirs = storage.basedirs();
+        // Procedural macros can observe the physical working directory and inherited environment
+        // variables without reporting them in rustc dep-info. Conservatively retain physical paths
+        // whenever an explicit extern or dynamic crate search entry may load one.
+        let can_normalize_paths = !basedirs.is_empty()
+            && self.parsed_args.externs.is_empty()
+            && !self.parsed_args.crate_link_paths.iter().any(|path| {
+                fs::read_dir(path)
+                    .map(|mut entries| {
+                        entries.any(|entry| {
+                            entry.map_or(true, |entry| {
+                                entry
+                                    .path()
+                                    .extension()
+                                    .is_some_and(|ext| ext == DLL_EXTENSION)
+                            })
+                        })
+                    })
+                    .unwrap_or(true)
+            });
+        let normalized_basedirs: &[Vec<u8>] = if can_normalize_paths { basedirs } else { &[] };
         // TODO: this doesn't produce correct arguments if they should be concatenated - should use iter_os_strings
         let os_string_arguments: Vec<(OsString, Option<OsString>)> = self
             .parsed_args
@@ -1523,6 +1646,13 @@ where
                 )
             })
             .collect();
+        let remap_input_path = |path: &Path| {
+            if can_normalize_paths {
+                remap_path(path, &os_string_arguments)
+            } else {
+                None
+            }
+        };
         // `filtered_arguments` omits --emit and --out-dir arguments.
         // It's used for invoking rustc with `--emit=dep-info` to get the list of
         // source files for this crate.
@@ -1653,7 +1783,7 @@ where
             for (arg, value) in rest.into_iter().chain(sortables) {
                 let arg_bytes = arg.as_encoded_bytes();
                 if value.is_none() {
-                    if let Some(remapped) = remap_path(Path::new(arg), &os_string_arguments) {
+                    if let Some(remapped) = remap_input_path(Path::new(arg)) {
                         hash_arg(true, remapped.as_encoded_bytes());
                     } else {
                         hash_arg(false, arg_bytes);
@@ -1663,7 +1793,7 @@ where
                 }
                 if let Some(value) = value {
                     let value_bytes = value.as_encoded_bytes();
-                    let normalized = normalize_arg_value(arg, value, basedirs);
+                    let normalized = normalize_arg_value(arg, value, normalized_basedirs);
                     let normalized_bytes: &[u8] = &normalized;
                     hash_arg(normalized_bytes != value_bytes, normalized_bytes);
                 }
@@ -1677,7 +1807,7 @@ where
             .iter()
             .zip(source_hashes)
             .map(|(path, hash)| {
-                if let Some(remapped) = remap_path(path, &os_string_arguments) {
+                if let Some(remapped) = remap_input_path(path) {
                     (true, remapped, path.as_os_str().to_owned(), hash)
                 } else {
                     (
@@ -1736,26 +1866,9 @@ where
             .cloned()
             .collect();
         env_vars.sort();
-        // Procedural macros can read inherited environment variables without reporting them in
-        // rustc dep-info. They can be explicit externs or resolved from a crate search path.
-        let normalize_cargo_paths = !basedirs.is_empty()
-            && remap_path(&cwd, &os_string_arguments).is_some()
-            && env_vars.iter().any(|(var, _)| is_path_cargo_env(var))
-            && self.parsed_args.externs.is_empty()
-            && !self.parsed_args.crate_link_paths.iter().any(|path| {
-                fs::read_dir(path)
-                    .map(|mut entries| {
-                        entries.any(|entry| {
-                            entry.map_or(true, |entry| {
-                                entry
-                                    .path()
-                                    .extension()
-                                    .is_some_and(|ext| ext == DLL_EXTENSION)
-                            })
-                        })
-                    })
-                    .unwrap_or(true)
-            });
+        let normalize_cargo_paths = can_normalize_paths
+            && remap_input_path(&cwd).is_some()
+            && env_vars.iter().any(|(var, _)| is_path_cargo_env(var));
         for (var, val) in env_vars.iter() {
             if !var.starts_with("CARGO_") {
                 continue;
@@ -1789,7 +1902,7 @@ where
         }
         // 9. The cwd of the compile. This will wind up in the rlib.
         let cwd_bytes = cwd.as_os_str().as_encoded_bytes();
-        if let Some(remapped) = remap_path(&cwd, &os_string_arguments) {
+        if let Some(remapped) = remap_input_path(&cwd) {
             true.hash(&mut HashToDigest { digest: &mut m });
             remapped
                 .as_encoded_bytes()
@@ -2122,6 +2235,13 @@ impl<T: CommandCreatorSync> Compilation<T> for RustCompilation {
         })();
 
         Ok((CCompileCommand::new(command), dist_command, Cacheable::Yes))
+    }
+
+    fn postprocess_cache_hit(&self, cwd: &Path) -> Result<()> {
+        if let Some(dep_info) = &self.dep_info {
+            rewrite_dep_info_targets(dep_info, &self.outputs, cwd)?;
+        }
+        Ok(())
     }
 
     #[cfg(feature = "dist-client")]
@@ -4300,6 +4420,77 @@ proc_macro false
         "lib",
     ];
 
+    #[test]
+    fn test_rewrite_cached_dep_info_targets() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let dep_info = PathBuf::from("new/out/foo.d");
+        fs::create_dir_all(tempdir.path().join("new/out")).unwrap();
+        #[cfg(windows)]
+        let cached_targets = "C:foo.d: src/lib.rs\n\nC:libfoo.rlib: src/lib.rs\n\nsrc/lib.rs:\n\n";
+        #[cfg(not(windows))]
+        let cached_targets = "/old/a: b/out/foo.d: src/lib.rs\n\n/old/a: b/out/libfoo.rlib: src/lib.rs\n\nsrc/lib.rs:\n\n";
+        fs::write(
+            tempdir.path().join(&dep_info),
+            format!("{cached_targets}# env-dep:OUT_DIR=/tmp/foo.d: value\n"),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(tempdir.path().join(&dep_info))
+            .unwrap()
+            .permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(tempdir.path().join(&dep_info), permissions).unwrap();
+        let outputs = HashMap::from([
+            (
+                "foo.d".to_owned(),
+                ArtifactDescriptor {
+                    path: "new/a: b/out/foo.d".into(),
+                    optional: false,
+                },
+            ),
+            (
+                "libfoo.rlib".to_owned(),
+                ArtifactDescriptor {
+                    path: "new/a: b/out/libfoo.rlib".into(),
+                    optional: false,
+                },
+            ),
+        ]);
+
+        rewrite_dep_info_targets(&dep_info, &outputs, tempdir.path()).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(tempdir.path().join(&dep_info)).unwrap(),
+            "new/a: b/out/foo.d: src/lib.rs\n\nnew/a: b/out/libfoo.rlib: src/lib.rs\n\nsrc/lib.rs:\n\n# env-dep:OUT_DIR=/tmp/foo.d: value\n"
+        );
+        assert!(
+            fs::metadata(tempdir.path().join(dep_info))
+                .unwrap()
+                .permissions()
+                .readonly()
+        );
+    }
+
+    #[test]
+    fn test_rewrite_cached_dep_info_rejects_ambiguous_target() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let dep_info = PathBuf::from("out/foo.d");
+        fs::create_dir_all(tempdir.path().join("out")).unwrap();
+        fs::write(
+            tempdir.path().join(&dep_info),
+            "/old/foo.d: dir/out/foo.d: src/lib.rs\n",
+        )
+        .unwrap();
+        let outputs = HashMap::from([(
+            "foo.d".to_owned(),
+            ArtifactDescriptor {
+                path: dep_info.clone(),
+                optional: false,
+            },
+        )]);
+
+        assert!(rewrite_dep_info_targets(&dep_info, &outputs, tempdir.path()).is_err());
+    }
+
     fn basedir_for(path: &Path) -> Vec<u8> {
         let bytes = path.to_string_lossy().into_owned().into_bytes();
         #[cfg(windows)]
@@ -4434,7 +4625,7 @@ proc_macro false
     }
 
     #[test]
-    fn test_basedirs_preserve_cargo_paths_with_external_crates() {
+    fn test_basedirs_preserve_paths_with_external_crates() {
         let f1 = TestFixture::new();
         let f2 = TestFixture::new();
         let dependency_name = "dependency.rlib";
@@ -4461,10 +4652,7 @@ proc_macro false
             hash_key_with_env_deps(
                 f,
                 &args,
-                &[(
-                    "CARGO_MANIFEST_DIR".into(),
-                    f.tempdir.path().as_os_str().to_owned(),
-                )],
+                &[],
                 nothing,
                 false,
                 vec![basedir_for(f.tempdir.path())],
@@ -4476,7 +4664,7 @@ proc_macro false
     }
 
     #[test]
-    fn test_basedirs_preserve_cargo_paths_with_dynamic_crate_search() {
+    fn test_basedirs_preserve_paths_with_dynamic_crate_search() {
         let f1 = TestFixture::new();
         let f2 = TestFixture::new();
         for f in [&f1, &f2] {
@@ -4502,10 +4690,7 @@ proc_macro false
             hash_key_with_env_deps(
                 f,
                 &args,
-                &[(
-                    "CARGO_MANIFEST_DIR".into(),
-                    f.tempdir.path().as_os_str().to_owned(),
-                )],
+                &[],
                 nothing,
                 false,
                 vec![basedir_for(f.tempdir.path())],
