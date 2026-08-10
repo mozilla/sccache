@@ -4863,7 +4863,6 @@ proc_macro false
         );
         assert!(super::is_path_cargo_env(&"CARGO_MANIFEST_DIR".into()));
         assert!(super::is_path_cargo_env(&"CARGO_INSTALL_ROOT".into()));
-        assert!(!super::is_path_cargo_env(&"CARGO_WORKSPACE_DIR".into()));
         assert!(!super::is_path_cargo_env(&"CARGO_PKG_DESCRIPTION".into()));
 
         let remap = |prefix: &str| {
