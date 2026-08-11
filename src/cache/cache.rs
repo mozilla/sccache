@@ -402,11 +402,19 @@ pub fn build_single_cache(
             connection_string,
             container,
             key_prefix,
+            storage_account,
+            endpoint,
             rw_mode,
         }) => {
             debug!("Init azure cache with container {container}, key_prefix {key_prefix}");
-            let operator = AzureBlobCache::build(connection_string, container, key_prefix)
-                .map_err(|err| anyhow!("create azure cache failed: {err:?}"))?;
+            let operator = AzureBlobCache::build(
+                connection_string.as_deref(),
+                container,
+                key_prefix,
+                storage_account.as_deref(),
+                endpoint.as_deref(),
+            )
+            .map_err(|err| anyhow!("create azure cache failed: {err:?}"))?;
             let storage = RemoteStorage::new(operator, basedirs.to_vec(), (*rw_mode).into());
             Ok(Arc::new(storage))
         }
