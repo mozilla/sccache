@@ -149,6 +149,7 @@ test-case = "3.3.1"
 thirtyfour = "0.36"
 
 [target.'cfg(unix)'.dependencies]
+close_fds = "0.3.2"
 daemonix = "0.1"
 
 [target.'cfg(not(target_os = "freebsd"))'.dependencies.libmount]

@@ -219,7 +219,9 @@ fn run(command: Command) -> Result<i32> {
                 }
             };
 
-            daemonize()?;
+            // sccache-dist has already built a reqwest client that owns
+            // runtime/epoll fds, so do NOT sweep inherited fds here.
+            daemonize(None, false)?;
             let scheduler = Scheduler::new();
             let http_scheduler = dist::http::Scheduler::new(
                 public_addr,
