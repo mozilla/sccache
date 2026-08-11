@@ -151,7 +151,7 @@ fn get_clap_command() -> clap::Command {
                 .help("watch cache statistics live in a terminal dashboard")
                 .action(ArgAction::SetTrue),
             flag_infer_long("monitor-interval")
-                .help("polling interval of `--monitor`, in seconds (0.2 to 60)")
+                .help(format!("polling interval of `--monitor`, in seconds ({} to {})", MIN_MONITOR_INTERVAL, MAX_MONITOR_INTERVAL))
                 .value_name("SECS")
                 .value_parser(clap::value_parser!(f64))
                 .default_value("1"),
