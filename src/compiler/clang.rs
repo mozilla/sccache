@@ -212,6 +212,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("-fmodule-output", OsString, Concatenated, ClangModuleOutput),
     flag!("-fmodules-reduced-bmi", PassThroughFlag),
     flag!("-fno-color-diagnostics", NoDiagnosticsColorFlag),
+    flag!("-fno-cxx-modules", PassThroughFlag),
     flag!("-fno-pch-timestamp", PassThroughFlag),
     flag!("-fno-profile-instr-generate", TooHardFlag),
     flag!("-fno-profile-instr-use", TooHardFlag),
@@ -949,6 +950,19 @@ mod test {
             "-no-opaque-pointers"
         );
         assert_eq!(ovec!["-Xclang", "-no-opaque-pointers"], a.preprocessor_args);
+    }
+
+    #[test]
+    fn test_parse_xclang_fno_cxx_modules() {
+        let a = parses!(
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "-Xclang",
+            "-fno-cxx-modules"
+        );
+        assert_eq!(ovec!["-Xclang", "-fno-cxx-modules"], a.common_args);
     }
 
     #[test]
