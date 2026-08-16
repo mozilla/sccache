@@ -233,9 +233,18 @@ impl HTTPUrl {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AzureCacheConfig {
-    pub connection_string: String,
+    /// Shared-key connection string. When set, the shared-key path is used.
+    /// When absent, the Microsoft Entra ID (passwordless) path is used and
+    /// `storage_account`/`endpoint` supply the blob endpoint.
+    pub connection_string: Option<String>,
     pub container: String,
     pub key_prefix: String,
+    /// Storage account name for the Entra ID path. The blob endpoint is
+    /// synthesized as `https://{storage_account}.blob.core.windows.net`.
+    pub storage_account: Option<String>,
+    /// Full blob endpoint override for the Entra ID path (sovereign clouds,
+    /// custom DNS). Takes precedence over `storage_account`.
+    pub endpoint: Option<String>,
     #[serde(default)]
     pub rw_mode: CacheModeConfig,
 }
@@ -1066,20 +1075,51 @@ fn config_from_env() -> Result<EnvConfig> {
     };
 
     // ======= Azure =======
-    let azure = if let (Some(connection_string), Some(container)) = (
-        string_from_env_var("SCCACHE_AZURE_CONNECTION_STRING"),
-        string_from_env_var("SCCACHE_AZURE_BLOB_CONTAINER"),
-    ) {
+    // Azure is enabled whenever a container is configured. Authentication is
+    // then selected by presence:
+    //   * SCCACHE_AZURE_CONNECTION_STRING                     -> shared-key (legacy) path
+    //   * SCCACHE_AZURE_STORAGE_ACCOUNT / SCCACHE_AZURE_ENDPOINT -> Entra ID (passwordless)
+    let azure = if let Some(container) = string_from_env_var("SCCACHE_AZURE_BLOB_CONTAINER") {
+        let connection_string = string_from_env_var("SCCACHE_AZURE_CONNECTION_STRING");
+        let storage_account = string_from_env_var("SCCACHE_AZURE_STORAGE_ACCOUNT");
+        let endpoint = string_from_env_var("SCCACHE_AZURE_ENDPOINT");
         let key_prefix = key_prefix_from_env_var("SCCACHE_AZURE_KEY_PREFIX");
         let rw_mode =
             cache_mode_from_env_var("SCCACHE_AZURE_RW_MODE").unwrap_or(CacheModeConfig::ReadWrite);
 
-        Some(AzureCacheConfig {
-            connection_string,
-            container,
-            key_prefix,
-            rw_mode,
-        })
+        let has_entra_source = storage_account.is_some() || endpoint.is_some();
+        if connection_string.is_some() && has_entra_source {
+            bail!(
+                "Set either SCCACHE_AZURE_CONNECTION_STRING (shared key) or SCCACHE_AZURE_STORAGE_ACCOUNT / SCCACHE_AZURE_ENDPOINT (Entra ID), not both."
+            );
+        }
+        if connection_string.is_none() && !has_entra_source {
+            // Backwards compatible with the historical behavior where a
+            // container without any auth source left the Azure backend disabled
+            // (previously the destructure required both the connection string
+            // and the container). Warn rather than fail so a stray container
+            // variable cannot take down an unrelated cache backend, while still
+            // surfacing the misconfiguration. This is deliberately more lenient
+            // than a file config: an explicit `[cache.azure]` block with no auth
+            // source is a real misconfiguration and errors at operator build
+            // (AzureBlobCache::build -> resolve_blob_endpoint), because a config
+            // file — unlike an ambient env var — is an unambiguous opt-in.
+            warn!(
+                "SCCACHE_AZURE_BLOB_CONTAINER is set but no Azure auth source was provided \
+                 (SCCACHE_AZURE_CONNECTION_STRING, SCCACHE_AZURE_STORAGE_ACCOUNT or \
+                 SCCACHE_AZURE_ENDPOINT); the Azure cache backend is disabled."
+            );
+            None
+        } else {
+            Some(AzureCacheConfig {
+                connection_string,
+                container,
+                key_prefix,
+                storage_account,
+                endpoint,
+                rw_mode,
+            })
+        }
     } else {
         None
     };
@@ -1657,9 +1697,11 @@ fn config_overrides() {
     let env_conf = EnvConfig {
         cache: CacheConfigs {
             azure: Some(AzureCacheConfig {
-                connection_string: String::new(),
+                connection_string: None,
                 container: String::new(),
                 key_prefix: String::new(),
+                storage_account: None,
+                endpoint: None,
                 rw_mode: CacheModeConfig::ReadWrite,
             }),
             disk: Some(DiskCacheConfig {
@@ -1725,9 +1767,11 @@ fn config_overrides() {
             })),
             cache_configs: CacheConfigs {
                 azure: Some(AzureCacheConfig {
-                    connection_string: String::new(),
+                    connection_string: None,
                     container: String::new(),
                     key_prefix: String::new(),
+                    storage_account: None,
+                    endpoint: None,
                     rw_mode: CacheModeConfig::ReadWrite,
                 }),
                 disk: Some(DiskCacheConfig {
@@ -2401,6 +2445,254 @@ fn test_s3_sse_kms_from_env() {
 
 #[test]
 #[serial(config_from_env)]
+#[cfg(feature = "azure")]
+fn test_azure_entra_storage_account_enables() {
+    unsafe {
+        env::set_var("SCCACHE_AZURE_BLOB_CONTAINER", "my-container");
+        env::set_var("SCCACHE_AZURE_STORAGE_ACCOUNT", "mystorageacct");
+    }
+
+    let cfg = config_from_env();
+
+    unsafe {
+        env::remove_var("SCCACHE_AZURE_BLOB_CONTAINER");
+        env::remove_var("SCCACHE_AZURE_STORAGE_ACCOUNT");
+    }
+
+    let env_cfg = cfg.unwrap();
+    match env_cfg.cache.azure {
+        Some(AzureCacheConfig {
+            ref connection_string,
+            ref container,
+            ref storage_account,
+            ref endpoint,
+            ..
+        }) => {
+            assert_eq!(container, "my-container");
+            assert!(connection_string.is_none());
+            assert_eq!(storage_account.as_deref(), Some("mystorageacct"));
+            assert!(endpoint.is_none());
+        }
+        None => unreachable!(),
+    }
+}
+
+#[test]
+#[serial(config_from_env)]
+#[cfg(feature = "azure")]
+fn test_azure_entra_endpoint_enables() {
+    unsafe {
+        env::set_var("SCCACHE_AZURE_BLOB_CONTAINER", "my-container");
+        env::set_var(
+            "SCCACHE_AZURE_ENDPOINT",
+            "https://acct.blob.core.usgovcloudapi.net",
+        );
+    }
+
+    let cfg = config_from_env();
+
+    unsafe {
+        env::remove_var("SCCACHE_AZURE_BLOB_CONTAINER");
+        env::remove_var("SCCACHE_AZURE_ENDPOINT");
+    }
+
+    let env_cfg = cfg.unwrap();
+    match env_cfg.cache.azure {
+        Some(AzureCacheConfig {
+            ref connection_string,
+            ref storage_account,
+            ref endpoint,
+            ..
+        }) => {
+            assert!(connection_string.is_none());
+            assert!(storage_account.is_none());
+            assert_eq!(
+                endpoint.as_deref(),
+                Some("https://acct.blob.core.usgovcloudapi.net")
+            );
+        }
+        None => unreachable!(),
+    }
+}
+
+#[test]
+#[serial(config_from_env)]
+#[cfg(feature = "azure")]
+fn test_azure_connection_string_still_works() {
+    unsafe {
+        env::set_var("SCCACHE_AZURE_BLOB_CONTAINER", "my-container");
+        env::set_var("SCCACHE_AZURE_CONNECTION_STRING", "some-connection-string");
+    }
+
+    let cfg = config_from_env();
+
+    unsafe {
+        env::remove_var("SCCACHE_AZURE_BLOB_CONTAINER");
+        env::remove_var("SCCACHE_AZURE_CONNECTION_STRING");
+    }
+
+    let env_cfg = cfg.unwrap();
+    match env_cfg.cache.azure {
+        Some(AzureCacheConfig {
+            ref connection_string,
+            ref storage_account,
+            ref endpoint,
+            ..
+        }) => {
+            assert_eq!(connection_string.as_deref(), Some("some-connection-string"));
+            assert!(storage_account.is_none());
+            assert!(endpoint.is_none());
+        }
+        None => unreachable!(),
+    }
+}
+
+#[test]
+#[serial(config_from_env)]
+#[cfg(feature = "azure")]
+fn test_azure_conflicting_auth_sources() {
+    unsafe {
+        env::set_var("SCCACHE_AZURE_BLOB_CONTAINER", "my-container");
+        env::set_var("SCCACHE_AZURE_CONNECTION_STRING", "some-connection-string");
+        env::set_var("SCCACHE_AZURE_STORAGE_ACCOUNT", "mystorageacct");
+    }
+
+    let cfg = config_from_env();
+
+    unsafe {
+        env::remove_var("SCCACHE_AZURE_BLOB_CONTAINER");
+        env::remove_var("SCCACHE_AZURE_CONNECTION_STRING");
+        env::remove_var("SCCACHE_AZURE_STORAGE_ACCOUNT");
+    }
+
+    let error = cfg.unwrap_err();
+    assert_eq!(
+        "Set either SCCACHE_AZURE_CONNECTION_STRING (shared key) or SCCACHE_AZURE_STORAGE_ACCOUNT / SCCACHE_AZURE_ENDPOINT (Entra ID), not both.",
+        error.to_string()
+    );
+}
+
+#[test]
+#[serial(config_from_env)]
+#[cfg(feature = "azure")]
+fn test_azure_conflicting_connection_string_and_endpoint() {
+    // The other operand of the mutual-exclusivity check: connection string paired
+    // with an endpoint (rather than a storage account) must also be rejected.
+    unsafe {
+        env::set_var("SCCACHE_AZURE_BLOB_CONTAINER", "my-container");
+        env::set_var("SCCACHE_AZURE_CONNECTION_STRING", "some-connection-string");
+        env::set_var(
+            "SCCACHE_AZURE_ENDPOINT",
+            "https://acct.blob.core.windows.net",
+        );
+    }
+
+    let cfg = config_from_env();
+
+    unsafe {
+        env::remove_var("SCCACHE_AZURE_BLOB_CONTAINER");
+        env::remove_var("SCCACHE_AZURE_CONNECTION_STRING");
+        env::remove_var("SCCACHE_AZURE_ENDPOINT");
+    }
+
+    let error = cfg.unwrap_err();
+    assert_eq!(
+        "Set either SCCACHE_AZURE_CONNECTION_STRING (shared key) or SCCACHE_AZURE_STORAGE_ACCOUNT / SCCACHE_AZURE_ENDPOINT (Entra ID), not both.",
+        error.to_string()
+    );
+}
+
+#[test]
+#[serial(config_from_env)]
+#[cfg(feature = "azure")]
+fn test_azure_no_auth_source_disables_backend() {
+    unsafe {
+        env::set_var("SCCACHE_AZURE_BLOB_CONTAINER", "my-container");
+    }
+
+    let cfg = config_from_env();
+
+    unsafe {
+        env::remove_var("SCCACHE_AZURE_BLOB_CONTAINER");
+    }
+
+    // A container with no auth source disables Azure (backwards compatible)
+    // rather than failing the whole config load.
+    let env_cfg = cfg.unwrap();
+    assert!(env_cfg.cache.azure.is_none());
+}
+
+#[test]
+#[cfg(feature = "azure")]
+fn test_azure_toml_endpoint_field() {
+    let toml = r#"
+[cache.azure]
+container = "c"
+key_prefix = "p"
+endpoint = "https://acct.blob.core.usgovcloudapi.net"
+"#;
+    let file_config: FileConfig = toml::from_str(toml).expect("Is valid toml.");
+    assert_eq!(
+        file_config.cache.azure,
+        Some(AzureCacheConfig {
+            connection_string: None,
+            container: "c".to_owned(),
+            key_prefix: "p".to_owned(),
+            storage_account: None,
+            endpoint: Some("https://acct.blob.core.usgovcloudapi.net".to_owned()),
+            rw_mode: CacheModeConfig::ReadWrite,
+        })
+    );
+}
+
+#[test]
+#[cfg(feature = "azure")]
+fn test_azure_toml_connection_string_field() {
+    let toml = r#"
+[cache.azure]
+container = "c"
+key_prefix = "p"
+connection_string = "conn"
+"#;
+    let file_config: FileConfig = toml::from_str(toml).expect("Is valid toml.");
+    assert_eq!(
+        file_config
+            .cache
+            .azure
+            .and_then(|a| a.connection_string)
+            .as_deref(),
+        Some("conn")
+    );
+}
+
+#[test]
+#[cfg(feature = "azure")]
+fn test_azure_toml_container_only_deserializes_with_no_auth() {
+    // A container-only block is valid TOML and leaves every auth source None
+    // (the file surface, unlike the env parser, does not warn-and-disable — the
+    // missing-auth error is raised later at operator build, see
+    // AzureBlobCache::build's test_build_requires_an_auth_source).
+    let toml = r#"
+[cache.azure]
+container = "c"
+key_prefix = "p"
+"#;
+    let file_config: FileConfig = toml::from_str(toml).expect("Is valid toml.");
+    assert_eq!(
+        file_config.cache.azure,
+        Some(AzureCacheConfig {
+            connection_string: None,
+            container: "c".to_owned(),
+            key_prefix: "p".to_owned(),
+            storage_account: None,
+            endpoint: None,
+            rw_mode: CacheModeConfig::ReadWrite,
+        })
+    );
+}
+
+#[test]
+#[serial(config_from_env)]
 #[cfg(feature = "gcs")]
 fn test_gcs_service_account() {
     unsafe {
@@ -2452,8 +2744,10 @@ type = "token"
 token = "secrettoken"
 
 
-#[cache.azure]
-# does not work as it appears
+[cache.azure]
+container = "azurecontainer"
+key_prefix = "azureprefix"
+storage_account = "azureaccount"
 
 [cache.disk]
 dir = "/tmp/.cache/sccache"
@@ -2526,7 +2820,14 @@ key_prefix = "cosprefix"
         file_config,
         FileConfig {
             cache: CacheConfigs {
-                azure: None, // TODO not sure how to represent a unit struct in TOML Some(AzureCacheConfig),
+                azure: Some(AzureCacheConfig {
+                    connection_string: None,
+                    container: "azurecontainer".to_owned(),
+                    key_prefix: "azureprefix".to_owned(),
+                    storage_account: Some("azureaccount".to_owned()),
+                    endpoint: None,
+                    rw_mode: CacheModeConfig::ReadWrite,
+                }),
                 disk: Some(DiskCacheConfig {
                     dir: PathBuf::from("/tmp/.cache/sccache"),
                     size: 7 * 1024 * 1024 * 1024,

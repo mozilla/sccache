@@ -405,6 +405,10 @@ impl CommandChild for MockChild {
 
 pub enum ChildOrCall {
     Child(Result<MockChild>),
+    #[allow(
+        dead_code,
+        reason = "Read in the async_trait below, but rustc doesn't see it as used"
+    )]
     Call(Box<dyn Fn(&[OsString]) -> Result<MockChild> + Send>),
 }
 

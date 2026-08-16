@@ -20,7 +20,7 @@ use crate::compiler::c::{ArtifactDescriptor, CCompilerImpl, CCompilerKind, Parse
 use crate::compiler::gcc::ArgData::*;
 use crate::compiler::{
     self, CCompileCommand, Cacheable, CompileCommand, CompileCommandImpl, CompilerArguments,
-    Language, gcc, get_compiler_info, write_temp_file,
+    Language, cicc, gcc, get_compiler_info, write_temp_file,
 };
 use crate::mock_command::{
     CommandChild, CommandCreator, CommandCreatorSync, ExitStatusValue, RunCommand, exit_status,
@@ -45,6 +45,21 @@ use std::process;
 use which::which_in;
 
 use crate::errors::*;
+
+const NVCC_GENERATED_FILENAME_SUFFIXES: &[&str] = &[
+    cicc::CICC_INPUT_SUFFIX,
+    ".cpp4.ii",
+    ".cudafe1.c",
+    ".cudafe1.cpp",
+    ".cudafe1.stub.c",
+];
+
+fn nvcc_generated_filename_suffix(arg: &str) -> Option<&'static str> {
+    NVCC_GENERATED_FILENAME_SUFFIXES
+        .iter()
+        .find(|ext| arg.ends_with(*ext))
+        .copied()
+}
 
 /// A unit struct on which to implement `CCompilerImpl`.
 #[derive(Clone, Debug)]
@@ -366,10 +381,10 @@ pub fn generate_compile_commands(
             }
             if let Some(idx) = unhashed_args.iter().position(|x| x == "--threads") {
                 let arg = unhashed_args.get(idx + 1);
-                if let Some(arg) = arg.and_then(|arg| arg.to_str()) {
-                    if let Ok(arg) = arg.parse::<usize>() {
-                        num_parallel = arg;
-                    }
+                if let Some(arg) = arg.and_then(|arg| arg.to_str())
+                    && let Ok(arg) = arg.parse::<usize>()
+                {
+                    num_parallel = arg;
                 }
                 unhashed_args.splice(idx..(idx + 2), []);
                 continue;
@@ -759,15 +774,21 @@ where
                     }
                     _ => {}
                 }
-                let group = device_compile_groups.get_mut(&args[args.len() - 3]);
+                let group = args
+                    .iter()
+                    .find(|arg| cicc::is_cicc_input(OsStr::new(arg)))
+                    .and_then(|input| device_compile_groups.get_mut(input));
                 (env_vars.clone(), Cacheable::Yes, group)
             }
             Some("ptxas") => {
                 let group = device_compile_groups.values_mut().find(|cmds| {
-                    if let Some(cicc) = cmds.last() {
-                        if let Some(cicc_out) = cicc.args.last() {
-                            return cicc_out == &args[args.len() - 3];
-                        }
+                    if let Some(cicc) = cmds.last()
+                        && let Some(cicc_out) = cicc.args.last()
+                    {
+                        return args
+                            .iter()
+                            .find(|arg| cicc::is_ptxas_input(OsStr::new(arg)))
+                            .is_some_and(|input| cicc_out == input);
                     }
                     false
                 });
@@ -777,11 +798,11 @@ where
             Some("cudafe++") => {
                 // Fix for CTK < 12.0:
                 // Add `--gen_module_id_file` if the cudafe++ args include `--module_id_file_name`
-                if !args.contains(&gen_module_id_file_flag) {
-                    if let Some(idx) = args.iter().position(|x| x == "--module_id_file_name") {
-                        // Insert `--gen_module_id_file` just before `--module_id_file_name` to match nvcc behavior
-                        args.splice(idx..idx, [gen_module_id_file_flag.clone()]);
-                    }
+                if !args.contains(&gen_module_id_file_flag)
+                    && let Some(idx) = args.iter().position(|x| x == "--module_id_file_name")
+                {
+                    // Insert `--gen_module_id_file` just before `--module_id_file_name` to match nvcc behavior
+                    args.splice(idx..idx, [gen_module_id_file_flag.clone()]);
                 }
                 (
                     env_vars.clone(),
@@ -824,7 +845,7 @@ where
                         // If the output file ends with...
                         // * .cpp1.ii - cicc/ptxas input
                         // * .cpp4.ii - cudafe++ input
-                        if out_name.ends_with(".cpp1.ii") {
+                        if cicc::is_cicc_input(OsStr::new(&out_name)) {
                             Some(out_name.clone())
                         } else {
                             None
@@ -1091,10 +1112,10 @@ fn fold_env_vars_or_split_into_exe_and_args(
     // Expand envvars in nvcc subcommands, i.e. "$CICC_PATH/cicc ..." or "%CICC_PATH%/cicc"
     if let Some(env_vars) = dist::osstring_tuples_to_strings(env_vars) {
         for (var, val) in env_vars {
-            if let Some(re) = env_var_re_map.get(&var) {
-                if re.is_match(&line) {
-                    line = line.replace(&envvar_in_shell_format(&var), &val);
-                }
+            if let Some(re) = env_var_re_map.get(&var)
+                && re.is_match(&line)
+            {
+                line = line.replace(&envvar_in_shell_format(&var), &val);
             }
         }
     }
@@ -1139,22 +1160,9 @@ fn remap_generated_filenames(
             // If the argument doesn't start with `-` and is a file that
             // ends in one of the below extensions, rename the file to an
             // auto-incrementing stable name
-            let maybe_extension = if !arg.starts_with('-') {
-                {
-                    [
-                        ".cpp1.ii",
-                        ".cpp4.ii",
-                        ".cudafe1.c",
-                        ".cudafe1.cpp",
-                        ".cudafe1.stub.c",
-                    ]
-                    .iter()
-                    .find(|ext| arg.ends_with(*ext))
-                    .copied()
-                }
-            } else {
-                None
-            };
+            let maybe_extension = (!arg.starts_with('-'))
+                .then(|| nvcc_generated_filename_suffix(&arg))
+                .flatten();
 
             // If the argument is a file that ends in one of the above extensions:
             // * If it's our first time seeing this file, create a unique name for it
@@ -1483,6 +1491,8 @@ mod test {
     use crate::mock_command::*;
     use crate::test::utils::*;
     use std::collections::HashMap;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
 
     fn parse_arguments_gcc(arguments: Vec<String>) -> CompilerArguments<ParsedArguments> {
@@ -1536,6 +1546,123 @@ mod test {
                 o => panic!("Got unexpected parse result: {:?}", o),
             }
         }
+    }
+
+    fn fake_executable(dir: &Path, name: &str) {
+        #[cfg(windows)]
+        let path = dir.join(format!("{name}.exe"));
+        #[cfg(not(windows))]
+        let path = dir.join(name);
+        fs::write(&path, "").unwrap();
+        #[cfg(unix)]
+        {
+            let mut permissions = fs::metadata(&path).unwrap().permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&path, permissions).unwrap();
+        }
+    }
+
+    #[test]
+    fn test_group_nvcc_subcommands_with_simt_only_cicc_input() {
+        let bin_dir = tempfile::tempdir().unwrap();
+
+        #[cfg(windows)]
+        let (host_exe, host_compiler) = ("cl", NvccHostCompiler::Msvc);
+        #[cfg(not(windows))]
+        let (host_exe, host_compiler) = ("gcc", NvccHostCompiler::Gcc);
+
+        for exe in ["nvcc", host_exe, "cudafe++", "cicc", "ptxas", "fatbinary"] {
+            fake_executable(bin_dir.path(), exe);
+        }
+
+        let path = bin_dir.path().to_string_lossy();
+        #[cfg(windows)]
+        let dryrun = format!(
+            r#"#$ PATH={path}
+#$ cl -D__CUDACC__ -E -x c++ "kernel.cu" > "kernel.cpp4.ii"
+#$ cudafe++ --gen_c_file_name "kernel.cudafe1.cpp" --stub_file_name "kernel.cudafe1.stub.c" --module_id_file_name "kernel.module_id" --simt-only "kernel.cpp4.ii"
+#$ cl -D__CUDA_ARCH__=800 -D__CUDACC__ -E -x c++ "kernel.cu" > "kernel.cpp1.ii"
+#$ cicc --device-c -arch compute_80 --module_id_file_name "kernel.module_id" --gen_c_file_name "kernel.cudafe1.c" --stub_file_name "kernel.cudafe1.stub.c" --gen_device_file_name "kernel.cudafe1.gpu" "kernel.cpp1.ii" --simt-only -o "kernel.ptx"
+#$ ptxas -arch=sm_80 --compile-only "kernel.ptx" -o "kernel.cubin"
+#$ fatbinary --create="kernel.fatbin" "--image3=kind=elf,sm=80,file=kernel.cubin" --embedded-fatbin="kernel.fatbin.c" --device-c
+#$ cl -D__CUDA_ARCH__=800 -D__CUDACC__ -c -x c++ "kernel.cudafe1.cpp" -Fo"kernel.o"
+"#
+        );
+        #[cfg(not(windows))]
+        let dryrun = format!(
+            r#"#$ PATH={path}
+#$ gcc -D__CUDACC__ -E -x c++ "kernel.cu" -o "kernel.cpp4.ii"
+#$ cudafe++ --gen_c_file_name "kernel.cudafe1.cpp" --stub_file_name "kernel.cudafe1.stub.c" --module_id_file_name "kernel.module_id" --simt-only "kernel.cpp4.ii"
+#$ gcc -D__CUDA_ARCH__=800 -D__CUDACC__ -E -x c++ "kernel.cu" -o "kernel.cpp1.ii"
+#$ cicc --device-c -arch compute_80 --module_id_file_name "kernel.module_id" --gen_c_file_name "kernel.cudafe1.c" --stub_file_name "kernel.cudafe1.stub.c" --gen_device_file_name "kernel.cudafe1.gpu" "kernel.cpp1.ii" --simt-only -o "kernel.ptx"
+#$ ptxas -arch=sm_80 --compile-only "kernel.ptx" -o "kernel.cubin"
+#$ fatbinary --create="kernel.fatbin" "--image3=kind=elf,sm=80,file=kernel.cubin" --embedded-fatbin="kernel.fatbin.c" --device-c
+#$ gcc -D__CUDA_ARCH__=800 -D__CUDACC__ -c -x c++ "kernel.cudafe1.cpp" -o "kernel.o"
+"#
+        );
+
+        let creator = new_creator();
+        next_command(
+            &creator,
+            Ok(MockChild::new(
+                exit_status(0),
+                dryrun.as_bytes(),
+                dryrun.as_bytes(),
+            )),
+        );
+        next_command(
+            &creator,
+            Ok(MockChild::new(
+                exit_status(0),
+                dryrun.as_bytes(),
+                dryrun.as_bytes(),
+            )),
+        );
+
+        let groups = group_nvcc_subcommands_by_compilation_stage(
+            &creator,
+            &bin_dir.path().join("nvcc"),
+            &["-c", "kernel.cu", "-o", "kernel.o"].map(OsString::from),
+            OsStr::new("-c"),
+            bin_dir.path(),
+            bin_dir.path(),
+            None,
+            &[],
+            &host_compiler,
+            OsStr::new("kernel.o"),
+        )
+        .wait()
+        .unwrap();
+
+        let device_group = groups
+            .iter()
+            .find(|group| {
+                group
+                    .iter()
+                    .any(|cmd| cmd.exe.file_stem().and_then(|stem| stem.to_str()) == Some("cicc"))
+            })
+            .expect("missing device compile group");
+
+        assert_eq!(
+            vec![host_exe, "cicc", "ptxas"],
+            device_group
+                .iter()
+                .map(|cmd| cmd.exe.file_stem().unwrap().to_str().unwrap())
+                .collect::<Vec<_>>()
+        );
+
+        let cicc = device_group
+            .iter()
+            .find(|cmd| cmd.exe.file_stem().and_then(|stem| stem.to_str()) == Some("cicc"))
+            .unwrap();
+        assert!(cicc.args.iter().any(cicc::is_cicc_input));
+        assert!(cicc.args.iter().any(|arg| arg == "--simt-only"));
+
+        let ptxas = device_group
+            .iter()
+            .find(|cmd| cmd.exe.file_stem().and_then(|stem| stem.to_str()) == Some("ptxas"))
+            .unwrap();
+        assert!(ptxas.args.iter().any(cicc::is_ptxas_input));
     }
 
     #[test]

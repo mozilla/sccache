@@ -1536,10 +1536,10 @@ where
     child.env_clear().envs(env.to_vec()).args(&["-vV"]);
 
     let rustc_vv = run_input_output(child, None).await.map(|output| {
-        if let Ok(stdout) = String::from_utf8(output.stdout.clone()) {
-            if stdout.starts_with("rustc ") {
-                return Ok(stdout);
-            }
+        if let Ok(stdout) = String::from_utf8(output.stdout.clone())
+            && stdout.starts_with("rustc ")
+        {
+            return Ok(stdout);
         }
         Err(ProcessError(output))
     })?;
@@ -1564,7 +1564,7 @@ where
                         // take the pathbuf for rustc as resolved by the proxy
                         match proxy.resolve_proxied_executable(creator1, cwd, env).await {
                             Ok((resolved_path, _time)) => {
-                                trace!("Resolved path with rustup proxy {:?}", &resolved_path);
+                                trace!("Resolved path with rustup proxy {:?}", resolved_path);
                                 Ok((Some(proxy), resolved_path))
                             }
                             Err(e) => {
