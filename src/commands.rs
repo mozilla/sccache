@@ -891,19 +891,28 @@ pub fn run_command(cmd: Command) -> Result<i32> {
         } => {
             trace!("Command::Compile {{ {:?}, {:?}, {:?} }}", exe, cmdline, cwd);
 
-            let incr_env_strs = ["CARGO_BUILD_INCREMENTAL", "CARGO_INCREMENTAL"];
-            incr_env_strs
-                .iter()
-                .for_each(|incr_str| match env::var(incr_str) {
-                    Ok(incr_val) if incr_val == "1" => {
-                        println!(
-                            "sccache: incremental compilation is prohibited: Unset {} to continue.",
-                            incr_str
-                        );
-                        std::process::exit(1);
-                    }
-                    _ => (),
-                });
+            // Incremental crates cannot be cached, hence the refusal below.
+            // Lifting it leaves only the crates cargo hands `-C incremental=`
+            // uncached (compiler/rust.rs already treats those as CannotCache).
+            // Compared against "1" so a global opt-in can be overridden per build.
+            let allow_incremental = env::var("SCCACHE_ALLOW_INCREMENTAL").as_deref() == Ok("1");
+            if !allow_incremental {
+                let incr_env_strs = ["CARGO_BUILD_INCREMENTAL", "CARGO_INCREMENTAL"];
+                incr_env_strs
+                    .iter()
+                    .for_each(|incr_str| match env::var(incr_str) {
+                        Ok(incr_val) if incr_val == "1" => {
+                            println!(
+                                "sccache: incremental compilation is prohibited: Unset {} to \
+                                 continue, or set SCCACHE_ALLOW_INCREMENTAL=1 to keep caching \
+                                 the non-incremental parts of the build.",
+                                incr_str
+                            );
+                            std::process::exit(1);
+                        }
+                        _ => (),
+                    });
+            }
 
             let jobserver = Client::new();
             let conn = connect_or_start_server(&get_addr(), startup_timeout)?;

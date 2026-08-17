@@ -178,6 +178,7 @@ Note that some env variables may need sccache server restart to take effect.
 ### misc
 
 * `SCCACHE_ALLOW_CORE_DUMPS` to enable core dumps by the server
+* `SCCACHE_ALLOW_INCREMENTAL` set to `1` to let Rust builds with incremental compilation proceed instead of exiting with an error; only the invocations carrying `-C incremental=` go uncached. Any other value keeps the default refusal. See [Rust caveats](Rust.md)
 * `SCCACHE_CONF` configuration file path
 * `SCCACHE_BASEDIRS` base directory (or directories) to strip from paths for cache key computation. This is similar to ccache's `CCACHE_BASEDIR` and enables cache hits across different absolute paths when compiling the same source code. Multiple directories can be separated by `;` on Windows hosts and by `:` on any other operating system. When multiple directories are specified, the longest matching prefix is used. Path matching is **case-insensitive** on Windows and **case-sensitive** on other operating systems. Environment variable takes precedence over file configuration. Only absolute paths are supported; relative paths will cause an error and prevent the server from start.
 * `SCCACHE_CACHED_CONF`
