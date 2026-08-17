@@ -891,13 +891,17 @@ pub fn run_command(cmd: Command) -> Result<i32> {
         } => {
             trace!("Command::Compile {{ {:?}, {:?}, {:?} }}", exe, cmdline, cwd);
 
+            // With the opt-in, `-C incremental=` compiles are left uncached (CannotCache).
+            let allow_incremental = env::var("SCCACHE_ALLOW_INCREMENTAL").as_deref() == Ok("1");
             let incr_env_strs = ["CARGO_BUILD_INCREMENTAL", "CARGO_INCREMENTAL"];
             incr_env_strs
                 .iter()
                 .for_each(|incr_str| match env::var(incr_str) {
-                    Ok(incr_val) if incr_val == "1" => {
+                    Ok(incr_val) if incr_val == "1" && !allow_incremental => {
                         println!(
-                            "sccache: incremental compilation is prohibited: Unset {} to continue.",
+                            "sccache: incremental compilation is prohibited: Unset {} to \
+                             continue, or set SCCACHE_ALLOW_INCREMENTAL=1 to keep caching \
+                             the non-incremental parts of the build.",
                             incr_str
                         );
                         std::process::exit(1);

@@ -1579,10 +1579,14 @@ where
             // already uniquely identify the relevant registries.
             // CARGO_BUILD_JOBS only affects Cargo's parallelism, not rustc output.
             // CARGO_ENCODED_RUSTFLAGS is already cached in argument list
+            // CARGO_INCREMENTAL/CARGO_BUILD_INCREMENTAL affect output only via
+            // `-C incremental=` (never cached) or `env!` (hashed via dep-info).
             if var == "CARGO_MAKEFLAGS"
                 || var.starts_with("CARGO_REGISTRIES_")
                 || var == "CARGO_BUILD_JOBS"
                 || var == "CARGO_ENCODED_RUSTFLAGS"
+                || var == "CARGO_INCREMENTAL"
+                || var == "CARGO_BUILD_INCREMENTAL"
             {
                 continue;
             }
@@ -3437,6 +3441,14 @@ proc_macro false
     }
 
     fn mock_dep_info(creator: &Arc<Mutex<MockCommandCreator>>, dep_srcs: &[&str]) {
+        mock_dep_info_with_env_deps(creator, dep_srcs, &[]);
+    }
+
+    fn mock_dep_info_with_env_deps(
+        creator: &Arc<Mutex<MockCommandCreator>>,
+        dep_srcs: &[&str],
+        env_deps: &[&str],
+    ) {
         // Mock the `rustc --emit=dep-info` process by writing
         // a dep-info file.
         let mut sorted_deps = dep_srcs
@@ -3444,6 +3456,10 @@ proc_macro false
             .map(|s| (*s).to_string())
             .collect::<Vec<String>>();
         sorted_deps.sort();
+        let env_deps = env_deps
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect::<Vec<String>>();
         next_command_calls(creator, move |args| {
             let mut dep_info_path = None;
             let mut it = args.iter();
@@ -3458,6 +3474,9 @@ proc_macro false
             writeln!(f, "blah: {}", sorted_deps.iter().join(" "))?;
             for d in sorted_deps.iter() {
                 writeln!(f, "{}:", d)?;
+            }
+            for e in env_deps.iter() {
+                writeln!(f, "# env-dep:{}", e)?;
             }
             Ok(MockChild::new(exit_status(0), "", ""))
         });
@@ -3565,6 +3584,14 @@ proc_macro false
                         OsString::from("CARGO_BUILD_JOBS"),
                         OsString::from("ignored"),
                     ),
+                    (
+                        OsString::from("CARGO_INCREMENTAL"),
+                        OsString::from("ignored"),
+                    ),
+                    (
+                        OsString::from("CARGO_BUILD_INCREMENTAL"),
+                        OsString::from("ignored"),
+                    ),
                 ]
                 .to_vec(),
                 false,
@@ -3620,6 +3647,20 @@ proc_macro false
     where
         F: Fn(&Path) -> Result<()>,
     {
+        hash_key_with_env_deps(f, args, env_vars, &[], pre_func, preprocessor_cache_mode)
+    }
+
+    fn hash_key_with_env_deps<F>(
+        f: &TestFixture,
+        args: &[&'static str],
+        env_vars: &[(OsString, OsString)],
+        env_deps: &[&str],
+        pre_func: F,
+        preprocessor_cache_mode: bool,
+    ) -> String
+    where
+        F: Fn(&Path) -> Result<()>,
+    {
         let oargs = args.iter().map(OsString::from).collect::<Vec<OsString>>();
         let parsed_args = match parse_arguments(&oargs, f.tempdir.path()) {
             CompilerArguments::Ok(parsed_args) => parsed_args,
@@ -3652,7 +3693,7 @@ proc_macro false
         let runtime = single_threaded_runtime();
         let pool = runtime.handle().clone();
 
-        mock_dep_info(&creator, &["foo.rs"]);
+        mock_dep_info_with_env_deps(&creator, &["foo.rs"], env_deps);
         mock_file_names(&creator, &["foo.rlib"]);
         hasher
             .generate_hash_key(
@@ -3673,6 +3714,48 @@ proc_macro false
     #[allow(clippy::unnecessary_unwrap)]
     fn nothing(_path: &Path) -> Result<()> {
         Ok(())
+    }
+
+    #[test_case(true ; "with preprocessor cache")]
+    #[test_case(false ; "without preprocessor cache")]
+    fn test_incremental_env_hashed_only_via_dep_info(preprocessor_cache_mode: bool) {
+        // CARGO_INCREMENTAL is left out of the env var hash, but a crate reading
+        // it via `env!` lists it in dep-info, which still changes the key.
+        let f = TestFixture::new();
+        let args = &[
+            "--emit",
+            "link",
+            "foo.rs",
+            "--out-dir",
+            "out",
+            "--crate-name",
+            "foo",
+            "--crate-type",
+            "lib",
+        ];
+        let incr = |v: &str| [(OsString::from("CARGO_INCREMENTAL"), OsString::from(v))];
+        assert_eq!(
+            hash_key(&f, args, &incr("0"), nothing, preprocessor_cache_mode),
+            hash_key(&f, args, &incr("1"), nothing, preprocessor_cache_mode)
+        );
+        assert_ne!(
+            hash_key_with_env_deps(
+                &f,
+                args,
+                &[],
+                &["CARGO_INCREMENTAL=0"],
+                nothing,
+                preprocessor_cache_mode
+            ),
+            hash_key_with_env_deps(
+                &f,
+                args,
+                &[],
+                &["CARGO_INCREMENTAL=1"],
+                nothing,
+                preprocessor_cache_mode
+            )
+        );
     }
 
     #[test_case(true ; "with preprocessor cache")]
