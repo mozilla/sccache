@@ -151,9 +151,10 @@ thirtyfour = "0.36"
 [target.'cfg(unix)'.dependencies]
 daemonix = "0.1"
 
-[target.'cfg(not(target_os = "freebsd"))'.dependencies.libmount]
+[target.'cfg(not(target_os = "freebsd"))'.dependencies.sys-mount]
+default-features = false
 optional = true
-version = "0.1.15"
+version = "3.1"
 
 [target.'cfg(windows)'.dependencies.windows-sys]
 features = [
@@ -210,7 +211,7 @@ dist-client = [
 dist-server = [
   "jwt",
   "flate2",
-  "libmount",
+  "sys-mount",
   "nix",
   "openssl",
   "reqwest",
