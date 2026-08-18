@@ -22,7 +22,7 @@
 use divan::{Bencher, black_box};
 use sccache::cache::{CacheRead, CacheWrite};
 use sccache::lru_disk_cache::LruCache;
-use sccache::util::{Digest, TimeMacroFinder, strip_basedirs};
+use sccache::util::{Digest, TimeMacroFinder, strip_basedirs, strip_path_basedirs};
 use std::io::Cursor;
 
 // =============================================================================
@@ -865,6 +865,23 @@ fn strip_basedirs_multiple(bencher: Bencher) {
     }
 
     bencher.bench(|| black_box(strip_basedirs(black_box(&output), black_box(&basedirs))));
+}
+
+#[divan::bench(args = [0, 1, 8, 32])]
+fn rust_path_basedirs(bencher: Bencher, root_count: usize) {
+    let basedirs = (0..root_count)
+        .map(|index| {
+            format!("/Users/example/workspaces/project/checkouts/worktree-{index:02}/").into_bytes()
+        })
+        .collect::<Vec<_>>();
+    let hit = b"/Users/example/workspaces/project/checkouts/worktree-00/src/lib.rs".as_slice();
+    let miss = b"/Users/example/.cargo/registry/src/package/src/lib.rs".as_slice();
+    bencher.bench(|| {
+        for index in 0..100 {
+            let value = if index % 10 == 0 { hit } else { miss };
+            black_box(strip_path_basedirs(black_box(value), black_box(&basedirs)));
+        }
+    });
 }
 
 fn main() {

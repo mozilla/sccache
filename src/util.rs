@@ -1209,6 +1209,59 @@ pub fn strip_basedirs<'a>(preprocessor_output: &'a [u8], basedirs: &[Vec<u8>]) -
     Cow::Owned(result)
 }
 
+/// Strips the longest configured base directory from a complete path.
+/// Configured base directories must be normalized and end with `/`.
+#[doc(hidden)]
+pub fn strip_path_basedirs<'a>(value: &'a [u8], basedirs: &[Vec<u8>]) -> &'a [u8] {
+    if basedirs.is_empty() || value.is_empty() {
+        return value;
+    }
+
+    // Unicode case folding can change byte lengths. Keep non-ASCII values
+    // unchanged so offsets into the original value remain valid.
+    #[cfg(target_os = "windows")]
+    if !value.is_ascii() {
+        return value;
+    }
+
+    #[cfg(target_os = "windows")]
+    let starts_with = |prefix: &[u8]| {
+        value.len() >= prefix.len()
+            && value.iter().zip(prefix).all(|(&actual, &expected)| {
+                let actual = match actual {
+                    b'A'..=b'Z' => actual + (b'a' - b'A'),
+                    b'\\' => b'/',
+                    _ => actual,
+                };
+                actual == expected
+            })
+    };
+
+    let mut longest = None;
+    for basedir in basedirs.iter().filter(|basedir| basedir.ends_with(b"/")) {
+        let root = &basedir[..basedir.len() - 1];
+        #[cfg(target_os = "windows")]
+        let (exact, nested) = (
+            value.len() == root.len() && starts_with(root),
+            starts_with(basedir),
+        );
+        #[cfg(not(target_os = "windows"))]
+        let (exact, nested) = (value == root, value.starts_with(basedir));
+        let match_len = if exact {
+            Some(root.len())
+        } else if nested {
+            Some(basedir.len())
+        } else {
+            None
+        };
+        if match_len > longest {
+            longest = match_len;
+        }
+    }
+
+    longest.map_or(value, |length| &value[length..])
+}
+
 /// Double every `/` in a normalized path.
 ///
 /// Paths inside preprocessor output are C string literals, so on Windows
@@ -1290,6 +1343,23 @@ pub fn normalize_win_path(path: &[u8]) -> Vec<u8> {
     }
 
     result
+}
+
+/// Remove the Win32 verbatim prefix from normalized drive and UNC paths.
+///
+/// `std::fs::canonicalize` adds this prefix on Windows, while compiler
+/// arguments commonly use the equivalent path without it.
+#[cfg(any(target_os = "windows", test))]
+pub(crate) fn strip_windows_verbatim_prefix(path: &mut Vec<u8>) {
+    match path.as_slice() {
+        [b'/', b'/', b'?', b'/', drive, b':', b'/', ..] if drive.is_ascii_alphabetic() => {
+            path.drain(..4);
+        }
+        [b'/', b'/', b'?', b'/', b'u', b'n', b'c', b'/', ..] => {
+            path.drain(2..8);
+        }
+        _ => {}
+    }
 }
 
 /// Resolve the compiler executable, avoiding ccache/sccache wrappers.
@@ -1831,6 +1901,28 @@ mod tests {
         let input = b"C:\\USERS\\test\\PROJECT";
         let normalized = super::normalize_win_path(input);
         assert_eq!(normalized, b"c:/users/test/project");
+    }
+
+    #[test]
+    fn test_strip_windows_verbatim_prefix() {
+        for (input, expected) in [
+            (
+                b"\\\\?\\C:\\Users\\Test\\Project".as_slice(),
+                b"c:/users/test/project".as_slice(),
+            ),
+            (
+                b"\\\\?\\UNC\\Server\\Share\\Project".as_slice(),
+                b"//server/share/project".as_slice(),
+            ),
+            (
+                b"\\\\?\\Volume{1234}\\Project".as_slice(),
+                b"//?/volume{1234}/project".as_slice(),
+            ),
+        ] {
+            let mut normalized = super::normalize_win_path(input);
+            super::strip_windows_verbatim_prefix(&mut normalized);
+            assert_eq!(normalized, expected);
+        }
     }
 
     #[test]
