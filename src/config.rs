@@ -27,13 +27,17 @@ use serde::{
 #[cfg(test)]
 use serial_test::serial;
 use std::env;
+use std::ffi::OsStr;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::result::Result as StdResult;
 use std::str::FromStr;
 use std::sync::{LazyLock, Mutex};
-use std::{collections::HashMap, fmt};
-use typed_path::Utf8TypedPathBuf;
+use std::{
+    collections::{HashMap, HashSet},
+    fmt,
+};
+use typed_path::TypedPathBuf;
 
 use crate::errors::*;
 
@@ -1319,13 +1323,22 @@ pub struct Config {
 
 impl Config {
     pub fn load() -> Result<Self> {
-        let env_conf = config_from_env()?;
+        Self::load_with_env_config(config_from_env()?)
+    }
 
+    pub(crate) fn load_with_file_basedirs() -> Result<Self> {
+        let mut env_conf = config_from_env()?;
+        // A daemon can outlive the shell that started it. Per-invocation basedirs
+        // arrive with compile requests, so only the file can define the fallback.
+        env_conf.basedirs = None;
+        Self::load_with_env_config(env_conf)
+    }
+
+    fn load_with_env_config(env_conf: EnvConfig) -> Result<Self> {
         let file_conf_path = config_file("SCCACHE_CONF", "config");
         let file_conf = try_read_config_file(&file_conf_path)
             .context("Failed to load config file")?
             .unwrap_or_default();
-
         Self::from_env_and_file_configs(env_conf, file_conf)
     }
 
@@ -1358,50 +1371,8 @@ impl Config {
             file_basedirs
         };
 
-        // Validate that all basedirs are absolute paths
-        // basedirs_raw is Vec<PathBuf>
-        let mut basedirs = Vec::with_capacity(basedirs_raw.len());
-        for d in basedirs_raw {
-            let p = Utf8TypedPathBuf::from(d);
-            if !p.is_absolute() {
-                bail!("Basedir path must be absolute: {:?}", p);
-            }
-            // Normalize basedir:
-            // remove double separators, cur_dirs, parent_dirs, trailing slashes
-            let p_norm = p.normalize();
-            let bytes = p_norm.to_string().into_bytes();
-
-            // normalize windows paths: use slashes and lowercase
-            let mut normalized = {
-                #[cfg(target_os = "windows")]
-                {
-                    let mut normalized = normalize_win_path(&bytes);
-                    strip_windows_verbatim_prefix(&mut normalized);
-                    normalized
-                }
-
-                #[cfg(not(target_os = "windows"))]
-                {
-                    bytes
-                }
-            };
-            // End basedirs with a separator to ensure we only match complete path components.
-            if !normalized.ends_with(b"/") {
-                normalized.push(b'/');
-            }
-            // push only if not already present
-            if !basedirs.contains(&normalized) {
-                basedirs.push(normalized);
-            }
-        }
-
-        if !basedirs.is_empty() && log::log_enabled!(log::Level::Debug) {
-            let basedirs_str: Vec<String> = basedirs
-                .iter()
-                .map(|b| String::from_utf8_lossy(b).into_owned())
-                .collect();
-            debug!("Using basedirs for path normalization: {:?}", basedirs_str);
-        }
+        let basedirs = normalize_basedirs(basedirs_raw.into_iter().map(String::into_bytes))?;
+        log_basedirs(&basedirs);
 
         let client_side_mode = env_client_side_mode.unwrap_or(file_client_side_mode)
             // Logging always writes to stderr in the client process, disregarding
@@ -1423,6 +1394,64 @@ impl Config {
             client_side_mode,
         })
     }
+}
+
+fn normalize_basedirs(basedirs_raw: impl IntoIterator<Item = Vec<u8>>) -> Result<Vec<Vec<u8>>> {
+    let mut basedirs = Vec::new();
+    let mut seen = HashSet::new();
+    for directory in basedirs_raw {
+        let path = TypedPathBuf::from(directory);
+        if !path.is_absolute() {
+            bail!("Basedir path must be absolute: {:?}", path);
+        }
+
+        // Normalize duplicate separators, current and parent components, and
+        // trailing separators before adding one stable component boundary.
+        let normalized = path.normalize().as_bytes().to_vec();
+        #[cfg(target_os = "windows")]
+        let mut normalized = {
+            let mut normalized = normalize_win_path(&normalized);
+            strip_windows_verbatim_prefix(&mut normalized);
+            normalized
+        };
+        #[cfg(not(target_os = "windows"))]
+        let mut normalized = normalized;
+
+        if !normalized.ends_with(b"/") {
+            normalized.push(b'/');
+        }
+
+        if seen.insert(normalized.clone()) {
+            basedirs.push(normalized);
+        }
+    }
+
+    Ok(basedirs)
+}
+
+fn log_basedirs(basedirs: &[Vec<u8>]) {
+    if !basedirs.is_empty() && log::log_enabled!(log::Level::Debug) {
+        let basedirs_str: Vec<String> = basedirs
+            .iter()
+            .map(|basedir| String::from_utf8_lossy(basedir).into_owned())
+            .collect();
+        debug!("Using basedirs for path normalization: {:?}", basedirs_str);
+    }
+}
+
+pub(crate) fn parse_basedirs_env(value: &OsStr) -> Result<Vec<Vec<u8>>> {
+    #[cfg(target_os = "windows")]
+    let separator = b';';
+    #[cfg(not(target_os = "windows"))]
+    let separator = b':';
+
+    normalize_basedirs(
+        value
+            .as_encoded_bytes()
+            .split(|byte| *byte == separator)
+            .filter(|path| !path.is_empty())
+            .map(<[u8]>::to_vec),
+    )
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -1979,6 +2008,38 @@ fn config_basedirs_overrides() {
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
     assert!(config.basedirs.is_empty());
+}
+
+#[test]
+fn request_basedirs_parse_multiple_paths_and_reject_relative_paths() {
+    #[cfg(target_os = "windows")]
+    let (value, expected) = (
+        OsStr::new(r"C:\first\root;D:/second/root"),
+        vec![b"c:/first/root/".to_vec(), b"d:/second/root/".to_vec()],
+    );
+    #[cfg(not(target_os = "windows"))]
+    let (value, expected) = (
+        OsStr::new("/first/root:/second/root"),
+        vec![b"/first/root/".to_vec(), b"/second/root/".to_vec()],
+    );
+
+    assert_eq!(parse_basedirs_env(value).unwrap(), expected);
+    assert!(parse_basedirs_env(OsStr::new("relative/root")).is_err());
+}
+
+#[test]
+#[cfg(unix)]
+fn request_basedirs_preserve_non_utf8_paths() {
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let raw = b"/tmp/non-\xff-utf8";
+    let mut expected = raw.to_vec();
+    expected.push(b'/');
+
+    assert_eq!(
+        parse_basedirs_env(OsStr::from_bytes(raw)).unwrap(),
+        vec![expected]
+    );
 }
 
 #[test]
