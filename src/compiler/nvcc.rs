@@ -1096,14 +1096,6 @@ fn fold_env_vars_or_split_into_exe_and_args(
     // The rest of the lines are subcommands, so parse into a vec of [cmd, args..]
 
     let mut line = if cfg!(target_os = "windows") {
-        // Protect escaped quotes (\") before flattening path separators:
-        // nvcc --dryrun prints string-valued defines as -D "FILE_NAME=\"x.dll\"",
-        // and replacing '\' with '/' first turns \" into /", collapsing the
-        // line's quote structure. shlex then mis-groups everything after the
-        // first such define into one giant token, so the host preprocess runs
-        // WITHOUT those -D's and #ifdef-guarded instantiations silently
-        // disappear from the final object (dropped-instantiation miscompile;
-        // observed as lld-link undefined symbols on ONNX Runtime).
         let line = line
             .replace("\\\"", "\u{1}")
             .replace("\"\"", "\"")
@@ -1575,13 +1567,6 @@ mod test {
     #[test]
     #[cfg(windows)]
     fn test_group_nvcc_subcommands_preserves_escaped_quotes_in_defines() {
-        // nvcc --dryrun on Windows prints string-valued defines with escaped
-        // quotes (-D "FILE_NAME=\"x.dll\""). The line mangling used to flatten
-        // '\' to '/' before tokenization, collapsing the quote structure:
-        // shlex then packed every argument after the first such define into
-        // one giant token, the preprocess ran without those -D's, and
-        // #ifdef-guarded instantiations silently vanished from the final
-        // object (observed as lld-link undefined symbols on ONNX Runtime).
         let bin_dir = tempfile::tempdir().unwrap();
 
         for exe in ["nvcc", "cl", "cudafe++", "cicc", "ptxas", "fatbinary"] {
