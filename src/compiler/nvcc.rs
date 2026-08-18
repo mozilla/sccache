@@ -381,10 +381,10 @@ pub fn generate_compile_commands(
             }
             if let Some(idx) = unhashed_args.iter().position(|x| x == "--threads") {
                 let arg = unhashed_args.get(idx + 1);
-                if let Some(arg) = arg.and_then(|arg| arg.to_str()) {
-                    if let Ok(arg) = arg.parse::<usize>() {
-                        num_parallel = arg;
-                    }
+                if let Some(arg) = arg.and_then(|arg| arg.to_str())
+                    && let Ok(arg) = arg.parse::<usize>()
+                {
+                    num_parallel = arg;
                 }
                 unhashed_args.splice(idx..(idx + 2), []);
                 continue;
@@ -782,13 +782,13 @@ where
             }
             Some("ptxas") => {
                 let group = device_compile_groups.values_mut().find(|cmds| {
-                    if let Some(cicc) = cmds.last() {
-                        if let Some(cicc_out) = cicc.args.last() {
-                            return args
-                                .iter()
-                                .find(|arg| cicc::is_ptxas_input(OsStr::new(arg)))
-                                .is_some_and(|input| cicc_out == input);
-                        }
+                    if let Some(cicc) = cmds.last()
+                        && let Some(cicc_out) = cicc.args.last()
+                    {
+                        return args
+                            .iter()
+                            .find(|arg| cicc::is_ptxas_input(OsStr::new(arg)))
+                            .is_some_and(|input| cicc_out == input);
                     }
                     false
                 });
@@ -798,11 +798,11 @@ where
             Some("cudafe++") => {
                 // Fix for CTK < 12.0:
                 // Add `--gen_module_id_file` if the cudafe++ args include `--module_id_file_name`
-                if !args.contains(&gen_module_id_file_flag) {
-                    if let Some(idx) = args.iter().position(|x| x == "--module_id_file_name") {
-                        // Insert `--gen_module_id_file` just before `--module_id_file_name` to match nvcc behavior
-                        args.splice(idx..idx, [gen_module_id_file_flag.clone()]);
-                    }
+                if !args.contains(&gen_module_id_file_flag)
+                    && let Some(idx) = args.iter().position(|x| x == "--module_id_file_name")
+                {
+                    // Insert `--gen_module_id_file` just before `--module_id_file_name` to match nvcc behavior
+                    args.splice(idx..idx, [gen_module_id_file_flag.clone()]);
                 }
                 (
                     env_vars.clone(),
@@ -1114,10 +1114,10 @@ fn fold_env_vars_or_split_into_exe_and_args(
     // Expand envvars in nvcc subcommands, i.e. "$CICC_PATH/cicc ..." or "%CICC_PATH%/cicc"
     if let Some(env_vars) = dist::osstring_tuples_to_strings(env_vars) {
         for (var, val) in env_vars {
-            if let Some(re) = env_var_re_map.get(&var) {
-                if re.is_match(&line) {
-                    line = line.replace(&envvar_in_shell_format(&var), &val);
-                }
+            if let Some(re) = env_var_re_map.get(&var)
+                && re.is_match(&line)
+            {
+                line = line.replace(&envvar_in_shell_format(&var), &val);
             }
         }
     }

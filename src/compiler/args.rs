@@ -184,12 +184,12 @@ impl<T: ArgumentValue> Iterator for Iter<'_, T> {
                 (0, &ArgDisposition::CanBeSeparated(d)) | (0, &ArgDisposition::Concatenated(d)) => {
                     let mut s = OsString::from(s);
                     let v = v.clone().into_arg_os_string();
-                    if let Some(d) = d {
-                        if !v.is_empty() {
-                            s.push(OsString::from(
-                                str::from_utf8(&[d]).expect("delimiter should be ascii"),
-                            ));
-                        }
+                    if let Some(d) = d
+                        && !v.is_empty()
+                    {
+                        s.push(OsString::from(
+                            str::from_utf8(&[d]).expect("delimiter should be ascii"),
+                        ));
                     }
                     s.push(v);
                     Some(s)
@@ -238,10 +238,10 @@ impl<T: ArgumentValue, F: FnMut(&Path) -> Option<String>> Iterator for IterStrin
                         Ok(s) => s,
                         Err(e) => return Some(Err(e)),
                     };
-                    if let Some(d) = d {
-                        if !v.is_empty() {
-                            s.push_str(str::from_utf8(&[d]).expect("delimiter should be ascii"));
-                        }
+                    if let Some(d) = d
+                        && !v.is_empty()
+                    {
+                        s.push_str(str::from_utf8(&[d]).expect("delimiter should be ascii"));
                     }
                     s.push_str(&v);
                     Some(Ok(s))
@@ -426,10 +426,10 @@ impl<T: ArgumentValue> ArgInfo<T> {
             ArgInfo::TakeArg(s, create, ArgDisposition::Concatenated(d)) => {
                 let mut len = s.len();
                 debug_assert_eq!(&arg[..len], s);
-                if let Some(d) = d {
-                    if arg.as_bytes().get(len) == Some(&d) {
-                        len += 1;
-                    }
+                if let Some(d) = d
+                    && arg.as_bytes().get(len) == Some(&d)
+                {
+                    len += 1;
                 }
                 Argument::WithValue(
                     s,

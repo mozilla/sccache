@@ -88,10 +88,10 @@ where
         let mut srv: SccacheServer<_, Arc<Mutex<MockCommandCreator>>> = srv;
         let addr = srv.local_addr().unwrap();
         assert!(matches!(addr, crate::net::SocketAddr::Net(a) if a.port() > 0));
-        if let Some(options) = options {
-            if let Some(timeout) = options.idle_timeout {
-                srv.set_idle_timeout(Duration::from_millis(timeout));
-            }
+        if let Some(options) = options
+            && let Some(timeout) = options.idle_timeout
+        {
+            srv.set_idle_timeout(Duration::from_millis(timeout));
         }
         let creator = srv.command_creator().clone();
         tx.send((addr, creator)).unwrap();

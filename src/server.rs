@@ -1315,7 +1315,7 @@ where
                 let (c, proxy) = match info {
                     Ok((c, proxy)) => (c.clone(), proxy.clone()),
                     Err(err) => {
-                        trace!("Inserting PLAIN cache map info for {:?}", &path);
+                        trace!("Inserting PLAIN cache map info for {:?}", path);
                         me.compilers.write().await.insert(path, None);
 
                         return Err(err);
@@ -1328,7 +1328,7 @@ where
                 if let Some(proxy) = proxy {
                     trace!(
                         "Inserting new path proxy {:?} @ {:?} -> {:?}",
-                        &path, &cwd, resolved_compiler_path
+                        path, cwd, resolved_compiler_path
                     );
                     me.compiler_proxies
                         .write()
@@ -1342,7 +1342,7 @@ where
                 let map_info = CompilerCacheEntry::new(c.clone(), mtime, dist_info);
                 trace!(
                     "Inserting POSSIBLY PROXIED cache map info for {:?}",
-                    &resolved_compiler_path
+                    resolved_compiler_path
                 );
                 me.compilers
                     .write()
