@@ -1097,10 +1097,12 @@ fn fold_env_vars_or_split_into_exe_and_args(
 
     let mut line = if cfg!(target_os = "windows") {
         let line = line
+            .replace("\\\"", "\u{1}")
             .replace("\"\"", "\"")
             .replace(r"\\?\", "")
             .replace('\\', "/")
-            .replace(r"//?/", "");
+            .replace(r"//?/", "")
+            .replace('\u{1}', "\\\"");
         match host_compiler {
             NvccHostCompiler::Msvc => line.replace(" -E ", " -P ").replace(" > ", " -Fi"),
             _ => line,
@@ -1559,6 +1561,98 @@ mod test {
             let mut permissions = fs::metadata(&path).unwrap().permissions();
             permissions.set_mode(0o755);
             fs::set_permissions(&path, permissions).unwrap();
+        }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_group_nvcc_subcommands_preserves_escaped_quotes_in_defines() {
+        let bin_dir = tempfile::tempdir().unwrap();
+
+        for exe in ["nvcc", "cl", "cudafe++", "cicc", "ptxas", "fatbinary"] {
+            fake_executable(bin_dir.path(), exe);
+        }
+
+        let path = bin_dir.path().to_string_lossy();
+        let dryrun = format!(
+            r#"#$ PATH={path}
+#$ cl -D__CUDACC__ -D "FILE_NAME=\"kernel.dll\"" -D "USE_CUDA=1" -DGUARDED_AFTER=1 -E -x c++ "kernel.cu" > "kernel.cpp4.ii"
+#$ cudafe++ --gen_c_file_name "kernel.cudafe1.cpp" --stub_file_name "kernel.cudafe1.stub.c" --module_id_file_name "kernel.module_id" --simt-only "kernel.cpp4.ii"
+#$ cl -D__CUDA_ARCH__=800 -D__CUDACC__ -D "FILE_NAME=\"kernel.dll\"" -D "USE_CUDA=1" -DGUARDED_AFTER=1 -E -x c++ "kernel.cu" > "kernel.cpp1.ii"
+#$ cicc --device-c -arch compute_80 --module_id_file_name "kernel.module_id" --gen_c_file_name "kernel.cudafe1.c" --stub_file_name "kernel.cudafe1.stub.c" --gen_device_file_name "kernel.cudafe1.gpu" "kernel.cpp1.ii" --simt-only -o "kernel.ptx"
+#$ ptxas -arch=sm_80 --compile-only "kernel.ptx" -o "kernel.cubin"
+#$ fatbinary --create="kernel.fatbin" "--image3=kind=elf,sm=80,file=kernel.cubin" --embedded-fatbin="kernel.fatbin.c" --device-c
+#$ cl -D__CUDA_ARCH__=800 -D__CUDACC__ -c -x c++ "kernel.cudafe1.cpp" -Fo"kernel.o"
+"#
+        );
+
+        let creator = new_creator();
+        next_command(
+            &creator,
+            Ok(MockChild::new(
+                exit_status(0),
+                dryrun.as_bytes(),
+                dryrun.as_bytes(),
+            )),
+        );
+        next_command(
+            &creator,
+            Ok(MockChild::new(
+                exit_status(0),
+                dryrun.as_bytes(),
+                dryrun.as_bytes(),
+            )),
+        );
+
+        let groups = group_nvcc_subcommands_by_compilation_stage(
+            &creator,
+            &bin_dir.path().join("nvcc"),
+            &["-c", "kernel.cu", "-o", "kernel.o"].map(OsString::from),
+            OsStr::new("-c"),
+            bin_dir.path(),
+            bin_dir.path(),
+            None,
+            &[],
+            &NvccHostCompiler::Msvc,
+            OsStr::new("kernel.o"),
+        )
+        .wait()
+        .unwrap();
+
+        let all_cmds = groups.iter().flatten().collect::<Vec<_>>();
+        let preprocess_cmds = all_cmds
+            .iter()
+            .filter(|cmd| {
+                cmd.exe.file_stem().and_then(|s| s.to_str()) == Some("cl")
+                    && cmd.args.iter().any(|a| a.starts_with("-Fi"))
+            })
+            .collect::<Vec<_>>();
+        assert!(!preprocess_cmds.is_empty(), "no preprocess steps found");
+
+        for cmd in preprocess_cmds {
+            // The giant-token fingerprint of the collapse: several " -D "
+            // pairs packed into a single argument.
+            assert!(
+                cmd.args.iter().all(|a| !a.contains(" -D ")),
+                "quote collapse: multiple -D pairs packed into one token: {:?}",
+                cmd.args
+            );
+            // Every define survives as its own token, escaped quotes intact.
+            assert!(
+                cmd.args.iter().any(|a| a == "USE_CUDA=1"),
+                "USE_CUDA=1 lost: {:?}",
+                cmd.args
+            );
+            assert!(
+                cmd.args.iter().any(|a| a == "-DGUARDED_AFTER=1"),
+                "-DGUARDED_AFTER=1 lost: {:?}",
+                cmd.args
+            );
+            assert!(
+                cmd.args.iter().any(|a| a == "FILE_NAME=\"kernel.dll\""),
+                "string-valued define mangled: {:?}",
+                cmd.args
+            );
         }
     }
 
