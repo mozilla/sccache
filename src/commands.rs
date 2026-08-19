@@ -736,6 +736,22 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                 StatsFormat::Json => serde_json::to_writer(&mut io::stdout(), &stats)?,
             }
         }
+        Command::Monitor { interval, log } => {
+            trace!("Command::Monitor({:?}, {:?})", interval, log);
+            #[cfg(feature = "monitor")]
+            {
+                // Attach to whatever server is running; the monitor keeps
+                // retrying if there is none yet, so don't start one here.
+                crate::monitor::run(get_addr(), interval, log)?;
+            }
+            #[cfg(not(feature = "monitor"))]
+            {
+                let _ = (interval, log);
+                bail!(
+                    "The monitor UI was not compiled in, please rebuild with the `monitor` feature"
+                );
+            }
+        }
         Command::DebugPreprocessorCacheEntries => {
             trace!("Command::DebugPreprocessorCacheEntries");
             let entries_dir = default_disk_cache_dir().join("preprocessor");

@@ -1699,6 +1699,16 @@ impl PerLanguageCount {
         self.adv_counts.get(key)
     }
 
+    /// The per-language counts, keyed by language.
+    pub fn counts(&self) -> &HashMap<String, u64> {
+        &self.counts
+    }
+
+    /// The per-language-and-compiler counts, keyed by `language (compiler)`.
+    pub fn adv_counts(&self) -> &HashMap<String, u64> {
+        &self.adv_counts
+    }
+
     pub fn new() -> PerLanguageCount {
         Self::default()
     }
