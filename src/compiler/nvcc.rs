@@ -1419,6 +1419,9 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("--dependency-output", PathBuf, Separated, DepArgumentPath),
     flag!("--device-c", DoCompilation),
     flag!("--device-w", DoCompilation),
+    take_arg!("--diag-error", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("--diag-suppress", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("--diag-warn", OsString, CanBeSeparated(b'='), PassThrough),
     flag!("--expt-extended-lambda", PreprocessorArgumentFlag),
     flag!("--expt-relaxed-constexpr", PreprocessorArgumentFlag),
     flag!("--extended-lambda", PreprocessorArgumentFlag),
@@ -1461,6 +1464,9 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     flag!("-cubin", DoCompilation),
     flag!("-dc", DoCompilation),
     take_arg!("-default-stream", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("-diag-error", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("-diag-suppress", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("-diag-warn", OsString, CanBeSeparated(b'='), PassThrough),
     flag!("-dw", DoCompilation),
     flag!("-expt-extended-lambda", PreprocessorArgumentFlag),
     flag!("-expt-relaxed-constexpr", PreprocessorArgumentFlag),
@@ -2149,6 +2155,38 @@ mod test {
                 "--suppress-stack-size-warning",
                 "-Xcudafe",
                 "--display_error_number",
+                "-c"
+            ],
+            a.common_args
+        );
+    }
+
+    #[test]
+    fn test_parse_diag_suppress_separated() {
+        // The separated form (`--diag-suppress 1394,1388`, as OpenCV emits
+        // it) must not be mistaken for a second input file.
+        let a = parses!(
+            "-x=cu",
+            "-Xcudafe",
+            "--display_error_number",
+            "--diag-suppress",
+            "1394,1388",
+            "-diag-warn=68",
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o"
+        );
+        assert_eq!(Some("foo.c"), a.input.to_str());
+        assert_eq!(Language::Cuda, a.language);
+        assert_eq!(
+            ovec![
+                "-Xcudafe",
+                "--display_error_number",
+                "--diag-suppress",
+                "1394,1388",
+                "-diag-warn",
+                "68",
                 "-c"
             ],
             a.common_args
