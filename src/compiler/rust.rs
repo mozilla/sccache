@@ -1677,7 +1677,13 @@ where
                 dep_info.to_string_lossy().into_owned(),
                 ArtifactDescriptor {
                     path: p.clone(),
-                    optional: false,
+                    // The build server does not reliably return the rust
+                    // dep-info (.d) file, and it only feeds cargo's rebuild
+                    // tracking (a bitbake do_compile runs cargo from scratch and
+                    // never consumes it). Mark it optional so a distributed
+                    // compile that omits it is not discarded and recompiled
+                    // locally - which stranded every rust compile on the client.
+                    optional: true,
                 },
             );
             Some(p)
