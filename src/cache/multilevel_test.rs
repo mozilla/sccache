@@ -971,6 +971,63 @@ fn test_readonly_level_in_check() {
 }
 
 #[test]
+fn test_mixed_readonly_chain_is_readwrite_in_check() {
+    // A chain that contains a writable level must report ReadWrite even
+    // when other levels are read-only: put() skips read-only levels, so a
+    // read-only remote behind a writable local disk (the documented
+    // "read-only fallback" topology) must not demote the whole cache to
+    // read-only. Regression test for #2773.
+    let runtime = RuntimeBuilder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    // Writable L0, read-only L1
+    let rw_l0 = Arc::new(InMemoryStorage::new());
+    let ro_l1 = Arc::new(ReadOnlyStorage(Arc::new(InMemoryStorage::new())));
+    let storage =
+        MultiLevelStorage::new(vec![rw_l0 as Arc<dyn Storage>, ro_l1 as Arc<dyn Storage>]);
+    runtime.block_on(async {
+        match storage.check().await.unwrap() {
+            CacheMode::ReadWrite => {} // Expected
+            _ => panic!("Writable L0 + read-only L1 should be ReadWrite"),
+        }
+    });
+
+    // Read-only L0, writable L1: still writable (put() skips L0)
+    let ro_l0 = Arc::new(ReadOnlyStorage(Arc::new(InMemoryStorage::new())));
+    let rw_l1 = Arc::new(InMemoryStorage::new());
+    let storage =
+        MultiLevelStorage::new(vec![ro_l0 as Arc<dyn Storage>, rw_l1 as Arc<dyn Storage>]);
+    runtime.block_on(async {
+        match storage.check().await.unwrap() {
+            CacheMode::ReadWrite => {} // Expected
+            _ => panic!("Read-only L0 + writable L1 should be ReadWrite"),
+        }
+    });
+}
+
+#[test]
+fn test_all_readonly_chain_is_readonly_in_check() {
+    // Only a chain in which EVERY level is read-only is itself read-only.
+    let runtime = RuntimeBuilder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let ro_l0 = Arc::new(ReadOnlyStorage(Arc::new(InMemoryStorage::new())));
+    let ro_l1 = Arc::new(ReadOnlyStorage(Arc::new(InMemoryStorage::new())));
+    let storage =
+        MultiLevelStorage::new(vec![ro_l0 as Arc<dyn Storage>, ro_l1 as Arc<dyn Storage>]);
+    runtime.block_on(async {
+        match storage.check().await.unwrap() {
+            CacheMode::ReadOnly => {} // Expected
+            _ => panic!("All read-only levels should be ReadOnly"),
+        }
+    });
+}
+
+#[test]
 fn test_sequential_read_order() {
     // Test that reads happen sequentially (L0, L1, L2, ...), not in parallel
     // This verifies the documented behavior: "check multiple storage backends in sequence"
