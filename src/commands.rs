@@ -568,7 +568,7 @@ where
 /// or produced by a local `SccacheService` in client-side mode.
 #[allow(clippy::too_many_arguments)]
 fn handle_compile_result<T>(
-    mut creator: T,
+    creator: T,
     runtime: &mut Runtime,
     response: CompileResponse,
     finished: Option<CompileFinished>,
@@ -597,6 +597,19 @@ where
         }
     }
 
+    run_compiler_locally(creator, runtime, exe, cmdline, cwd)
+}
+
+fn run_compiler_locally<T>(
+    mut creator: T,
+    runtime: &mut Runtime,
+    exe: &Path,
+    cmdline: Vec<OsString>,
+    cwd: &Path,
+) -> Result<i32>
+where
+    T: CommandCreatorSync,
+{
     let mut cmd = creator.new_command_sync(exe);
     cmd.args(&cmdline).current_dir(cwd);
     if log_enabled!(Trace) {
@@ -906,7 +919,26 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                 });
 
             let jobserver = Client::new();
-            let conn = connect_or_start_server(&get_addr(), startup_timeout)?;
+            let conn = match connect_or_start_server(&get_addr(), startup_timeout) {
+                Ok(conn) => conn,
+                Err(error) if ignore_all_server_io_errors() => {
+                    eprintln!(
+                        "sccache: warning: failed to connect to or start server, \
+                         compiling locally instead: {error:#}"
+                    );
+                    let mut runtime = new_client_runtime()?;
+                    let exe = which_in(Path::new(&exe), env::var_os("PATH"), &cwd)?;
+                    return run_compiler_locally(
+                        ProcessCommandCreator::new(&jobserver),
+                        &mut runtime,
+                        &exe,
+                        cmdline,
+                        &cwd,
+                    )
+                    .context("failed to execute compiler locally");
+                }
+                Err(error) => return Err(error),
+            };
             if config.client_side_mode {
                 // Under make -jN each CLI process gets only 2 worker threads;
                 // one for preprocessing/compilation and one for IPC.  The
