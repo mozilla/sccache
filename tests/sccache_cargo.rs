@@ -13,7 +13,8 @@ use fs_err as fs;
 use helpers::{SCCACHE_BIN, SccacheTest};
 use predicates::prelude::*;
 use serial_test::serial;
-use std::path::Path;
+use std::env;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[macro_use]
@@ -41,6 +42,87 @@ fn test_rust_cargo_build() -> Result<()> {
 #[serial]
 fn test_rust_cargo_build_readonly() -> Result<()> {
     test_rust_cargo_cmd_readonly("build", SccacheTest::new(None)?)
+}
+
+#[test]
+#[serial]
+fn test_rust_cargo_build_across_basedirs() -> Result<()> {
+    let test_info = SccacheTest::new(None)?;
+    let first = test_info.tempdir.path().join("first");
+    let second = test_info.tempdir.path().join("second");
+
+    for root in [&first, &second] {
+        fs::create_dir_all(root.join("src"))?;
+        fs::write(
+            root.join("Cargo.toml"),
+            b"[package]\nname = \"basedirs-test\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )?;
+        fs::write(
+            root.join("src/lib.rs"),
+            b"pub fn manifest() -> &'static str { env!(\"CARGO_MANIFEST_DIR\") }\npub fn answer() -> u32 { 42 }\n",
+        )?;
+        fs::write(
+            root.join("src/main.rs"),
+            b"fn main() { println!(\"{}\", basedirs_test::manifest()); }\n",
+        )?;
+    }
+    let first = fs::canonicalize(first)?;
+    let second = fs::canonicalize(second)?;
+
+    stop_sccache()?;
+    let basedirs = env::join_paths([&first, &second])?
+        .into_string()
+        .map_err(|_| anyhow::anyhow!("basedir list is not valid UTF-8"))?;
+    restart_sccache(
+        &test_info,
+        Some(vec![("SCCACHE_BASEDIRS".into(), basedirs)]),
+    )?;
+
+    let build = |root: &Path| -> Result<()> {
+        Command::new(CARGO.as_os_str())
+            .args(["build", "--color=never"])
+            .envs(test_info.env.iter().cloned())
+            .env("CARGO_TARGET_DIR", root.join("target"))
+            .current_dir(root)
+            .assert()
+            .try_success()?;
+        Ok(())
+    };
+    build(&first)?;
+    build(&second)?;
+
+    let stdout = Command::new(CARGO.as_os_str())
+        .args(["run", "--quiet", "--color=never"])
+        .envs(test_info.env.iter().cloned())
+        .env("CARGO_TARGET_DIR", second.join("target"))
+        .current_dir(&second)
+        .assert()
+        .try_success()?
+        .get_output()
+        .stdout
+        .clone();
+    let stdout =
+        std::str::from_utf8(&stdout).context("cached Cargo binary output was not UTF-8")?;
+    let reported = PathBuf::from(stdout.trim_end_matches(&['\r', '\n'][..]));
+    let reported = fs::canonicalize(&reported)
+        .with_context(|| format!("failed to canonicalize reported path {reported:?}"))?;
+    assert_eq!(reported, first);
+
+    fs::write(
+        second.join("src/lib.rs"),
+        b"pub fn manifest() -> &'static str { env!(\"CARGO_MANIFEST_DIR\") }\npub fn answer() -> u32 { 43 }\n",
+    )?;
+    build(&second)?;
+
+    test_info
+        .show_stats()?
+        .try_stdout(predicates::str::contains(r#""cache_hits":{"counts":{"Rust":1}"#).from_utf8())?
+        .try_stdout(
+            predicates::str::contains(r#""cache_misses":{"counts":{"Rust":2}"#).from_utf8(),
+        )?
+        .try_success()?;
+
+    Ok(())
 }
 
 #[test]

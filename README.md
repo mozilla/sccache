@@ -327,7 +327,7 @@ This is most useful when using sccache for Rust compilation, as rustc supports u
 
 ---
 
-Normalizing Paths with `SCCACHE_BASEDIRS`
+Normalizing paths with `SCCACHE_BASEDIRS`
 -----------------------------------------
 
 By default, sccache requires absolute paths to match for cache hits. To enable cache sharing across different build directories, you can set `SCCACHE_BASEDIRS` to strip a base directory from paths before hashing:
@@ -344,6 +344,11 @@ export SCCACHE_BASEDIRS="/home/user/project:/home/user/workspace"
 
 Path matching is **case-insensitive** on Windows and **case-sensitive** on other operating systems.
 
+For Rust compilations, sccache normalizes matching absolute source arguments,
+the source side of `--remap-path-prefix`, Cargo path variables, tracked
+environment dependency values that are absolute paths, and the current working
+directory before computing the cache key.
+
 This is similar to ccache's `CCACHE_BASEDIR` and helps when:
 * Building the same project from different directories
 * Sharing cache between CI jobs with different checkout paths
@@ -351,6 +356,12 @@ This is similar to ccache's `CCACHE_BASEDIR` and helps when:
 * Working with multiple project checkouts simultaneously
 
 **Note:** Only absolute paths are supported. Relative paths will prevent server from starting.
+
+**Rust note:** This setting normalizes cache-key inputs; it does not rewrite
+paths embedded in compiled artifacts. If a crate deliberately embeds an
+absolute path, for example with `env!("CARGO_MANIFEST_DIR")`, a cache hit from
+another checkout can contain the path from the compilation that populated the
+cache. Use this opt-in setting only when that behavior is acceptable.
 
 You can also configure this in the sccache config file:
 
