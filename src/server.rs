@@ -13,15 +13,13 @@
 // limitations under the License.SCCACHE_MAX_FRAME_LENGTH
 
 use crate::cache::readonly::ReadOnlyStorage;
-use crate::cache::{CacheMode, Storage, storage_from_config};
+use crate::cache::{CacheMode, Storage, storage_from_config, with_basedirs};
 use crate::compiler::PreprocessorCacheEntry;
 use crate::compiler::{
     CacheControl, CompileResult, Compiler, CompilerArguments, CompilerHasher, CompilerKind,
     CompilerProxy, DistType, Language, MissType, get_compiler_info,
 };
-#[cfg(feature = "dist-client")]
-use crate::config;
-use crate::config::Config;
+use crate::config::{self, Config};
 use crate::dist;
 use crate::jobserver::Client;
 use crate::mock_command::{CommandCreatorSync, ProcessCommandCreator};
@@ -43,7 +41,7 @@ use serde::{Deserialize, Serialize};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::env;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::future::Future;
 use std::io::{self, Write};
 use std::marker::Unpin;
@@ -81,6 +79,18 @@ const DEFAULT_IDLE_TIMEOUT: u64 = 600;
 /// of seconds from now (or later)
 #[cfg(feature = "dist-client")]
 const DIST_CLIENT_RECREATE_TIMEOUT: Duration = Duration::from_secs(30);
+
+fn is_basedirs_env(name: &OsStr) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        name.as_encoded_bytes()
+            .eq_ignore_ascii_case(b"SCCACHE_BASEDIRS")
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        name == "SCCACHE_BASEDIRS"
+    }
+}
 
 /// Result of background server startup.
 #[derive(Debug, Serialize, Deserialize)]
@@ -1169,12 +1179,29 @@ where
         let cmd = compile.args;
         let cwd: PathBuf = compile.cwd.into();
         let env_vars = compile.env_vars;
+        let storage = self.storage_for_request(&env_vars)?;
         let me = self.clone();
 
         let info = self
             .compiler_info(exe.into(), cwd.clone(), &cmd, &env_vars)
             .await;
-        Ok(me.check_compiler(info, cmd, cwd, env_vars).await)
+        Ok(me.check_compiler(info, cmd, cwd, env_vars, storage).await)
+    }
+
+    pub(crate) fn storage_for_request(
+        &self,
+        env_vars: &[(OsString, OsString)],
+    ) -> Result<Arc<dyn Storage>> {
+        let Some((_, value)) = env_vars
+            .iter()
+            .rev()
+            .find(|(name, _)| is_basedirs_env(name))
+        else {
+            return Ok(self.storage.clone());
+        };
+
+        let basedirs = config::parse_basedirs_env(value)?;
+        Ok(with_basedirs(self.storage.clone(), basedirs))
     }
 
     /// Run a compile entirely in the current process (used in client-side mode).
@@ -1363,6 +1390,7 @@ where
         cmd: Vec<OsString>,
         cwd: PathBuf,
         env_vars: Vec<(OsString, OsString)>,
+        storage: Arc<dyn Storage>,
     ) -> SccacheResponse {
         match compiler {
             Err(e) => {
@@ -1382,7 +1410,7 @@ where
 
                         let body = self
                             .clone()
-                            .start_compile_task(c, hasher, cmd, cwd, env_vars)
+                            .start_compile_task(c, hasher, cmd, cwd, env_vars, storage)
                             .and_then(|res| async { Ok(Response::CompileFinished(res)) })
                             .boxed();
 
@@ -1426,6 +1454,7 @@ where
         arguments: Vec<OsString>,
         cwd: PathBuf,
         env_vars: Vec<(OsString, OsString)>,
+        storage: Arc<dyn Storage>,
     ) -> Result<CompileFinished> {
         self.stats.lock().await.requests_executed += 1;
 
@@ -1466,7 +1495,7 @@ where
                     &me,
                     client,
                     me.creator.clone(),
-                    me.storage.clone(),
+                    storage,
                     arguments,
                     cwd,
                     env_vars,
