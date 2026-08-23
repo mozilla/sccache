@@ -934,14 +934,7 @@ mod test {
 
     #[test]
     fn test_parse_xclang_fno_cxx_modules() {
-        let a = parses!(
-            "-c",
-            "foo.c",
-            "-o",
-            "foo.o",
-            "-Xclang",
-            "-fno-cxx-modules"
-        );
+        let a = parses!("-c", "foo.c", "-o", "foo.o", "-Xclang", "-fno-cxx-modules");
         assert_eq!(ovec!["-Xclang", "-fno-cxx-modules"], a.common_args);
     }
 
