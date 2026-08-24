@@ -190,6 +190,7 @@ pub struct RemoteStorage {
     operator: opendal::Operator,
     basedirs: Vec<Vec<u8>>,
     rw_mode: CacheMode,
+    skip_cache_check: bool,
 }
 
 #[cfg(any(
@@ -209,7 +210,13 @@ impl RemoteStorage {
             operator,
             basedirs,
             rw_mode,
+            skip_cache_check: false,
         }
+    }
+
+    pub fn with_skip_cache_check(mut self, skip_cache_check: bool) -> Self {
+        self.skip_cache_check = skip_cache_check;
+        self
     }
 }
 
@@ -250,6 +257,14 @@ impl Storage for RemoteStorage {
 
     async fn check(&self) -> Result<CacheMode> {
         use opendal::ErrorKind;
+
+        if self.skip_cache_check {
+            debug!(
+                "storage check skipped; using configured cache mode: {:?}",
+                self.rw_mode
+            );
+            return Ok(self.rw_mode);
+        }
 
         let path = ".sccache_check";
 
@@ -395,6 +410,7 @@ pub fn build_single_cache(
     cache_type: &CacheType,
     basedirs: &[Vec<u8>],
     _pool: &tokio::runtime::Handle,
+    skip_cache_check: bool,
 ) -> Result<Arc<dyn Storage>> {
     match cache_type {
         #[cfg(feature = "azure")]
@@ -415,7 +431,8 @@ pub fn build_single_cache(
                 endpoint.as_deref(),
             )
             .map_err(|err| anyhow!("create azure cache failed: {err:?}"))?;
-            let storage = RemoteStorage::new(operator, basedirs.to_vec(), (*rw_mode).into());
+            let storage = RemoteStorage::new(operator, basedirs.to_vec(), (*rw_mode).into())
+                .with_skip_cache_check(skip_cache_check);
             Ok(Arc::new(storage))
         }
         #[cfg(feature = "gcs")]
@@ -438,7 +455,8 @@ pub fn build_single_cache(
                 credential_url.as_deref(),
             )
             .map_err(|err| anyhow!("create gcs cache failed: {err:?}"))?;
-            let storage = RemoteStorage::new(operator, basedirs.to_vec(), (*rw_mode).into());
+            let storage = RemoteStorage::new(operator, basedirs.to_vec(), (*rw_mode).into())
+                .with_skip_cache_check(skip_cache_check);
             Ok(Arc::new(storage))
         }
         #[cfg(feature = "gha")]
@@ -449,7 +467,8 @@ pub fn build_single_cache(
 
             let operator = GHACache::build(version)
                 .map_err(|err| anyhow!("create gha cache failed: {err:?}"))?;
-            let storage = RemoteStorage::new(operator, basedirs.to_vec(), (*rw_mode).into());
+            let storage = RemoteStorage::new(operator, basedirs.to_vec(), (*rw_mode).into())
+                .with_skip_cache_check(skip_cache_check);
             Ok(Arc::new(storage))
         }
         #[cfg(feature = "memcached")]
@@ -471,7 +490,8 @@ pub fn build_single_cache(
                 *expiration,
             )
             .map_err(|err| anyhow!("create memcached cache failed: {err:?}"))?;
-            let storage = RemoteStorage::new(operator, basedirs.to_vec(), (*rw_mode).into());
+            let storage = RemoteStorage::new(operator, basedirs.to_vec(), (*rw_mode).into())
+                .with_skip_cache_check(skip_cache_check);
             Ok(Arc::new(storage))
         }
         #[cfg(feature = "redis")]
@@ -520,7 +540,8 @@ pub fn build_single_cache(
                 _ => bail!("Only one of `endpoint`, `cluster_endpoints`, `url` must be set"),
             }
             .map_err(|err| anyhow!("create redis cache failed: {err:?}"))?;
-            let storage = RemoteStorage::new(storage, basedirs.to_vec(), (*rw_mode).into());
+            let storage = RemoteStorage::new(storage, basedirs.to_vec(), (*rw_mode).into())
+                .with_skip_cache_check(skip_cache_check);
             Ok(Arc::new(storage))
         }
         #[cfg(feature = "s3")]
@@ -542,7 +563,8 @@ pub fn build_single_cache(
                 .build()
                 .map_err(|err| anyhow!("create s3 cache failed: {err:?}"))?;
 
-            let storage = RemoteStorage::new(operator, basedirs.to_vec(), c.rw_mode.into());
+            let storage = RemoteStorage::new(operator, basedirs.to_vec(), c.rw_mode.into())
+                .with_skip_cache_check(skip_cache_check);
             Ok(Arc::new(storage))
         }
         #[cfg(feature = "webdav")]
@@ -558,7 +580,8 @@ pub fn build_single_cache(
             )
             .map_err(|err| anyhow!("create webdav cache failed: {err:?}"))?;
 
-            let storage = RemoteStorage::new(operator, basedirs.to_vec(), c.rw_mode.into());
+            let storage = RemoteStorage::new(operator, basedirs.to_vec(), c.rw_mode.into())
+                .with_skip_cache_check(skip_cache_check);
             Ok(Arc::new(storage))
         }
         #[cfg(feature = "oss")]
@@ -576,7 +599,8 @@ pub fn build_single_cache(
             )
             .map_err(|err| anyhow!("create oss cache failed: {err:?}"))?;
 
-            let storage = RemoteStorage::new(operator, basedirs.to_vec(), c.rw_mode.into());
+            let storage = RemoteStorage::new(operator, basedirs.to_vec(), c.rw_mode.into())
+                .with_skip_cache_check(skip_cache_check);
             Ok(Arc::new(storage))
         }
         #[cfg(feature = "cos")]
@@ -589,7 +613,8 @@ pub fn build_single_cache(
             let operator = COSCache::build(&c.bucket, &c.key_prefix, c.endpoint.as_deref())
                 .map_err(|err| anyhow!("create cos cache failed: {err:?}"))?;
 
-            let storage = RemoteStorage::new(operator, basedirs.to_vec(), c.rw_mode.into());
+            let storage = RemoteStorage::new(operator, basedirs.to_vec(), c.rw_mode.into())
+                .with_skip_cache_check(skip_cache_check);
             Ok(Arc::new(storage))
         }
         #[allow(unreachable_patterns)]
@@ -624,7 +649,7 @@ pub fn storage_from_config(
     ))]
     if let Some(cache_type) = &config.cache {
         debug!("Configuring single cache from CacheType");
-        return build_single_cache(cache_type, &config.basedirs, pool);
+        return build_single_cache(cache_type, &config.basedirs, pool, config.skip_cache_check);
     }
 
     // No remote cache configured - use disk cache only
@@ -737,6 +762,58 @@ mod test {
         assert_eq!(storage.basedirs().len(), 2);
         assert_eq!(storage.basedirs()[0], b"/home/user/project".to_vec());
         assert_eq!(storage.basedirs()[1], b"/opt/build".to_vec());
+    }
+
+    #[test]
+    #[cfg(feature = "s3")]
+    fn test_skip_remote_cache_check_uses_configured_mode() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        for (configured_mode, expected_mode) in [
+            (CacheModeConfig::ReadOnly, CacheMode::ReadOnly),
+            (CacheModeConfig::ReadWrite, CacheMode::ReadWrite),
+        ] {
+            let cache_config = config::S3CacheConfig {
+                bucket: "test-bucket".to_owned(),
+                region: Some("us-east-1".to_owned()),
+                key_prefix: String::new(),
+                no_credentials: true,
+                endpoint: Some("http://127.0.0.1:1".to_owned()),
+                use_ssl: Some(false),
+                server_side_encryption: None,
+                server_side_encryption_aws_kms: None,
+                server_side_encryption_kms_key_id: None,
+                enable_virtual_host_style: None,
+                rw_mode: configured_mode,
+            };
+            let single_cache_config = Config {
+                cache: Some(CacheType::S3(cache_config.clone())),
+                skip_cache_check: true,
+                ..Default::default()
+            };
+
+            let storage = storage_from_config(&single_cache_config, runtime.handle()).unwrap();
+            assert_eq!(runtime.block_on(storage.check()).unwrap(), expected_mode);
+
+            let multilevel_config = Config {
+                cache_configs: config::CacheConfigs {
+                    s3: Some(cache_config),
+                    multilevel: Some(config::MultiLevelConfig {
+                        chain: vec!["s3".to_owned()],
+                        write_error_policy: config::WriteErrorPolicy::default(),
+                    }),
+                    ..Default::default()
+                },
+                skip_cache_check: true,
+                ..Default::default()
+            };
+
+            let storage = storage_from_config(&multilevel_config, runtime.handle()).unwrap();
+            assert_eq!(runtime.block_on(storage.check()).unwrap(), expected_mode);
+        }
     }
 
     #[test]
