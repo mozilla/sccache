@@ -1209,47 +1209,104 @@ pub fn strip_basedirs<'a>(preprocessor_output: &'a [u8], basedirs: &[Vec<u8>]) -
     Cow::Owned(result)
 }
 
+#[cfg(any(target_os = "windows", test))]
+enum WindowsVerbatimPrefix {
+    Drive,
+    Unc,
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_path_starts_with(value: &[u8], prefix: &[u8]) -> bool {
+    value.len() >= prefix.len()
+        && value.iter().zip(prefix).all(|(&actual, &expected)| {
+            let actual = match actual {
+                b'A'..=b'Z' => actual + (b'a' - b'A'),
+                b'\\' => b'/',
+                _ => actual,
+            };
+            actual == expected
+        })
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_verbatim_prefix(value: &[u8]) -> Option<WindowsVerbatimPrefix> {
+    if value.len() >= 7
+        && windows_path_starts_with(value, b"//?/")
+        && value[4].is_ascii_alphabetic()
+        && value[5] == b':'
+        && matches!(value[6], b'/' | b'\\')
+    {
+        Some(WindowsVerbatimPrefix::Drive)
+    } else if windows_path_starts_with(value, b"//?/unc/") {
+        Some(WindowsVerbatimPrefix::Unc)
+    } else {
+        None
+    }
+}
+
 /// Strips the longest configured base directory from a complete path.
-/// Configured base directories must be normalized and end with `/`.
+/// Configured base directories must be normalized and end with a slash.
 #[doc(hidden)]
 pub fn strip_path_basedirs<'a>(value: &'a [u8], basedirs: &[Vec<u8>]) -> &'a [u8] {
     if basedirs.is_empty() || value.is_empty() {
         return value;
     }
 
+    #[cfg(target_os = "windows")]
+    {
+        strip_windows_path_basedirs(value, basedirs)
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut longest = None;
+        for basedir in basedirs.iter().filter(|basedir| basedir.ends_with(b"/")) {
+            let root = &basedir[..basedir.len() - 1];
+            let match_len = if value == root {
+                Some(root.len())
+            } else if value.starts_with(basedir) {
+                Some(basedir.len())
+            } else {
+                None
+            };
+            if match_len > longest {
+                longest = match_len;
+            }
+        }
+
+        longest.map_or(value, |length| &value[length..])
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn strip_windows_path_basedirs<'a>(value: &'a [u8], basedirs: &[Vec<u8>]) -> &'a [u8] {
     // Unicode case folding can change byte lengths. Keep non-ASCII values
     // unchanged so offsets into the original value remain valid.
-    #[cfg(target_os = "windows")]
     if !value.is_ascii() {
         return value;
     }
 
-    #[cfg(target_os = "windows")]
+    // A verbatim drive prefix has no logical bytes; a verbatim UNC prefix
+    // replaces //?/UNC/ with the two leading separators of a UNC path.
+    let (logical_prefix, tail, removed_len): (&[u8], &[u8], usize) =
+        match windows_verbatim_prefix(value) {
+            Some(WindowsVerbatimPrefix::Drive) => (b"", &value[4..], 4),
+            Some(WindowsVerbatimPrefix::Unc) => (b"//", &value[8..], 6),
+            None => (b"", value, 0),
+        };
+    let logical_len = logical_prefix.len() + tail.len();
     let starts_with = |prefix: &[u8]| {
-        value.len() >= prefix.len()
-            && value.iter().zip(prefix).all(|(&actual, &expected)| {
-                let actual = match actual {
-                    b'A'..=b'Z' => actual + (b'a' - b'A'),
-                    b'\\' => b'/',
-                    _ => actual,
-                };
-                actual == expected
-            })
+        prefix
+            .strip_prefix(logical_prefix)
+            .is_some_and(|prefix| windows_path_starts_with(tail, prefix))
     };
 
     let mut longest = None;
     for basedir in basedirs.iter().filter(|basedir| basedir.ends_with(b"/")) {
         let root = &basedir[..basedir.len() - 1];
-        #[cfg(target_os = "windows")]
-        let (exact, nested) = (
-            value.len() == root.len() && starts_with(root),
-            starts_with(basedir),
-        );
-        #[cfg(not(target_os = "windows"))]
-        let (exact, nested) = (value == root, value.starts_with(basedir));
-        let match_len = if exact {
+        let match_len = if logical_len == root.len() && starts_with(root) {
             Some(root.len())
-        } else if nested {
+        } else if starts_with(basedir) {
             Some(basedir.len())
         } else {
             None
@@ -1259,7 +1316,7 @@ pub fn strip_path_basedirs<'a>(value: &'a [u8], basedirs: &[Vec<u8>]) -> &'a [u8
         }
     }
 
-    longest.map_or(value, |length| &value[length..])
+    longest.map_or(value, |length| &value[length + removed_len..])
 }
 
 /// Double every `/` in a normalized path.
@@ -1351,14 +1408,14 @@ pub fn normalize_win_path(path: &[u8]) -> Vec<u8> {
 /// arguments commonly use the equivalent path without it.
 #[cfg(any(target_os = "windows", test))]
 pub(crate) fn strip_windows_verbatim_prefix(path: &mut Vec<u8>) {
-    match path.as_slice() {
-        [b'/', b'/', b'?', b'/', drive, b':', b'/', ..] if drive.is_ascii_alphabetic() => {
+    match windows_verbatim_prefix(path) {
+        Some(WindowsVerbatimPrefix::Drive) => {
             path.drain(..4);
         }
-        [b'/', b'/', b'?', b'/', b'u', b'n', b'c', b'/', ..] => {
+        Some(WindowsVerbatimPrefix::Unc) => {
             path.drain(2..8);
         }
-        _ => {}
+        None => {}
     }
 }
 
@@ -1901,6 +1958,43 @@ mod tests {
         let input = b"C:\\USERS\\test\\PROJECT";
         let normalized = super::normalize_win_path(input);
         assert_eq!(normalized, b"c:/users/test/project");
+    }
+
+    #[test]
+    fn test_strip_windows_path_basedirs_verbatim_paths() {
+        let basedirs = vec![
+            b"c:/users/test/".to_vec(),
+            b"c:/users/test/project/".to_vec(),
+            b"//server/share/project/".to_vec(),
+        ];
+
+        for (input, expected) in [
+            (
+                b"\\\\?\\C:\\Users\\Test\\Project\\src\\lib.rs".as_slice(),
+                b"src\\lib.rs".as_slice(),
+            ),
+            (
+                b"//?/c:/users/test/project".as_slice(),
+                b"".as_slice(),
+            ),
+            (
+                b"\\\\?\\UNC\\Server\\Share\\Project\\src\\lib.rs".as_slice(),
+                b"src\\lib.rs".as_slice(),
+            ),
+            (
+                b"C:/Users/Test/Project/src/lib.rs".as_slice(),
+                b"src/lib.rs".as_slice(),
+            ),
+            (
+                b"\\\\?\\Volume{1234}\\Project\\src\\lib.rs".as_slice(),
+                b"\\\\?\\Volume{1234}\\Project\\src\\lib.rs".as_slice(),
+            ),
+        ] {
+            assert_eq!(
+                super::strip_windows_path_basedirs(input, &basedirs),
+                expected
+            );
+        }
     }
 
     #[test]
