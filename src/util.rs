@@ -1229,6 +1229,49 @@ fn windows_path_starts_with(value: &[u8], prefix: &[u8]) -> bool {
 }
 
 #[cfg(any(target_os = "windows", test))]
+/// Match a normalized Windows prefix while treating separator runs as one.
+/// Rust dep-info escapes backslashes, so a separator can occupy multiple bytes.
+/// The returned offset still indexes the original value, avoiding an allocation.
+fn windows_path_prefix_len(value: &[u8], prefix: &[u8]) -> Option<usize> {
+    let mut value_index = 0;
+    let mut prefix_index = 0;
+
+    while prefix_index < prefix.len() {
+        if matches!(prefix[prefix_index], b'/' | b'\\') {
+            let prefix_start = prefix_index;
+            while prefix_index < prefix.len() && matches!(prefix[prefix_index], b'/' | b'\\') {
+                prefix_index += 1;
+            }
+
+            let value_start = value_index;
+            while value_index < value.len() && matches!(value[value_index], b'/' | b'\\') {
+                value_index += 1;
+            }
+            if value_index == value_start
+                || (prefix_start == 0
+                    && prefix_index - prefix_start >= 2
+                    && value_index - value_start < 2)
+            {
+                return None;
+            }
+        } else {
+            let actual = *value.get(value_index)?;
+            let actual = match actual {
+                b'A'..=b'Z' => actual + (b'a' - b'A'),
+                _ => actual,
+            };
+            if actual != prefix[prefix_index] {
+                return None;
+            }
+            value_index += 1;
+            prefix_index += 1;
+        }
+    }
+
+    Some(value_index)
+}
+
+#[cfg(any(target_os = "windows", test))]
 fn windows_verbatim_prefix(value: &[u8]) -> Option<WindowsVerbatimPrefix> {
     if value.len() >= 7
         && windows_path_starts_with(value, b"//?/")
@@ -1286,37 +1329,31 @@ fn strip_windows_path_basedirs<'a>(value: &'a [u8], basedirs: &[Vec<u8>]) -> &'a
         return value;
     }
 
-    // A verbatim drive prefix has no logical bytes; a verbatim UNC prefix
-    // replaces //?/UNC/ with the two leading separators of a UNC path.
-    let (logical_prefix, tail, removed_len): (&[u8], &[u8], usize) =
+    let (basedir_prefix, tail, removed_len): (&[u8], &[u8], usize) =
         match windows_verbatim_prefix(value) {
             Some(WindowsVerbatimPrefix::Drive) => (b"", &value[4..], 4),
-            Some(WindowsVerbatimPrefix::Unc) => (b"//", &value[8..], 6),
+            Some(WindowsVerbatimPrefix::Unc) => (b"//", &value[8..], 8),
             None => (b"", value, 0),
         };
-    let logical_len = logical_prefix.len() + tail.len();
-    let starts_with = |prefix: &[u8]| {
-        prefix
-            .strip_prefix(logical_prefix)
-            .is_some_and(|prefix| windows_path_starts_with(tail, prefix))
-    };
 
     let mut longest = None;
     for basedir in basedirs.iter().filter(|basedir| basedir.ends_with(b"/")) {
-        let root = &basedir[..basedir.len() - 1];
-        let match_len = if logical_len == root.len() && starts_with(root) {
-            Some(root.len())
-        } else if starts_with(basedir) {
-            Some(basedir.len())
-        } else {
-            None
-        };
-        if match_len > longest {
-            longest = match_len;
+        let configured_len = basedir.len();
+        let root = basedir[..configured_len - 1].strip_prefix(basedir_prefix);
+        let prefix = basedir.strip_prefix(basedir_prefix);
+        let exact_match = root.and_then(|root| {
+            windows_path_prefix_len(tail, root).filter(|length| *length == tail.len())
+        });
+        let match_end =
+            exact_match.or_else(|| prefix.and_then(|prefix| windows_path_prefix_len(tail, prefix)));
+        if let Some(match_end) = match_end
+            && longest.is_none_or(|(length, _)| configured_len > length)
+        {
+            longest = Some((configured_len, match_end));
         }
     }
 
-    longest.map_or(value, |length| &value[length + removed_len..])
+    longest.map_or(value, |(_, match_end)| &value[removed_len + match_end..])
 }
 
 /// Double every `/` in a normalized path.
@@ -1973,10 +2010,7 @@ mod tests {
                 b"\\\\?\\C:\\Users\\Test\\Project\\src\\lib.rs".as_slice(),
                 b"src\\lib.rs".as_slice(),
             ),
-            (
-                b"//?/c:/users/test/project".as_slice(),
-                b"".as_slice(),
-            ),
+            (b"//?/c:/users/test/project".as_slice(), b"".as_slice()),
             (
                 b"\\\\?\\UNC\\Server\\Share\\Project\\src\\lib.rs".as_slice(),
                 b"src\\lib.rs".as_slice(),
@@ -1984,6 +2018,14 @@ mod tests {
             (
                 b"C:/Users/Test/Project/src/lib.rs".as_slice(),
                 b"src/lib.rs".as_slice(),
+            ),
+            (
+                b"C:\\\\Users\\\\Test\\\\Project\\\\src\\\\lib.rs".as_slice(),
+                b"src\\\\lib.rs".as_slice(),
+            ),
+            (
+                b"\\\\?\\C:\\\\Users\\\\Test\\\\Project".as_slice(),
+                b"".as_slice(),
             ),
             (
                 b"\\\\?\\Volume{1234}\\Project\\src\\lib.rs".as_slice(),
