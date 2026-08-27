@@ -741,7 +741,7 @@ fn process_preprocessed_file(
             // GCC precompiled header:
             || slice[1..].starts_with(PRAGMA_GCC_PCH_PREPROCESS)
             // HP/AIX:
-            || (&slice[1..5] == b"line "))
+            || slice[1..].starts_with(b"line "))
         && (start == 0 || bytes[start - 1] == b'\n')
         {
             match process_preprocessor_line(
@@ -1903,6 +1903,56 @@ mod test {
         assert_eq!(&bytes, &original_bytes);
         assert!(success);
         assert_eq!(include_files.len(), 0);
+    }
+
+    #[test]
+    fn test_process_preprocessed_file_line_directive() {
+        let header = PathBuf::from("tests/test.h");
+        let fs_impl = TestFs {
+            metadata_results: Mutex::new(
+                [(
+                    header.clone(),
+                    PreprocessorFileMetadata {
+                        is_dir: false,
+                        is_file: true,
+                        modified: Some(Timestamp::new(12341234, 0)),
+                        ctime_or_creation: None,
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            ),
+            open_results: Mutex::new(
+                [(
+                    header.clone(),
+                    Box::new(&b"contents"[..]) as Box<dyn std::io::Read>,
+                )]
+                .into_iter()
+                .collect(),
+            ),
+        };
+        let mut bytes = br#"#line 1 "tests/test.h"
+int value;
+"#
+        .to_vec();
+        let mut include_files = HashMap::new();
+
+        let success = process_preprocessed_file(
+            Path::new("tests/test.c"),
+            Path::new(""),
+            &mut bytes,
+            &mut include_files,
+            PreprocessorCacheModeConfig::activated(),
+            std::time::SystemTime::now(),
+            fs_impl,
+        )
+        .unwrap();
+
+        assert!(success);
+        assert_eq!(
+            include_files.get(&header).map(String::as_str),
+            Some("a93900c371d997927c5bc568ea538bed59ae5c960021dcfe7b0b369da5267528")
+        );
     }
 
     /// A filesystem interface that only panics to test that we don't access it.
