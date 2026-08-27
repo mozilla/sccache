@@ -34,6 +34,8 @@ use log::Level::Trace;
 use std::{
     collections::HashMap,
     ffi::OsString,
+    fs::File,
+    io::Read,
     path::{Path, PathBuf},
     process,
 };
@@ -130,18 +132,18 @@ ArgData! { pub
 use self::ArgData::*;
 
 counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
-    take_arg!("--define", OsString, Concatenated(b'='), PreprocessorArgument),
+    take_arg!("--define", OsString, CanBeSeparated(b'='), PreprocessorArgument),
     take_arg!("--dep-file", PathBuf, Concatenated(b'='), DepFile),
     flag!("--dry-run", TooHardFlag),
     take_arg!("--help", OsString, Concatenated(b'='), NotCompilation),
-    take_arg!("--include-directory", PathBuf, Concatenated(b'='), PreprocessorArgumentPath),
-    take_arg!("--include-file", PathBuf, Concatenated(b'='), PreprocessorArgumentPath),
+    take_arg!("--include-directory", PathBuf, CanBeSeparated(b'='), PreprocessorArgumentPath),
+    take_arg!("--include-file", PathBuf, CanBeSeparated(b'='), PreprocessorArgumentPath),
     take_arg!("--library-directory", OsString, Concatenated(b'='), PassThrough),
-    take_arg!("--mil-split", OsString, Concatenated(b'='), TooHard),
-    take_arg!("--option-file", OsString, Concatenated(b'='), TooHard),
-    take_arg!("--output", PathBuf, Concatenated(b'='), Output),
+    take_arg!("--mil-split", OsString, CanBeSeparated(b'='), TooHard),
+    take_arg!("--option-file", OsString, CanBeSeparated(b'='), TooHard),
+    take_arg!("--output", PathBuf, CanBeSeparated(b'='), Output),
     take_arg!("--preprocess", OsString, Concatenated(b'='), TooHard),
-    take_arg!("--undefine", OsString, Separated, PreprocessorArgument), // ok
+    take_arg!("--undefine", OsString, CanBeSeparated(b'='), PreprocessorArgument),
     flag!("--version", NotCompilationFlag),
     flag!("-?", NotCompilationFlag),
     take_arg!("-D", OsString, CanBeSeparated, PreprocessorArgument),
@@ -152,7 +154,7 @@ counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     take_arg!("-U", OsString, CanBeSeparated, PreprocessorArgument),
     flag!("-V", NotCompilationFlag),
     flag!("-c", DoCompilation),
-    take_arg!("-f", OsString, Separated, TooHard),
+    take_arg!("-f", OsString, CanBeSeparated, TooHard),
     flag!("-n", TooHardFlag),
     take_arg!("-o", PathBuf, Separated, Output),
 ]);
@@ -168,7 +170,7 @@ counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
 /// `arguments`.
 fn parse_arguments<S>(
     arguments: &[OsString],
-    _cwd: &Path,
+    cwd: &Path,
     arg_info: S,
 ) -> CompilerArguments<ParsedArguments>
 where
@@ -182,7 +184,9 @@ where
     let mut preprocessor_args = vec![];
     let mut depfile = None;
 
-    for arg in ArgsIter::new(arguments.iter().cloned(), arg_info) {
+    let arguments = ExpandOptionFiles::new(cwd, arguments);
+
+    for arg in ArgsIter::new(arguments, arg_info) {
         let arg = try_or_cannot_cache!(arg, "argument parse");
 
         match arg.get_data() {
@@ -297,6 +301,217 @@ where
     })
 }
 
+struct ExpandOptionFiles<'a> {
+    stack: Vec<OptionFileArgument>,
+    cwd: &'a Path,
+    previous_may_consume_argument: bool,
+}
+
+struct OptionFileArgument {
+    value: OsString,
+    depth: usize,
+}
+
+impl<'a> ExpandOptionFiles<'a> {
+    fn new(cwd: &'a Path, arguments: &[OsString]) -> Self {
+        Self {
+            stack: arguments
+                .iter()
+                .rev()
+                .cloned()
+                .map(|value| OptionFileArgument { value, depth: 0 })
+                .collect(),
+            cwd,
+            previous_may_consume_argument: false,
+        }
+    }
+
+    fn expand(&mut self, value: &OsString, depth: usize) -> Result<()> {
+        const MAX_NESTING_DEPTH: usize = 25;
+        if depth >= MAX_NESTING_DEPTH {
+            bail!("option files cannot be nested more than {MAX_NESTING_DEPTH} levels");
+        }
+
+        let values = value
+            .to_str()
+            .map(|value| value.split(',').collect::<Vec<_>>())
+            .unwrap_or_default();
+        if values.is_empty() {
+            bail!("option file path is not valid UTF-8");
+        }
+
+        let mut arguments = Vec::new();
+        for value in values {
+            let path = self.cwd.join(value);
+            let mut contents = String::new();
+            File::open(&path)?.read_to_string(&mut contents)?;
+            arguments.extend(split_option_file_args(&contents)?);
+        }
+        self.stack
+            .extend(arguments.into_iter().rev().map(|value| OptionFileArgument {
+                value,
+                depth: depth + 1,
+            }));
+        Ok(())
+    }
+}
+
+impl Iterator for ExpandOptionFiles<'_> {
+    type Item = OsString;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let arg = self.stack.pop()?;
+
+            if self.previous_may_consume_argument {
+                self.previous_may_consume_argument = false;
+                return Some(arg.value);
+            }
+
+            let Some(arg_str) = arg.value.to_str() else {
+                return Some(arg.value);
+            };
+
+            if is_option_file_flag(arg_str) {
+                let Some(value) = self.stack.pop() else {
+                    return Some(if arg_str == "-f" {
+                        arg.value
+                    } else {
+                        "--option-file".into()
+                    });
+                };
+                if let Err(error) = self.expand(&value.value, arg.depth) {
+                    debug!(
+                        "failed to read TASKING option file `{}`: {error}",
+                        self.cwd.join(&value.value).display()
+                    );
+                    self.stack.push(value);
+                    return Some(if arg_str == "-f" {
+                        arg.value
+                    } else {
+                        "--option-file".into()
+                    });
+                }
+                continue;
+            }
+
+            let value = if let Some((flag, value)) = arg_str.split_once('=')
+                && is_option_file_flag(flag)
+            {
+                value
+            } else if let Some(value) = arg_str.strip_prefix("-f") {
+                if value.is_empty() {
+                    return Some(arg.value);
+                }
+                value
+            } else {
+                self.previous_may_consume_argument = argument_may_consume_value(arg_str);
+                return Some(arg.value);
+            };
+            if let Err(error) = self.expand(&OsString::from(value), arg.depth) {
+                debug!("failed to read TASKING option file `{value}`: {error}");
+                return Some(if arg_str.starts_with("--") {
+                    format!("--option-file={value}").into()
+                } else {
+                    arg.value
+                });
+            }
+        }
+    }
+}
+
+fn is_option_file_flag(argument: &str) -> bool {
+    argument == "-f" || (argument.len() >= "--op".len() && "--option-file".starts_with(argument))
+}
+
+fn argument_may_consume_value(argument: &str) -> bool {
+    if !argument.starts_with('-') {
+        return false;
+    }
+
+    for info in ARGS.iter() {
+        match info {
+            ArgInfo::Flag(flag, _) if argument == *flag => return false,
+            ArgInfo::TakeArg(flag, _, disposition) if argument == *flag => {
+                return !matches!(disposition, ArgDisposition::Concatenated(_));
+            }
+            ArgInfo::TakeArg(flag, _, disposition)
+                if argument.len() > flag.len() && argument.starts_with(flag) =>
+            {
+                let is_concatenated = match disposition {
+                    ArgDisposition::Separated => false,
+                    ArgDisposition::CanBeConcatenated(None)
+                    | ArgDisposition::CanBeSeparated(None)
+                    | ArgDisposition::Concatenated(None) => true,
+                    ArgDisposition::CanBeConcatenated(Some(delimiter))
+                    | ArgDisposition::CanBeSeparated(Some(delimiter))
+                    | ArgDisposition::Concatenated(Some(delimiter)) => {
+                        argument.as_bytes()[flag.len()] == *delimiter
+                    }
+                };
+                if is_concatenated {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    true
+}
+
+fn split_option_file_args(contents: &str) -> Result<Vec<OsString>> {
+    let mut arguments = Vec::new();
+    let mut argument = String::new();
+    let mut quote = None;
+    let contents = contents.chars().collect::<Vec<_>>();
+    let mut index = 0;
+
+    while index < contents.len() {
+        let character = contents[index];
+        if character == '\\' {
+            let continuation_length = if contents.get(index + 1) == Some(&'\n') {
+                2
+            } else if contents.get(index + 1) == Some(&'\r')
+                && contents.get(index + 2) == Some(&'\n')
+            {
+                3
+            } else {
+                0
+            };
+            if continuation_length != 0 {
+                index += continuation_length;
+                if quote.is_none() {
+                    while matches!(contents.get(index), Some(' ' | '\t')) {
+                        index += 1;
+                    }
+                }
+                continue;
+            }
+        }
+
+        match quote {
+            Some(delimiter) if character == delimiter => quote = None,
+            Some(_) => argument.push(character),
+            None if character == '\'' || character == '"' => quote = Some(character),
+            None if character.is_ascii_whitespace() => {
+                if !argument.is_empty() {
+                    arguments.push(OsString::from(std::mem::take(&mut argument)));
+                }
+            }
+            None => argument.push(character),
+        }
+        index += 1;
+    }
+    if !argument.is_empty() {
+        arguments.push(argument.into());
+    }
+    if quote.is_some() {
+        bail!("unterminated quote in option file");
+    }
+    Ok(arguments)
+}
+
 async fn preprocess<T>(
     creator: &T,
     executable: &Path,
@@ -400,7 +615,7 @@ fn generate_compile_commands(
 mod test {
     use super::{
         ARGS, Language, OsString, ParsedArguments, PathBuf, dist, generate_compile_commands,
-        parse_arguments,
+        parse_arguments, split_option_file_args,
     };
     use crate::compiler::c::ArtifactDescriptor;
     use crate::compiler::*;
@@ -408,10 +623,19 @@ mod test {
     use crate::server;
     use crate::test::mock_storage::MockStorage;
     use crate::test::utils::*;
+    use std::{fs, path::Path};
 
     fn parse_arguments_(arguments: Vec<String>) -> CompilerArguments<ParsedArguments> {
         let args = arguments.iter().map(OsString::from).collect::<Vec<_>>();
         parse_arguments(&args, ".".as_ref(), &ARGS[..])
+    }
+
+    fn parse_arguments_in(
+        arguments: Vec<String>,
+        cwd: &Path,
+    ) -> CompilerArguments<ParsedArguments> {
+        let args = arguments.iter().map(OsString::from).collect::<Vec<_>>();
+        parse_arguments(&args, cwd, &ARGS[..])
     }
 
     #[test]
@@ -480,7 +704,7 @@ mod test {
 
     #[test]
     fn test_parse_arguments_extra() {
-        let args = stringvec!["-c", "foo.cc", "-fabc", "-o", "foo.o", "-mxyz"];
+        let args = stringvec!["-c", "foo.cc", "--unknown=abc", "-o", "foo.o", "-mxyz"];
         let ParsedArguments {
             input,
             language,
@@ -506,14 +730,22 @@ mod test {
             )
         );
         assert!(preprocessor_args.is_empty());
-        assert_eq!(ovec!["-fabc", "-mxyz"], common_args);
+        assert_eq!(ovec!["--unknown=abc", "-mxyz"], common_args);
         assert!(!msvc_show_includes);
     }
 
     #[test]
     fn test_parse_arguments_values() {
         let args = stringvec![
-            "-c", "foo.cxx", "-fabc", "-I", "include", "-o", "foo.o", "-H", "file"
+            "-c",
+            "foo.cxx",
+            "--unknown=abc",
+            "-I",
+            "include",
+            "-o",
+            "foo.o",
+            "-H",
+            "file"
         ];
         let ParsedArguments {
             input,
@@ -540,7 +772,7 @@ mod test {
             )
         );
         assert_eq!(ovec!["-Iinclude", "-Hfile"], preprocessor_args);
-        assert_eq!(ovec!["-fabc"], common_args);
+        assert_eq!(ovec!["--unknown=abc"], common_args);
         assert!(!msvc_show_includes);
     }
 
@@ -549,7 +781,7 @@ mod test {
         let args = stringvec![
             "-c",
             "foo.c",
-            "-fabc",
+            "--unknown=abc",
             "--include-directory=bar",
             "--include-file=foo",
             "-o",
@@ -580,16 +812,301 @@ mod test {
             )
         );
         assert_eq!(
-            ovec!["--include-directory=bar", "--include-file=foo"],
+            ovec!["--include-directory", "bar", "--include-file", "foo"],
             preprocessor_args
         );
-        assert_eq!(ovec!["-fabc"], common_args);
+        assert_eq!(ovec!["--unknown=abc"], common_args);
         assert!(!msvc_show_includes);
     }
 
     #[test]
+    fn test_parse_arguments_option_file() {
+        let fixture = TestFixture::new();
+        fs::write(
+            fixture.tempdir.path().join("options"),
+            r#"-I "include directory" -DVALUE=\"Debug\""#,
+        )
+        .unwrap();
+
+        let ParsedArguments {
+            input,
+            outputs,
+            preprocessor_args,
+            ..
+        } = match parse_arguments_in(
+            stringvec!["-f", "options", "-c", "foo.c", "-o", "foo.o"],
+            fixture.tempdir.path(),
+        ) {
+            CompilerArguments::Ok(args) => args,
+            other => panic!("Got unexpected parse result: {other:?}"),
+        };
+
+        assert_eq!(Path::new("foo.c"), input);
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.o"),
+                    optional: false
+                }
+            )
+        );
+        assert_eq!(
+            ovec!["-Iinclude directory", r#"-DVALUE=\Debug\"#],
+            preprocessor_args
+        );
+    }
+
+    #[test]
+    fn test_parse_arguments_long_option_files() {
+        let fixture = TestFixture::new();
+        fs::write(fixture.tempdir.path().join("defines"), "-DFOO=1").unwrap();
+        fs::write(fixture.tempdir.path().join("includes"), "-Iinclude").unwrap();
+
+        let argument = "--option-file=defines,includes".to_string();
+        let ParsedArguments {
+            preprocessor_args, ..
+        } = match parse_arguments_in(
+            vec![argument, "-c".into(), "foo.c".into()],
+            fixture.tempdir.path(),
+        ) {
+            CompilerArguments::Ok(args) => args,
+            other => panic!("Got unexpected parse result: {other:?}"),
+        };
+
+        assert_eq!(ovec!["-DFOO=1", "-Iinclude"], preprocessor_args);
+    }
+
+    #[test]
+    fn test_parse_arguments_concatenated_option_file() {
+        let fixture = TestFixture::new();
+        fs::write(fixture.tempdir.path().join("options"), "-DFOO=1").unwrap();
+
+        let argument = format!("-f{}", fixture.tempdir.path().join("options").display());
+        let ParsedArguments {
+            preprocessor_args, ..
+        } = match parse_arguments_in(
+            vec![argument, "-c".into(), "foo.c".into()],
+            fixture.tempdir.path(),
+        ) {
+            CompilerArguments::Ok(args) => args,
+            other => panic!("Got unexpected parse result: {other:?}"),
+        };
+
+        assert_eq!(ovec!["-DFOO=1"], preprocessor_args);
+    }
+
+    #[test]
+    fn test_parse_arguments_separated_long_option_file() {
+        let fixture = TestFixture::new();
+        fs::write(fixture.tempdir.path().join("options"), "-DFOO=1").unwrap();
+
+        let ParsedArguments {
+            preprocessor_args, ..
+        } = match parse_arguments_in(
+            stringvec!["--option-file", "options", "-c", "foo.c"],
+            fixture.tempdir.path(),
+        ) {
+            CompilerArguments::Ok(args) => args,
+            other => panic!("Got unexpected parse result: {other:?}"),
+        };
+
+        assert_eq!(ovec!["-DFOO=1"], preprocessor_args);
+    }
+
+    #[test]
+    fn test_parse_arguments_abbreviated_option_file() {
+        let fixture = TestFixture::new();
+        fs::write(fixture.tempdir.path().join("options"), "-DFOO=1").unwrap();
+
+        let ParsedArguments {
+            preprocessor_args, ..
+        } = match parse_arguments_in(
+            stringvec!["--op", "options", "-c", "foo.c"],
+            fixture.tempdir.path(),
+        ) {
+            CompilerArguments::Ok(args) => args,
+            other => panic!("Got unexpected parse result: {other:?}"),
+        };
+
+        assert_eq!(ovec!["-DFOO=1"], preprocessor_args);
+    }
+
+    #[test]
+    fn test_parse_arguments_missing_abbreviated_option_file() {
+        let fixture = TestFixture::new();
+        assert_eq!(
+            CompilerArguments::CannotCache("--option-file", None),
+            parse_arguments_in(
+                stringvec!["--op", "missing", "-c", "foo.c"],
+                fixture.tempdir.path()
+            )
+        );
+    }
+
+    #[test]
+    fn test_parse_arguments_missing_option_file() {
+        let fixture = TestFixture::new();
+        assert_eq!(
+            CompilerArguments::CannotCache("-f", None),
+            parse_arguments_in(
+                stringvec!["-f", "missing", "-c", "foo.c"],
+                fixture.tempdir.path()
+            )
+        );
+    }
+
+    #[test]
+    fn test_option_file_like_output_is_not_expanded() {
+        let fixture = TestFixture::new();
+        fs::write(fixture.tempdir.path().join("options"), "-DFOO=1").unwrap();
+
+        let output = format!("-f{}", fixture.tempdir.path().join("options").display());
+        let ParsedArguments { outputs, .. } = match parse_arguments_in(
+            vec!["-c".into(), "foo.c".into(), "-o".into(), output.clone()],
+            fixture.tempdir.path(),
+        ) {
+            CompilerArguments::Ok(args) => args,
+            other => panic!("Got unexpected parse result: {other:?}"),
+        };
+
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from(output.clone()),
+                    optional: false
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn test_option_file_like_long_output_is_not_expanded() {
+        let fixture = TestFixture::new();
+        fs::write(fixture.tempdir.path().join("options"), "-DFOO=1").unwrap();
+
+        let output = format!("-f{}", fixture.tempdir.path().join("options").display());
+        let ParsedArguments { outputs, .. } = match parse_arguments_in(
+            vec![
+                "-c".into(),
+                "foo.c".into(),
+                "--output".into(),
+                output.clone(),
+            ],
+            fixture.tempdir.path(),
+        ) {
+            CompilerArguments::Ok(args) => args,
+            other => panic!("Got unexpected parse result: {other:?}"),
+        };
+
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from(output.clone()),
+                    optional: false
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn test_option_file_like_unknown_option_value_is_not_expanded() {
+        let fixture = TestFixture::new();
+        fs::write(fixture.tempdir.path().join("options"), "-DFOO=1").unwrap();
+
+        let value = format!("-f{}", fixture.tempdir.path().join("options").display());
+        assert_eq!(
+            CompilerArguments::CannotCache("-f", None),
+            parse_arguments_in(
+                vec!["-Wc".into(), value, "-c".into(), "foo.c".into()],
+                fixture.tempdir.path()
+            )
+        );
+    }
+
+    #[test]
+    fn test_option_file_after_concatenated_option_is_expanded() {
+        let fixture = TestFixture::new();
+        fs::write(fixture.tempdir.path().join("options"), "-DFOO=1").unwrap();
+
+        let ParsedArguments {
+            preprocessor_args, ..
+        } = match parse_arguments_in(
+            stringvec!["-Iinclude", "-f", "options", "-c", "foo.c"],
+            fixture.tempdir.path(),
+        ) {
+            CompilerArguments::Ok(args) => args,
+            other => panic!("Got unexpected parse result: {other:?}"),
+        };
+
+        assert_eq!(ovec!["-Iinclude", "-DFOO=1"], preprocessor_args);
+    }
+
+    #[test]
+    fn test_split_option_file_args() {
+        assert_eq!(
+            ovec!["-DNAME=a b", r#"-DVALUE=\Debug\"#, "foo.c"],
+            split_option_file_args(r#"-DNAME="a b" -DVALUE=\"Debug\" foo.c"#).unwrap()
+        );
+    }
+
+    #[test]
+    fn test_split_option_file_line_continuations() {
+        assert_eq!(
+            ovec![
+                "-DNAME=value",
+                "-Iinclude",
+                "-DOTHER=foobar",
+                "-DQUOTED=foo   bar"
+            ],
+            split_option_file_args(
+                "-DNAME=val\\\r\nue -Iinc\\\nlude -DOTHER=foo\\\n   bar -DQUOTED=\"foo\\\n   bar\""
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn test_parse_arguments_unterminated_option_file_quote() {
+        let fixture = TestFixture::new();
+        fs::write(fixture.tempdir.path().join("options"), r#"-DNAME="value"#).unwrap();
+        assert_eq!(
+            CompilerArguments::CannotCache("-f", None),
+            parse_arguments_in(
+                stringvec!["-f", "options", "-c", "foo.c"],
+                fixture.tempdir.path()
+            )
+        );
+    }
+
+    #[test]
+    fn test_parse_arguments_option_file_nesting_limit() {
+        let fixture = TestFixture::new();
+        fs::write(fixture.tempdir.path().join("options"), "-f options").unwrap();
+        assert_eq!(
+            CompilerArguments::CannotCache("-f", None),
+            parse_arguments_in(
+                stringvec!["-f", "options", "-c", "foo.c"],
+                fixture.tempdir.path()
+            )
+        );
+    }
+
+    #[test]
     fn test_parse_arguments_explicit_dep_target() {
-        let args = stringvec!["-c", "foo.c", "--dep-file=depfile", "-fabc", "-o", "foo.o"];
+        let args = stringvec![
+            "-c",
+            "foo.c",
+            "--dep-file=depfile",
+            "--unknown=abc",
+            "-o",
+            "foo.o"
+        ];
         let ParsedArguments {
             input,
             language,
@@ -617,13 +1134,13 @@ mod test {
             )
         );
         assert!(preprocessor_args.is_empty());
-        assert_eq!(ovec!["-fabc"], common_args);
+        assert_eq!(ovec!["--unknown=abc"], common_args);
         assert!(!msvc_show_includes);
     }
 
     #[test]
     fn test_parse_arguments_implicit_dep_target() {
-        let args = stringvec!["-c", "foo.c", "--dep-file", "-fabc", "-o", "foo.o"];
+        let args = stringvec!["-c", "foo.c", "--dep-file", "--unknown=abc", "-o", "foo.o"];
         let ParsedArguments {
             input,
             language,
@@ -651,7 +1168,7 @@ mod test {
             )
         );
         assert!(preprocessor_args.is_empty());
-        assert_eq!(ovec!["-fabc"], common_args);
+        assert_eq!(ovec!["--unknown=abc"], common_args);
         assert!(!msvc_show_includes);
     }
 
