@@ -429,6 +429,14 @@ fn argument_may_consume_value(argument: &str) -> bool {
         return false;
     }
 
+    // If a value is already provided inline (e.g. `--foo=bar`), this arg cannot
+    // consume the next argv element.
+    if let Some(eq) = argument.find('=') {
+        if eq + 1 < argument.len() {
+            return false;
+        }
+    }
+
     for info in ARGS.iter() {
         match info {
             ArgInfo::Flag(flag, _) if argument == *flag => return false,
