@@ -391,6 +391,7 @@ fn generate_compile_commands(
         arguments,
         env_vars: env_vars.to_owned(),
         cwd: cwd.to_owned(),
+        share_jobserver: false,
     };
 
     Ok((command, None, Cacheable::Yes))

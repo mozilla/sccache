@@ -166,6 +166,14 @@ pub struct SingleCompileCommand {
     pub arguments: Vec<OsString>,
     pub env_vars: Vec<(OsString, OsString)>,
     pub cwd: PathBuf,
+    /// Whether this compiler participates in the GNU make jobserver.
+    ///
+    /// Deliberately a field rather than a defaulted builder method: the
+    /// compiler then makes every frontend answer, so a new one cannot
+    /// silently get this wrong. Getting it wrong in the `true` direction
+    /// costs a `fork` per compile; in the `false` direction it costs `rustc`
+    /// its parallelism limit, which is what the jobserver exists to enforce.
+    pub share_jobserver: bool,
 }
 
 #[async_trait]
@@ -196,6 +204,7 @@ impl CompileCommandImpl for SingleCompileCommand {
             arguments,
             env_vars,
             cwd,
+            share_jobserver,
         } = self;
         // Resolve compiler avoiding ccache wrappers to prevent double-caching.
         let resolved_executable = resolve_compiler_avoiding_wrapper(executable, env_vars);
@@ -204,6 +213,9 @@ impl CompileCommandImpl for SingleCompileCommand {
             .env_clear()
             .envs(env_vars.clone())
             .current_dir(cwd);
+        if *share_jobserver {
+            cmd.share_jobserver();
+        }
         run_input_output(cmd, None).await
     }
 }
