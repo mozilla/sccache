@@ -258,7 +258,7 @@ jobs:
       - name: Chmod for binary
         run: chmod +x ${SCCACHE_PATH}
 
-      # Ensure that HIPCC isn't already borken
+      # Ensure that HIPCC isn't already broken
       - name: Sanity Check
         run: |
           export LD_PRELOAD=$PWD/target/debug/librandomize_readdir.so
