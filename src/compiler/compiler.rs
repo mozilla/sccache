@@ -1503,7 +1503,8 @@ where
             // in case we attempted to test for rustc while it didn't look like it, fallback to c compiler detection one lat time
             if maybe_rustc_executable.is_none() {
                 let executable = executable.to_path_buf();
-                let cc = detect_c_compiler(creator, executable, cwd, args, env.to_vec(), pool).await;
+                let cc =
+                    detect_c_compiler(creator, executable, cwd, args, env.to_vec(), pool).await;
                 cc.map(|c| (c, None))
             } else {
                 Err(e)
