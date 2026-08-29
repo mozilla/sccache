@@ -184,15 +184,27 @@ pub fn language_to_clang_arg(lang: Language) -> Option<&'static str> {
 }
 
 counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
+    flag!("--analyze", TooHardFlag),
+    take_arg!("--analyzer-output", OsString, Separated, TooHard),
+    // Config files can include other files; refuse rather than hashing one layer.
+    take_arg!("--config", OsString, CanBeSeparated(b'='), TooHard),
     take_arg!("--dependent-lib", OsString, Concatenated(b'='), PassThrough),
+    take_arg!("--embed-dir", OsString, Concatenated(b'='), TooHard),
+    take_arg!("--extract-api-ignores", PathBuf, Concatenated(b'='), ExtraHashFile),
     take_arg!("--hip-device-lib-path", PathBuf, Concatenated(b'='), PassThroughPath),
     take_arg!("--hip-path", PathBuf, Concatenated(b'='), PassThroughPath),
     flag!("--precompile", ModuleOnlyFlag),
+    flag!("--precompile-reduced-bmi", ModuleOnlyFlag),
     take_arg!("--rocm-path", PathBuf, Concatenated(b'='), PassThroughPath),
+    take_arg!("--save-stats", OsString, Concatenated(b'='), TooHard),
     take_arg!("--serialize-diagnostics", OsString, Separated, PassThrough),
+    take_arg!("--symbol-graph-dir", OsString, Concatenated(b'='), TooHard),
     take_arg!("--target", OsString, Separated, PassThrough),
+    take_arg!("--vfsoverlay", PathBuf, CanBeSeparated, PreprocessorArgumentPath), // same as -ivfsoverlay
+    take_arg!("--warning-suppression-mappings", PathBuf, Concatenated(b'='), ExtraHashFile),
     // Note: for clang we must override the dep options from gcc.rs with `CanBeSeparated`.
     take_arg!("-MF", PathBuf, CanBeSeparated, DepArgumentPath),
+    take_arg!("-MJ", OsString, CanBeSeparated, TooHard),
     take_arg!("-MQ", OsString, CanBeSeparated, DepTarget),
     take_arg!("-MT", OsString, CanBeSeparated, DepTarget),
     flag!("-Wno-unknown-cuda-version", PassThroughFlag),
@@ -200,32 +212,58 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("-Xclang", OsString, Separated, XClang),
     take_arg!("-add-plugin", OsString, Separated, PassThrough),
     take_arg!("-debug-info-kind", OsString, Concatenated(b'='), PassThrough),
+    take_arg!("-dependency-dot", OsString, Separated, TooHard),
     take_arg!("-dependency-file", PathBuf, Separated, DepArgumentPath),
+    take_arg!("-dsym-dir", OsString, CanBeSeparated, TooHard),
+    take_arg!("-dumpdir", OsString, CanBeSeparated, TooHard),
     flag!("-emit-pch", PassThroughFlag),
+    flag!("-fbuiltin-module-map", TooHardFlag),
+    take_arg!("-fcodegen-data-generate", OsString, Concatenated(b'='), TooHard),
     flag!("-fcolor-diagnostics", DiagnosticsColorFlag),
     flag!("-fcuda-allow-variadic-functions", PassThroughFlag),
     flag!("-fcxx-modules", TooHardFlag),
     take_arg!("-fdebug-compilation-dir", OsString, Separated, PassThrough),
     take_arg!("-fembed-offload-object", PathBuf, Concatenated(b'='), ExtraHashFile),
     take_arg!("-fexperimental-assignment-tracking", OsString, Concatenated(b'='), PassThrough),
+    flag!("-fimplicit-modules", TooHardFlag),
+    flag!("-fmemory-profile", TooHardFlag),
+    take_arg!("-fmemory-profile-use", PathBuf, Concatenated(b'='), ExtraHashFile),
+    take_arg!("-fmemory-profile=", OsString, Concatenated, TooHard),
     take_arg!("-fmodule-file", OsString, Concatenated(b'='), ExtraHashFileClangModuleFile),
+    take_arg!("-fmodule-header", OsString, Concatenated(b'='), TooHard),
+    take_arg!("-fmodule-map-file", PathBuf, Concatenated(b'='), ExtraHashFile),
     take_arg!("-fmodule-output", OsString, Concatenated, ClangModuleOutput),
+    take_arg!("-fmodules-cache-path", OsString, Concatenated(b'='), TooHard),
     flag!("-fmodules-reduced-bmi", PassThroughFlag),
+    take_arg!("-fmodules-user-build-path", OsString, Separated, TooHard),
+    take_arg!("-fms-secure-hotpatch-functions-file", PathBuf, Concatenated(b'='), ExtraHashFile),
     flag!("-fno-color-diagnostics", NoDiagnosticsColorFlag),
     flag!("-fno-pch-timestamp", PassThroughFlag),
     flag!("-fno-profile-instr-generate", TooHardFlag),
     flag!("-fno-profile-instr-use", TooHardFlag),
+    take_arg!("-foptimization-record-file", OsString, Concatenated(b'='), TooHard),
+    take_arg!("-foptimization-record-passes", OsString, Concatenated(b'='), PassThrough),
+    take_arg!("-fpass-plugin", PathBuf, Concatenated(b'='), ExtraHashFile),
     take_arg!("-fplugin", PathBuf, CanBeConcatenated(b'='), ExtraHashFile),
     flag!("-fprebuilt-implicit-modules", TooHardFlag),
     take_arg!("-fprebuilt-module-path", OsString, Concatenated, TooHard),
     flag!("-fprofile-instr-generate", ProfileGenerate),
     // Note: the PathBuf argument is optional
     take_arg!("-fprofile-instr-use", PathBuf, Concatenated(b'='), ClangProfileUse),
+    take_arg!("-fprofile-remapping-file", PathBuf, Concatenated(b'='), ExtraHashFile),
     // Note: this overrides the -fprofile-use option in gcc.rs.
     take_arg!("-fprofile-use", PathBuf, Concatenated(b'='), ClangProfileUse),
+    take_arg!("-frandomize-layout-seed-file", PathBuf, Concatenated(b'='), ExtraHashFile),
     take_arg!("-fsanitize-blacklist", PathBuf, Concatenated(b'='), ExtraHashFile),
     take_arg!("-fsanitize-ignorelist", PathBuf, Concatenated(b'='), ExtraHashFile),
+    take_arg!("-fsanitize-system-ignorelist", PathBuf, Concatenated(b'='), ExtraHashFile),
+    take_arg!("-fsave-optimization-record", OsString, Concatenated(b'='), TooHard),
+    take_arg!("-fthin-link-bitcode", OsString, Concatenated(b'='), TooHard),
+    take_arg!("-ftime-trace", OsString, Concatenated(b'='), TooHard),
     flag!("-fuse-ctor-homing", PassThroughFlag),
+    take_arg!("-fxray-always-instrument", PathBuf, Concatenated(b'='), ExtraHashFile),
+    take_arg!("-fxray-attr-list", PathBuf, Concatenated(b'='), ExtraHashFile),
+    take_arg!("-fxray-never-instrument", PathBuf, Concatenated(b'='), ExtraHashFile),
     take_arg!("-gcc-toolchain", OsString, Separated, PassThrough),
     flag!("-gcodeview", PassThroughFlag),
     take_arg!("-include-pch", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
@@ -233,13 +271,19 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("-load", PathBuf, Separated, ExtraHashFile),
     flag!("-mconstructor-aliases", PassThroughFlag),
     take_arg!("-mllvm", OsString, Separated, PassThrough),
+    take_arg!("-mmlir", OsString, Separated, PassThrough),
+    take_arg!("-module-dependency-dir", OsString, Separated, TooHard),
     flag!("-mrelax-all", PassThroughFlag),
     flag!("-no-opaque-pointers", PreprocessorArgumentFlag),
     // Note: this is ROCm clang specific. Parallelism level shouldn't affect output.
     take_arg!("-parallel-jobs", OsString, Concatenated(b'='), Unhashed),
     take_arg!("-plugin-arg", OsString, Concatenated(b'-'), PassThrough),
+    take_arg!("-save-stats", OsString, Concatenated(b'='), TooHard),
     take_arg!("-target", OsString, Separated, PassThrough),
     flag!("-verify", PreprocessorArgumentFlag),
+    flag!("-verify-pch", PassThroughFlag),
+    take_arg!("-vfsoverlay", PathBuf, CanBeSeparated, PreprocessorArgumentPath), // same as -ivfsoverlay
+    take_arg!("-working-directory", OsString, CanBeSeparated(b'='), TooHard),
     take_arg!("/winsysroot", PathBuf, CanBeSeparated, PassThroughPath),
 ]);
 
@@ -1180,6 +1224,194 @@ mod test {
                 "foo.o"
             ])
         );
+    }
+
+    #[test]
+    fn test_parse_arguments_too_hard() {
+        for (extra, reason) in [
+            (&["--analyze"][..], "--analyze"),
+            (&["--analyzer-output", "html"], "--analyzer-output"),
+            (&["--config", "clang.cfg"], "--config"),
+            (&["--config=clang.cfg"], "--config"),
+            (&["--embed-dir=/tmp/embed"], "--embed-dir"),
+            (&["--save-stats"], "--save-stats"),
+            (&["--save-stats=obj"], "--save-stats"),
+            (&["--symbol-graph-dir=/tmp/sg"], "--symbol-graph-dir"),
+            (&["-MJ", "compile_commands.json"], "-MJ"),
+            (&["-dependency-dot", "deps.dot"], "-dependency-dot"),
+            (&["-dsym-dir", "/tmp/dsym"], "-dsym-dir"),
+            (&["-dumpdir", "/tmp/dumps"], "-dumpdir"),
+            (&["-fbuiltin-module-map"], "-fbuiltin-module-map"),
+            (&["-fcodegen-data-generate"], "-fcodegen-data-generate"),
+            (
+                &["-fcodegen-data-generate=/tmp/cg"],
+                "-fcodegen-data-generate",
+            ),
+            (&["-fimplicit-modules"], "-fimplicit-modules"),
+            (&["-fmemory-profile"], "-fmemory-profile"),
+            (&["-fmemory-profile=/tmp/memprof"], "-fmemory-profile="),
+            (&["-fmodule-header"], "-fmodule-header"),
+            (&["-fmodule-header=user"], "-fmodule-header"),
+            (
+                &["-fmodules-cache-path=/tmp/modules"],
+                "-fmodules-cache-path",
+            ),
+            (
+                &["-fmodules-user-build-path", "/tmp/mods"],
+                "-fmodules-user-build-path",
+            ),
+            (
+                &["-foptimization-record-file=opt.yaml"],
+                "-foptimization-record-file",
+            ),
+            (
+                &["-fsave-optimization-record"],
+                "-fsave-optimization-record",
+            ),
+            (
+                &["-fsave-optimization-record=yaml"],
+                "-fsave-optimization-record",
+            ),
+            (&["-fthin-link-bitcode"], "-fthin-link-bitcode"),
+            (&["-fthin-link-bitcode=foo.bc"], "-fthin-link-bitcode"),
+            (&["-ftime-trace"], "-ftime-trace"),
+            (&["-ftime-trace=trace.json"], "-ftime-trace"),
+            (
+                &["-module-dependency-dir", "/tmp/moddeps"],
+                "-module-dependency-dir",
+            ),
+            (&["-save-stats"], "-save-stats"),
+            (&["-save-stats=cwd"], "-save-stats"),
+            (&["-working-directory", "/tmp"], "-working-directory"),
+            (&["-working-directory=/tmp"], "-working-directory"),
+        ] {
+            let mut args = stringvec!["-c", "foo.c", "-o", "foo.o"];
+            args.extend(extra.iter().copied().map(str::to_string));
+            assert_eq!(
+                CompilerArguments::CannotCache(reason, None),
+                parse_arguments_(args),
+                "{extra:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_arguments_extra_hash_files() {
+        let cwd = std::env::current_dir().unwrap();
+        let a = parses!(
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "--extract-api-ignores=ignores.txt",
+            "--warning-suppression-mappings=map.txt",
+            "-fmemory-profile-use=memprof.prof",
+            "-fmodule-map-file=module.modulemap",
+            "-fms-secure-hotpatch-functions-file=hotpatch.txt",
+            "-fpass-plugin=plugin.so",
+            "-fprofile-remapping-file=remap.txt",
+            "-frandomize-layout-seed-file=seed.txt",
+            "-fsanitize-system-ignorelist=list.txt",
+            "-fxray-always-instrument=always.txt",
+            "-fxray-attr-list=xray.txt",
+            "-fxray-never-instrument=never.txt"
+        );
+        assert_eq!(
+            ovec![
+                "--extract-api-ignores=ignores.txt",
+                "--warning-suppression-mappings=map.txt",
+                "-fmemory-profile-use=memprof.prof",
+                "-fmodule-map-file=module.modulemap",
+                "-fms-secure-hotpatch-functions-file=hotpatch.txt",
+                "-fpass-plugin=plugin.so",
+                "-fprofile-remapping-file=remap.txt",
+                "-frandomize-layout-seed-file=seed.txt",
+                "-fsanitize-system-ignorelist=list.txt",
+                "-fxray-always-instrument=always.txt",
+                "-fxray-attr-list=xray.txt",
+                "-fxray-never-instrument=never.txt"
+            ],
+            a.common_args
+        );
+        assert_eq!(
+            ovec![
+                cwd.join("ignores.txt"),
+                cwd.join("map.txt"),
+                cwd.join("memprof.prof"),
+                cwd.join("module.modulemap"),
+                cwd.join("hotpatch.txt"),
+                cwd.join("plugin.so"),
+                cwd.join("remap.txt"),
+                cwd.join("seed.txt"),
+                cwd.join("list.txt"),
+                cwd.join("always.txt"),
+                cwd.join("xray.txt"),
+                cwd.join("never.txt")
+            ],
+            a.extra_hash_files
+        );
+    }
+
+    #[test]
+    fn test_parse_arguments_passthrough() {
+        let a = parses!(
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "-foptimization-record-passes=inline",
+            "-mmlir",
+            "-allow-unregistered-dialect",
+            "-verify-pch"
+        );
+        assert_eq!(
+            ovec![
+                "-foptimization-record-passes=inline",
+                "-mmlir",
+                "-allow-unregistered-dialect",
+                "-verify-pch"
+            ],
+            a.common_args
+        );
+    }
+
+    #[test]
+    fn test_parse_arguments_vfsoverlay() {
+        let a = parses!(
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "-vfsoverlay",
+            "overlay.yaml",
+            "--vfsoverlay",
+            "overlay2.yaml"
+        );
+        assert_eq!(
+            ovec![
+                "-vfsoverlay",
+                "overlay.yaml",
+                "--vfsoverlay",
+                "overlay2.yaml"
+            ],
+            a.preprocessor_args
+        );
+    }
+
+    #[test]
+    fn test_parse_arguments_precompile_reduced_bmi() {
+        let a = parses!(
+            "-c",
+            "module.cppm",
+            "-o",
+            "module.pcm",
+            "--precompile-reduced-bmi",
+            "-x",
+            "c++-module"
+        );
+        assert_eq!(Some("module.cppm"), a.input.to_str());
+        assert_eq!(Language::CxxModule, a.language);
+        assert_eq!(ovec!["--precompile-reduced-bmi"], a.common_args);
     }
 
     #[test]
