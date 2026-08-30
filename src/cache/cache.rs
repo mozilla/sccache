@@ -82,6 +82,28 @@ pub trait Storage: Send + Sync {
     /// return a `Cache::Hit`.
     async fn get(&self, key: &str) -> Result<Cache>;
 
+    /// Get a parsed cache entry and, when supported, the same entry's raw bytes.
+    ///
+    /// Multi-level caches use the raw bytes to backfill faster levels. The
+    /// default preserves compatibility with existing backends by retaining
+    /// the historical second `get_raw()` call; raw-capable backends can
+    /// override this to avoid reading a hit twice.
+    async fn get_with_raw(&self, key: &str) -> Result<(Cache, Option<Bytes>)> {
+        let cache = self.get(key).await?;
+        let raw = if matches!(&cache, Cache::Hit(_)) {
+            match self.get_raw(key).await {
+                Ok(raw) => raw,
+                Err(error) => {
+                    debug!("Failed to get raw bytes for cache backfill: {}", error);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        Ok((cache, raw))
+    }
+
     /// Put `entry` in the cache under `key`.
     ///
     /// Returns a `Future` that will provide the result or error when the put is
@@ -235,15 +257,20 @@ impl RemoteStorage {
 #[async_trait]
 impl Storage for RemoteStorage {
     async fn get(&self, key: &str) -> Result<Cache> {
+        Ok(self.get_with_raw(key).await?.0)
+    }
+
+    async fn get_with_raw(&self, key: &str) -> Result<(Cache, Option<Bytes>)> {
         match self.operator.read(&normalize_key(key)).await {
             Ok(res) => {
-                let hit = CacheRead::from(io::Cursor::new(res.to_bytes()))?;
-                Ok(Cache::Hit(hit))
+                let data = res.to_bytes();
+                let hit = CacheRead::from(io::Cursor::new(data.clone()))?;
+                Ok((Cache::Hit(hit), Some(data)))
             }
-            Err(e) if e.kind() == opendal::ErrorKind::NotFound => Ok(Cache::Miss),
+            Err(e) if e.kind() == opendal::ErrorKind::NotFound => Ok((Cache::Miss, None)),
             Err(e) => {
                 warn!("Got unexpected error: {:?}", e);
-                Ok(Cache::Miss)
+                Ok((Cache::Miss, None))
             }
         }
     }

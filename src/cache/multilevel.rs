@@ -639,7 +639,20 @@ impl Storage for MultiLevelStorage {
     async fn get(&self, key: &str) -> Result<Cache> {
         for (idx, level) in self.levels.iter().enumerate() {
             let start = Instant::now();
-            match level.get(key).await {
+            let mut raw_bytes_for_backfill = None;
+            let cache_result = if idx > 0 {
+                match level.get_with_raw(key).await {
+                    Ok((cache, raw_bytes)) => {
+                        raw_bytes_for_backfill = raw_bytes;
+                        Ok(cache)
+                    }
+                    Err(error) => Err(error),
+                }
+            } else {
+                level.get(key).await
+            };
+
+            match cache_result {
                 Ok(Cache::Hit(entry)) => {
                     let duration = start.elapsed();
                     debug!("Cache hit at level {} in {:?}", idx, duration);
@@ -661,9 +674,10 @@ impl Storage for MultiLevelStorage {
                         let key_str = key.to_string();
                         let hit_level = idx;
 
-                        // Try to get raw bytes for backfilling
-                        match level.get_raw(key).await {
-                            Ok(Some(raw_bytes)) => {
+                        // Raw bytes obtained above are reused for backfilling;
+                        // no second read is needed for a raw-capable level.
+                        match raw_bytes_for_backfill {
+                            Some(raw_bytes) => {
                                 // Update backfill stats
                                 inc_stat!(
                                     self.atomic_stats.get(hit_level),
@@ -704,16 +718,10 @@ impl Storage for MultiLevelStorage {
                                     });
                                 }
                             }
-                            Ok(None) => {
+                            None => {
                                 debug!(
                                     "Cache backend at level {} does not support get_raw(), skipping backfill",
                                     hit_level
-                                );
-                            }
-                            Err(e) => {
-                                debug!(
-                                    "Failed to get raw bytes from level {} for backfill: {}",
-                                    hit_level, e
                                 );
                             }
                         }
