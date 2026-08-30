@@ -197,6 +197,7 @@ fn test_multi_level_storage_backfill_on_hit() {
 struct InMemoryStorage {
     data: Arc<Mutex<HashMap<String, Vec<u8>>>>,
     access_log: Arc<Mutex<Vec<String>>>,
+    raw_access_log: Arc<Mutex<Vec<String>>>,
 }
 
 impl InMemoryStorage {
@@ -204,11 +205,16 @@ impl InMemoryStorage {
         Self {
             data: Arc::new(Mutex::new(HashMap::new())),
             access_log: Arc::new(Mutex::new(Vec::new())),
+            raw_access_log: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
     fn get_access_log(&self) -> Arc<Mutex<Vec<String>>> {
         Arc::clone(&self.access_log)
+    }
+
+    fn get_raw_access_log(&self) -> Arc<Mutex<Vec<String>>> {
+        Arc::clone(&self.raw_access_log)
     }
 }
 
@@ -227,6 +233,17 @@ impl Storage for InMemoryStorage {
                 }
             }
             None => Ok(Cache::Miss),
+        }
+    }
+
+    async fn get_with_raw(&self, key: &str) -> Result<(Cache, Option<Bytes>)> {
+        let Some(bytes) = self.get_raw(key).await? else {
+            return Ok((Cache::Miss, None));
+        };
+        let raw_bytes = bytes.clone();
+        match CacheRead::from(Cursor::new(bytes)) {
+            Ok(entry) => Ok((Cache::Hit(entry), Some(raw_bytes))),
+            Err(error) => Err(error),
         }
     }
 
@@ -258,6 +275,10 @@ impl Storage for InMemoryStorage {
     /// This simulates the behavior of real remote backends (S3, Redis, etc.) that
     /// can efficiently return raw serialized cache entries for backfilling.
     async fn get_raw(&self, key: &str) -> Result<Option<Bytes>> {
+        self.raw_access_log
+            .lock()
+            .await
+            .push(format!("get_raw:{}", key));
         Ok(self.data.lock().await.get(key).cloned().map(Bytes::from))
     }
 
@@ -269,6 +290,44 @@ impl Storage for InMemoryStorage {
             .insert(key.to_string(), data.to_vec());
         Ok(Duration::ZERO)
     }
+}
+
+#[test]
+fn test_multilevel_raw_hit_reads_backend_once() {
+    let runtime = RuntimeBuilder::new_multi_thread()
+        .enable_all()
+        .worker_threads(1)
+        .build()
+        .unwrap();
+
+    let l0 = Arc::new(InMemoryStorage::new());
+    let l1 = Arc::new(InMemoryStorage::new());
+    let storage = MultiLevelStorage::new(vec![
+        l0.clone() as Arc<dyn Storage>,
+        l1.clone() as Arc<dyn Storage>,
+    ]);
+
+    runtime.block_on(async {
+        let entry = CacheWrite::default();
+        l1.put("single_read_key", entry).await.unwrap();
+
+        // Ignore setup writes and assert the lookup path itself.  A raw-capable
+        // level should be read once, then the same bytes should feed both
+        // parsing and the asynchronous backfill.
+        l0.get_access_log().lock().await.clear();
+        l1.get_access_log().lock().await.clear();
+        l1.get_raw_access_log().lock().await.clear();
+
+        assert!(matches!(
+            storage.get("single_read_key").await.unwrap(),
+            Cache::Hit(_)
+        ));
+
+        assert_eq!(
+            l1.get_raw_access_log().lock().await.as_slice(),
+            &["get_raw:single_read_key"]
+        );
+    });
 }
 
 #[test]
@@ -987,6 +1046,8 @@ fn test_sequential_read_order() {
     let l0_log = l0.get_access_log();
     let l1_log = l1.get_access_log();
     let l2_log = l2.get_access_log();
+    let l1_raw_log = l1.get_raw_access_log();
+    let l2_raw_log = l2.get_raw_access_log();
 
     // Put data only in L2 (slowest level)
     let key = "test_key_12345678901234567890";
@@ -1012,15 +1073,22 @@ fn test_sequential_read_order() {
         let l1_accesses = l1_log.lock().await;
         let l2_accesses = l2_log.lock().await;
 
-        // Each level should have been accessed exactly once for get
+        // L0 still uses get(); raw-capable lower levels use one get_raw() to
+        // both parse and backfill the hit.
         assert_eq!(l0_accesses.len(), 1, "L0 should be checked first");
-        assert_eq!(l1_accesses.len(), 1, "L1 should be checked second");
-        assert_eq!(l2_accesses.len(), 2, "L2: put (setup) + get (check)");
+        assert_eq!(l1_accesses.len(), 0, "L1 should use raw lookup");
+        assert_eq!(l2_accesses.len(), 1, "L2 should contain setup put only");
+        assert_eq!(
+            l1_raw_log.lock().await.as_slice(),
+            &[format!("get_raw:{}", key)]
+        );
+        assert_eq!(
+            l2_raw_log.lock().await.as_slice(),
+            &[format!("get_raw:{}", key)]
+        );
 
         assert_eq!(l0_accesses[0], format!("get:{}", key));
-        assert_eq!(l1_accesses[0], format!("get:{}", key));
         assert_eq!(l2_accesses[0], format!("put:{}", key)); // from setup
-        assert_eq!(l2_accesses[1], format!("get:{}", key)); // from sequential check
     });
 }
 
@@ -1039,6 +1107,7 @@ fn test_read_stops_at_first_hit_not_parallel() {
     let l0_log = l0.get_access_log();
     let l1_log = l1.get_access_log();
     let l2_log = l2.get_access_log();
+    let l1_raw_log = l1.get_raw_access_log();
 
     let key = "test_key_early_hit_1234567890ab";
 
@@ -1066,7 +1135,15 @@ fn test_read_stops_at_first_hit_not_parallel() {
         let l2_accesses = l2_log.lock().await;
 
         assert_eq!(l0_accesses.len(), 1, "L0 should be checked first");
-        assert_eq!(l1_accesses.len(), 2, "L1: put (setup) + get (check)");
+        assert_eq!(
+            l1_accesses.len(),
+            1,
+            "L1: put (setup); lookup uses raw access"
+        );
+        assert_eq!(
+            l1_raw_log.lock().await.as_slice(),
+            &[format!("get_raw:{}", key)]
+        );
         assert_eq!(
             l2_accesses.len(),
             0,
