@@ -1416,6 +1416,24 @@ fn test_multilevel_get_raw_finds_first_hit() {
             "get_raw bytes should be a valid zip archive"
         );
 
+        // Raw reads are used by client-side mode and must preserve the same
+        // accounting and backfill behavior as regular multi-level reads.
+        sleep(Duration::from_millis(50)).await;
+        assert!(
+            l0.get_raw("key").await.unwrap().is_some(),
+            "L1 hit should be backfilled to L0"
+        );
+        let stats = storage.stats();
+        assert_eq!(stats.0[0].misses, 1);
+        assert_eq!(stats.0[0].backfills_to, 1);
+        assert_eq!(stats.0[1].hits, 1);
+        assert_eq!(stats.0[1].backfills_from, 1);
+
+        storage.get_raw("key").await.unwrap();
+        let stats = storage.stats();
+        assert_eq!(stats.0[0].hits, 1, "the second read should hit L0");
+        assert_eq!(stats.0[1].hits, 1, "the second read should skip L1");
+
         // A key that exists in neither level should return None.
         assert!(storage.get_raw("missing").await.unwrap().is_none());
     });
