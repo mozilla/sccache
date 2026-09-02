@@ -1974,16 +1974,30 @@ struct RustInputsPackager {
 #[cfg(feature = "dist-client")]
 fn can_trim_this(input_path: &Path) -> bool {
     trace!("can_trim_this: input_path={:?}", input_path);
-    let mut ar_path = input_path.to_path_buf();
-    ar_path.set_extension("a");
-    // Check if the input path exists with both a .rlib and a .a, in which case
-    // we want to refuse to trim, otherwise triggering
+    // A dependency that also emits a linkable artifact is handed to its
+    // dependents as a whole rlib rather than as metadata, so trimming it to
+    // metadata strands the remote compile.
     // https://bugzilla.mozilla.org/show_bug.cgi?id=1760743
     input_path
         .extension()
         .map(|e| e == RLIB_EXTENSION)
         .unwrap_or(false)
-        && !ar_path.exists()
+        && !has_link_artifact_sibling(input_path)
+}
+
+/// Whether `rlib` sits beside a staticlib, cdylib or dylib built from the same crate.
+#[cfg(feature = "dist-client")]
+fn has_link_artifact_sibling(rlib: &Path) -> bool {
+    const LINK_EXTENSIONS: &[&str] = &["a", "so", "dylib", "dll", "wasm"];
+    let (Some(dir), Some(stem)) = (rlib.parent(), rlib.file_stem().and_then(|s| s.to_str())) else {
+        return false;
+    };
+    // Only some of the artifacts carry the `lib` prefix the rlib has.
+    let unprefixed = stem.strip_prefix("lib").unwrap_or(stem);
+    LINK_EXTENSIONS.iter().any(|ext| {
+        dir.join(format!("{stem}.{ext}")).exists()
+            || dir.join(format!("{unprefixed}.{ext}")).exists()
+    })
 }
 
 #[test]
@@ -2003,6 +2017,28 @@ fn test_can_trim_this() {
     // Adding an ar from a staticlib (i.e., crate-type = ["staticlib", "rlib"]
     // we need to refuse to allow trimming
     let _ar_file = create_file(tempdir, "libtest.a", |_f| Ok(())).unwrap();
+    assert!(!can_trim_this(&rlib_file));
+
+    // Same for a cdylib, whose artifact shares the rlib's stem
+    let tempdir = tempfile::Builder::new()
+        .prefix("sccache_test")
+        .tempdir()
+        .unwrap();
+    let tempdir = tempdir.path();
+    let rlib_file = create_file(tempdir, "libtest.rlib", |_f| Ok(())).unwrap();
+    assert!(can_trim_this(&rlib_file));
+    let _so_file = create_file(tempdir, "libtest.so", |_f| Ok(())).unwrap();
+    assert!(!can_trim_this(&rlib_file));
+
+    // A wasm cdylib is the same case, minus the `lib` prefix
+    let tempdir = tempfile::Builder::new()
+        .prefix("sccache_test")
+        .tempdir()
+        .unwrap();
+    let tempdir = tempdir.path();
+    let rlib_file = create_file(tempdir, "libtest.rlib", |_f| Ok(())).unwrap();
+    assert!(can_trim_this(&rlib_file));
+    let _wasm_file = create_file(tempdir, "test.wasm", |_f| Ok(())).unwrap();
     assert!(!can_trim_this(&rlib_file));
 }
 
