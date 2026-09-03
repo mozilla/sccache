@@ -1209,6 +1209,153 @@ pub fn strip_basedirs<'a>(preprocessor_output: &'a [u8], basedirs: &[Vec<u8>]) -
     Cow::Owned(result)
 }
 
+#[cfg(any(target_os = "windows", test))]
+enum WindowsVerbatimPrefix {
+    Drive,
+    Unc,
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_path_starts_with(value: &[u8], prefix: &[u8]) -> bool {
+    value.len() >= prefix.len()
+        && value.iter().zip(prefix).all(|(&actual, &expected)| {
+            let actual = match actual {
+                b'A'..=b'Z' => actual + (b'a' - b'A'),
+                b'\\' => b'/',
+                _ => actual,
+            };
+            actual == expected
+        })
+}
+
+#[cfg(any(target_os = "windows", test))]
+/// Match a normalized Windows prefix while treating separator runs as one.
+/// Rust dep-info escapes backslashes, so a separator can occupy multiple bytes.
+/// The returned offset still indexes the original value, avoiding an allocation.
+fn windows_path_prefix_len(value: &[u8], prefix: &[u8]) -> Option<usize> {
+    let mut value_index = 0;
+    let mut prefix_index = 0;
+
+    while prefix_index < prefix.len() {
+        if matches!(prefix[prefix_index], b'/' | b'\\') {
+            let prefix_start = prefix_index;
+            while prefix_index < prefix.len() && matches!(prefix[prefix_index], b'/' | b'\\') {
+                prefix_index += 1;
+            }
+
+            let value_start = value_index;
+            while value_index < value.len() && matches!(value[value_index], b'/' | b'\\') {
+                value_index += 1;
+            }
+            if value_index == value_start
+                || (prefix_start == 0
+                    && prefix_index - prefix_start >= 2
+                    && value_index - value_start < 2)
+            {
+                return None;
+            }
+        } else {
+            let actual = *value.get(value_index)?;
+            let actual = match actual {
+                b'A'..=b'Z' => actual + (b'a' - b'A'),
+                _ => actual,
+            };
+            if actual != prefix[prefix_index] {
+                return None;
+            }
+            value_index += 1;
+            prefix_index += 1;
+        }
+    }
+
+    Some(value_index)
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_verbatim_prefix(value: &[u8]) -> Option<WindowsVerbatimPrefix> {
+    if value.len() >= 7
+        && windows_path_starts_with(value, b"//?/")
+        && value[4].is_ascii_alphabetic()
+        && value[5] == b':'
+        && matches!(value[6], b'/' | b'\\')
+    {
+        Some(WindowsVerbatimPrefix::Drive)
+    } else if windows_path_starts_with(value, b"//?/unc/") {
+        Some(WindowsVerbatimPrefix::Unc)
+    } else {
+        None
+    }
+}
+
+/// Strips the longest configured base directory from a complete path.
+/// Configured base directories must be normalized and end with a slash.
+#[doc(hidden)]
+pub fn strip_path_basedirs<'a>(value: &'a [u8], basedirs: &[Vec<u8>]) -> &'a [u8] {
+    if basedirs.is_empty() || value.is_empty() {
+        return value;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        strip_windows_path_basedirs(value, basedirs)
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut longest = None;
+        for basedir in basedirs.iter().filter(|basedir| basedir.ends_with(b"/")) {
+            let root = &basedir[..basedir.len() - 1];
+            let match_len = if value == root {
+                Some(root.len())
+            } else if value.starts_with(basedir) {
+                Some(basedir.len())
+            } else {
+                None
+            };
+            if match_len > longest {
+                longest = match_len;
+            }
+        }
+
+        longest.map_or(value, |length| &value[length..])
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn strip_windows_path_basedirs<'a>(value: &'a [u8], basedirs: &[Vec<u8>]) -> &'a [u8] {
+    // Unicode case folding can change byte lengths. Keep non-ASCII values
+    // unchanged so offsets into the original value remain valid.
+    if !value.is_ascii() {
+        return value;
+    }
+
+    let (basedir_prefix, tail, removed_len): (&[u8], &[u8], usize) =
+        match windows_verbatim_prefix(value) {
+            Some(WindowsVerbatimPrefix::Drive) => (b"", &value[4..], 4),
+            Some(WindowsVerbatimPrefix::Unc) => (b"//", &value[8..], 8),
+            None => (b"", value, 0),
+        };
+
+    let mut longest = None;
+    for basedir in basedirs.iter().filter(|basedir| basedir.ends_with(b"/")) {
+        let configured_len = basedir.len();
+        let root = basedir[..configured_len - 1].strip_prefix(basedir_prefix);
+        let prefix = basedir.strip_prefix(basedir_prefix);
+        let exact_match = root.and_then(|root| {
+            windows_path_prefix_len(tail, root).filter(|length| *length == tail.len())
+        });
+        let match_end =
+            exact_match.or_else(|| prefix.and_then(|prefix| windows_path_prefix_len(tail, prefix)));
+        if let Some(match_end) = match_end
+            && longest.is_none_or(|(length, _)| configured_len > length)
+        {
+            longest = Some((configured_len, match_end));
+        }
+    }
+
+    longest.map_or(value, |(_, match_end)| &value[removed_len + match_end..])
+}
+
 /// Double every `/` in a normalized path.
 ///
 /// Paths inside preprocessor output are C string literals, so on Windows
@@ -1290,6 +1437,23 @@ pub fn normalize_win_path(path: &[u8]) -> Vec<u8> {
     }
 
     result
+}
+
+/// Remove the Win32 verbatim prefix from normalized drive and UNC paths.
+///
+/// `std::fs::canonicalize` adds this prefix on Windows, while compiler
+/// arguments commonly use the equivalent path without it.
+#[cfg(any(target_os = "windows", test))]
+pub(crate) fn strip_windows_verbatim_prefix(path: &mut Vec<u8>) {
+    match windows_verbatim_prefix(path) {
+        Some(WindowsVerbatimPrefix::Drive) => {
+            path.drain(..4);
+        }
+        Some(WindowsVerbatimPrefix::Unc) => {
+            path.drain(2..8);
+        }
+        None => {}
+    }
 }
 
 /// Resolve the compiler executable, avoiding ccache/sccache wrappers.
@@ -1831,6 +1995,70 @@ mod tests {
         let input = b"C:\\USERS\\test\\PROJECT";
         let normalized = super::normalize_win_path(input);
         assert_eq!(normalized, b"c:/users/test/project");
+    }
+
+    #[test]
+    fn test_strip_windows_path_basedirs_verbatim_paths() {
+        let basedirs = vec![
+            b"c:/users/test/".to_vec(),
+            b"c:/users/test/project/".to_vec(),
+            b"//server/share/project/".to_vec(),
+        ];
+
+        for (input, expected) in [
+            (
+                b"\\\\?\\C:\\Users\\Test\\Project\\src\\lib.rs".as_slice(),
+                b"src\\lib.rs".as_slice(),
+            ),
+            (b"//?/c:/users/test/project".as_slice(), b"".as_slice()),
+            (
+                b"\\\\?\\UNC\\Server\\Share\\Project\\src\\lib.rs".as_slice(),
+                b"src\\lib.rs".as_slice(),
+            ),
+            (
+                b"C:/Users/Test/Project/src/lib.rs".as_slice(),
+                b"src/lib.rs".as_slice(),
+            ),
+            (
+                b"C:\\\\Users\\\\Test\\\\Project\\\\src\\\\lib.rs".as_slice(),
+                b"src\\\\lib.rs".as_slice(),
+            ),
+            (
+                b"\\\\?\\C:\\\\Users\\\\Test\\\\Project".as_slice(),
+                b"".as_slice(),
+            ),
+            (
+                b"\\\\?\\Volume{1234}\\Project\\src\\lib.rs".as_slice(),
+                b"\\\\?\\Volume{1234}\\Project\\src\\lib.rs".as_slice(),
+            ),
+        ] {
+            assert_eq!(
+                super::strip_windows_path_basedirs(input, &basedirs),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn test_strip_windows_verbatim_prefix() {
+        for (input, expected) in [
+            (
+                b"\\\\?\\C:\\Users\\Test\\Project".as_slice(),
+                b"c:/users/test/project".as_slice(),
+            ),
+            (
+                b"\\\\?\\UNC\\Server\\Share\\Project".as_slice(),
+                b"//server/share/project".as_slice(),
+            ),
+            (
+                b"\\\\?\\Volume{1234}\\Project".as_slice(),
+                b"//?/volume{1234}/project".as_slice(),
+            ),
+        ] {
+            let mut normalized = super::normalize_win_path(input);
+            super::strip_windows_verbatim_prefix(&mut normalized);
+            assert_eq!(normalized, expected);
+        }
     }
 
     #[test]
