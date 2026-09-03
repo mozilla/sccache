@@ -15,7 +15,6 @@
 use anyhow::{Context, Error, Result, anyhow, bail};
 use flate2::read::GzDecoder;
 use fs_err as fs;
-use libmount::Overlay;
 use sccache::dist::{
     BuildResult, BuilderIncoming, CompileCommand, InputsReader, OutputData, ProcessOutput, TcCache,
     Toolchain,
@@ -23,7 +22,7 @@ use sccache::dist::{
 use sccache::lru_disk_cache::Error as LruError;
 use std::collections::{HashMap, hash_map};
 use std::io;
-use std::iter;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{self, Path, PathBuf};
 use std::process::{ChildStdin, Command, Output, Stdio};
 use std::sync::Mutex;
@@ -87,6 +86,38 @@ fn join_suffix<P: AsRef<Path>>(path: &Path, suffix: P) -> PathBuf {
     path.join(components)
 }
 
+// The Linux kernel creates subdirectories (within the overlayFS work dir) with
+// mode `0o000`:
+//   - https://github.com/torvalds/linux/blob/c10130c234c81f4a7a143edbf413080235f8d8ce/fs/overlayfs/super.c#L326
+//
+// `fs::remove_dir_all` is unable to delete these, hence this function:
+fn remove_dir_all_force<P: AsRef<Path>>(path: P) -> io::Result<()> {
+    match fs::remove_dir_all(&path) {
+        Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+            // attempt to change permissions (recursively) and try again:
+            for ent in walkdir::WalkDir::new(&path) {
+                let Ok(ent) = ent else {
+                    continue;
+                };
+
+                // only attempt to change permissions on directories (we're only
+                // looking to delete files under `path`, not read them)
+                if !ent.file_type().is_dir() {
+                    continue;
+                }
+
+                // equivalent of `ug+rwx`:
+                let mut perms = ent.metadata()?.permissions();
+                perms.set_mode(perms.mode() | 0o770);
+                fs::set_permissions(ent.path(), perms).unwrap();
+            }
+
+            fs::remove_dir_all(&path)
+        }
+        other => other,
+    }
+}
+
 #[derive(Debug)]
 struct OverlaySpec {
     build_dir: PathBuf,
@@ -109,11 +140,6 @@ pub struct OverlayBuilder {
 impl OverlayBuilder {
     pub fn new(bubblewrap: PathBuf, dir: PathBuf) -> Result<Self> {
         info!("Creating overlay builder");
-
-        if !nix::unistd::getuid().is_root() || !nix::unistd::geteuid().is_root() {
-            // Not root, or a setuid binary - haven't put enough thought into supporting this, bail
-            bail!("not running as root")
-        }
 
         let out = Command::new(&bubblewrap)
             .arg("--version")
@@ -163,7 +189,7 @@ impl OverlayBuilder {
 
     fn cleanup(&self) -> Result<()> {
         if self.dir.exists() {
-            fs::remove_dir_all(&self.dir).context("Failed to clean up builder directory")?
+            remove_dir_all_force(&self.dir).context("Failed to clean up builder directory")?
         }
         Ok(())
     }
@@ -270,49 +296,15 @@ impl OverlayBuilder {
         std::thread::scope(|scope| {
             scope
                 .spawn(|| {
-                    // Now mounted filesystems will be automatically unmounted when this thread dies
-                    // (and tmpfs filesystems will be completely destroyed)
-                    nix::sched::unshare(nix::sched::CloneFlags::CLONE_NEWNS)
-                        .context("Failed to enter a new Linux namespace")?;
-                    // Make sure that all future mount changes are private to this namespace
-                    // TODO: shouldn't need to add these annotations
-                    let source: Option<&str> = None;
-                    let fstype: Option<&str> = None;
-                    let data: Option<&str> = None;
-                    // Turn / into a 'slave', so it receives mounts from real root, but doesn't propagate back
-                    nix::mount::mount(
-                        source,
-                        "/",
-                        fstype,
-                        nix::mount::MsFlags::MS_REC | nix::mount::MsFlags::MS_PRIVATE,
-                        data,
-                    )
-                    .context("Failed to turn / into a slave")?;
-
                     let work_dir = overlay.build_dir.join("work");
                     let upper_dir = overlay.build_dir.join("upper");
-                    let target_dir = overlay.build_dir.join("target");
                     fs::create_dir(&work_dir).context("Failed to create overlay work directory")?;
                     fs::create_dir(&upper_dir)
                         .context("Failed to create overlay upper directory")?;
-                    fs::create_dir(&target_dir)
-                        .context("Failed to create overlay target directory")?;
-
-                    let () = Overlay::writable(
-                        iter::once(overlay.toolchain_dir.as_path()),
-                        upper_dir,
-                        work_dir,
-                        &target_dir,
-                        // This error is unfortunately not Send+Sync
-                    )
-                    .mount()
-                    .map_err(|e| anyhow!("Failed to mount overlay FS: {}", e.to_string()))?;
 
                     trace!("copying in inputs");
-                    // Note that we don't unpack directly into the upperdir since there overlayfs has some
-                    // special marker files that we don't want to create by accident (or malicious intent)
                     tar::Archive::new(inputs_rdr)
-                        .unpack(&target_dir)
+                        .unpack(&upper_dir)
                         .context("Failed to unpack inputs to overlay")?;
 
                     let CompileCommand {
@@ -324,7 +316,7 @@ impl OverlayBuilder {
                     let cwd = Path::new(&cwd);
 
                     trace!("creating output directories");
-                    fs::create_dir_all(join_suffix(&target_dir, cwd))
+                    fs::create_dir_all(join_suffix(&upper_dir, cwd))
                         .context("Failed to create cwd")?;
                     for path in output_paths.iter() {
                         // If it doesn't have a parent, nothing needs creating
@@ -333,13 +325,12 @@ impl OverlayBuilder {
                         } else {
                             continue;
                         };
-                        fs::create_dir_all(join_suffix(&target_dir, cwd.join(output_parent)))
+                        fs::create_dir_all(join_suffix(&upper_dir, cwd.join(output_parent)))
                             .context("Failed to create an output directory")?;
                     }
 
                     trace!("performing compile");
                     // Bubblewrap notes:
-                    // - We're running as uid 0 (to do the mounts above), and so bubblewrap is run as uid 0
                     // - There's special handling in bubblewrap to compare uid and euid - of interest to us,
                     //   if uid == euid == 0, bubblewrap preserves capabilities (not good!) so we explicitly
                     //   drop all capabilities
@@ -349,8 +340,8 @@ impl OverlayBuilder {
                     //   hurt.
                     // - --unshare-all is not ideal as it happily continues if it fails to unshare either
                     //   the user or cgroups namespace, so we list everything explicitly
-                    // - The order of bind vs proc + dev is important - the new root must be put in place
-                    //   first, otherwise proc and dev get hidden
+                    // - The order of overlay mounts vs proc + dev is important - the new root must be put in
+                    //   place first, otherwise proc and dev get hidden
                     let mut cmd = Command::new(bubblewrap);
                     cmd.arg("--die-with-parent")
                         .args(["--cap-drop", "ALL"])
@@ -362,9 +353,14 @@ impl OverlayBuilder {
                             "--unshare-net",
                             "--unshare-uts",
                         ])
-                        .arg("--bind")
-                        .arg(&target_dir)
-                        .arg("/")
+                        .args([
+                            "--overlay-src".as_ref(),
+                            overlay.toolchain_dir.as_os_str(),
+                            "--overlay".as_ref(),
+                            /* RWSRC   */ upper_dir.as_os_str(),
+                            /* WORKDIR */ work_dir.as_os_str(),
+                            /* DEST    */ "/".as_ref(),
+                        ])
                         .args(["--proc", "/proc"])
                         .args(["--dev", "/dev"])
                         .arg("--chdir")
@@ -380,6 +376,7 @@ impl OverlayBuilder {
                     cmd.arg("--");
                     cmd.arg(executable);
                     cmd.args(arguments);
+                    trace!("bubblewrap invocation: {cmd:?}");
                     let compile_output = cmd
                         .output()
                         .context("Failed to retrieve output from compile")?;
@@ -388,7 +385,9 @@ impl OverlayBuilder {
                     let mut outputs = vec![];
                     trace!("retrieving {:?}", output_paths);
                     for path in output_paths {
-                        let abspath = join_suffix(&target_dir, cwd.join(&path)); // Resolve in case it's relative since we copy it from the root level
+                        // NOTE: this (resolving as relative to `upper_dir`) presumes that the
+                        // output path is not part of the toolchain..
+                        let abspath = join_suffix(&upper_dir, cwd.join(&path)); // Resolve in case it's relative since we copy it from the root level
                         match fs::File::open(abspath) {
                             Ok(file) => {
                                 let output = OutputData::try_from_reader(file)
@@ -428,7 +427,7 @@ impl OverlayBuilder {
             build_dir,
             toolchain_dir: _,
         } = overlay;
-        if let Err(e) = fs::remove_dir_all(&build_dir) {
+        if let Err(e) = remove_dir_all_force(&build_dir) {
             error!(
                 "Failed to remove build directory {}: {}",
                 build_dir.display(),
