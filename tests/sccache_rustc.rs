@@ -112,7 +112,7 @@ while [ "$#" -gt 0 ]; do
         --emit)
             shift
             if [ "$1" = dep-info ]; then
-                echo "deps.d: RUST_FILE.rs" > "$3"
+                echo "$3: RUST_FILE.rs" > "$3"
                 exec echo "RUST_FILE.rs:" "$3"
             fi
             ;;
