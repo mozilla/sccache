@@ -20,7 +20,7 @@ use crate::compiler::cicc::Cicc;
 use crate::compiler::clang::Clang;
 use crate::compiler::cudafe::CudaFE;
 use crate::compiler::diab::Diab;
-use crate::compiler::gcc::Gcc;
+use crate::compiler::gcc::{ExpandIncludeFile, Gcc};
 use crate::compiler::msvc;
 use crate::compiler::msvc::Msvc;
 use crate::compiler::nvcc::Nvcc;
@@ -1479,7 +1479,7 @@ where
         .await
         .map(|c| (Box::new(c) as Box<dyn Compiler<T>>, None));
     } else if is_known_c_compiler(executable) {
-        let cc = detect_c_compiler(creator, executable, args, env.to_vec(), pool).await;
+        let cc = detect_c_compiler(creator, executable, cwd, args, env.to_vec(), pool).await;
         return cc.map(|c| (c, None));
     } else {
         // Even if it does not look like rustc like it might still be rustc driver
@@ -1503,7 +1503,8 @@ where
             // in case we attempted to test for rustc while it didn't look like it, fallback to c compiler detection one lat time
             if maybe_rustc_executable.is_none() {
                 let executable = executable.to_path_buf();
-                let cc = detect_c_compiler(creator, executable, args, env.to_vec(), pool).await;
+                let cc =
+                    detect_c_compiler(creator, executable, cwd, args, env.to_vec(), pool).await;
                 cc.map(|c| (c, None))
             } else {
                 Err(e)
@@ -1628,7 +1629,7 @@ use self::ArgData::PassThrough as Detect_PassThrough;
 
 // Establish a set of compiler flags that are required for
 // valid execution of the compiler even in preprocessor mode.
-// If the requested compiler invocatiomn has any of these arguments
+// If the requested compiler invocation has any of these arguments
 // propagate them when doing our compiler vendor detection
 //
 // Current known required flags:
@@ -1636,14 +1637,19 @@ use self::ArgData::PassThrough as Detect_PassThrough;
 //  This flag specifies the host compiler to use otherwise
 //  gcc is expected to exist on the PATH. So if gcc doesn't exist
 //  compiler detection fails if we don't pass along the ccbin arg
+// target needed for cross-compilers that cannot preprocess for an
+// unspecified host target
 counted_array!(static ARGS: [ArgInfo<ArgData>; _] = [
     take_arg!("--compiler-bindir", OsString, CanBeSeparated(b'='), Detect_PassThrough),
+    take_arg!("--target", OsString, CanBeSeparated(b'='), Detect_PassThrough),
     take_arg!("-ccbin", OsString, CanBeSeparated(b'='), Detect_PassThrough),
+    take_arg!("-target", OsString, CanBeSeparated(b'='), Detect_PassThrough),
 ]);
 
 async fn detect_c_compiler<T, P>(
     creator: T,
     executable: P,
+    cwd: &Path,
     arguments: &[OsString],
     env: Vec<(OsString, OsString)>,
     pool: tokio::runtime::Handle,
@@ -1717,10 +1723,15 @@ compiler_version=__VERSION__
     // Iterate over all the arguments for compilation and extract
     // any that are required for any valid execution of the compiler.
     // Allowing our compiler vendor detection to always properly execute
-    for arg in ArgsIter::new(arguments.iter().cloned(), &ARGS[..]) {
+    for arg in ArgsIter::new(ExpandIncludeFile::new(cwd, arguments), &ARGS[..]) {
         let arg = arg.unwrap_or_else(|_| Argument::Raw(OsString::from("")));
         if let Some(Detect_PassThrough(_)) = arg.get_data() {
-            let required_arg = arg.normalize(NormalizedDisposition::Concatenated);
+            let disposition = if arg.flag_str() == Some("-target") {
+                NormalizedDisposition::Separated
+            } else {
+                NormalizedDisposition::Concatenated
+            };
+            let required_arg = arg.normalize(disposition);
             cmd.args(&required_arg.iter_os_strings().collect_vec());
         }
     }
@@ -2021,6 +2032,80 @@ mod test {
             .wait()
             .unwrap()
             .0;
+        assert_eq!(CompilerKind::C(CCompilerKind::Clang), c.kind());
+    }
+
+    #[test_case(&["--target=arm-none-eabi"], &["--target=arm-none-eabi"] ; "long joined")]
+    #[test_case(&["--target", "arm-none-eabi"], &["--target=arm-none-eabi"] ; "long separated")]
+    #[test_case(&["-target=arm-none-eabi"], &["-target", "arm-none-eabi"] ; "short joined")]
+    #[test_case(&["-target", "arm-none-eabi"], &["-target", "arm-none-eabi"] ; "short separated")]
+    fn test_detect_compiler_forwards_target(arguments: &[&str], expected_target: &[&str]) {
+        let f = TestFixture::new();
+        let creator = new_creator();
+        let runtime = single_threaded_runtime();
+        let pool = runtime.handle();
+        let clang = f.mk_bin("clang").unwrap();
+        let expected_target = expected_target
+            .iter()
+            .map(|arg| OsString::from(*arg))
+            .collect_vec();
+
+        next_command_calls(&creator, move |args| {
+            assert_eq!(args.len(), expected_target.len() + 2);
+            assert_eq!(&args[..expected_target.len()], expected_target);
+            assert_eq!(args[expected_target.len()], "-E");
+            Ok(MockChild::new(exit_status(0), "compiler_id=clang\n", ""))
+        });
+
+        let arguments = arguments
+            .iter()
+            .map(|arg| OsString::from(*arg))
+            .collect_vec();
+        let c = detect_compiler(
+            creator,
+            &clang,
+            f.tempdir.path(),
+            &arguments,
+            &[],
+            pool,
+            None,
+        )
+        .wait()
+        .unwrap()
+        .0;
+        assert_eq!(CompilerKind::C(CCompilerKind::Clang), c.kind());
+    }
+
+    #[test]
+    fn test_detect_compiler_forwards_target_from_response_file() {
+        let f = TestFixture::new();
+        let creator = new_creator();
+        let runtime = single_threaded_runtime();
+        let pool = runtime.handle();
+        let clang = f.mk_bin("clang").unwrap();
+        let response_file = f.tempdir.path().join("target.rsp");
+        std::fs::write(&response_file, "--target arm-none-eabi").unwrap();
+
+        next_command_calls(&creator, move |args| {
+            assert_eq!(args.len(), 3);
+            assert_eq!(args[0], "--target=arm-none-eabi");
+            assert_eq!(args[1], "-E");
+            Ok(MockChild::new(exit_status(0), "compiler_id=clang\n", ""))
+        });
+
+        let arguments = [OsString::from("@target.rsp")];
+        let c = detect_compiler(
+            creator,
+            &clang,
+            f.tempdir.path(),
+            &arguments,
+            &[],
+            pool,
+            None,
+        )
+        .wait()
+        .unwrap()
+        .0;
         assert_eq!(CompilerKind::C(CCompilerKind::Clang), c.kind());
     }
 
