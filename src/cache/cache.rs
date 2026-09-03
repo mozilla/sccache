@@ -220,6 +220,28 @@ impl RemoteStorage {
     }
 }
 
+#[cfg(any(
+    feature = "azure",
+    feature = "gcs",
+    feature = "gha",
+    feature = "memcached",
+    feature = "redis",
+    feature = "s3",
+    feature = "webdav",
+    feature = "oss",
+    feature = "cos"
+))]
+fn decode_remote_cache_read(result: opendal::Result<opendal::Buffer>) -> Result<Cache> {
+    match result {
+        Ok(res) => {
+            let hit = CacheRead::from(io::Cursor::new(res.to_bytes()))?;
+            Ok(Cache::Hit(hit))
+        }
+        Err(e) if e.kind() == opendal::ErrorKind::NotFound => Ok(Cache::Miss),
+        Err(e) => Err(e).context("failed to read remote cache entry"),
+    }
+}
+
 /// Implement storage for operator.
 #[cfg(any(
     feature = "azure",
@@ -235,17 +257,7 @@ impl RemoteStorage {
 #[async_trait]
 impl Storage for RemoteStorage {
     async fn get(&self, key: &str) -> Result<Cache> {
-        match self.operator.read(&normalize_key(key)).await {
-            Ok(res) => {
-                let hit = CacheRead::from(io::Cursor::new(res.to_bytes()))?;
-                Ok(Cache::Hit(hit))
-            }
-            Err(e) if e.kind() == opendal::ErrorKind::NotFound => Ok(Cache::Miss),
-            Err(e) => {
-                warn!("Got unexpected error: {:?}", e);
-                Ok(Cache::Miss)
-            }
-        }
+        decode_remote_cache_read(self.operator.read(&normalize_key(key)).await)
     }
 
     async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration> {
@@ -672,6 +684,26 @@ mod test {
     use super::*;
     use crate::config::CacheModeConfig;
     use fs_err as fs;
+
+    #[cfg(feature = "s3")]
+    mod remote_storage {
+        use super::*;
+        use opendal::{Error, ErrorKind};
+
+        #[test]
+        fn get_propagates_unexpected_backend_errors() {
+            let error = decode_remote_cache_read(Err(Error::new(
+                ErrorKind::Unexpected,
+                "injected read failure",
+            )))
+            .unwrap_err();
+
+            assert_eq!(
+                error.downcast_ref::<Error>().map(Error::kind),
+                Some(ErrorKind::Unexpected)
+            );
+        }
+    }
 
     #[test]
     fn test_read_write_mode_local() {
