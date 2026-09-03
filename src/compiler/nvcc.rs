@@ -792,7 +792,15 @@ where
                     }
                     false
                 });
-                (env_vars.clone(), Cacheable::Yes, group)
+                // For a virtual-only gencode (e.g. -gencode arch=compute_120,
+                // code=compute_120) nvcc runs ptxas with no -o just to verify the
+                // PTX. There is no artifact to cache, so run it directly.
+                let cacheable = if args.iter().any(|arg| arg == "-o") {
+                    Cacheable::Yes
+                } else {
+                    Cacheable::No
+                };
+                (env_vars.clone(), cacheable, group)
             }
             // cudafe++ _must be_ cached, because the `.module_id` file is unique to each invocation (new in CTK 12.8)
             Some("cudafe++") => {
