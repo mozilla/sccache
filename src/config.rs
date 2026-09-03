@@ -14,7 +14,7 @@
 
 use crate::cache::CacheMode;
 #[cfg(target_os = "windows")]
-use crate::util::normalize_win_path;
+use crate::util::{normalize_win_path, strip_windows_verbatim_prefix};
 use directories::ProjectDirs;
 use fs::File;
 use fs_err as fs;
@@ -1377,17 +1377,15 @@ impl Config {
             // Normalize basedir:
             // remove double separators, cur_dirs, parent_dirs, trailing slashes
             let p_norm = p.normalize();
-            let mut bytes = p_norm.to_string().into_bytes();
-
-            // Always add a trailing `/` to basedirs to ensure we only match complete path
-            // components
-            bytes.push(b'/');
+            let bytes = p_norm.to_string().into_bytes();
 
             // normalize windows paths: use slashes and lowercase
-            let normalized = {
+            let mut normalized = {
                 #[cfg(target_os = "windows")]
                 {
-                    normalize_win_path(&bytes)
+                    let mut normalized = normalize_win_path(&bytes);
+                    strip_windows_verbatim_prefix(&mut normalized);
+                    normalized
                 }
 
                 #[cfg(not(target_os = "windows"))]
@@ -1395,6 +1393,10 @@ impl Config {
                     bytes
                 }
             };
+            // End basedirs with a separator to ensure we only match complete path components.
+            if !normalized.ends_with(b"/") {
+                normalized.push(b'/');
+            }
             // push only if not already present
             if !basedirs.contains(&normalized) {
                 basedirs.push(normalized);
@@ -3122,14 +3124,25 @@ fn test_integration_normalized_path_with_double_slashes() {
         cache: Default::default(),
         dist: Default::default(),
         server_startup_timeout_ms: None,
-        basedirs: vec!["/home//user///project/".to_string()],
+        basedirs: vec![
+            "/home//user///project/".to_string(),
+            "/".to_string(),
+            "/home/user/project\\".to_string(),
+        ],
         client_side_mode: false,
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
 
     // Config should normalize to single slashes with one trailing slash
-    assert_eq!(config.basedirs, vec![b"/home/user/project/"]);
+    assert_eq!(
+        config.basedirs,
+        vec![
+            b"/home/user/project/".to_vec(),
+            b"/".to_vec(),
+            b"/home/user/project\\/".to_vec(),
+        ]
+    );
 
     // Verify it works with strip_basedirs
     let input = b"# 1 \"/home/user/project/src/main.c\"";
@@ -3153,14 +3166,17 @@ fn test_integration_windows_path_normalization() {
         cache: Default::default(),
         dist: Default::default(),
         server_startup_timeout_ms: None,
-        basedirs: vec!["C:\\Users\\Test\\Project".to_string()],
+        basedirs: vec!["C:\\Users\\Test\\Project".to_string(), "C:\\".to_string()],
         client_side_mode: false,
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
 
     // Should be normalized to lowercase with forward slashes
-    assert_eq!(config.basedirs, vec![b"c:/users/test/project/"]);
+    assert_eq!(
+        config.basedirs,
+        vec![b"c:/users/test/project/".to_vec(), b"c:/".to_vec()]
+    );
 
     // Test with mixed case preprocessor output
     let input = b"# 1 \"C:\\Users\\Test\\Project\\src\\main.c\"";
