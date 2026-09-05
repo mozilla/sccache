@@ -1209,6 +1209,125 @@ pub fn strip_basedirs<'a>(preprocessor_output: &'a [u8], basedirs: &[Vec<u8>]) -
     Cow::Owned(result)
 }
 
+/// Strip the base directories from a single compiler argument, for hashing.
+///
+/// [`strip_basedirs`] looks for a basedir where preprocessor output would put
+/// one: at the start of a line, after a quote, after whitespace.  A compiler
+/// argument spells the same paths differently.  `-I/home/user/project/include`
+/// has no boundary at all before the path, and `-ffile-prefix-map` names a
+/// directory without a trailing slash, as in
+/// `-ffile-prefix-map=/home/user/project=.`, which is what keeps two checkouts
+/// of the same tree from agreeing on a hash.
+///
+/// Only the places where an argument is expected to spell a pathname are
+/// considered, rather than any offset that happens to match:
+///
+/// * the whole argument, as in a source file or the path of a separated
+///   option such as `-include-pch <path>`;
+/// * the value of an option written with an `=`, as in `--sysroot=<path>` or
+///   either half of `-ffile-prefix-map=<path>=<path>`;
+/// * the value glued to a short option, as in `-I<path>` or `-L<path>`.
+///
+/// A basedir sitting anywhere else is left alone, so `-DROOT="/home/user/project"`
+/// keeps a definition the compiler will bake into the output verbatim.  A match
+/// also has to end where a path component ends, so `/home/user/project` does not
+/// match the start of `/home/user/project-docs`.  The longest basedir wins, so a
+/// nested one takes precedence over the tree that contains it.
+pub fn strip_basedirs_from_arg<'a>(arg: &'a [u8], basedirs: &[Vec<u8>]) -> Cow<'a, [u8]> {
+    if basedirs.is_empty() || arg.is_empty() {
+        return Cow::Borrowed(arg);
+    }
+
+    // We must return the original argument on all platforms, so we only
+    // normalize a copy for searching.
+    #[cfg(not(target_os = "windows"))]
+    let haystack: &[u8] = arg;
+    #[cfg(target_os = "windows")]
+    let normalized = normalize_win_path(arg);
+    #[cfg(target_os = "windows")]
+    let haystack: &[u8] = &normalized;
+
+    let mut order: Vec<usize> = (0..basedirs.len()).collect();
+    order.sort_by_key(|&i| std::cmp::Reverse(basedirs[i].len()));
+
+    let mut result: Option<Vec<u8>> = None;
+    let mut copied = 0;
+    for pos in pathname_positions(haystack) {
+        if pos < copied {
+            // Inside a basedir we already stripped.
+            continue;
+        }
+        let rest = &haystack[pos..];
+        let mut matched = 0;
+        for &i in &order {
+            // Basedirs carry a trailing slash, see Config::basedirs. A path
+            // component can also end at the end of the argument, or at a
+            // separator such as the `=` of -ffile-prefix-map.
+            let with_slash = basedirs[i].as_slice();
+            let bare = &with_slash[..with_slash.len() - 1];
+            if rest.starts_with(with_slash) {
+                matched = with_slash.len();
+            } else if rest.starts_with(bare)
+                && matches!(rest.get(bare.len()), None | Some(b'='))
+            {
+                matched = bare.len();
+            }
+            if matched > 0 {
+                trace!(
+                    "Matched basedir {} at position {} of argument",
+                    String::from_utf8_lossy(with_slash),
+                    pos
+                );
+                break;
+            }
+        }
+        if matched > 0 {
+            let out = result.get_or_insert_with(|| Vec::with_capacity(arg.len()));
+            out.extend_from_slice(&arg[copied..pos]);
+            copied = pos + matched;
+        }
+    }
+
+    match result {
+        Some(mut out) => {
+            out.extend_from_slice(&arg[copied..]);
+            Cow::Owned(out)
+        }
+        None => Cow::Borrowed(arg),
+    }
+}
+
+/// The offsets in a compiler argument where a pathname can begin.
+///
+/// See [`strip_basedirs_from_arg`] for what they are and why the rest of the
+/// argument is off limits.
+fn pathname_positions(arg: &[u8]) -> impl Iterator<Item = usize> + '_ {
+    // The value glued to a short option: everything up to the first byte that
+    // cannot be part of an option name. `-I/path` yields 2, `-isystem/path` 8.
+    let glued = if arg.first() == Some(&b'-') {
+        let name_len = arg[1..]
+            .iter()
+            .take_while(|b| b.is_ascii_alphanumeric() || **b == b'-' || **b == b'_')
+            .count();
+        Some(1 + name_len)
+    } else {
+        None
+    };
+
+    // The whole argument, the value of each `=`-separated option, and the one
+    // glued position, in ascending order and without duplicates.
+    let equals = arg
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| **b == b'=')
+        .map(|(i, _)| i + 1);
+
+    let mut positions: Vec<usize> = std::iter::once(0).chain(glued).chain(equals).collect();
+    positions.sort_unstable();
+    positions.dedup();
+    positions.into_iter().filter(move |&p| p < arg.len())
+}
+
 /// Double every `/` in a normalized path.
 ///
 /// Paths inside preprocessor output are C string literals, so on Windows
@@ -1650,6 +1769,102 @@ mod tests {
         assert_eq!(tested_cases, (alphabet.len() + 1).pow(3) - 1);
         let empty_result = super::ascii_unescape_default(&[]).unwrap();
         assert!(empty_result.is_empty(), "{:?}", empty_result);
+    }
+
+    #[test]
+    fn test_strip_basedirs_from_arg() {
+        let basedir = b"/home/user/project/".to_vec();
+        let strip = |arg: &[u8]| {
+            super::strip_basedirs_from_arg(arg, std::slice::from_ref(&basedir)).into_owned()
+        };
+
+        // The flag that ties an object file to one checkout: the tree is named
+        // without a trailing slash, so the path component ends at the `=`.
+        assert_eq!(strip(b"-ffile-prefix-map=/home/user/project=."), b"-ffile-prefix-map==.");
+        assert_eq!(
+            strip(b"-ffile-prefix-map=/home/user/project/build=."),
+            b"-ffile-prefix-map=build=."
+        );
+        assert_eq!(
+            strip(b"-ffile-prefix-map=/home/user/project/build/=build/"),
+            b"-ffile-prefix-map=build/=build/"
+        );
+
+        // Paths with no boundary before them.
+        assert_eq!(strip(b"-I/home/user/project/include"), b"-Iinclude");
+        assert_eq!(strip(b"/home/user/project/src/main.c"), b"src/main.c");
+
+        // A sibling directory that merely starts with the same bytes is not a
+        // match, in either spelling.
+        assert_eq!(
+            strip(b"-I/home/user/project-docs/include"),
+            b"-I/home/user/project-docs/include"
+        );
+        assert_eq!(
+            strip(b"-ffile-prefix-map=/home/user/project-docs=."),
+            b"-ffile-prefix-map=/home/user/project-docs=."
+        );
+
+        // Untouched without basedirs, and when nothing matches.
+        assert_eq!(
+            &*super::strip_basedirs_from_arg(b"-ffile-prefix-map=/home/user/project=.", &[]),
+            b"-ffile-prefix-map=/home/user/project=."
+        );
+        assert_eq!(strip(b"-O2"), b"-O2");
+        assert_eq!(strip(b""), b"");
+    }
+
+    #[test]
+    fn test_strip_basedirs_from_arg_only_at_pathname_positions() {
+        let basedir = b"/home/user/project/".to_vec();
+        let strip = |arg: &[u8]| {
+            super::strip_basedirs_from_arg(arg, std::slice::from_ref(&basedir)).into_owned()
+        };
+
+        // A macro definition the compiler bakes into the output verbatim: the
+        // path is inside a string literal, not where a pathname is expected.
+        assert_eq!(
+            strip(b"-DROOT=\"/home/user/project\""),
+            b"-DROOT=\"/home/user/project\""
+        );
+
+        // Not the value of an option, just a path further along in one.
+        assert_eq!(
+            strip(b"-Wl,-rpath,/home/user/project/lib"),
+            b"-Wl,-rpath,/home/user/project/lib"
+        );
+        assert_eq!(
+            strip(b"-fplugin-arg-p=x/home/user/project/y"),
+            b"-fplugin-arg-p=x/home/user/project/y"
+        );
+
+        // The value glued to a short option, however long its name.
+        assert_eq!(strip(b"-isystem/home/user/project/abseil"), b"-isystemabseil");
+        assert_eq!(strip(b"-L/home/user/project/lib"), b"-Llib");
+
+        // The value of an =-separated option, and both halves of a prefix map.
+        assert_eq!(strip(b"--sysroot=/home/user/project/sys"), b"--sysroot=sys");
+        assert_eq!(
+            strip(b"-ffile-prefix-map=/home/user/project/build=/home/user/project"),
+            b"-ffile-prefix-map=build="
+        );
+    }
+
+    #[test]
+    fn test_strip_basedirs_from_arg_longest_match_wins() {
+        // A build directory nested inside the tree, both listed.
+        let basedirs = vec![
+            b"/home/user/project/".to_vec(),
+            b"/home/user/project/build/".to_vec(),
+        ];
+        assert_eq!(
+            &*super::strip_basedirs_from_arg(b"-ffile-prefix-map=/home/user/project/build=.", &basedirs),
+            b"-ffile-prefix-map==."
+        );
+        assert_eq!(
+            &*super::strip_basedirs_from_arg(b"-ffile-prefix-map=/home/user/project=.", &basedirs),
+            b"-ffile-prefix-map==."
+        );
     }
 
     #[test]

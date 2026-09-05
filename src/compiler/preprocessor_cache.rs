@@ -38,10 +38,11 @@ use crate::{
 };
 
 use super::Language;
+use super::c::hash_arguments;
 
 /// The current format is 1 header byte for the version + bincode encoding
 /// of the [`PreprocessorCacheEntry`] struct.
-const FORMAT_VERSION: u8 = 0;
+const FORMAT_VERSION: u8 = 1;
 const MAX_PREPROCESSOR_CACHE_ENTRIES: usize = 100;
 const MAX_PREPROCESSOR_CACHE_FILE_INFO_ENTRIES: usize = 10000;
 
@@ -391,9 +392,7 @@ pub fn preprocessor_cache_entry_hash_key(
     m.update(&[plusplus as u8]);
     m.update(&[FORMAT_VERSION]);
     m.update(language.as_str().as_bytes());
-    for arg in arguments {
-        arg.hash(&mut HashToDigest { digest: &mut m });
-    }
+    hash_arguments(&mut m, arguments, basedirs);
     for hash in extra_hashes {
         m.update(hash.as_bytes());
     }

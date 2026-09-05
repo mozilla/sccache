@@ -344,6 +344,10 @@ export SCCACHE_BASEDIRS="/home/user/project:/home/user/workspace"
 
 Path matching is **case-insensitive** on Windows and **case-sensitive** on other operating systems.
 
+Base directories are stripped from the preprocessed source and from the compiler arguments alike. The arguments matter because a flag can name the tree it is building: `-ffile-prefix-map=/home/user/project=.` makes the object file independent of where the tree is checked out, but the flag itself is not, and it is hashed verbatim.
+
+In an argument only the places that are expected to spell a pathname are considered: the whole argument, the value of an option written with an `=` (either half of a prefix map), and the value glued to a short option such as `-I`. A base directory appearing anywhere else is left alone, so a definition the compiler bakes into the output verbatim, `-DROOT="/home/user/project"`, still counts. A match also has to end where a path component ends, so a sibling `/home/user/project-docs` is not one.
+
 This is similar to ccache's `CCACHE_BASEDIR` and helps when:
 * Building the same project from different directories
 * Sharing cache between CI jobs with different checkout paths

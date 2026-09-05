@@ -27,7 +27,7 @@ use crate::dist::pkg;
 use crate::mock_command::CommandCreatorSync;
 use crate::util::{
     Digest, HashToDigest, MetadataCtimeExt, TimeMacroFinder, Timestamp, decode_path, encode_path,
-    hash_all, strip_basedirs,
+    hash_all, strip_basedirs, strip_basedirs_from_arg,
 };
 use async_trait::async_trait;
 use fs_err as fs;
@@ -1441,7 +1441,7 @@ impl pkg::ToolchainPackager for CToolchainPackager {
 }
 
 /// The cache is versioned by the inputs to `HashKeyParams::compute`.
-pub const CACHE_VERSION: &[u8] = b"12";
+pub const CACHE_VERSION: &[u8] = b"13";
 
 /// Environment variables that are factored into the cache key.
 static CACHED_ENV_VARS: LazyLock<HashSet<&'static OsStr>> = LazyLock::new(|| {
@@ -1462,6 +1462,20 @@ static CACHED_ENV_VARS: LazyLock<HashSet<&'static OsStr>> = LazyLock::new(|| {
     .map(OsStr::new)
     .collect()
 });
+
+/// Feed the compiler arguments into `m`, with the base directories stripped.
+///
+/// The arguments are hashed verbatim, so any that spell out an absolute path -
+/// `-ffile-prefix-map=/home/user/project=.` above all - would tie the cache
+/// entry to one checkout of the tree. See [`strip_basedirs_from_arg`].
+pub fn hash_arguments(m: &mut Digest, arguments: &[OsString], basedirs: &[Vec<u8>]) {
+    for arg in arguments {
+        // Same shape as OsString's own Hash impl: the bytes, then a separator
+        // that cannot occur in them.
+        m.update(&strip_basedirs_from_arg(arg.as_encoded_bytes(), basedirs));
+        m.update(&[0xff]);
+    }
+}
 
 /// Parameters for computing a hash key for C/C++ compilation caching.
 ///
@@ -1560,9 +1574,7 @@ impl<'a> HashKeyParams<'a> {
         m.update(&[self.plusplus as u8]);
         m.update(CACHE_VERSION);
         m.update(self.language.as_str().as_bytes());
-        for arg in self.arguments {
-            arg.hash(&mut HashToDigest { digest: &mut m });
-        }
+        hash_arguments(&mut m, self.arguments, self.basedirs);
         for hash in self.extra_hashes {
             m.update(hash.as_bytes());
         }

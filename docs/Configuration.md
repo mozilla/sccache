@@ -20,6 +20,13 @@ server_startup_timeout_ms = 10000
 #
 # Path matching is case-insensitive on Windows and case-sensitive on other OSes.
 #
+# Applies to the preprocessed source and to the compiler arguments
+# alike, so that a flag naming the tree, such as
+# -ffile-prefix-map=/home/user/project=., does not tie the cache
+# entry to one checkout. In an argument only the places expected to
+# spell a pathname are considered: the whole argument, the value of
+# an =-separated option, and the value glued to a short option.
+#
 # Example:
 #   basedir = ["/home/user/project"] results in the path prefix rewrite:
 #   "/home/user/project/src/main.c" -> "src/main.c"
