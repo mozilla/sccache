@@ -253,6 +253,17 @@ services:
       - test
       - gcc
 
+  test-file-prefix-map:
+    <<: *test-runner
+    image: gcc:latest
+    entrypoint: /sccache/tests/integration/scripts/test-file-prefix-map.sh
+    environment:
+      <<: *common-env
+      SCCACHE_DIR: /build/sccache
+    profiles:
+      - test
+      - file-prefix-map
+
   test-clang:
     <<: *test-runner
     image: silkeh/clang:21-trixie
