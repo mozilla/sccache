@@ -31,7 +31,7 @@ endgroup =
 endif
 
 BACKENDS := redis redis-deprecated memcached memcached-deprecated s3 azblob webdav basedirs multilevel multilevel-chain
-TOOLS := gcc clang cmake cmake-modules cmake-modules-v4 autotools coverage zstd
+TOOLS := gcc clang cmake cmake-modules cmake-modules-v4 autotools coverage zstd file-prefix-map
 
 # Map backends to their compose profiles
 PROFILES_autotools := autotools
@@ -42,6 +42,7 @@ PROFILES_cmake := cmake
 PROFILES_cmake-modules := cmake-modules
 PROFILES_cmake-modules-v4 := cmake-modules-v4
 PROFILES_coverage := coverage
+PROFILES_file-prefix-map := file-prefix-map
 PROFILES_gcc := gcc
 PROFILES_memcached := memcached
 PROFILES_memcached-deprecated := memcached
@@ -62,6 +63,7 @@ SERVICES_cmake :=
 SERVICES_cmake-modules :=
 SERVICES_cmake-modules-v4 :=
 SERVICES_coverage :=
+SERVICES_file-prefix-map :=
 SERVICES_gcc :=
 SERVICES_memcached := memcached
 SERVICES_memcached-deprecated := memcached
@@ -102,6 +104,7 @@ help:
 	@echo "  make test-coverage           Run Rust coverage instrumentation test"
 	@echo "  make test-zstd               Run ZSTD compression levels test"
 	@echo "  make test-basedirs           Run basedirs test across all backends"
+	@echo "  make test-file-prefix-map    Run basedirs vs -ffile-prefix-map test"
 	@echo "  make test-multilevel         Run multi-level cache test across all backends"
 	@echo "  make test-multilevel-chain   Run multi-level backfill chain test (4 levels)"
 	@echo ""
