@@ -27,12 +27,12 @@ use crate::dist::pkg;
 use crate::mock_command::CommandCreatorSync;
 use crate::util::{
     Digest, HashToDigest, MetadataCtimeExt, TimeMacroFinder, Timestamp, decode_path, encode_path,
-    hash_all, strip_basedirs,
+    strip_basedirs,
 };
 use async_trait::async_trait;
 use fs_err as fs;
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::hash::Hash;
@@ -378,7 +378,28 @@ where
     ) -> Result<HashResult<T>> {
         let start_of_compilation = std::time::SystemTime::now();
 
-        let extra_hashes = hash_all(&self.parsed_args.extra_hash_files, &pool.clone()).await?;
+        // An argument may name a file whose contents the compiler reads directly,
+        // making it an input the preprocessor never reports. A file we cannot hash
+        // leaves us unable to tell what the compilation depends on, so it must not
+        // be cached.
+        let mut cacheable = Cacheable::Yes;
+        let mut extra_hashes = Vec::with_capacity(self.parsed_args.extra_hash_files.len());
+        for path in &self.parsed_args.extra_hash_files {
+            match Digest::file(path, pool).await {
+                Ok(hash) => extra_hashes.push(hash),
+                Err(e) => {
+                    debug!(
+                        "[{}]: Not cacheable: cannot hash {:?}: {}",
+                        self.parsed_args.output_pretty(),
+                        path,
+                        e
+                    );
+                    cacheable = Cacheable::No;
+                    break;
+                }
+            }
+        }
+
         // Create an argument vector containing both preprocessor and arch args, to
         // use in creating a hash key
         let mut preprocessor_and_arch_args = self.parsed_args.preprocessor_args.clone();
@@ -409,9 +430,13 @@ where
         let needs_preprocessing = self.parsed_args.language.needs_c_preprocessing();
 
         let use_preprocessor_cache_mode = if needs_preprocessing {
+            // Preprocessor cache mode maps include files to a hash key computed
+            // elsewhere, so it must not record one for a compilation whose key we
+            // already know is untrustworthy.
             let can_use_preprocessor_cache_mode = preprocessor_cache_mode_config
                 .use_preprocessor_cache_mode
-                && !too_hard_for_preprocessor_cache_mode;
+                && !too_hard_for_preprocessor_cache_mode
+                && cacheable == Cacheable::Yes;
 
             let mut use_preprocessor_cache_mode = can_use_preprocessor_cache_mode;
 
@@ -503,6 +528,9 @@ where
                         );
                         return Ok(HashResult {
                             key,
+                            // Preprocessor cache mode is explicitly disabled for any
+                            // translation unit containing an `.incbin`.
+                            cacheable: Cacheable::Yes,
                             compilation: Box::new(CCompilation {
                                 parsed_args: self.parsed_args.clone(),
                                 is_locally_preprocessed: false,
@@ -612,6 +640,76 @@ where
             )
         };
 
+        // Files named by `.incbin` and `.include` are read by the assembler, so
+        // they are not part of the preprocessor output and have to be hashed
+        // separately. `.include` names assembly source, which can name further
+        // files in turn, so the queue grows as those are read.
+        let mut pending: VecDeque<_> = find_asm_dependencies(&preprocessor_output).into();
+        let mut included = HashSet::new();
+        while let Some(dependency) = pending.pop_front() {
+            let (tag, name, assembled_in_place) = match &dependency {
+                AsmDependency::Embedded(name) => ("incbin", name, false),
+                AsmDependency::Source(name) => ("include", name, true),
+                AsmDependency::Unparsable => {
+                    debug!(
+                        "[{}]: Not cacheable: an assembler directive names a file we cannot identify",
+                        self.parsed_args.output_pretty()
+                    );
+                    cacheable = Cacheable::No;
+                    break;
+                }
+            };
+
+            // gas resolves a relative operand against the working directory before
+            // consulting its own include path, so that is the only location we can
+            // resolve without replicating the assembler's search. An operand we
+            // cannot parse or a file we cannot hash makes the translation unit
+            // explicitly non-cacheable.
+            let path = decode_path(name).ok().map(|name| {
+                if name.is_absolute() {
+                    name
+                } else {
+                    cwd.join(name)
+                }
+            });
+
+            let hash = match &path {
+                // Included assembly is read rather than streamed, because the
+                // directives inside it have to be followed as well.
+                Some(path) if assembled_in_place => {
+                    if !included.insert(path.clone()) {
+                        // Already hashed and scanned: a repeated or cyclic include.
+                        continue;
+                    }
+                    match fs::read(path) {
+                        Ok(bytes) => {
+                            pending.extend(find_asm_dependencies(&bytes));
+                            Digest::reader_sync(&bytes[..]).ok()
+                        }
+                        Err(_) => None,
+                    }
+                }
+                Some(path) => Digest::file(path, pool).await.ok(),
+                None => None,
+            };
+
+            match hash {
+                // Tagged so these digests cannot collide with each other or with an
+                // entry contributed by `extra_hash_files`.
+                Some(hash) => extra_hashes.push(format!("{tag}:{hash}")),
+                None => {
+                    debug!(
+                        "[{}]: Not cacheable: cannot hash {:?} named by a .{tag} directive",
+                        self.parsed_args.output_pretty(),
+                        path.as_deref()
+                            .unwrap_or(Path::new("<undecodable operand>"))
+                    );
+                    cacheable = Cacheable::No;
+                    break;
+                }
+            }
+        }
+
         // Create an argument vector containing both common and arch args, to
         // use in creating a hash key
         let mut common_and_arch_args = self.parsed_args.common_args.clone();
@@ -659,6 +757,7 @@ where
         );
         Ok(HashResult {
             key,
+            cacheable,
             compilation: Box::new(CCompilation {
                 parsed_args: self.parsed_args.clone(),
                 is_locally_preprocessed: true,
@@ -694,6 +793,189 @@ const PRAGMA_GCC_PCH_PREPROCESS: &[u8] = b"pragma GCC pch_preprocess";
 const HASH_31_COMMAND_LINE_NEWLINE: &[u8] = b"# 31 \"<command-line>\"\n";
 const HASH_32_COMMAND_LINE_2_NEWLINE: &[u8] = b"# 32 \"<command-line>\" 2\n";
 const INCBIN_DIRECTIVE: &[u8] = b".incbin";
+const INCLUDE_DIRECTIVE: &[u8] = b".include";
+
+/// Upper bound on the length of a directive operand we are willing to parse.
+/// A file name longer than this is treated as unparsable rather than scanned to
+/// the end of the translation unit.
+const OPERAND_MAX_LEN: usize = 4096;
+
+/// A file an assembler directive pulls in, which the preprocessor never reports.
+#[derive(Debug, PartialEq, Eq)]
+enum AsmDependency {
+    /// `.incbin "file"`: the file's bytes are embedded verbatim.
+    Embedded(Vec<u8>),
+    /// `.include "file"`: the file is assembly source assembled in place, so it
+    /// can pull in further files itself.
+    Source(Vec<u8>),
+    /// A directive whose operand is not a plain quoted file name, leaving the
+    /// file it names unknown.
+    Unparsable,
+}
+
+/// The operand of an assembler directive that names a file.
+#[derive(Debug, PartialEq, Eq)]
+enum FileOperand {
+    /// The file name, exactly as written in the source.
+    Name(Vec<u8>),
+    /// The operand could not be parsed as a plain quoted file name.
+    Unparsable,
+}
+
+/// Whether the quotes around a directive operand are backslash-escaped.
+#[derive(Copy, Clone)]
+enum OperandQuoting {
+    /// `"file"`, as written directly in assembly.
+    Plain,
+    /// `\"file\"`, as written inside a C string literal in inline assembly.
+    Escaped,
+}
+
+/// Skips whitespace between an assembler directive and its operand.
+///
+/// Inside a C string literal the whitespace may be spelled as a two-character
+/// escape sequence rather than appearing literally, so both forms are accepted.
+fn skip_asm_whitespace(bytes: &[u8]) -> (&[u8], bool) {
+    let mut rest = bytes;
+    let mut skipped = false;
+    loop {
+        rest = match rest {
+            [b' ' | b'\t', tail @ ..] => tail,
+            [b'\\', b't' | b'n' | b'r' | b'f' | b'v' | b' ', tail @ ..] => tail,
+            _ => return (rest, skipped),
+        };
+        skipped = true;
+    }
+}
+
+/// Parses the file operand of a directive from the bytes that immediately follow
+/// the directive name, also returning how many of those bytes it spans.
+///
+/// Returns `None` if the name did not end where the caller thought it did, as in
+/// `.incbinary`.
+fn parse_file_operand(after_directive: &[u8]) -> Option<(FileOperand, usize)> {
+    // A directive name continuing past the one we matched is a different directive.
+    if after_directive
+        .first()
+        .is_some_and(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.' | b'$'))
+    {
+        return None;
+    }
+
+    let (rest, skipped_whitespace) = skip_asm_whitespace(after_directive);
+    let (quoting, body) = if let Some(body) = rest.strip_prefix(b"\\\"") {
+        (OperandQuoting::Escaped, body)
+    } else if let Some(body) = rest.strip_prefix(b"\"") {
+        (OperandQuoting::Plain, body)
+    } else if skipped_whitespace {
+        // gas requires a quoted file name. Not finding one means the operand was
+        // produced some other way, so we cannot tell what this depends on.
+        return Some((FileOperand::Unparsable, 0));
+    } else {
+        return None;
+    };
+
+    let terminator: &[u8] = match quoting {
+        OperandQuoting::Plain => b"\"",
+        OperandQuoting::Escaped => b"\\\"",
+    };
+    let window = &body[..body.len().min(OPERAND_MAX_LEN)];
+    let mut end = None;
+    let mut i = 0;
+    while i < window.len() {
+        if window[i..].starts_with(terminator) {
+            end = Some(i);
+            break;
+        }
+        // A quote, backslash or newline before the terminator means the operand
+        // is escaped, concatenated or otherwise not a plain file name.
+        if matches!(window[i], b'"' | b'\\' | b'\n') {
+            break;
+        }
+        i += 1;
+    }
+
+    Some(match end {
+        Some(0) | None => (FileOperand::Unparsable, 0),
+        Some(end) => {
+            let spanned = after_directive.len() - body.len() + end + terminator.len();
+            (FileOperand::Name(window[..end].to_vec()), spanned)
+        }
+    })
+}
+
+/// Matches an assembler directive naming a file at the start of `slice`, also
+/// returning how many bytes of `slice` it spans.
+///
+/// Returns `None` if no such directive starts there.
+fn asm_dependency_at(slice: &[u8]) -> Option<(AsmDependency, usize)> {
+    let (wrap, directive_len, after_directive): (fn(Vec<u8>) -> AsmDependency, _, _) =
+        if let Some(rest) = slice.strip_prefix(INCBIN_DIRECTIVE) {
+            (AsmDependency::Embedded, INCBIN_DIRECTIVE.len(), rest)
+        } else if let Some(rest) = slice.strip_prefix(INCLUDE_DIRECTIVE) {
+            (AsmDependency::Source, INCLUDE_DIRECTIVE.len(), rest)
+        } else {
+            return None;
+        };
+
+    Some(match parse_file_operand(after_directive)? {
+        (FileOperand::Name(name), spanned) => (wrap(name), directive_len + spanned),
+        // The operand's extent is unknown, so resume right after the directive
+        // name; a spurious extra match is harmless once we are not caching.
+        (FileOperand::Unparsable, _) => (AsmDependency::Unparsable, directive_len),
+    })
+}
+
+/// Whether an assembler statement can begin at `pos` in `bytes`.
+///
+/// Missing a directive serves a stale object, which is not acceptable, so this is
+/// necessarily strict about ruling a position out. An identifier character in front
+/// of the directive makes this a C member access, and no gas statement can end in
+/// one. Every other position is treated as a statement start, which covers the
+/// line starts, whitespace, `;` separators and label colons used by gas.
+fn starts_asm_statement(bytes: &[u8], pos: usize) -> bool {
+    let before = &bytes[..pos];
+    let identifier_start = before
+        .iter()
+        .rposition(|c| !(c.is_ascii_alphanumeric() || matches!(c, b'_' | b'$')))
+        .map_or(0, |end| end + 1);
+    if identifier_start == before.len() {
+        return true;
+    }
+    // Inline assembly writes the line break in front of a directive as a C escape
+    // sequence, whose own characters are identifier characters: "\n.incbin",
+    // "\012.incbin", "\x0a.incbin".
+    identifier_start > 0 && before[identifier_start - 1] == b'\\'
+}
+
+/// Finds every file an assembler directive pulls into `bytes`, in the order the
+/// directives appear.
+///
+/// `.incbin` and `.include` are handled by the assembler, not the preprocessor,
+/// so the files they name never appear in preprocessor output. Hashing that
+/// output alone therefore misses the dependency entirely: the named file can
+/// change while the cache key stays the same, and a stale object gets served,
+/// which we do not want.
+///
+/// `.include` names assembly source, so its contents have to be scanned in turn.
+/// That is the caller's job, since it is the one reading the files.
+fn find_asm_dependencies(bytes: &[u8]) -> Vec<AsmDependency> {
+    let mut dependencies = Vec::new();
+    let mut offset = 0;
+    while let Some(pos) = memchr::memchr(b'.', &bytes[offset..]) {
+        let start = offset + pos;
+        match asm_dependency_at(&bytes[start..]) {
+            // Resume past the operand, so a file name that itself contains
+            // ".incbin" or ".include" is not mistaken for another directive.
+            Some((dependency, spanned)) if starts_asm_statement(bytes, start) => {
+                dependencies.push(dependency);
+                offset = start + spanned;
+            }
+            _ => offset = start + 1,
+        }
+    }
+    dependencies
+}
 
 /// Remember the include files in the preprocessor output if it can be cached.
 /// Returns `false` if preprocessor cache mode should be disabled.
@@ -771,18 +1053,14 @@ fn process_preprocessed_file(
                     continue;
                 }
             }
-        } else if slice
-            .strip_prefix(INCBIN_DIRECTIVE)
-            .filter(|slice| {
-                slice.starts_with(b"\"") || slice.starts_with(b" \"") || slice.starts_with(b" \\\"")
-            })
-            .is_some()
-        {
-            // An assembler .inc bin (without the space) statement, which could be
-            // part of inline assembly, refers to an external file. If the file
-            // changes, the hash should change as well, but finding out what file to
-            // hash is too hard for sccache, so just bail out.
-            debug!("Found potential unsupported .inc bin directive in source code");
+        // The directive match runs first.
+        } else if asm_dependency_at(slice).is_some() && starts_asm_statement(bytes, start) {
+            // An assembler .inc bin or .include statement, which could be part of
+            // inline assembly, refers to an external file. Preprocessor cache mode
+            // keys on the include files alone and never sees the preprocessed
+            // output, so it cannot account for that file; `generate_hash_key`
+            // handles it for the normal path instead.
+            debug!("Found potential unsupported assembler file directive in source code");
             return Ok(false);
         } else if slice.starts_with(b"___________") && (start == 0 || bytes[start - 1] == b'\n') {
             // Unfortunately the distcc-pump wrapper outputs standard output lines:
@@ -1441,7 +1719,7 @@ impl pkg::ToolchainPackager for CToolchainPackager {
 }
 
 /// The cache is versioned by the inputs to `HashKeyParams::compute`.
-pub const CACHE_VERSION: &[u8] = b"12";
+pub const CACHE_VERSION: &[u8] = b"13";
 
 /// Environment variables that are factored into the cache key.
 static CACHED_ENV_VARS: LazyLock<HashSet<&'static OsStr>> = LazyLock::new(|| {
@@ -1457,6 +1735,18 @@ static CACHED_ENV_VARS: LazyLock<HashSet<&'static OsStr>> = LazyLock::new(|| {
         "WATCHOS_DEPLOYMENT_TARGET",
         "SDKROOT",
         "CCC_OVERRIDE_OPTIONS",
+        // Selects which cc1/as the driver runs, so it changes the generated code
+        // without changing the driver binary we hash.
+        "COMPILER_PATH",
+        // Turns on -fcompare-debug, which changes what the compiler does.
+        "GCC_COMPARE_DEBUG",
+        // Adds include directories. Preprocessing reflects these, but preprocessor
+        // cache mode skips preprocessing and would keep matching the files it
+        // recorded before the search path changed.
+        "CPATH",
+        "C_INCLUDE_PATH",
+        "CPLUS_INCLUDE_PATH",
+        "OBJC_INCLUDE_PATH",
     ]
     .iter()
     .map(OsStr::new)
@@ -1860,6 +2150,241 @@ mod test {
         t("Hpp");
         t("Mm");
         t("Cu");
+    }
+
+    /// Convenience for asserting on a source fragment holding a single directive.
+    fn asm_dependency(source: &str) -> Option<AsmDependency> {
+        let mut dependencies = find_asm_dependencies(source.as_bytes());
+        assert!(dependencies.len() <= 1, "expected at most one dependency");
+        dependencies.pop()
+    }
+
+    fn embedded_file(source: &str) -> Option<String> {
+        match asm_dependency(source) {
+            Some(AsmDependency::Embedded(name)) => Some(String::from_utf8(name).unwrap()),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn test_asm_dependency_plain_assembly() {
+        // As written directly in a .S file.
+        assert_eq!(
+            embedded_file("\t.incbin \"certs/signing_key.x509\"\n"),
+            Some("certs/signing_key.x509".to_string())
+        );
+        // Tab between the directive and its operand, as in the kernel's rmpiggy.S.
+        assert_eq!(
+            embedded_file("\t.incbin\t\"realmode.bin\"\n"),
+            Some("realmode.bin".to_string())
+        );
+        // gas does not require any separator before a quoted operand.
+        assert_eq!(
+            embedded_file(".incbin\"blob.bin\""),
+            Some("blob.bin".to_string())
+        );
+        // A skip/count suffix does not change which file is embedded.
+        assert_eq!(
+            embedded_file(".incbin \"blob.bin\",16,32\n"),
+            Some("blob.bin".to_string())
+        );
+    }
+
+    #[test]
+    fn test_asm_dependency_include_is_source() {
+        // `.include` pulls in assembly source rather than embedding bytes, so it is
+        // distinguished: its contents have to be scanned for further directives.
+        assert_eq!(
+            asm_dependency("\t.include \"macros.s\"\n"),
+            Some(AsmDependency::Source(b"macros.s".to_vec()))
+        );
+        assert_eq!(
+            asm_dependency("\"\t.include \\\"macros.s\\\"\\n\""),
+            Some(AsmDependency::Source(b"macros.s".to_vec()))
+        );
+        // A longer directive that merely starts with ".include".
+        assert_eq!(asm_dependency(".included \"macros.s\""), None);
+        // Embedding and including the same file must not hash the same way.
+        assert_ne!(
+            asm_dependency(".incbin \"x\"\n"),
+            asm_dependency(".include \"x\"\n")
+        );
+    }
+
+    #[test]
+    fn test_asm_dependency_in_c_string_literal() {
+        // Inline assembly, where the operand's quotes are backslash-escaped. This
+        // is how the Linux kernel's kernel/configs.c embeds config_data.gz.
+        assert_eq!(
+            embedded_file("\"\t.incbin \\\"kernel/config_data.gz\\\"\t\\n\""),
+            Some("kernel/config_data.gz".to_string())
+        );
+        // Whitespace spelled as an escape sequence rather than appearing literally.
+        assert_eq!(
+            embedded_file("\"\\t.incbin\\t\\\"blob.bin\\\"\\n\""),
+            Some("blob.bin".to_string())
+        );
+    }
+
+    #[test]
+    fn test_asm_dependency_not_a_directive() {
+        // A longer directive that merely starts with ".incbin".
+        assert_eq!(asm_dependency(".incbinary \"blob.bin\""), None);
+        assert_eq!(asm_dependency(".incbin_data \"blob.bin\""), None);
+        // The bare word with no operand at all is not something we can attribute a
+        // file to, but neither is it a directive we recognize.
+        assert_eq!(asm_dependency(".incbin"), None);
+    }
+
+    #[test]
+    fn test_asm_dependency_unparsable_operands() {
+        let unparsable = |source| {
+            assert_eq!(
+                asm_dependency(source),
+                Some(AsmDependency::Unparsable),
+                "{source:?}"
+            );
+        };
+        // Not a quoted string: assembled from something we cannot evaluate.
+        unparsable(".incbin BLOB_PATH\n");
+        unparsable(".include MACRO_PATH\n");
+        // Operand split across two C string literals, which the compiler
+        // concatenates but we cannot.
+        unparsable("\".incbin \\\"bl\" \"ob.bin\\\"\\n\"");
+        // Never terminated.
+        unparsable(".incbin \"blob.bin\n");
+        // Empty file name.
+        unparsable(".incbin \"\"\n");
+        // An escape inside the file name.
+        unparsable(".incbin \"bl\\ob.bin\"\n");
+        // Longer than we are willing to scan.
+        let long = "x".repeat(OPERAND_MAX_LEN + 1);
+        unparsable(&format!(".incbin \"{long}\"\n"));
+    }
+
+    #[test]
+    fn test_asm_dependency_multiple_directives() {
+        // certs/system_certificates.S embeds two files in one translation unit,
+        // and both have to be accounted for.
+        let source = "__module_cert_start:\n\t.incbin \"certs/signing_key.x509\"\n\
+                      __module_cert_end:\n\t.incbin \"certs/x509_certificate_list\"\n\
+                      \t.include \"trailer.s\"\n";
+        assert_eq!(
+            find_asm_dependencies(source.as_bytes()),
+            vec![
+                AsmDependency::Embedded(b"certs/signing_key.x509".to_vec()),
+                AsmDependency::Embedded(b"certs/x509_certificate_list".to_vec()),
+                AsmDependency::Source(b"trailer.s".to_vec()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_asm_dependency_directive_name_inside_operand() {
+        // The scan resumes past the operand, so a file whose own name contains a
+        // directive name does not look like a second directive.
+        assert_eq!(
+            find_asm_dependencies(b"\t.incbin \"payload.incbin\"\n"),
+            vec![AsmDependency::Embedded(b"payload.incbin".to_vec())]
+        );
+        assert_eq!(
+            find_asm_dependencies(b"\t.include \"a.include\"\n\t.incbin \"b.bin\"\n"),
+            vec![
+                AsmDependency::Source(b"a.include".to_vec()),
+                AsmDependency::Embedded(b"b.bin".to_vec()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_asm_dependency_needs_a_statement_boundary() {
+        // A member access only spells a directive name.
+        assert!(find_asm_dependencies(b"opts.include = 1;\n").is_empty());
+        assert!(find_asm_dependencies(b"x = y.incbin + 1;\n").is_empty());
+        assert!(find_asm_dependencies(b"cfg->opts.incbin(path);\n").is_empty());
+        assert_eq!(
+            find_asm_dependencies(b"nop;.incbin \"blob.bin\"\n"),
+            vec![AsmDependency::Embedded(b"blob.bin".to_vec())]
+        );
+        assert_eq!(
+            find_asm_dependencies(b"payload:.incbin \"blob.bin\"\n"),
+            vec![AsmDependency::Embedded(b"blob.bin".to_vec())]
+        );
+        // A directive at the very start of a C string literal, which is how inline
+        // assembly is usually written.
+        assert_eq!(
+            find_asm_dependencies(b"__asm__(\".incbin \\\"blob.bin\\\"\");\n"),
+            vec![AsmDependency::Embedded(b"blob.bin".to_vec())]
+        );
+    }
+
+    #[test]
+    fn test_asm_dependency_after_an_escaped_line_break() {
+        // The line break in front of a directive in inline assembly is a C escape
+        // sequence, whose characters are identifier characters. Every spelling of
+        // it still has to reach the directive.
+        for line_break in ["\\n", "\\012", "\\x0a"] {
+            assert_eq!(
+                embedded_file(&format!("\"nop{line_break}.incbin \\\"blob.bin\\\"\"")),
+                Some("blob.bin".to_string()),
+                "{line_break}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_asm_dependency_in_string_literal_stays_parsimonious() {
+        // A string literal starting with a directive name is indistinguishable from
+        // inline assembly at this point, so it must be reported rather than skipped.
+        assert_eq!(
+            asm_dependency("printf(\".include %s\\n\", path);\n"),
+            Some(AsmDependency::Unparsable)
+        );
+    }
+
+    #[test]
+    fn test_asm_dependency_absent() {
+        assert!(find_asm_dependencies(b"int main(void) { return 0; }\n").is_empty());
+        assert!(find_asm_dependencies(b"").is_empty());
+    }
+
+    #[test]
+    fn test_process_preprocessed_file_asm_directive_disables_preprocessor_cache() {
+        // Preprocessor cache mode keys on include files only and never sees the
+        // preprocessed output, so it cannot account for a file named by an
+        // assembler directive and has to be turned off for every form the scanner
+        // recognizes.
+        for source in [
+            "\t.incbin \"blob.bin\"\n",
+            "\t.incbin\t\"blob.bin\"\n",
+            "\"\t.incbin \\\"blob.bin\\\"\t\\n\"\n",
+            ".incbin BLOB_PATH\n",
+            "\t.include \"macros.s\"\n",
+            "\t.include\t\"macros.s\"\n",
+            "\"\t.include \\\"macros.s\\\"\t\\n\"\n",
+            ".include MACRO_PATH\n",
+        ] {
+            // Pad past the 7-byte minimum the scan loop requires.
+            let mut bytes = format!("# 1 \"test.c\"\n{source}          ").into_bytes();
+            let success = process_preprocessed_file(
+                Path::new("test.c"),
+                Path::new(""),
+                &mut bytes,
+                &mut HashMap::new(),
+                PreprocessorCacheModeConfig {
+                    use_preprocessor_cache_mode: true,
+                    skip_system_headers: true,
+                    ..Default::default()
+                },
+                std::time::SystemTime::now(),
+                StandardFsAbstraction,
+            )
+            .unwrap();
+            assert!(
+                !success,
+                "{source:?} should disable preprocessor cache mode"
+            );
+        }
     }
 
     #[test]

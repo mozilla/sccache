@@ -556,7 +556,7 @@ where
             out_pretty,
             fmt_duration_as_secs(&start.elapsed())
         );
-        let (key, compilation, weak_toolchain_key) = match result {
+        let (key, key_cacheable, compilation, weak_toolchain_key) = match result {
             Err(e) => {
                 return match e.downcast::<ProcessError>() {
                     Ok(ProcessError(output)) => {
@@ -568,15 +568,19 @@ where
             }
             Ok(HashResult {
                 key,
+                cacheable,
                 compilation,
                 weak_toolchain_key,
-            }) => (key, compilation, weak_toolchain_key),
+            }) => (key, cacheable, compilation, weak_toolchain_key),
         };
         debug!("[{}]: Hash key: {}", out_pretty, key);
         // If `ForceRecache` is enabled, we won't check the cache.
         let start = Instant::now();
         let cache_status = async {
-            if cache_control == CacheControl::ForceNoCache {
+            // A key that does not cover every dependency must not be looked up,
+            // an entry stored under it may have been produced from different
+            // inputs.
+            if key_cacheable == Cacheable::No || cache_control == CacheControl::ForceNoCache {
                 Ok(Cache::None)
             } else if cache_control == CacheControl::ForceRecache {
                 Ok(Cache::Recache)
@@ -743,6 +747,18 @@ where
                     );
                     return Ok((
                         CompileResult::CompileFailed(dist_type, duration_compilation),
+                        compiler_result,
+                    ));
+                }
+                if key_cacheable != Cacheable::Yes {
+                    // The hash key does not cover every dependency, so we cannot cache it.
+                    debug!(
+                        "[{}]: Compiled in {}, but the hash key is not cacheable",
+                        out_pretty,
+                        fmt_duration_as_secs(&duration_compilation)
+                    );
+                    return Ok((
+                        CompileResult::NotCacheable(dist_type, duration_compilation),
                         compiler_result,
                     ));
                 }
@@ -1151,6 +1167,11 @@ where
 {
     /// The hash key of the inputs.
     pub key: String,
+    /// Whether `key` accounts for everything the compilation depends on.
+    ///
+    /// `Cacheable::No` means a dependency was found that the key cannot cover,
+    /// so the cache must be neither read nor written for this compilation.
+    pub cacheable: Cacheable,
     /// An object to use for the actual compilation, if necessary.
     pub compilation: Box<dyn Compilation<T> + 'static>,
     /// A weak key that may be used to identify the toolchain
