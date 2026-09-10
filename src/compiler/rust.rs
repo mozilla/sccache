@@ -15,7 +15,7 @@
 use crate::cache::{FileObjectSource, Storage};
 use crate::compiler::args::*;
 use crate::compiler::{
-    CCompileCommand, Cacheable, ColorMode, Compilation, CompileCommand, Compiler,
+    CCompileCommand, CacheType, Cacheable, ColorMode, Compilation, CompileCommand, Compiler,
     CompilerArguments, CompilerHasher, CompilerKind, CompilerProxy, HashResult, Language,
     SingleCompileCommand, c::ArtifactDescriptor,
 };
@@ -1739,6 +1739,7 @@ where
                 rlib_dep_reader: self.rlib_dep_reader.clone(),
             }),
             weak_toolchain_key,
+            hash_key_type: CacheType::DirectNotAttempted,
         })
     }
 
