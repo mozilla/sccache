@@ -14,11 +14,11 @@
 
 use crate::cache::readonly::ReadOnlyStorage;
 use crate::cache::{CacheMode, Storage, storage_from_config};
-use crate::compiler::PreprocessorCacheEntry;
 use crate::compiler::{
     CacheControl, CompileResult, Compiler, CompilerArguments, CompilerHasher, CompilerKind,
     CompilerProxy, DistType, Language, MissType, get_compiler_info,
 };
+use crate::compiler::{CacheType, PreprocessorCacheEntry};
 #[cfg(feature = "dist-client")]
 use crate::config;
 use crate::config::Config;
@@ -1502,7 +1502,11 @@ where
             };
 
             let mut stats = me.stats.lock().await;
-
+            let direct_mode_capable = me
+                .storage
+                .preprocessor_cache_mode_config()
+                .use_preprocessor_cache_mode
+                && lang.needs_c_preprocessing();
             match result {
                 Ok((compiled, out)) => {
                     let mut dist_type = DistType::NoDist;
@@ -1513,10 +1517,14 @@ where
 
                             stats.cache_errors.increment(&kind, &lang);
                         }
-                        CompileResult::CacheHit(duration, _) => {
+                        CompileResult::CacheHit(duration, cache_type) => {
                             debug!("[{}]: compile result: cache hit", out_pretty);
-
                             stats.cache_hits.increment(&kind, &lang);
+                            if cache_type == CacheType::DirectHit {
+                                stats.direct_cache_hits.increment(&kind, &lang);
+                            } else if cache_type == CacheType::DirectMiss && direct_mode_capable {
+                                stats.direct_cache_misses.increment(&kind, &lang);
+                            }
                             stats.cache_read_hit_duration += duration;
                         }
                         CompileResult::CacheMiss(miss_type, dt, duration, future) => {
@@ -1538,6 +1546,9 @@ where
                             }
                             stats.compilations += 1;
                             stats.cache_misses.increment(&kind, &lang);
+                            if direct_mode_capable {
+                                stats.direct_cache_misses.increment(&kind, &lang);
+                            }
                             stats.compiler_write_duration += duration;
                             debug!("stats after compile result: {stats:?}");
                             cache_write = Some(future);
@@ -1732,8 +1743,12 @@ pub struct ServerStats {
     pub cache_errors: PerLanguageCount,
     /// The count of cache hits for handled compile requests (per language).
     pub cache_hits: PerLanguageCount,
+    /// The count of direct cache hits for handled compile requests (per language).
+    pub direct_cache_hits: PerLanguageCount,
     /// The count of cache misses for handled compile requests (per language).
     pub cache_misses: PerLanguageCount,
+    /// The count of direct cache misses for handled compile requests (per language).
+    pub direct_cache_misses: PerLanguageCount,
     /// The count of cache misses because the cache took too long to respond.
     pub cache_timeouts: u64,
     /// The count of errors reading cache entries.
@@ -1838,7 +1853,9 @@ impl Default for ServerStats {
             requests_executed: u64::default(),
             cache_errors: PerLanguageCount::new(),
             cache_hits: PerLanguageCount::new(),
+            direct_cache_hits: PerLanguageCount::new(),
             cache_misses: PerLanguageCount::new(),
+            direct_cache_misses: PerLanguageCount::new(),
             cache_timeouts: u64::default(),
             cache_read_errors: u64::default(),
             non_cacheable_compilations: u64::default(),
@@ -1925,10 +1942,14 @@ impl ServerStats {
         );
         if advanced {
             set_compiler_stat!(stats_vec, self.cache_hits, "Cache hits");
+            set_compiler_stat!(stats_vec, self.direct_cache_hits, "Direct cache hits");
             set_compiler_stat!(stats_vec, self.cache_misses, "Cache misses");
+            set_compiler_stat!(stats_vec, self.direct_cache_misses, "Cache misses");
         } else {
             set_lang_stat!(stats_vec, self.cache_hits, "Cache hits");
+            set_lang_stat!(stats_vec, self.direct_cache_hits, "Direct cache hits");
             set_lang_stat!(stats_vec, self.cache_misses, "Cache misses");
+            set_lang_stat!(stats_vec, self.direct_cache_misses, "Direct cache hits");
         }
 
         self.set_percentage_stats(&mut stats_vec, advanced);
@@ -2055,6 +2076,13 @@ impl ServerStats {
             self.cache_hits.all(),
             self.cache_misses.all() + self.cache_hits.all(),
             "Cache hits rate",
+        );
+
+        set_percentage_stat(
+            stats_vec,
+            self.direct_cache_hits.all(),
+            self.direct_cache_misses.all() + self.direct_cache_hits.all(),
+            "Direct cache hits rate",
         );
 
         let (stats_hits, stats_misses): (Vec<_>, Vec<_>) = if advanced {
@@ -2489,6 +2517,7 @@ mod tests {
         let output = writer.get_output();
 
         assert!(output.contains("Cache hits rate                       -"));
+        assert!(output.contains("Direct cache hits rate                -"));
     }
 
     #[test]
@@ -2519,6 +2548,7 @@ mod tests {
         let output = writer.get_output();
 
         assert!(output.contains("Cache hits rate                    46.15 %"));
+        assert!(output.contains("Direct cache hits rate                 -"));
         assert!(output.contains("Cache hits rate (C/C++)           100.00 %"));
         assert!(output.contains("Cache hits rate (Cuda)              0.00 %"));
         assert!(output.contains("Cache hits rate (Rust)             66.67 %"));
@@ -2552,6 +2582,7 @@ mod tests {
         let output = writer.get_output();
 
         assert!(output.contains("Cache hits rate                        -"));
+        assert!(output.contains("Direct cache hits rate                 -"));
         assert!(output.contains("Cache hits rate (c/c++ [clang])   100.00 %"));
         assert!(output.contains("Cache hits rate (cuda)              0.00 %"));
         assert!(output.contains("Cache hits rate (rust)             33.33 %"));
