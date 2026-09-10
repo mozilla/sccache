@@ -664,7 +664,7 @@ where
                     outputs.clone()
                 };
 
-                let hit = CompileResult::CacheHit(duration);
+                let hit = CompileResult::CacheHit(duration, CacheType::DirectNotAttempted);
                 match entry.extract_objects(filtered_outputs, &pool).await {
                     Ok(()) => Ok(CacheLookupResult::Success(hit, output)),
                     Err(e) => {
@@ -1226,6 +1226,14 @@ pub enum DistType {
 
 /// Specifics about cache misses.
 #[derive(Debug, PartialEq, Eq)]
+pub enum CacheType {
+    DirectHit,
+    DirectMiss,
+    DirectNotAttempted
+}
+
+/// Specifics about cache misses.
+#[derive(Debug, PartialEq, Eq)]
 pub enum MissType {
     /// The compilation was not found in the cache, nothing more.
     Normal,
@@ -1250,7 +1258,7 @@ pub enum CompileResult {
     /// An error made the compilation not possible.
     Error,
     /// Result was found in cache.
-    CacheHit(Duration),
+    CacheHit(Duration, CacheType),
     /// Result was not found in cache.
     ///
     /// The `CacheWriteFuture` will resolve when the result is finished
@@ -1283,7 +1291,7 @@ impl fmt::Debug for CompileResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             CompileResult::Error => write!(f, "CompileResult::Error"),
-            CompileResult::CacheHit(ref d) => write!(f, "CompileResult::CacheHit({:?})", d),
+            CompileResult::CacheHit(ref d, ref ht) => write!(f, "CompileResult::CacheHit({:?}, {:?})", d, ht),
             CompileResult::CacheMiss(ref m, ref dt, ref d, _) => {
                 write!(f, "CompileResult::CacheMiss({:?}, {:?}, {:?}, _)", d, m, dt)
             }
@@ -1305,7 +1313,9 @@ impl PartialEq<CompileResult> for CompileResult {
     fn eq(&self, other: &CompileResult) -> bool {
         match (self, other) {
             (&CompileResult::Error, &CompileResult::Error) => true,
-            (&CompileResult::CacheHit(_), &CompileResult::CacheHit(_)) => true,
+            (CompileResult::CacheHit(_, ht), CompileResult::CacheHit(_, ht2)) => {
+                ht == ht2
+            },
             (CompileResult::CacheMiss(m, dt, _, _), CompileResult::CacheMiss(n, dt2, _, _)) => {
                 m == n && dt == dt2
             }
@@ -3069,7 +3079,7 @@ LLVM version: 6.0",
             .unwrap();
         // Ensure that the object file was created.
         assert!(fs::metadata(&obj).map(|m| m.len() > 0).unwrap());
-        assert_eq!(CompileResult::CacheHit(Duration::new(0, 0)), cached);
+        assert_eq!(CompileResult::CacheHit(Duration::new(0, 0), CacheType::DirectNotAttempted), cached);
         assert_eq!(exit_status(0), res.status);
         assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
         assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
@@ -3200,7 +3210,7 @@ LLVM version: 6.0",
             .unwrap();
         // Ensure that the object file was created.
         assert!(fs::metadata(&obj).map(|m| m.len() > 0).unwrap());
-        assert_eq!(CompileResult::CacheHit(Duration::new(0, 0)), cached);
+        assert_eq!(CompileResult::CacheHit(Duration::new(0, 0), CacheType::DirectNotAttempted), cached);
         assert_eq!(exit_status(0), res.status);
         assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
         assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
@@ -3376,7 +3386,7 @@ LLVM version: 6.0",
             ))
             .unwrap();
         match cached {
-            CompileResult::CacheHit(duration) => {
+            CompileResult::CacheHit(duration, _) => {
                 assert!(duration >= storage_delay);
             }
             _ => panic!("Unexpected compile result: {:?}", cached),
