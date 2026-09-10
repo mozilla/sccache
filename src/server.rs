@@ -1513,7 +1513,7 @@ where
 
                             stats.cache_errors.increment(&kind, &lang);
                         }
-                        CompileResult::CacheHit(duration) => {
+                        CompileResult::CacheHit(duration, _) => {
                             debug!("[{}]: compile result: cache hit", out_pretty);
 
                             stats.cache_hits.increment(&kind, &lang);
