@@ -29,7 +29,7 @@ use crate::util::{
     Digest, HashToDigest, MetadataCtimeExt, TimeMacroFinder, Timestamp, decode_path, encode_path,
     hash_all, strip_basedirs, strip_basedirs_from_arg,
 };
-use crate::{compiler::CacheType, errors::*};
+use crate::{compiler::DirectCacheType, errors::*};
 use async_trait::async_trait;
 use fs_err as fs;
 use std::borrow::Cow;
@@ -528,7 +528,7 @@ where
                                 env_vars: env_vars.clone(),
                             }),
                             weak_toolchain_key,
-                            hash_key_type: CacheType::DirectHit,
+                            hash_key_type: DirectCacheType::Hit,
                         });
                     } else {
                         debug!("Preprocessor cache miss: {preprocessor_key}");
@@ -687,8 +687,8 @@ where
             }),
             weak_toolchain_key,
             hash_key_type: match needs_preprocessing {
-                true => CacheType::DirectMiss,
-                false => CacheType::DirectNotAttempted,
+                true => DirectCacheType::Miss,
+                false => DirectCacheType::NotAttempted,
             },
         })
     }

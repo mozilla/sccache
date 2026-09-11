@@ -18,7 +18,7 @@ use crate::compiler::{
     CacheControl, CompileResult, Compiler, CompilerArguments, CompilerHasher, CompilerKind,
     CompilerProxy, DistType, Language, MissType, get_compiler_info,
 };
-use crate::compiler::{CacheType, PreprocessorCacheEntry};
+use crate::compiler::{DirectCacheType, PreprocessorCacheEntry};
 #[cfg(feature = "dist-client")]
 use crate::config;
 use crate::config::Config;
@@ -1520,9 +1520,9 @@ where
                         CompileResult::CacheHit(duration, cache_type) => {
                             debug!("[{}]: compile result: cache hit", out_pretty);
                             stats.cache_hits.increment(&kind, &lang);
-                            if cache_type == CacheType::DirectHit {
+                            if cache_type == DirectCacheType::Hit {
                                 stats.direct_cache_hits.increment(&kind, &lang);
-                            } else if cache_type == CacheType::DirectMiss && direct_mode_capable {
+                            } else if cache_type == DirectCacheType::Miss && direct_mode_capable {
                                 stats.direct_cache_misses.increment(&kind, &lang);
                             }
                             stats.cache_read_hit_duration += duration;
