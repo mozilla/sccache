@@ -2676,6 +2676,15 @@ fn parse_rustc_z_ls(stdout: &str) -> Result<Vec<&str>> {
         let libstring = line_splits
             .next()
             .context("No lib string on line from rustc -Z ls")?;
+        // The libstring may contain additional metadata after the crate name
+        // (e.g., "crc_fast hash 05bce6... host_hash None kind Unconditional public"
+        // when the crate has no -HASH suffix). Take only the first
+        // whitespace-delimited token so rsplitn(-) below operates on just
+        // the crate name, not the entire trailing metadata.
+        let libstring = libstring
+            .split_whitespace()
+            .next()
+            .context("No lib string on line from rustc -Z ls")?;
         if num != dep_names.len() + 1 {
             bail!(
                 "Unexpected numbering of {} in rustc -Z ls output",
@@ -3357,6 +3366,39 @@ proc_macro false
         assert_eq!(res[0], "lucet_runtime");
         assert_eq!(res[1], "lucet_runtime_internals");
         assert_eq!(res[2], "lucet_runtime_macros");
+    }
+
+    #[cfg(feature = "dist-client")]
+    #[test]
+    fn test_parse_rustc_z_ls_modern_no_hash_suffix() {
+        // Modern rustc (1.75+) prints extended metadata per dep line:
+        //   N libname[-hash] hash HASH host_hash ... kind ... public
+        // Crates without a -HASH suffix (e.g. crc_fast, a proc-macro-style
+        // library built with a deterministic hash) appear as:
+        //   N crc_fast hash 05bce6... host_hash None kind Unconditional public
+        // The parser must extract just "crc_fast", not the entire trailing
+        // metadata, so that RustInputsPackager can match it against rmeta
+        // files in crate_link_paths.
+        let output = "Crate info:
+name xai_file_utils
+hash 42fac6f0 stable_crate_id StableCrateId(12206970385906972588)
+=External Dependencies=
+1 std-453218b5e9634890 hash c76be37888b32288681053863554e618 host_hash None kind Unconditional public
+2 core-5f5c0031517c19c4 hash 4e0d60221dfd8f9efa10e2a33c921b61 host_hash None kind Unconditional public
+3 crc_fast hash 05bce60290e56777e3ae6d3ddcc01e6c host_hash None kind Unconditional public
+4 crc-8c7d86e779319534 hash 49e85fac7c830ee1def0dd1674e740b0 host_hash None kind Unconditional public
+5 aws_sdk_s3-c49a342c963fe6e9 hash 119191ef3d4a8059aee3abebc4c4b5bf host_hash None kind Unconditional public
+
+";
+        let res = parse_rustc_z_ls(output);
+        assert!(res.is_ok());
+        let res = res.unwrap();
+        assert_eq!(res.len(), 5);
+        assert_eq!(res[0], "std");
+        assert_eq!(res[1], "core");
+        assert_eq!(res[2], "crc_fast");
+        assert_eq!(res[3], "crc");
+        assert_eq!(res[4], "aws_sdk_s3");
     }
 
     #[cfg(feature = "dist-client")]
