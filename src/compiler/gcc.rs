@@ -713,11 +713,20 @@ where
     };
     if outputs_gcno {
         let gcno = output.with_extension("gcno");
+        // Assembly inputs accept the coverage flags but never emit a .gcno note
+        // file, so it must not be a required output -- otherwise caching the
+        // compile aborts with "failed to zip up compiler outputs". Assembly
+        // became cacheable in the "Assembly language support" change, which is
+        // what first exposed this (see issue #2275).
+        let optional = matches!(
+            language,
+            Language::Assembler | Language::AssemblerToPreprocess
+        );
         outputs.insert(
             "gcno",
             ArtifactDescriptor {
                 path: gcno,
-                optional: false,
+                optional,
             },
         );
         profile_generate = true;
@@ -1510,6 +1519,44 @@ mod test {
         assert!(preprocessor_args.is_empty());
         assert_eq!(ovec!["--coverage"], common_args);
         assert!(!msvc_show_includes);
+        assert!(profile_generate);
+    }
+
+    #[test]
+    fn test_parse_arguments_coverage_assembly_gcno_optional() {
+        // Assembly compiled with the coverage flags does not emit a .gcno note
+        // file, so the .gcno output must be optional for the compile to remain
+        // cacheable rather than aborting (see issue #2275).
+        let args = stringvec!["--coverage", "-c", "foo.S", "-o", "foo.o"];
+        let ParsedArguments {
+            input,
+            language,
+            outputs,
+            profile_generate,
+            ..
+        } = match parse_arguments_(args, false) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(Some("foo.S"), input.to_str());
+        assert_eq!(Language::AssemblerToPreprocess, language);
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            ),
+            (
+                "gcno",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.gcno"),
+                    optional: true
+                }
+            )
+        );
         assert!(profile_generate);
     }
 
