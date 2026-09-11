@@ -1782,7 +1782,6 @@ where
 async fn detect_c_compiler<T, P>(
     creator: T,
     executable: P,
-    cwd: &Path,
     arguments: &[OsString],
     cwd: &Path,
     env: Vec<(OsString, OsString)>,
