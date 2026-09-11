@@ -377,6 +377,7 @@ pub fn preprocessor_cache_entry_hash_key(
     language: Language,
     arguments: &[OsString],
     extra_hashes: &[String],
+    assembler_digest: Option<&str>,
     env_vars: &[(OsString, OsString)],
     input_file: &Path,
     plusplus: bool,
@@ -396,6 +397,12 @@ pub fn preprocessor_cache_entry_hash_key(
     }
     for hash in extra_hashes {
         m.update(hash.as_bytes());
+    }
+    // A hit on a preprocessor cache entry hands back the object cache key that
+    // was stored in it, so everything the object key is made of has to be here
+    // too or the assembler would be forgotten on that path.
+    if let Some(assembler_digest) = assembler_digest {
+        m.update(assembler_digest.as_bytes());
     }
 
     for (var, val) in env_vars.iter() {
@@ -676,6 +683,7 @@ mod test {
             Language::C,
             &[],
             &[],
+            None,
             &[],
             &file1_path,
             false,
@@ -690,6 +698,7 @@ mod test {
             Language::C,
             &[],
             &[],
+            None,
             &[],
             &file2_path,
             false,
@@ -710,6 +719,7 @@ mod test {
             Language::C,
             &[],
             &[],
+            None,
             &[],
             &file1_path,
             false,
@@ -724,6 +734,7 @@ mod test {
             Language::C,
             &[],
             &[],
+            None,
             &[],
             &file2_path,
             false,
@@ -744,6 +755,7 @@ mod test {
             Language::C,
             &[],
             &[],
+            None,
             &[],
             &file1_path,
             false,
@@ -758,6 +770,7 @@ mod test {
             Language::C,
             &[],
             &[],
+            None,
             &[],
             &file2_path,
             false,

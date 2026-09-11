@@ -310,6 +310,7 @@ where
         unhashed_args: vec![],
         extra_dist_files: vec![],
         extra_hash_files: vec![],
+        uses_external_assembler: false,
         msvc_show_includes: false,
         profile_generate: false,
         // FIXME: Implement me.
@@ -785,6 +786,7 @@ mod test {
             unhashed_args: vec![],
             extra_dist_files: vec![],
             extra_hash_files: vec![],
+            uses_external_assembler: false,
             msvc_show_includes: false,
             profile_generate: false,
             color_mode: ColorMode::Auto,

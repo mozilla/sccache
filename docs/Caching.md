@@ -33,6 +33,9 @@ cases.
 
 We also take into account in the hash:
 * Hash of the compiler binary
+* Hash of the assembler binary the compiler hands the compilation off to, and
+  the version it reports, when there is one: GCC always assembles that way,
+  clang only with `-fno-integrated-as`
 * Programming language
 * Flag required to compile for the given language
 * File in which to generate dependencies.

@@ -109,6 +109,8 @@ pub struct ParsedArguments {
     pub extra_dist_files: Vec<PathBuf>,
     /// Extra files that need to have their contents hashed.
     pub extra_hash_files: Vec<PathBuf>,
+    /// Whether the compiler runs a separate assembler to produce the object file.
+    pub uses_external_assembler: bool,
     /// Whether or not the `-showIncludes` argument is passed on MSVC
     pub msvc_show_includes: bool,
     /// Whether the compilation is generating profiling or coverage data.
@@ -177,6 +179,11 @@ pub trait CCompilerImpl: Clone + fmt::Debug + Send + Sync + 'static {
     fn plusplus(&self) -> bool;
     /// Return the compiler version reported by the compiler executable.
     fn version(&self) -> Option<String>;
+    /// Return the identity of the assembler the compiler would run, when it
+    /// runs one at all.
+    fn assembler_digest(&self) -> Option<String> {
+        None
+    }
     /// Determine whether `arguments` are supported by this compiler.
     fn parse_arguments(
         &self,
@@ -379,6 +386,13 @@ where
         let start_of_compilation = std::time::SystemTime::now();
 
         let extra_hashes = hash_all(&self.parsed_args.extra_hash_files, &pool.clone()).await?;
+        // The assembler that turns the compiler's output into the object file is
+        // as much a part of the result as the compiler itself.
+        let assembler_digest = if self.parsed_args.uses_external_assembler {
+            self.compiler.assembler_digest()
+        } else {
+            None
+        };
         // Create an argument vector containing both preprocessor and arch args, to
         // use in creating a hash key
         let mut preprocessor_and_arch_args = self.parsed_args.preprocessor_args.clone();
@@ -449,6 +463,7 @@ where
                 self.parsed_args.language,
                 &preprocessor_and_arch_args,
                 &extra_hashes,
+                assembler_digest.as_deref(),
                 &env_vars,
                 &absolute_input_path,
                 self.compiler.plusplus(),
@@ -627,6 +642,7 @@ where
         .with_env_vars(&env_vars)
         .with_plusplus(self.compiler.plusplus())
         .with_basedirs(storage.basedirs())
+        .with_assembler_digest(assembler_digest.as_deref())
         .compute();
 
         // Cache the preprocessing step
@@ -741,7 +757,7 @@ fn process_preprocessed_file(
             // GCC precompiled header:
             || slice[1..].starts_with(PRAGMA_GCC_PCH_PREPROCESS)
             // HP/AIX:
-            || (&slice[1..5] == b"line "))
+            || slice[1..].starts_with(b"line "))
         && (start == 0 || bytes[start - 1] == b'\n')
         {
             match process_preprocessor_line(
@@ -1490,6 +1506,7 @@ pub struct HashKeyParams<'a> {
     preprocessor_output: &'a [u8],
     plusplus: bool,
     basedirs: &'a [Vec<u8>],
+    assembler_digest: Option<&'a str>,
 }
 
 impl<'a> HashKeyParams<'a> {
@@ -1517,6 +1534,7 @@ impl<'a> HashKeyParams<'a> {
             env_vars: &[],
             plusplus: false,
             basedirs: &[],
+            assembler_digest: None,
         }
     }
 
@@ -1544,6 +1562,12 @@ impl<'a> HashKeyParams<'a> {
         self
     }
 
+    /// Sets the identity of the assembler the compiler will run, if any.
+    pub fn with_assembler_digest(mut self, assembler_digest: Option<&'a str>) -> Self {
+        self.assembler_digest = assembler_digest;
+        self
+    }
+
     /// Computes the hash key based on the configured parameters.
     ///
     /// If `basedirs` are provided, paths in the preprocessor output will be normalized by
@@ -1565,6 +1589,9 @@ impl<'a> HashKeyParams<'a> {
         }
         for hash in self.extra_hashes {
             m.update(hash.as_bytes());
+        }
+        if let Some(assembler_digest) = self.assembler_digest {
+            m.update(assembler_digest.as_bytes());
         }
 
         for (var, val) in self.env_vars.iter() {
@@ -1605,6 +1632,26 @@ mod test {
             .with_plusplus(true)
             .compute();
         assert_neq!(h1, h2);
+    }
+
+    #[test]
+    fn test_assembler_digest_differs() {
+        let args = ovec!["a", "b", "c"];
+        let h1 = HashKeyParams::new("abcd", Language::C, &args, b"hello world").compute();
+        let h2 = HashKeyParams::new("abcd", Language::C, &args, b"hello world")
+            .with_assembler_digest(Some("abcd"))
+            .compute();
+        let h3 = HashKeyParams::new("abcd", Language::C, &args, b"hello world")
+            .with_assembler_digest(Some("efgh"))
+            .compute();
+        assert_neq!(h1, h2);
+        assert_neq!(h2, h3);
+        // Not knowing the assembler must keep the key the compiler alone would give,
+        // so that caches predating assembler tracking stay usable.
+        let h4 = HashKeyParams::new("abcd", Language::C, &args, b"hello world")
+            .with_assembler_digest(None)
+            .compute();
+        assert_eq!(h1, h4);
     }
 
     #[test]
@@ -1903,6 +1950,56 @@ mod test {
         assert_eq!(&bytes, &original_bytes);
         assert!(success);
         assert_eq!(include_files.len(), 0);
+    }
+
+    #[test]
+    fn test_process_preprocessed_file_line_directive() {
+        let header = PathBuf::from("tests/test.h");
+        let fs_impl = TestFs {
+            metadata_results: Mutex::new(
+                [(
+                    header.clone(),
+                    PreprocessorFileMetadata {
+                        is_dir: false,
+                        is_file: true,
+                        modified: Some(Timestamp::new(12341234, 0)),
+                        ctime_or_creation: None,
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            ),
+            open_results: Mutex::new(
+                [(
+                    header.clone(),
+                    Box::new(&b"contents"[..]) as Box<dyn std::io::Read>,
+                )]
+                .into_iter()
+                .collect(),
+            ),
+        };
+        let mut bytes = br#"#line 1 "tests/test.h"
+int value;
+"#
+        .to_vec();
+        let mut include_files = HashMap::new();
+
+        let success = process_preprocessed_file(
+            Path::new("tests/test.c"),
+            Path::new(""),
+            &mut bytes,
+            &mut include_files,
+            PreprocessorCacheModeConfig::activated(),
+            std::time::SystemTime::now(),
+            fs_impl,
+        )
+        .unwrap();
+
+        assert!(success);
+        assert_eq!(
+            include_files.get(&header).map(String::as_str),
+            Some("a93900c371d997927c5bc568ea538bed59ae5c960021dcfe7b0b369da5267528")
+        );
     }
 
     /// A filesystem interface that only panics to test that we don't access it.

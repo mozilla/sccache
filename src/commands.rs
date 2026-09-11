@@ -29,8 +29,12 @@ use log::Level::Trace;
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::io::{self, IsTerminal, Write};
+#[cfg(not(windows))]
+use std::os::fd::AsRawFd;
 #[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
+#[cfg(windows)]
+use std::os::windows::io::AsRawHandle;
 use std::path::Path;
 use std::process;
 use std::sync::Arc;
@@ -758,12 +762,16 @@ pub fn run_command(cmd: Command) -> Result<i32> {
             trace!("Command::InternalStartServer");
             if env::var("SCCACHE_ERROR_LOG").is_ok() {
                 let f = create_error_log()?;
+                #[cfg(not(windows))]
+                let preserve = [f.as_raw_fd()];
+                #[cfg(windows)]
+                let preserve = [f.as_raw_handle()];
                 // Can't report failure here, we're already daemonized.
-                daemonize()?;
+                daemonize(&preserve)?;
                 redirect_error_log(f)?;
             } else {
                 // We aren't asking for a log file
-                daemonize()?;
+                daemonize(&[])?;
             }
             server::start_server(config, &get_addr())?;
         }

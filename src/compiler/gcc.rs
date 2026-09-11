@@ -39,6 +39,7 @@ use crate::errors::*;
 pub struct Gcc {
     pub gplusplus: bool,
     pub version: Option<String>,
+    pub assembler_digest: Option<String>,
 }
 
 #[async_trait]
@@ -51,6 +52,9 @@ impl CCompilerImpl for Gcc {
     }
     fn version(&self) -> Option<String> {
         self.version.clone()
+    }
+    fn assembler_digest(&self) -> Option<String> {
+        self.assembler_digest.clone()
     }
     fn parse_arguments(
         &self,
@@ -171,6 +175,10 @@ ArgData! { pub
     PedanticFlag,
     Standard(OsString),
     SerializeDiagnostics(PathBuf),
+    // Only valid for clang, but this needs to be here since clang shares gcc's
+    // arg parsing.
+    IntegratedAs,
+    NoIntegratedAs,
 }
 
 use self::ArgData::*;
@@ -216,6 +224,7 @@ counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     take_arg!("-aux-info", OsString, Separated, PassThrough),
     take_arg!("-b", OsString, Separated, PassThrough),
     flag!("-c", DoCompilation),
+    take_arg!("-fcallgraph-info", OsString, Concatenated(b'='), TooHard),
     take_arg!("-fdiagnostics-color", OsString, Concatenated(b'='), DiagnosticsColor),
     // Old: gcc/clang header module flag.
     flag!("-fmodules", TooHardFlag),
@@ -227,11 +236,12 @@ counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     flag!("-fno-profile-generate", TooHardFlag),
     flag!("-fno-profile-use", TooHardFlag),
     flag!("-fno-working-directory", PreprocessorArgumentFlag),
-    flag!("-fplugin=libcc1plugin", TooHardFlag),
+    take_arg!("-fplugin", OsString, Concatenated(b'='), TooHard),
     flag!("-fprofile-arcs", ProfileGenerate),
     flag!("-fprofile-generate", ProfileGenerate),
     take_arg!("-fprofile-use", OsString, Concatenated, TooHard),
     flag!("-frepo", TooHardFlag),
+    flag!("-fstack-usage", TooHardFlag),
     flag!("-fsyntax-only", TooHardFlag),
     flag!("-ftest-coverage", TestCoverage),
     flag!("-fworking-directory", PreprocessorArgumentFlag),
@@ -316,6 +326,9 @@ where
     }
     let mut need_explicit_dep_argument_path = DepArgumentRequirePath::NotNeeded;
     let mut language = None;
+    // Clang assembles in-process unless told otherwise; the other compilers
+    // parsed here always hand off to a separate assembler.
+    let mut integrated_assembler = kind == CCompilerKind::Clang;
     let mut compilation_flag = OsString::new();
     let mut profile_generate = false;
     let mut outputs_gcno = false;
@@ -380,6 +393,8 @@ where
                 outputs_gcno = true;
                 profile_generate = true;
             }
+            Some(IntegratedAs) => integrated_assembler = true,
+            Some(NoIntegratedAs) => integrated_assembler = false,
             Some(DiagnosticsColorFlag) => color_mode = ColorMode::On,
             Some(NoDiagnosticsColorFlag) => color_mode = ColorMode::Off,
             Some(DiagnosticsColor(value)) => {
@@ -495,6 +510,8 @@ where
             | Some(PassThroughFlag)
             | Some(PassThrough(_))
             | Some(ClangModuleOutput(_))
+            | Some(IntegratedAs)
+            | Some(NoIntegratedAs)
             | Some(PassThroughPath(_)) => &mut common_args,
             Some(UnhashedFlag) | Some(Unhashed(_)) => &mut unhashed_args,
             Some(Arch(_)) => &mut arch_args,
@@ -571,6 +588,8 @@ where
             | Some(ClangModuleOutput(_))
             | Some(TooHardFlag)
             | Some(XClang(_))
+            | Some(IntegratedAs)
+            | Some(NoIntegratedAs)
             | Some(TooHard(_)) => cannot_cache!(
                 arg.flag_str()
                     .unwrap_or("Can't handle complex arguments through clang",)
@@ -769,6 +788,7 @@ where
         unhashed_args,
         extra_dist_files: vec![],
         extra_hash_files,
+        uses_external_assembler: !integrated_assembler,
         msvc_show_includes: false,
         profile_generate,
         color_mode,
@@ -1265,6 +1285,17 @@ mod test {
         assert!(preprocessor_args.is_empty());
         assert!(common_args.is_empty());
         assert!(!msvc_show_includes);
+    }
+
+    #[test]
+    fn test_parse_arguments_external_assembler() {
+        // GCC has no integrated assembler, so `as` is always part of what
+        // produced the object file.
+        let args = stringvec!["-c", "foo.c", "-o", "foo.o"];
+        match parse_arguments_(args, false) {
+            CompilerArguments::Ok(args) => assert!(args.uses_external_assembler),
+            o => panic!("Got unexpected parse result: {:?}", o),
+        }
     }
 
     #[test]
@@ -1812,6 +1843,8 @@ mod test {
     #[test]
     fn test_parse_arguments_too_hard() {
         let too_hard_flags = stringvec![
+            "-fstack-usage",
+            "-fcallgraph-info",
             "-save-temps",
             "-save-temps=cwd",
             "-save-temps=obj",
@@ -2300,6 +2333,35 @@ mod test {
     }
 
     #[test]
+    fn test_parse_arguments_fplugin() {
+        assert_eq!(
+            CompilerArguments::CannotCache("-fplugin", None),
+            parse_arguments_(
+                stringvec!["-c", "foo.c", "-fplugin=plugin.so", "-o", "foo.o"],
+                false
+            )
+        );
+        assert_eq!(
+            CompilerArguments::CannotCache("-fplugin", None),
+            parse_arguments_(
+                stringvec!["-c", "foo.c", "-fplugin=libcc1plugin", "-o", "foo.o"],
+                false
+            )
+        );
+    }
+
+    #[test]
+    fn test_parse_arguments_fcallgraph_info_with_markers() {
+        assert_eq!(
+            CompilerArguments::CannotCache("-fcallgraph-info", None),
+            parse_arguments_(
+                stringvec!["-c", "foo.c", "-fcallgraph-info=su,da", "-o", "foo.o"],
+                false
+            )
+        );
+    }
+
+    #[test]
     fn test_parse_arguments_pgo() {
         assert_eq!(
             CompilerArguments::CannotCache("-fprofile-use", None),
@@ -2598,6 +2660,7 @@ mod test {
             unhashed_args: vec![],
             extra_dist_files: vec![],
             extra_hash_files: vec![],
+            uses_external_assembler: false,
             msvc_show_includes: false,
             profile_generate: false,
             color_mode: ColorMode::Auto,
@@ -2659,6 +2722,7 @@ mod test {
             unhashed_args: vec![],
             extra_dist_files: vec![],
             extra_hash_files: vec![],
+            uses_external_assembler: false,
             msvc_show_includes: false,
             profile_generate: false,
             color_mode: ColorMode::Auto,
@@ -2718,6 +2782,7 @@ mod test {
             unhashed_args: vec![],
             extra_dist_files: vec![],
             extra_hash_files: vec![],
+            uses_external_assembler: false,
             msvc_show_includes: false,
             profile_generate: false,
             color_mode: ColorMode::Auto,

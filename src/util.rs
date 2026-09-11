@@ -897,10 +897,55 @@ impl Hasher for HashToDigest<'_> {
     }
 }
 
-/// Pipe `cmd`'s stdio to `/dev/null`, unless a specific env var is set.
+/// Close every file descriptor we inherited from whoever spawned us, keeping
+/// stdin/out/err and anything in `preserve`.
 #[cfg(not(windows))]
-pub fn daemonize() -> Result<()> {
-    use crate::jobserver::discard_inherited_jobserver;
+fn close_inherited_fds(preserve: &[std::os::unix::io::RawFd]) {
+    use std::os::unix::io::RawFd;
+
+    let keep = |fd: RawFd| fd <= libc::STDERR_FILENO || preserve.contains(&fd);
+
+    // macOS/BSD: /dev/fd; Linux: /proc/self/fd
+    let listing = std::fs::read_dir("/dev/fd").or_else(|_| std::fs::read_dir("/proc/self/fd"));
+    let victims: Option<Vec<RawFd>> = listing.ok().map(|entries| {
+        entries
+            .flatten()
+            .filter_map(|e| e.file_name().to_str()?.parse::<RawFd>().ok())
+            .filter(|fd| !keep(*fd))
+            .collect()
+    });
+
+    match victims {
+        Some(fds) => {
+            for fd in fds {
+                unsafe { libc::close(fd) };
+            }
+        }
+        // No fd directory to enumerate, so fall back to sweeping the whole
+        // range. Bounded by the soft limit rather than the hard one to keep
+        // this from turning into a million syscalls.
+        None => {
+            let max = unsafe { libc::sysconf(libc::_SC_OPEN_MAX) };
+            let max = if max < 0 {
+                4096
+            } else {
+                max.min(65536) as RawFd
+            };
+            for fd in (libc::STDERR_FILENO + 1)..max {
+                if !keep(fd) {
+                    unsafe { libc::close(fd) };
+                }
+            }
+        }
+    }
+}
+
+/// Pipe `cmd`'s stdio to `/dev/null`, unless a specific env var is set.
+///
+/// `preserve_fds` lists descriptors the caller opened before daemonizing and
+/// still needs afterwards; everything else inherited is closed.
+#[cfg(not(windows))]
+pub fn daemonize(preserve_fds: &[std::os::unix::io::RawFd]) -> Result<()> {
     use daemonix::Daemonize;
     use std::env;
     use std::mem;
@@ -912,9 +957,7 @@ pub fn daemonize() -> Result<()> {
         }
     }
 
-    unsafe {
-        discard_inherited_jobserver();
-    }
+    close_inherited_fds(preserve_fds);
 
     static mut PREV_SIGSEGV: *mut libc::sigaction = std::ptr::null_mut();
     static mut PREV_SIGBUS: *mut libc::sigaction = std::ptr::null_mut();
@@ -986,7 +1029,7 @@ pub fn daemonize() -> Result<()> {
 
 /// This is a no-op on Windows.
 #[cfg(windows)]
-pub fn daemonize() -> Result<()> {
+pub fn daemonize(_preserve_fds: &[std::os::windows::io::RawHandle]) -> Result<()> {
     Ok(())
 }
 
