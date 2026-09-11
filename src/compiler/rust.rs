@@ -2285,10 +2285,18 @@ impl pkg::ToolchainPackager for RustToolchainPackager {
         let sysroot_executable = bins_path.join("rustc").with_extension(EXE_EXTENSION);
         package_builder.add_executable_and_deps(sysroot_executable)?;
 
-        package_builder.add_dir_contents(&bins_path)?;
+        // Package the Rust standard library subtree instead of the entire
+        // sysroot lib directory. Distros like Void Linux report `/usr` as the
+        // sysroot, so packaging `$sysroot/lib` would drag in the whole system
+        // library tree (several GiB) rather than just the Rust stdlib.
         if BINS_DIR != LIBS_DIR {
             let libs_path = sysroot.join(LIBS_DIR);
-            package_builder.add_dir_contents(&libs_path)?;
+            let rustlib_path = libs_path.join("rustlib");
+            if rustlib_path.is_dir() {
+                package_builder.add_dir_contents(&rustlib_path)?;
+            } else {
+                package_builder.add_dir_contents(&libs_path)?;
+            }
         }
 
         package_builder.into_compressed_tar(f)
