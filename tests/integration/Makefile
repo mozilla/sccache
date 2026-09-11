@@ -159,6 +159,7 @@ test-%: build clean-%
 	$(call group,Testing $*)
 	@echo "Testing $*..."
 	@docker compose $(call profiles,$*) up --quiet-pull -d $(SERVICES_$*)
+	@rm -f $(COVERAGE_DIR)/sccache.log
 	@docker compose $(call profiles,$*) run --quiet-pull --rm test-$*
 	@docker compose $(call profiles,$*) down
 	@echo "$* test completed"
