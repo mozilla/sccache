@@ -1183,7 +1183,7 @@ where
     pub compilation: Box<dyn Compilation<T> + 'static>,
     /// A weak key that may be used to identify the toolchain
     pub weak_toolchain_key: String,
-    pub hash_key_type: CacheType,
+    pub hash_key_type: DirectCacheType,
 }
 
 /// Possible results of parsing compiler arguments.
@@ -1228,10 +1228,10 @@ pub enum DistType {
 
 /// Specifics about cache misses.
 #[derive(Debug, PartialEq, Eq)]
-pub enum CacheType {
-    DirectHit,
-    DirectMiss,
-    DirectNotAttempted,
+pub enum DirectCacheType {
+    Hit,
+    Miss,
+    NotAttempted,
 }
 
 /// Specifics about cache misses.
@@ -1260,7 +1260,7 @@ pub enum CompileResult {
     /// An error made the compilation not possible.
     Error,
     /// Result was found in cache.
-    CacheHit(Duration, CacheType),
+    CacheHit(Duration, DirectCacheType),
     /// Result was not found in cache.
     ///
     /// The `CacheWriteFuture` will resolve when the result is finished
@@ -3082,7 +3082,7 @@ LLVM version: 6.0",
         // Ensure that the object file was created.
         assert!(fs::metadata(&obj).map(|m| m.len() > 0).unwrap());
         assert_eq!(
-            CompileResult::CacheHit(Duration::new(0, 0), CacheType::DirectMiss),
+            CompileResult::CacheHit(Duration::new(0, 0), DirectCacheType::Miss),
             cached
         );
         assert_eq!(exit_status(0), res.status);
@@ -3216,7 +3216,7 @@ LLVM version: 6.0",
         // Ensure that the object file was created.
         assert!(fs::metadata(&obj).map(|m| m.len() > 0).unwrap());
         assert_eq!(
-            CompileResult::CacheHit(Duration::new(0, 0), CacheType::DirectMiss),
+            CompileResult::CacheHit(Duration::new(0, 0), DirectCacheType::Miss),
             cached
         );
         assert_eq!(exit_status(0), res.status);
