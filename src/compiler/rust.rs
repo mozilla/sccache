@@ -2006,6 +2006,83 @@ fn test_can_trim_this() {
     assert!(!can_trim_this(&rlib_file));
 }
 
+/// Extract the crate name and extension from a library file path in a crate
+/// link directory.
+///
+/// Filenames are normally `lib<crate>-<metadata-hash>.<ext>`, but cdylib and
+/// staticlib outputs can have no metadata hash (e.g. `libcrc_fast.rmeta` from a
+/// crate with `crate-type = ["lib", "cdylib", "staticlib"]`). In that case
+/// `rsplitn(2, '-')` yields a single element, so the whole filename is the
+/// libname.
+#[cfg(feature = "dist-client")]
+fn crate_name_and_ext_from_lib_path(path: &Path) -> Option<(&str, &str)> {
+    let ext = path.extension()?.to_str()?;
+    // file_stem strips the extension, giving e.g. `libcrc_fast` from
+    // `libcrc_fast.rmeta`. rsplitn on the stem then correctly handles both
+    // `libfoo-HASH` (normal) and `libcrc_fast` (cdylib, no hash) cases.
+    let stem = path.file_stem()?.to_str()?;
+    let mut rev_name_split = stem.rsplitn(2, '-');
+    let _extra_filename_and_ext = rev_name_split.next();
+    let libname = rev_name_split.next().unwrap_or(stem);
+    if libname.starts_with(DLL_PREFIX) && ext == DLL_EXTENSION {
+        Some((&libname[DLL_PREFIX.len()..], ext))
+    } else if libname.starts_with(RLIB_PREFIX) && (ext == RLIB_EXTENSION || ext == RMETA_EXTENSION) {
+        Some((&libname[RLIB_PREFIX.len()..], ext))
+    } else {
+        None
+    }
+}
+
+#[test]
+#[cfg(feature = "dist-client")]
+fn test_crate_name_and_ext_from_lib_path() {
+    use std::path::Path;
+
+    // Normal rlib with metadata hash suffix
+    let p = Path::new("libfoo-abc123.rlib");
+    assert_eq!(crate_name_and_ext_from_lib_path(p), Some(("foo", "rlib")));
+
+    // Normal rmeta with metadata hash suffix
+    let p = Path::new("libfoo-abc123.rmeta");
+    assert_eq!(crate_name_and_ext_from_lib_path(p), Some(("foo", "rmeta")));
+
+    // cdylib output with no metadata hash suffix (crate-type includes cdylib)
+    let p = Path::new("libcrc_fast.rmeta");
+    assert_eq!(
+        crate_name_and_ext_from_lib_path(p),
+        Some(("crc_fast", "rmeta"))
+    );
+
+    // cdylib output with no metadata hash suffix, rlib variant
+    let p = Path::new("libcrc_fast.rlib");
+    assert_eq!(
+        crate_name_and_ext_from_lib_path(p),
+        Some(("crc_fast", "rlib"))
+    );
+
+    // Dynamic library with metadata hash
+    let p = Path::new("libfoo-abc123.so");
+    assert_eq!(crate_name_and_ext_from_lib_path(p), Some(("foo", "so")));
+
+    // Dynamic library without metadata hash (cdylib)
+    let p = Path::new("libcrc_fast.so");
+    assert_eq!(
+        crate_name_and_ext_from_lib_path(p),
+        Some(("crc_fast", "so"))
+    );
+
+    // Not a library file
+    let p = Path::new("foo.txt");
+    assert_eq!(crate_name_and_ext_from_lib_path(p), None);
+
+    // Path with multiple dashes in crate name
+    let p = Path::new("libxai_file_utils-abc123.rmeta");
+    assert_eq!(
+        crate_name_and_ext_from_lib_path(p),
+        Some(("xai_file_utils", "rmeta"))
+    );
+}
+
 #[cfg(feature = "dist-client")]
 fn maybe_add_cargo_toml(input_path: &Path, verify: bool) -> Option<PathBuf> {
     let lib_rs = PathBuf::new().join("src").join("lib.rs");
@@ -2158,32 +2235,11 @@ impl pkg::InputsPackager for RustInputsPackager {
 
                 {
                     // Take a look at the path and see if it's something we care about
-                    let libname: &str = match path.file_name().and_then(|s| s.to_str()) {
-                        Some(name) => {
-                            let mut rev_name_split = name.rsplitn(2, '-');
-                            let _extra_filename_and_ext = rev_name_split.next();
-                            let libname = if let Some(libname) = rev_name_split.next() {
-                                libname
-                            } else {
-                                continue;
-                            };
-                            assert!(rev_name_split.next().is_none());
-                            libname
-                        }
-                        None => continue,
-                    };
-                    let (crate_name, ext): (&str, _) = match path.extension() {
-                        Some(ext) if libname.starts_with(DLL_PREFIX) && ext == DLL_EXTENSION => {
-                            (&libname[DLL_PREFIX.len()..], ext)
-                        }
-                        Some(ext) if libname.starts_with(RLIB_PREFIX) && ext == RLIB_EXTENSION => {
-                            (&libname[RLIB_PREFIX.len()..], ext)
-                        }
-                        Some(ext) if libname.starts_with(RLIB_PREFIX) && ext == RMETA_EXTENSION => {
-                            (&libname[RLIB_PREFIX.len()..], ext)
-                        }
-                        _ => continue,
-                    };
+                    let (crate_name, ext): (&str, &str) =
+                        match crate_name_and_ext_from_lib_path(&path) {
+                            Some(c) => c,
+                            None => continue,
+                        };
                     if let Some((_, ref dep_crate_names)) = rlib_dep_reader_and_names {
                         // We have a list of crate names we care about, see if this lib is a candidate
                         if !dep_crate_names.contains(crate_name) {
