@@ -154,6 +154,7 @@ pub fn generate_compile_commands(
         arguments,
         env_vars: env_vars.to_owned(),
         cwd: cwd.to_owned(),
+        _response_file_dir: None,
     };
 
     #[cfg(not(feature = "dist-client"))]

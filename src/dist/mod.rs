@@ -326,6 +326,7 @@ pub fn try_compile_command_to_dist(
         arguments,
         env_vars,
         cwd,
+        ..
     } = command;
     Some(CompileCommand {
         executable: executable.into_os_string().into_string().ok()?,

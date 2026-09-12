@@ -50,7 +50,7 @@ use std::future::Future;
 use std::hash::Hash;
 #[cfg(feature = "dist-client")]
 use std::io;
-use std::io::{BufReader, Read};
+use std::io::{BufReader, Read, Write};
 use std::iter;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -257,8 +257,9 @@ where
         .tempdir()
         .context("Failed to create temp dir")?;
     let dep_file = temp_dir.path().join("deps.d");
+    let (rsp_args, _rsp_dir) = maybe_write_response_file(arguments.to_vec())?;
     let mut cmd = creator.clone().new_command_sync(executable);
-    cmd.args(arguments)
+    cmd.args(&rsp_args)
         .args(&["--emit", "dep-info"])
         .arg("-o")
         .arg(&dep_file)
@@ -381,8 +382,9 @@ async fn get_compiler_outputs<T>(
 where
     T: Clone + CommandCreatorSync,
 {
+    let (rsp_args, _rsp_dir) = maybe_write_response_file(arguments)?;
     let mut cmd = creator.clone().new_command_sync(executable);
-    cmd.args(&arguments)
+    cmd.args(&rsp_args)
         .args(&["--print", "file-names"])
         .env_clear()
         .envs(env_vars.to_vec())
@@ -1117,6 +1119,45 @@ impl Iterator for ExpandResponseFile<'_> {
     }
 }
 
+fn maybe_write_response_file(
+    flat_args: Vec<OsString>,
+) -> Result<(Vec<OsString>, Option<tempfile::TempDir>)> {
+    // On Windows there is a hard limit of ~32KB, so we cut off at 30KB to
+    // give some buffer just incase.
+    #[cfg(windows)]
+    let threshold: usize = 30 * 1024;
+    // On unix the limit is defined by ARG_MAX. If its not explicitly set we set it to 1MB
+    // which is fairly large but lower than the ~2MB that it defaults to on most systems.
+    #[cfg(unix)]
+    let threshold: usize = std::env::var("ARG_MAX")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1024 * 1024);
+
+    let total_arg_len: usize = flat_args.iter().map(|a| a.len() + 1).sum();
+    if total_arg_len <= threshold {
+        return Ok((flat_args, None));
+    }
+
+    let dir = tempfile::Builder::new()
+        .prefix("sccache-rsp")
+        .tempdir()
+        .context("Failed to create response file directory")?;
+    let rsp_path = dir.path().join("args");
+    let mut rsp_file = fs::File::create(&rsp_path).context("Failed to create response file")?;
+    for arg in &flat_args {
+        let line = arg
+            .to_str()
+            .ok_or_else(|| anyhow!("rustc argument not valid UTF-8: {:?}", arg))?;
+        writeln!(rsp_file, "{}", line).context("Failed to write response file")?;
+    }
+    rsp_file.flush().context("Failed to flush response file")?;
+    Ok((
+        vec![OsString::from(format!("@{}", rsp_path.display()))],
+        Some(dir),
+    ))
+}
+
 fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<ParsedArguments> {
     let mut args = vec![];
 
@@ -1790,14 +1831,19 @@ impl<T: CommandCreatorSync> Compilation<T> for RustCompilation {
 
         trace!("[{}]: compile", crate_name);
 
+        let flat_args: Vec<OsString> = arguments
+            .iter()
+            .flat_map(|arg| arg.iter_os_strings())
+            .collect();
+
+        let (command_args, rsp_dir) = maybe_write_response_file(flat_args)?;
+
         let command = SingleCompileCommand {
             executable: executable.to_owned(),
-            arguments: arguments
-                .iter()
-                .flat_map(|arg| arg.iter_os_strings())
-                .collect(),
+            arguments: command_args,
             env_vars: env_vars.to_owned(),
             cwd: cwd.to_owned(),
+            _response_file_dir: rsp_dir,
         };
 
         #[cfg(not(feature = "dist-client"))]
