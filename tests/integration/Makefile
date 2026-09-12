@@ -56,7 +56,7 @@ PROFILES_zstd := zstd
 # Map backends to their services
 SERVICES_autotools :=
 SERVICES_azblob := azurite azurite-setup
-SERVICES_basedirs := redis memcached minio minio-setup azurite azurite-setup webdav
+SERVICES_basedirs := redis memcached silo silo-setup azurite azurite-setup webdav
 SERVICES_clang :=
 SERVICES_cmake :=
 SERVICES_cmake-modules :=
@@ -65,11 +65,11 @@ SERVICES_coverage :=
 SERVICES_gcc :=
 SERVICES_memcached := memcached
 SERVICES_memcached-deprecated := memcached
-SERVICES_multilevel := redis memcached minio minio-setup azurite azurite-setup webdav
-SERVICES_multilevel-chain := redis memcached minio minio-setup
+SERVICES_multilevel := redis memcached silo silo-setup azurite azurite-setup webdav
+SERVICES_multilevel-chain := redis memcached silo silo-setup
 SERVICES_redis := redis
 SERVICES_redis-deprecated := redis
-SERVICES_s3 := minio minio-setup
+SERVICES_s3 := silo silo-setup
 SERVICES_webdav := webdav
 SERVICES_zstd :=
 
@@ -84,7 +84,7 @@ help:
 	@echo "  make test-redis-deprecated   Run Redis (deprecated) test"
 	@echo "  make test-memcached          Run Memcached (new endpoint) test"
 	@echo "  make test-memcached-deprecated Run Memcached (deprecated) test"
-	@echo "  make test-s3                 Run S3/MinIO test"
+	@echo "  make test-s3                 Run S3/Silo test"
 	@echo "  make test-azblob             Run Azure Blob Storage test"
 	@echo "  make test-webdav             Run WebDAV test"
 	@echo ""

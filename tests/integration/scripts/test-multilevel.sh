@@ -223,7 +223,7 @@ test_multilevel_backend "memcached" "SCCACHE_MEMCACHED_ENDPOINT=tcp://memcached:
 
 test_multilevel_backend "s3" \
     "SCCACHE_BUCKET=test" \
-    "SCCACHE_ENDPOINT=http://minio:9000/" \
+    "SCCACHE_ENDPOINT=http://silo:9000/" \
     "SCCACHE_REGION=us-east-1" \
     "AWS_ACCESS_KEY_ID=minioadmin" \
     "AWS_SECRET_ACCESS_KEY=minioadmin" \

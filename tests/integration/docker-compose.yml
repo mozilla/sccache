@@ -49,12 +49,13 @@ services:
       - test
       - memcached
 
-  minio:
-    image: minio/minio:latest
+  silo:
+    image: pgsty/silo:latest
     ports:
       - "9000:9000"
       - "9001:9001"
     environment:
+      # Silo is a MinIO fork and still reads the MINIO_* configuration.
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
     command: server /data --console-address ":9001"
@@ -65,15 +66,15 @@ services:
       - test
       - s3
 
-  minio-setup:
-    image: minio/mc:latest
+  silo-setup:
+    image: pgsty/mc:latest
     depends_on:
-      minio:
+      silo:
         condition: service_healthy
     entrypoint: >
       /bin/sh -c "
-      mc alias set myminio http://minio:9000 minioadmin minioadmin;
-      mc mb myminio/test || true;
+      mc alias set silo http://silo:9000 minioadmin minioadmin;
+      mc mb silo/test || true;
       exit 0;
       "
     profiles:
@@ -187,14 +188,14 @@ services:
     image: rust:latest
     entrypoint: /sccache/tests/integration/scripts/test-backend.sh
     depends_on:
-      minio:
+      silo:
         condition: service_healthy
-      minio-setup:
+      silo-setup:
         condition: service_completed_successfully
     environment:
       <<: *common-env
       SCCACHE_BUCKET: test
-      SCCACHE_ENDPOINT: http://minio:9000/
+      SCCACHE_ENDPOINT: http://silo:9000/
       SCCACHE_REGION: us-east-1
       AWS_ACCESS_KEY_ID: minioadmin
       AWS_SECRET_ACCESS_KEY: minioadmin
@@ -342,9 +343,9 @@ services:
         condition: service_healthy
       memcached:
         condition: service_healthy
-      minio:
+      silo:
         condition: service_healthy
-      minio-setup:
+      silo-setup:
         condition: service_completed_successfully
       azurite:
         condition: service_healthy
@@ -365,9 +366,9 @@ services:
         condition: service_healthy
       memcached:
         condition: service_healthy
-      minio:
+      silo:
         condition: service_healthy
-      minio-setup:
+      silo-setup:
         condition: service_completed_successfully
       azurite:
         condition: service_healthy
@@ -388,9 +389,9 @@ services:
         condition: service_healthy
       memcached:
         condition: service_healthy
-      minio:
+      silo:
         condition: service_healthy
-      minio-setup:
+      silo-setup:
         condition: service_completed_successfully
     profiles:
       - test
