@@ -2566,7 +2566,7 @@ LLVM version: 6.0",
                         false,
                         pool,
                         false,
-                        Arc::new(MockStorage::new(None, preprocessor_cache_mode)),
+                        Arc::new(MockStorage::new(None, preprocessor_cache_mode, vec![])),
                         CacheControl::Default,
                     )
                     .wait()
@@ -2724,7 +2724,7 @@ LLVM version: 6.0",
                         false,
                         pool,
                         false,
-                        Arc::new(MockStorage::new(None, preprocessor_cache_mode)),
+                        Arc::new(MockStorage::new(None, preprocessor_cache_mode, vec![])),
                         CacheControl::Default,
                     )
                     .wait()
@@ -2791,7 +2791,7 @@ LLVM version: 6.0",
                         false,
                         pool,
                         false,
-                        Arc::new(MockStorage::new(None, preprocessor_cache_mode)),
+                        Arc::new(MockStorage::new(None, preprocessor_cache_mode, vec![])),
                         CacheControl::Default,
                     )
                     .wait()
@@ -3096,7 +3096,7 @@ LLVM version: 6.0",
         let gcc = f.mk_bin("gcc").unwrap();
         let runtime = Runtime::new().unwrap();
         let pool = runtime.handle().clone();
-        let storage = MockStorage::new(None, preprocessor_cache_mode);
+        let storage = MockStorage::new(None, preprocessor_cache_mode, vec![]);
         let storage: Arc<MockStorage> = Arc::new(storage);
         let service = server::SccacheService::mock_with_storage(storage.clone(), pool.clone());
 
@@ -3190,7 +3190,7 @@ LLVM version: 6.0",
         std::fs::write(f.tempdir.path().join("foo.c"), "whatever").unwrap();
         // Make our storage wait 2ms for each get/put operation.
         let storage_delay = Duration::from_millis(2);
-        let storage = MockStorage::new(Some(storage_delay), preprocessor_cache_mode);
+        let storage = MockStorage::new(Some(storage_delay), preprocessor_cache_mode, vec![]);
         let storage: Arc<MockStorage> = Arc::new(storage);
         let service = server::SccacheService::mock_with_storage(storage.clone(), pool.clone());
         // Pretend to be GCC.
