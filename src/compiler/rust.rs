@@ -26,7 +26,10 @@ use crate::dist::pkg;
 #[cfg(feature = "dist-client")]
 use crate::lru_disk_cache::{LruCache, Meter};
 use crate::mock_command::{CommandCreatorSync, RunCommand};
-use crate::util::{Digest, fmt_duration_as_secs, hash_all, hash_all_archives, run_input_output};
+use crate::util::{
+    Digest, fmt_duration_as_secs, hash_all, hash_all_archives, run_input_output,
+    strip_path_basedirs,
+};
 use crate::util::{HashToDigest, OsStrExt};
 use crate::{counted_array, dist};
 use async_trait::async_trait;
@@ -44,7 +47,7 @@ use std::collections::{HashMap, HashSet};
 use std::env::consts::DLL_EXTENSION;
 #[cfg(feature = "dist-client")]
 use std::env::consts::{DLL_PREFIX, EXE_EXTENSION};
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::future::Future;
 use std::hash::Hash;
@@ -235,7 +238,90 @@ static ALLOWED_EMIT: LazyLock<HashSet<&'static str>> =
     LazyLock::new(|| ["link", "metadata", "dep-info"].iter().copied().collect());
 
 /// Version number for cache key.
-const CACHE_VERSION: &[u8] = b"6";
+const CACHE_VERSION: &[u8] = b"7";
+
+fn hash_rust_value(digest: &mut Digest, value: &OsStr, basedirs: Option<&[Vec<u8>]>) {
+    let encoded = encode_rust_value(value);
+    let normalized = basedirs.map_or(encoded, |basedirs| strip_path_basedirs(encoded, basedirs));
+    digest.update(&(normalized.len() as u64).to_le_bytes());
+    digest.update(normalized);
+}
+
+fn hash_rust_argument(
+    digest: &mut Digest,
+    arg: &OsStr,
+    value: Option<&OsStr>,
+    basedirs: Option<&[Vec<u8>]>,
+) {
+    let arg_normalizer = if value.is_none() && Path::new(arg).is_absolute() {
+        basedirs
+    } else {
+        None
+    };
+    hash_rust_value(digest, arg, arg_normalizer);
+
+    let Some(value) = value else {
+        return;
+    };
+    if arg == "--remap-path-prefix" {
+        hash_rust_remap(digest, value, basedirs);
+        return;
+    }
+    hash_rust_value(digest, value, None);
+}
+
+fn hash_rust_remap(digest: &mut Digest, value: &OsStr, basedirs: Option<&[Vec<u8>]>) {
+    let Some(basedirs) = basedirs else {
+        hash_rust_value(digest, value, None);
+        return;
+    };
+    let encoded = encode_rust_value(value);
+    let Some(separator) = encoded.iter().rposition(|byte| *byte == b'=') else {
+        hash_rust_value(digest, value, None);
+        return;
+    };
+    let source = strip_path_basedirs(&encoded[..separator], basedirs);
+    let replacement = &encoded[separator..];
+    digest.update(&((source.len() + replacement.len()) as u64).to_le_bytes());
+    digest.update(source);
+    digest.update(replacement);
+}
+
+fn encode_rust_value(value: &OsStr) -> &[u8] {
+    value.as_encoded_bytes()
+}
+
+fn sort_paths_for_hash(paths: &mut [PathBuf], basedirs: Option<&[Vec<u8>]>) {
+    let Some(basedirs) = basedirs else {
+        return;
+    };
+    if !paths.iter().any(|path| {
+        let path = encode_rust_value(path.as_os_str());
+        strip_path_basedirs(path, basedirs).len() != path.len()
+    }) {
+        return;
+    }
+
+    paths.sort_by(|left, right| {
+        let left = strip_path_basedirs(encode_rust_value(left.as_os_str()), basedirs);
+        let right = strip_path_basedirs(encode_rust_value(right.as_os_str()), basedirs);
+        left.cmp(right)
+    });
+}
+
+fn is_path_cargo_env(var: &OsStr) -> bool {
+    matches!(
+        var.to_str(),
+        Some(
+            "CARGO_HOME"
+                | "CARGO_INSTALL_ROOT"
+                | "CARGO_MANIFEST_DIR"
+                | "CARGO_MANIFEST_PATH"
+                | "CARGO_TARGET_DIR"
+                | "CARGO_TARGET_TMPDIR"
+        )
+    ) || var.as_encoded_bytes().starts_with(b"CARGO_BIN_EXE_")
+}
 
 /// Get absolute paths for all source files and env-deps listed in rustc's dep-info output.
 async fn get_source_files_and_env_deps<T>(
@@ -1388,10 +1474,12 @@ where
         _may_dist: bool,
         pool: &tokio::runtime::Handle,
         _rewrite_includes_only: bool,
-        _storage: Arc<dyn Storage>,
+        storage: Arc<dyn Storage>,
         _cache_control: CacheControl,
     ) -> Result<HashResult<T>> {
         trace!("[{}]: generate_hash_key", self.parsed_args.crate_name);
+        let basedirs = storage.basedirs();
+        let basedirs = (!basedirs.is_empty()).then_some(basedirs);
         // TODO: this doesn't produce correct arguments if they should be concatenated - should use iter_os_strings
         let os_string_arguments: Vec<(OsString, Option<OsString>)> = self
             .parsed_args
@@ -1422,7 +1510,7 @@ where
         // Find all the source files and hash them
         let source_hashes_pool = pool.clone();
         let source_files_and_hashes_and_env_deps = async {
-            let (source_files, env_deps) = get_source_files_and_env_deps(
+            let (mut source_files, env_deps) = get_source_files_and_env_deps(
                 creator,
                 &self.parsed_args.crate_name,
                 &self.executable,
@@ -1432,6 +1520,7 @@ where
                 pool,
             )
             .await?;
+            sort_paths_for_hash(&mut source_files, basedirs);
             let source_hashes = hash_all(&source_files, &source_hashes_pool).await?;
             Ok((source_files, source_hashes, env_deps))
         };
@@ -1442,12 +1531,13 @@ where
             self.parsed_args.crate_name,
             self.parsed_args.externs.len()
         );
-        let abs_externs = self
+        let mut abs_externs = self
             .parsed_args
             .externs
             .iter()
             .map(|e| cwd.join(e))
             .collect::<Vec<_>>();
+        sort_paths_for_hash(&mut abs_externs, basedirs);
         let extern_hashes = hash_all(&abs_externs, pool);
         // Hash the contents of the staticlibs listed on the commandline.
         trace!(
@@ -1455,12 +1545,13 @@ where
             self.parsed_args.crate_name,
             self.parsed_args.staticlibs.len()
         );
-        let abs_staticlibs = self
+        let mut abs_staticlibs = self
             .parsed_args
             .staticlibs
             .iter()
             .map(|s| cwd.join(s))
             .collect::<Vec<_>>();
+        sort_paths_for_hash(&mut abs_staticlibs, basedirs);
         let staticlib_hashes = hash_all_archives(&abs_staticlibs, pool);
 
         // Hash the content of the specified target json file, if any.
@@ -1501,64 +1592,63 @@ where
         }
         let weak_toolchain_key = m.clone().finish();
         // 3. The full commandline (self.arguments)
-        // TODO: there will be full paths here, it would be nice to
-        // normalize them so we can get cross-machine cache hits.
         // A few argument types are not passed in a deterministic order
         // by cargo: --extern, -L, --cfg. We'll filter those out, sort them,
         // and append them to the rest of the arguments.
-        let args = {
-            let (mut sortables, rest): (Vec<_>, Vec<_>) = os_string_arguments
-                .iter()
-                // We exclude a few arguments from the hash:
-                //   -L, --extern, --out-dir, --diagnostic-width
-                // These contain paths which aren't relevant to the output, and the compiler inputs
-                // in those paths (rlibs and static libs used in the compilation) are used as hash
-                // inputs below.
-                .filter(|&(arg, _)| {
-                    !(arg == "--extern"
-                        || arg == "-L"
-                        || arg == "--check-cfg"
-                        || arg == "--out-dir"
-                        || arg == "--diagnostic-width")
-                })
-                // We also exclude `--target` if it specifies a path to a .json file. The file content
-                // is used as hash input below.
-                // If `--target` specifies a string, it continues to be hashed as part of the arguments.
-                .filter(|&(arg, _)| self.parsed_args.target_json.is_none() || arg != "--target")
-                // A few argument types were not passed in a deterministic order
-                // by older versions of cargo: --extern, -L, --cfg. We'll filter the rest of those
-                // out, sort them, and append them to the rest of the arguments.
-                .partition(|&(arg, _)| arg == "--cfg");
-            sortables.sort();
-            rest.into_iter()
-                .chain(sortables)
-                .flat_map(|(arg, val)| iter::once(arg).chain(val.as_ref()))
-                .fold(OsString::new(), |mut a, b| {
-                    a.push(b);
-                    a
-                })
-        };
-        args.hash(&mut HashToDigest { digest: &mut m });
+        let (mut sortable_args, remaining_args): (Vec<_>, Vec<_>) = os_string_arguments
+            .iter()
+            // We exclude a few arguments from the hash:
+            //   -L, --extern, --out-dir, --diagnostic-width
+            // These contain paths which aren't relevant to the output, and the compiler inputs
+            // in those paths (rlibs and static libs used in the compilation) are used as hash
+            // inputs below.
+            .filter(|&(arg, _)| {
+                !(arg == "--extern"
+                    || arg == "-L"
+                    || arg == "--check-cfg"
+                    || arg == "--out-dir"
+                    || arg == "--diagnostic-width")
+            })
+            // We also exclude `--target` if it specifies a path to a .json file. The file content
+            // is used as hash input below.
+            // If `--target` specifies a string, it continues to be hashed as part of the arguments.
+            .filter(|&(arg, _)| self.parsed_args.target_json.is_none() || arg != "--target")
+            // A few argument types were not passed in a deterministic order
+            // by older versions of cargo: --extern, -L, --cfg. We'll filter the rest of those
+            // out, sort them, and append them to the rest of the arguments.
+            .partition(|&(arg, _)| arg == "--cfg");
+        sortable_args.sort();
+        let argument_count = remaining_args
+            .iter()
+            .chain(&sortable_args)
+            .map(|(_, value)| 1 + usize::from(value.is_some()))
+            .sum::<usize>();
+        m.delimiter(b"rust-arguments");
+        m.update(&(argument_count as u64).to_le_bytes());
+        for (arg, value) in remaining_args.into_iter().chain(sortable_args) {
+            hash_rust_argument(&mut m, arg, value.as_deref(), basedirs);
+        }
         // 4. The digest of all source files (this includes src file from cmdline).
         // 5. The digest of all files listed on the commandline (self.externs).
         // 6. The digest of all static libraries listed on the commandline (self.staticlibs).
         // 7. The digest of the content of the target json file specified via `--target` (if any).
-        for h in source_hashes
+        for hash in source_hashes
             .into_iter()
             .chain(extern_hashes)
             .chain(staticlib_hashes)
             .chain(target_json_hash)
         {
-            m.update(h.as_bytes());
+            m.update(hash.as_bytes());
         }
         // 8. Environment variables: Hash all environment variables listed in the rustc dep-info
         //    output. Additionally also has all environment variables starting with `CARGO_`,
         //    since those are not listed in dep-info but affect cacheability.
         env_deps.sort();
+        m.delimiter(b"rust-env-deps");
+        m.update(&(env_deps.len() as u64).to_le_bytes());
         for (var, val) in env_deps.iter() {
-            var.hash(&mut HashToDigest { digest: &mut m });
-            m.update(b"=");
-            val.hash(&mut HashToDigest { digest: &mut m });
+            hash_rust_value(&mut m, var, None);
+            hash_rust_value(&mut m, val, basedirs);
         }
         let mut env_vars: Vec<_> = env_vars
             .iter()
@@ -1568,31 +1658,34 @@ where
             .cloned()
             .collect();
         env_vars.sort();
-        for (var, val) in env_vars.iter() {
-            if !var.starts_with("CARGO_") {
-                continue;
-            }
-
-            // CARGO_MAKEFLAGS will have jobserver info which is extremely non-cacheable.
-            // CARGO_REGISTRIES_*_TOKEN contains non-cacheable secrets.
-            // Registry override config doesn't need to be hashed, because deps' package IDs
-            // already uniquely identify the relevant registries.
-            // CARGO_BUILD_JOBS only affects Cargo's parallelism, not rustc output.
-            // CARGO_ENCODED_RUSTFLAGS is already cached in argument list
-            if var == "CARGO_MAKEFLAGS"
-                || var.starts_with("CARGO_REGISTRIES_")
-                || var == "CARGO_BUILD_JOBS"
-                || var == "CARGO_ENCODED_RUSTFLAGS"
-            {
-                continue;
-            }
-
-            var.hash(&mut HashToDigest { digest: &mut m });
-            m.update(b"=");
-            val.hash(&mut HashToDigest { digest: &mut m });
+        let cargo_env_vars = env_vars.iter().filter(|(var, _)| {
+            var.starts_with("CARGO_")
+                // CARGO_MAKEFLAGS will have jobserver info which is extremely non-cacheable.
+                // CARGO_REGISTRIES_*_TOKEN contains non-cacheable secrets.
+                // Registry override config doesn't need to be hashed, because deps' package IDs
+                // already uniquely identify the relevant registries.
+                // CARGO_BUILD_JOBS only affects Cargo's parallelism, not rustc output.
+                // CARGO_ENCODED_RUSTFLAGS is already cached in argument list.
+                && var != "CARGO_MAKEFLAGS"
+                && !var.starts_with("CARGO_REGISTRIES_")
+                && var != "CARGO_BUILD_JOBS"
+                && var != "CARGO_ENCODED_RUSTFLAGS"
+        });
+        let cargo_env_count = cargo_env_vars.clone().count();
+        m.delimiter(b"rust-cargo-env");
+        m.update(&(cargo_env_count as u64).to_le_bytes());
+        for (var, val) in cargo_env_vars {
+            hash_rust_value(&mut m, var, None);
+            let normalizer = if is_path_cargo_env(var) {
+                basedirs
+            } else {
+                None
+            };
+            hash_rust_value(&mut m, val, normalizer);
         }
         // 9. The cwd of the compile. This will wind up in the rlib.
-        cwd.hash(&mut HashToDigest { digest: &mut m });
+        m.delimiter(b"rust-cwd");
+        hash_rust_value(&mut m, cwd.as_os_str(), basedirs);
         // 10. The version of the compiler.
         self.version.hash(&mut HashToDigest { digest: &mut m });
 
@@ -2721,7 +2814,6 @@ mod test {
     use crate::test::utils::*;
     use fs::File;
     use itertools::Itertools;
-    use std::ffi::OsStr;
     use std::io::{self, Write};
     use std::sync::{Arc, Mutex};
     use test_case::test_case;
@@ -3584,24 +3676,30 @@ proc_macro false
         // sysroot shlibs digests.
         m.update(FAKE_DIGEST.as_bytes());
         // Arguments, with cfgs sorted at the end.
-        OsStr::new("ab--cfgabc--cfgxyz").hash(&mut HashToDigest { digest: &mut m });
-        // bar.rs (source file, from dep-info)
-        m.update(empty_digest.as_bytes());
-        // foo.rs (source file, from dep-info)
-        m.update(empty_digest.as_bytes());
-        // bar.rlib (extern crate, from externs)
-        m.update(empty_digest.as_bytes());
-        // libbaz.a (static library, from staticlibs), containing a single
-        // file, baz.o, consisting of 1024 bytes of zeroes.
+        let args = ["a", "b", "--cfg", "abc", "--cfg", "xyz"];
+        m.delimiter(b"rust-arguments");
+        m.update(&(args.len() as u64).to_le_bytes());
+        for arg in args {
+            hash_rust_value(&mut m, OsStr::new(arg), None);
+        }
+        // bar.rs and foo.rs (source files), then bar.rlib (extern crate).
+        for _ in 0..3 {
+            m.update(empty_digest.as_bytes());
+        }
+        // libbaz.a contains baz.o, consisting of 1024 bytes of zeroes.
         m.update(libbaz_a_digest.as_bytes());
-        // Env vars
-        OsStr::new("CARGO_BLAH").hash(&mut HashToDigest { digest: &mut m });
-        m.update(b"=");
-        OsStr::new("abc").hash(&mut HashToDigest { digest: &mut m });
-        OsStr::new("CARGO_PKG_NAME").hash(&mut HashToDigest { digest: &mut m });
-        m.update(b"=");
-        OsStr::new("foo").hash(&mut HashToDigest { digest: &mut m });
-        f.tempdir.path().hash(&mut HashToDigest { digest: &mut m });
+        // rustc environment dependencies.
+        m.delimiter(b"rust-env-deps");
+        m.update(&0_u64.to_le_bytes());
+        // Cargo environment variables.
+        m.delimiter(b"rust-cargo-env");
+        m.update(&2_u64.to_le_bytes());
+        hash_rust_value(&mut m, OsStr::new("CARGO_BLAH"), None);
+        hash_rust_value(&mut m, OsStr::new("abc"), None);
+        hash_rust_value(&mut m, OsStr::new("CARGO_PKG_NAME"), None);
+        hash_rust_value(&mut m, OsStr::new("foo"), None);
+        m.delimiter(b"rust-cwd");
+        hash_rust_value(&mut m, f.tempdir.path().as_os_str(), None);
         TEST_RUSTC_VERSION.hash(&mut HashToDigest { digest: &mut m });
         let digest = m.finish();
         assert_eq!(res.key, digest);
@@ -3673,6 +3771,175 @@ proc_macro false
     #[allow(clippy::unnecessary_unwrap)]
     fn nothing(_path: &Path) -> Result<()> {
         Ok(())
+    }
+
+    fn rust_argument_key(arg: &str, value: Option<&str>, basedirs: Option<&[Vec<u8>]>) -> String {
+        let mut digest = Digest::new();
+        hash_rust_argument(
+            &mut digest,
+            OsStr::new(arg),
+            value.map(OsStr::new),
+            basedirs,
+        );
+        digest.finish()
+    }
+
+    #[test]
+    fn test_strip_rust_basedirs_paths() {
+        let basedirs = [b"/work/project/".to_vec(), b"/work/project/crate/".to_vec()];
+
+        for (value, expected) in [
+            (
+                b"/work/project/crate/src/lib.rs".as_slice(),
+                b"src/lib.rs".as_slice(),
+            ),
+            (b"/work/project", b""),
+            (b"/work/project/", b""),
+            (
+                b"prefix=/work/project/src/lib.rs",
+                b"prefix=/work/project/src/lib.rs",
+            ),
+            (
+                b"/work/project copy/src/lib.rs",
+                b"/work/project copy/src/lib.rs",
+            ),
+            (b"/work/project=copy", b"/work/project=copy"),
+            (b"/other/project/src/lib.rs", b"/other/project/src/lib.rs"),
+        ] {
+            assert_eq!(strip_path_basedirs(value, &basedirs), expected);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_strip_rust_basedirs_non_utf8() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let key = |value: &[u8], basedir: &[u8]| {
+            let mut digest = Digest::new();
+            hash_rust_value(
+                &mut digest,
+                OsStr::from_bytes(value),
+                Some(&[basedir.to_vec()]),
+            );
+            digest.finish()
+        };
+
+        let first = key(b"/work/one/src/non-utf8-\xff.rs", b"/work/one/");
+        let second = key(b"/work/two/src/non-utf8-\xff.rs", b"/work/two/");
+        assert_eq!(first, second);
+        assert_ne!(first, key(b"/work/two/src/non-utf8-\xfe.rs", b"/work/two/"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_sort_paths_for_hash_uses_normalized_paths() {
+        let first_basedirs = vec![b"/a/work/".to_vec()];
+        let second_basedirs = vec![b"/z/work/".to_vec()];
+        let mut first = vec![
+            PathBuf::from("/a/work/src/lib.rs"),
+            PathBuf::from("/m/shared.rs"),
+        ];
+        let mut second = vec![
+            PathBuf::from("/m/shared.rs"),
+            PathBuf::from("/z/work/src/lib.rs"),
+        ];
+        let keys = |paths: &[PathBuf], basedirs: &[Vec<u8>]| {
+            paths
+                .iter()
+                .map(|path| {
+                    strip_path_basedirs(encode_rust_value(path.as_os_str()), basedirs).to_vec()
+                })
+                .collect::<Vec<_>>()
+        };
+
+        sort_paths_for_hash(&mut first, Some(&first_basedirs));
+        sort_paths_for_hash(&mut second, Some(&second_basedirs));
+        assert_eq!(
+            keys(&first, &first_basedirs),
+            keys(&second, &second_basedirs)
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_strip_rust_basedirs_windows_paths() {
+        let basedirs = [b"c:/work/project/".to_vec()];
+        assert_eq!(
+            strip_path_basedirs(b"C:\\Work\\Project\\src\\lib.rs", &basedirs),
+            b"src\\lib.rs".as_slice()
+        );
+        assert_eq!(
+            strip_path_basedirs(b"C:\\Work\\Project", &basedirs),
+            b"".as_slice()
+        );
+        assert_eq!(
+            strip_path_basedirs(b"C:\\Work\\Project\\\xc4\xb0", &basedirs),
+            b"C:\\Work\\Project\\\xc4\xb0".as_slice()
+        );
+
+        assert_ne!(
+            rust_argument_key("package 😀", None, None),
+            rust_argument_key("package 😁", None, None)
+        );
+        assert_eq!(
+            rust_argument_key(
+                r"C:\Work\one\src\lib.rs",
+                None,
+                Some(&[b"c:/work/one/".to_vec()])
+            ),
+            rust_argument_key(
+                r"D:\Work\two\src\lib.rs",
+                None,
+                Some(&[b"d:/work/two/".to_vec()])
+            )
+        );
+    }
+
+    #[test]
+    fn test_hash_rust_inputs_normalize_only_paths() {
+        let first = [b"/work/one/".to_vec()];
+        let second = [b"/work/two/".to_vec()];
+        let value_key = |value: &str, basedirs: &[Vec<u8>]| {
+            let mut digest = Digest::new();
+            hash_rust_value(&mut digest, OsStr::new(value), Some(basedirs));
+            digest.finish()
+        };
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            assert_eq!(
+                rust_argument_key("/work/one/src/lib.rs", None, Some(&first)),
+                rust_argument_key("/work/two/src/lib.rs", None, Some(&second))
+            );
+            assert_ne!(
+                rust_argument_key("/work/one/src/lib.rs", None, Some(&first)),
+                rust_argument_key("/work/two/other/lib.rs", None, Some(&second))
+            );
+        }
+        assert_ne!(
+            rust_argument_key("ab", Some("c"), None),
+            rust_argument_key("a", Some("bc"), None)
+        );
+        assert_eq!(
+            rust_argument_key("--remap-path-prefix", Some("/work/one=/src"), Some(&first)),
+            rust_argument_key("--remap-path-prefix", Some("/work/two=/src"), Some(&second))
+        );
+        assert_ne!(
+            rust_argument_key("--remap-path-prefix", Some("/work/one=/src"), None),
+            rust_argument_key("--remap-path-prefix", Some("/work/two=/src"), None)
+        );
+        assert_eq!(
+            value_key("/work/one/Cargo.toml", &first),
+            value_key("/work/two/Cargo.toml", &second)
+        );
+        assert_ne!(
+            rust_argument_key("--cfg", Some("root=/work/one"), Some(&first)),
+            rust_argument_key("--cfg", Some("root=/work/two"), Some(&second))
+        );
+        assert_eq!(
+            rust_argument_key("/other/src/lib.rs", None, None),
+            rust_argument_key("/other/src/lib.rs", None, Some(&first))
+        );
     }
 
     #[test_case(true ; "with preprocessor cache")]
