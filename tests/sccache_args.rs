@@ -14,6 +14,55 @@ use std::process::Command;
 #[macro_use]
 extern crate log;
 
+#[cfg(unix)]
+fn command_with_server_start_failure() -> Result<(tempfile::TempDir, Command)> {
+    let tempdir = tempfile::tempdir()?;
+    let config = tempdir.path().join("config");
+    std::fs::write(&config, "")?;
+
+    let mut command = Command::new(SCCACHE_BIN.as_os_str());
+    command
+        .args(["rustc", "--version"])
+        .current_dir(tempdir.path())
+        .env("SCCACHE_CONF", config)
+        .env("SCCACHE_DIR", tempdir.path().join("cache"))
+        .env_remove("SCCACHE_IGNORE_SERVER_IO_ERROR")
+        // Force server start to fail with an overlong unix domain socket.
+        .env("SCCACHE_SERVER_UDS", "x".repeat(4096));
+
+    Ok((tempdir, command))
+}
+
+#[cfg(unix)]
+#[test]
+#[serial]
+fn test_server_start_failure_falls_back() -> Result<()> {
+    let (_tempdir, mut command) = command_with_server_start_failure()?;
+
+    command
+        .env("SCCACHE_IGNORE_SERVER_IO_ERROR", "1")
+        .assert()
+        .success()
+        .stdout(predicate::str::starts_with("rustc "))
+        .stderr(predicate::str::contains("compiling locally instead"));
+
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+#[serial]
+fn test_server_start_failure_errors() -> Result<()> {
+    let (_tempdir, mut command) = command_with_server_start_failure()?;
+
+    command
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("sccache: error"));
+
+    Ok(())
+}
+
 #[test]
 #[serial]
 #[cfg(feature = "gcs")]
