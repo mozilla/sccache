@@ -409,3 +409,86 @@ fn test_rust_cargo_cmd_readonly_preemtive_block() -> Result<()> {
         .try_success()?;
     Ok(())
 }
+
+/// Test that without `SCCACHE_ALLOW_INCREMENTAL`, enabling cargo's incremental
+/// compilation still makes sccache refuse to run.
+#[test]
+#[serial]
+fn test_rust_cargo_incremental_refused_by_default() -> Result<()> {
+    let test_info = SccacheTest::new(None)?;
+    // Clean before setting the env var below: the refusal fires on any rustc
+    // invocation, including the `rustc -vV` probe `cargo clean` makes.
+    cargo_clean(&test_info)?;
+
+    Command::new(CARGO.as_os_str())
+        .args(["build", "--color=never"])
+        .envs(test_info.env.iter().cloned())
+        .env("CARGO_INCREMENTAL", "1")
+        // Explicitly off, so the default is still tested on a machine that opted
+        // in globally (`.env_remove` cannot undo cargo's `[env]` table).
+        .env("SCCACHE_ALLOW_INCREMENTAL", "0")
+        .current_dir(CRATE_DIR.as_os_str())
+        .assert()
+        .try_stderr(predicates::str::contains("incremental compilation is prohibited").from_utf8())?
+        .try_failure()?;
+
+    Ok(())
+}
+
+/// Test that with `SCCACHE_ALLOW_INCREMENTAL` an incremental build succeeds and
+/// splits per invocation: the workspace crates cargo hands `-C incremental=`
+/// bypass the cache, while its registry dependencies keep hitting it.
+#[test]
+#[serial]
+fn test_rust_cargo_incremental_allowed_deps_cached() -> Result<()> {
+    let test_info = SccacheTest::new(None)?;
+    cargo_clean(&test_info)?;
+
+    // First build in the default, non-incremental mode: everything misses and
+    // populates the cache.
+    Command::new(CARGO.as_os_str())
+        .args(["build", "--color=never"])
+        .envs(test_info.env.iter().cloned())
+        .current_dir(CRATE_DIR.as_os_str())
+        .assert()
+        .try_success()?;
+
+    // Second build from a clean target, now incremental: the registry dep must
+    // still hit the entry the non-incremental build wrote.
+    cargo_clean(&test_info)?;
+    Command::new(CARGO.as_os_str())
+        .args(["build", "--color=never"])
+        .envs(test_info.env.iter().cloned())
+        .env("CARGO_INCREMENTAL", "1")
+        .env("SCCACHE_ALLOW_INCREMENTAL", "1")
+        .current_dir(CRATE_DIR.as_os_str())
+        .assert()
+        .try_success()?;
+
+    // The workspace lib really went through rustc's incremental machinery.
+    let incremental_dir = test_info.tempdir.path().join("cargo/debug/incremental");
+    let has_mylib_session = std::fs::read_dir(&incremental_dir)?
+        .filter_map(|e| e.ok())
+        .any(|e| e.file_name().to_string_lossy().starts_with("mylib"));
+    assert!(
+        has_mylib_session,
+        "expected an incremental session dir for `mylib` in {incremental_dir:?}"
+    );
+
+    test_info
+        .show_stats()?
+        // itoa: one miss (first build), one hit (second build, across modes).
+        .try_stdout(predicates::str::contains(r#""cache_hits":{"counts":{"Rust":1}"#).from_utf8())?
+        .try_stdout(
+            predicates::str::contains(
+                r#""cache_misses":{"counts":{"Rust":2},"adv_counts":{"rust":2}}"#,
+            )
+            .from_utf8(),
+        )?
+        // The workspace lib bypassed the cache. One, not two: `mybin` is rejected
+        // on `--crate-type bin` first, which cargo passes ahead of the flag.
+        .try_stdout(predicates::str::contains(r#""incremental":1"#).from_utf8())?
+        .try_success()?;
+
+    Ok(())
+}
