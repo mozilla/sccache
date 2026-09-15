@@ -1985,6 +1985,104 @@ fn test_sccache_command(preprocessor_cache_mode: bool) {
     }
 }
 
+/// The assembler is what turns the compiler's output into the object file, so a
+/// different assembler reporting the same version still has to be a cache miss.
+/// Preprocessor cache mode is the interesting half of this: a hit there hands
+/// back the object cache key stored with the entry, so the assembler has to be
+/// part of that key too.
+#[test_case(true ; "with preprocessor cache")]
+#[test_case(false ; "without preprocessor cache")]
+#[serial]
+#[cfg(all(unix, not(target_os = "macos")))]
+fn test_assembler_affects_cache(preprocessor_cache_mode: bool) {
+    use fs_err::os::unix::fs::OpenOptionsExt;
+
+    let _ = env_logger::try_init();
+    let tempdir = tempfile::Builder::new()
+        .prefix("sccache_system_test")
+        .tempdir()
+        .unwrap();
+
+    // GCC always assembles by spawning `as`, so it needs no flag to opt into
+    // this, unlike clang.
+    let compiler = match find_compilers().into_iter().find(|c| c.name == "gcc") {
+        Some(compiler) => compiler,
+        None => {
+            warn!("No gcc found, skipping test");
+            return;
+        }
+    };
+    let assembler = Command::new(&compiler.exe)
+        .arg("-print-prog-name=as")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        .and_then(|name| which_in(name, env::var_os("PATH"), env::current_dir().unwrap()).ok());
+    let assembler = match assembler {
+        Some(assembler) => assembler,
+        None => {
+            warn!("No assembler found, skipping test");
+            return;
+        }
+    };
+
+    // Something that assembles identically and reports the same version, but
+    // isn't the same file, the way a distro rebuild wouldn't be.
+    let bindir = tempdir.path().join("bin");
+    fs::create_dir_all(&bindir).unwrap();
+    let mut wrapper = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o777)
+        .open(bindir.join("as"))
+        .unwrap();
+    writeln!(wrapper, "#!/bin/sh\nexec {} \"$@\"", assembler.display()).unwrap();
+    drop(wrapper);
+
+    let path = env::var_os("PATH").unwrap();
+    let mut wrapper_first = OsString::from(&bindir);
+    wrapper_first.push(":");
+    wrapper_first.push(&path);
+
+    copy_to_tempdir(&[INPUT], tempdir.path());
+    let sccache_cfg = sccache_client_cfg(tempdir.path(), preprocessor_cache_mode);
+    write_json_cfg(tempdir.path(), "sccache-cfg.json", &sccache_cfg);
+    let cached_cfg = tempdir.path().join("sccache-cached-cfg");
+
+    // The compiler is only looked at once per server, so anything that wants a
+    // fresh look at the assembler needs a fresh server.
+    let compile = |path: &OsString, expected_hits: u64| {
+        stop_local_daemon();
+        start_local_daemon(&tempdir.path().join("sccache-cfg.json"), &cached_cfg);
+        zero_stats();
+        fs::remove_file(tempdir.path().join(OUTPUT)).ok();
+        sccache_command()
+            .args(compile_cmdline(
+                compiler.name,
+                &compiler.exe,
+                INPUT,
+                OUTPUT,
+                Vec::new(),
+            ))
+            .current_dir(tempdir.path())
+            .env("PATH", path)
+            .assert()
+            .success();
+        get_stats(move |info| {
+            assert_eq!(expected_hits, info.stats.cache_hits.all());
+            assert_eq!(1 - expected_hits, info.stats.cache_misses.all());
+        });
+    };
+
+    compile(&path, 0);
+    compile(&wrapper_first, 0);
+    // Back to the assembler the cache was populated with.
+    compile(&path, 1);
+    stop_local_daemon();
+}
+
 #[test]
 #[serial]
 fn test_stats_no_server() {

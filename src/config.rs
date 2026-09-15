@@ -890,6 +890,10 @@ fn bool_from_env_var(env_var_name: &str) -> Result<Option<bool>> {
         .transpose()
 }
 
+fn skip_cache_check_from_env() -> Result<bool> {
+    Ok(bool_from_env_var("SCCACHE_SKIP_CACHE_CHECK")?.unwrap_or(false))
+}
+
 fn config_from_env() -> Result<EnvConfig> {
     // ======= AWS =======
     let s3 = if let Some(bucket) = string_from_env_var("SCCACHE_BUCKET") {
@@ -1311,6 +1315,7 @@ pub struct Config {
     pub fallback_cache: DiskCacheConfig,
     pub dist: DistConfig,
     pub server_startup_timeout: Option<std::time::Duration>,
+    pub skip_cache_check: bool,
     /// Base directory (or directories) to strip from paths for cache key computation.
     /// Similar to ccache's CCACHE_BASEDIR.
     pub basedirs: Vec<Vec<u8>>,
@@ -1320,13 +1325,16 @@ pub struct Config {
 impl Config {
     pub fn load() -> Result<Self> {
         let env_conf = config_from_env()?;
+        let skip_cache_check = skip_cache_check_from_env()?;
 
         let file_conf_path = config_file("SCCACHE_CONF", "config");
         let file_conf = try_read_config_file(&file_conf_path)
             .context("Failed to load config file")?
             .unwrap_or_default();
 
-        Self::from_env_and_file_configs(env_conf, file_conf)
+        let mut config = Self::from_env_and_file_configs(env_conf, file_conf)?;
+        config.skip_cache_check = skip_cache_check;
+        Ok(config)
     }
 
     fn from_env_and_file_configs(env_conf: EnvConfig, file_conf: FileConfig) -> Result<Self> {
@@ -1417,6 +1425,7 @@ impl Config {
             fallback_cache,
             dist,
             server_startup_timeout,
+            skip_cache_check: false,
             basedirs,
             client_side_mode,
         })
@@ -1693,6 +1702,43 @@ fn test_string_from_env_var() {
 }
 
 #[test]
+#[serial(config_from_env)]
+fn test_skip_cache_check_from_env() {
+    const ENV_VAR: &str = "SCCACHE_SKIP_CACHE_CHECK";
+
+    unsafe {
+        std::env::remove_var(ENV_VAR);
+    }
+    assert!(!skip_cache_check_from_env().unwrap());
+
+    for (value, expected) in [
+        ("true", true),
+        ("on", true),
+        ("1", true),
+        ("false", false),
+        ("off", false),
+        ("0", false),
+    ] {
+        unsafe {
+            std::env::set_var(ENV_VAR, value);
+        }
+        assert_eq!(skip_cache_check_from_env().unwrap(), expected);
+    }
+
+    unsafe {
+        std::env::set_var(ENV_VAR, "invalid");
+    }
+    assert_eq!(
+        skip_cache_check_from_env().unwrap_err().to_string(),
+        "SCCACHE_SKIP_CACHE_CHECK must be 'true', 'on', '1', 'false', 'off' or '0'."
+    );
+
+    unsafe {
+        std::env::remove_var(ENV_VAR);
+    }
+}
+
+#[test]
 fn config_overrides() {
     let env_conf = EnvConfig {
         cache: CacheConfigs {
@@ -1805,6 +1851,7 @@ fn config_overrides() {
             },
             dist: Default::default(),
             server_startup_timeout: None,
+            skip_cache_check: false,
             basedirs: vec![],
             client_side_mode: false,
         }

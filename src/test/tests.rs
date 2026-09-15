@@ -234,6 +234,13 @@ fn test_server_compile() {
         let mut c = server_creator.lock().unwrap();
         // The server will check the compiler. Pretend it's GCC.
         c.next_command_spawns(Ok(MockChild::new(exit_status(0), "compiler_id=gcc", "")));
+        // The assembler version and path probes.
+        c.next_command_spawns(Ok(MockChild::new(
+            exit_status(0),
+            "GNU assembler (GNU Binutils) 2.42",
+            "",
+        )));
+        c.next_command_spawns(Ok(MockChild::new(exit_status(0), "as", "")));
         // Preprocessor invocation.
         c.next_command_spawns(Ok(MockChild::new(
             exit_status(0),
