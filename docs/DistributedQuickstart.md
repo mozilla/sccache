@@ -93,9 +93,9 @@ type = "jwt_token"
 token = "my server's token"
 ```
 
-Due to bubblewrap requirements currently the build server *must* be run as root. Start the build server by running:
+Start the build server by running:
 ```
-sudo sccache-dist server --config server.conf
+sccache-dist server --config server.conf
 ```
 
 As with the scheduler, if the build server fails to start you may need to set `SCCACHE_LOG=trace` to get useful diagnostics.

@@ -5,9 +5,10 @@ use sccache::config::HTTPUrl;
 use sccache::dist::{self, SchedulerStatusResult, ServerId};
 use sccache::server::ServerInfo;
 use std::env;
-use std::fs::remove_dir_all;
+use std::fs::{remove_dir_all, set_permissions, Permissions};
 use std::io::Write;
 use std::net::{self, IpAddr, SocketAddr};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::str::{self, FromStr};
@@ -216,6 +217,8 @@ fn sccache_server_cfg(
 ) -> sccache::config::server::Config {
     let relpath = "server-cache";
     fs::create_dir(tmpdir.join(relpath)).unwrap();
+    set_permissions(tmpdir.join(relpath), Permissions::from_mode(0o777)).unwrap();
+
 
     sccache::config::server::Config {
         builder: sccache::config::server::BuilderType::Overlay {
@@ -293,6 +296,10 @@ impl DistSystem {
 
         let tmpdir = tmpdir.join("distsystem");
         fs::create_dir(&tmpdir).unwrap();
+
+        // make the tmpdir writable by all users to accommodate the dist-server
+        // (runs as an unprivileged user):
+        set_permissions(&tmpdir, Permissions::from_mode(0o777)).unwrap();
 
         Self {
             sccache_dist: sccache_dist.to_owned(),
@@ -388,8 +395,18 @@ impl DistSystem {
         let output = Command::new("docker")
             .args([
                 "run",
-                // Important for the bubblewrap builder
-                "--privileged",
+                // allow bubblewrap to create (unprivileged) user namespaces within the container:
+                "--security-opt",
+                "seccomp=unconfined",
+                "--security-opt",
+                "apparmor=unconfined",
+                "--cap-add=SYS_ADMIN",
+                // allow bubblewrap to mount `/proc` and `/sys`:
+                "--security-opt",
+                "systempaths=unconfined",
+                // run as an unprivileged user:
+                "-u",
+                "1000:1000",
                 "--name",
                 &server_name,
                 "-e",
