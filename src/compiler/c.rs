@@ -29,7 +29,6 @@ use crate::util::{
     Digest, HashToDigest, MetadataCtimeExt, TimeMacroFinder, Timestamp, decode_path, encode_path,
     hash_all, strip_basedirs, strip_basedirs_from_arg,
 };
-use crate::{compiler::CacheType, errors::*};
 use async_trait::async_trait;
 use fs_err as fs;
 use std::borrow::Cow;
@@ -42,6 +41,8 @@ use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::{Arc, LazyLock};
+
+use crate::errors::*;
 
 use super::CacheControl;
 use super::preprocessor_cache::PreprocessorCacheEntry;
@@ -528,7 +529,6 @@ where
                                 env_vars: env_vars.clone(),
                             }),
                             weak_toolchain_key,
-                            hash_key_type: CacheType::DirectHit,
                         });
                     } else {
                         debug!("Preprocessor cache miss: {preprocessor_key}");
@@ -686,10 +686,6 @@ where
                 env_vars,
             }),
             weak_toolchain_key,
-            hash_key_type: match needs_preprocessing {
-                true => CacheType::DirectMiss,
-                false => CacheType::DirectNotAttempted,
-            },
         })
     }
 

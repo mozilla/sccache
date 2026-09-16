@@ -571,7 +571,7 @@ where
             out_pretty,
             fmt_duration_as_secs(&start.elapsed())
         );
-        let (key, compilation, weak_toolchain_key, hash_key_type) = match result {
+        let (key, compilation, weak_toolchain_key) = match result {
             Err(e) => {
                 return match e.downcast::<ProcessError>() {
                     Ok(ProcessError(output)) => {
@@ -585,8 +585,7 @@ where
                 key,
                 compilation,
                 weak_toolchain_key,
-                hash_key_type,
-            }) => (key, compilation, weak_toolchain_key, hash_key_type),
+            }) => (key, compilation, weak_toolchain_key),
         };
         debug!("[{}]: Hash key: {}", out_pretty, key);
         // If `ForceRecache` is enabled, we won't check the cache.
@@ -653,7 +652,7 @@ where
                     outputs.clone()
                 };
 
-                let hit = CompileResult::CacheHit(duration, hash_key_type);
+                let hit = CompileResult::CacheHit(duration, CacheType::DirectNotAttempted);
                 match entry.extract_objects(filtered_outputs, &pool).await {
                     Ok(()) => Ok(CacheLookupResult::Success(hit, output)),
                     Err(e) => {
@@ -1171,7 +1170,6 @@ where
     pub compilation: Box<dyn Compilation<T> + 'static>,
     /// A weak key that may be used to identify the toolchain
     pub weak_toolchain_key: String,
-    pub hash_key_type: CacheType,
 }
 
 /// Possible results of parsing compiler arguments.
@@ -1219,7 +1217,7 @@ pub enum DistType {
 pub enum CacheType {
     DirectHit,
     DirectMiss,
-    DirectNotAttempted,
+    DirectNotAttempted
 }
 
 /// Specifics about cache misses.
@@ -1281,9 +1279,7 @@ impl fmt::Debug for CompileResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             CompileResult::Error => write!(f, "CompileResult::Error"),
-            CompileResult::CacheHit(ref d, ref ht) => {
-                write!(f, "CompileResult::CacheHit({:?}, {:?})", d, ht)
-            }
+            CompileResult::CacheHit(ref d, ref ht) => write!(f, "CompileResult::CacheHit({:?}, {:?})", d, ht),
             CompileResult::CacheMiss(ref m, ref dt, ref d, _) => {
                 write!(f, "CompileResult::CacheMiss({:?}, {:?}, {:?}, _)", d, m, dt)
             }
@@ -1305,7 +1301,9 @@ impl PartialEq<CompileResult> for CompileResult {
     fn eq(&self, other: &CompileResult) -> bool {
         match (self, other) {
             (&CompileResult::Error, &CompileResult::Error) => true,
-            (CompileResult::CacheHit(_, ht), CompileResult::CacheHit(_, ht2)) => ht == ht2,
+            (CompileResult::CacheHit(_, ht), CompileResult::CacheHit(_, ht2)) => {
+                ht == ht2
+            },
             (CompileResult::CacheMiss(m, dt, _, _), CompileResult::CacheMiss(n, dt2, _, _)) => {
                 m == n && dt == dt2
             }
@@ -2972,10 +2970,7 @@ LLVM version: 6.0",
             .unwrap();
         // Ensure that the object file was created.
         assert!(fs::metadata(&obj).map(|m| m.len() > 0).unwrap());
-        assert_eq!(
-            CompileResult::CacheHit(Duration::new(0, 0), CacheType::DirectMiss),
-            cached
-        );
+        assert_eq!(CompileResult::CacheHit(Duration::new(0, 0), CacheType::DirectNotAttempted), cached);
         assert_eq!(exit_status(0), res.status);
         assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
         assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
@@ -3106,10 +3101,7 @@ LLVM version: 6.0",
             .unwrap();
         // Ensure that the object file was created.
         assert!(fs::metadata(&obj).map(|m| m.len() > 0).unwrap());
-        assert_eq!(
-            CompileResult::CacheHit(Duration::new(0, 0), CacheType::DirectMiss),
-            cached
-        );
+        assert_eq!(CompileResult::CacheHit(Duration::new(0, 0), CacheType::DirectNotAttempted), cached);
         assert_eq!(exit_status(0), res.status);
         assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
         assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
