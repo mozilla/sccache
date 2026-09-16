@@ -686,11 +686,10 @@ where
                 env_vars,
             }),
             weak_toolchain_key,
-            hash_key_type: if needs_preprocessing {
-                DirectCacheType::Miss 
-            } else {
-                 DirectCacheType::NotAttempted
-            }
+            hash_key_type: match needs_preprocessing {
+                true => DirectCacheType::Miss,
+                false => DirectCacheType::NotAttempted,
+            },
         })
     }
 
