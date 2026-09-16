@@ -9,6 +9,8 @@ x-common-env: &common-env
 
 x-test-runner: &test-runner
   user: "${UID:-1000}:${GID:-1000}"
+  # Empty under docker; "keep-id" under rootless podman (set by the Makefile).
+  userns_mode: "${COMPOSE_USERNS_MODE:-}"
   volumes:
     - ../../:/sccache:ro
     - ../../target/integration-cargo-cache:/usr/local/cargo/registry:rw
