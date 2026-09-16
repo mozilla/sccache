@@ -3,6 +3,20 @@
 export UID := $(shell id -u)
 export GID := $(shell id -g)
 
+# Rootless podman maps the container's UID to a subuid on the host, so files
+# written into bind mounts come back owned by that subuid rather than by us.
+# keep-id makes the mapping an identity for our own UID. Docker needs neither.
+IS_PODMAN := $(shell docker --version 2>/dev/null | grep -qi podman && echo 1)
+ifdef IS_PODMAN
+# Compose services run as $(UID) in-container; keep-id maps that to the same
+# host UID. The root-running build containers below need no mapping, because
+# rootless podman already maps container root to us -- and so must not chown.
+export COMPOSE_USERNS_MODE := keep-id
+CHOWN_BACK := true
+else
+CHOWN_BACK := chown -R $(UID):$(GID)
+endif
+
 PROJECT_ROOT := $(shell git rev-parse --show-toplevel)
 SCCACHE_BIN := $(PROJECT_ROOT)/target/debug/sccache
 
@@ -144,7 +158,7 @@ endif
 		docker.io/library/rust:latest \
 		bash -c "apt-get update -qq && apt-get install -y -qq libssl-dev pkg-config && \
 		         cargo build --all-features $(BUILD_TARGET_DIR) && \
-		         chown -R $(UID):$(GID) target"
+		         $(CHOWN_BACK) target"
 	@echo "Binary built: $(SCCACHE_BIN)"
 	@ls -lh $(SCCACHE_BIN)
 	$(call endgroup)
@@ -211,7 +225,7 @@ coverage-report:
 		           --ignore '/*' \
 		           --ignore 'build.rs' \
 		           --excl-br-line '^\s*((debug_)?assert(_eq|_ne)?!|#\[derive\()' && \
-		         chown -R $(UID):$(GID) target/integration-coverage"
+		         $(CHOWN_BACK) target/integration-coverage"
 	$(call endgroup)
 	@echo ""
 	@echo "Coverage report generated:"
