@@ -142,7 +142,8 @@ $(PROJECT_ROOT)/target/integration-cargo-cache:
 $(COVERAGE_DIR)/profraw:
 	@mkdir -p $@
 
-$(SCCACHE_BIN): $(PROJECT_ROOT)/Cargo.toml $(PROJECT_ROOT)/Cargo.lock
+$(SCCACHE_BIN): $(PROJECT_ROOT)/Cargo.toml $(PROJECT_ROOT)/Cargo.lock \
+               | $(PROJECT_ROOT)/target/integration-cargo-cache $(COVERAGE_DIR)/profraw
 	$(call group,Building $*)
 ifdef WITH_COVERAGE
 	@echo "Building sccache with coverage instrumentation in Docker..."
