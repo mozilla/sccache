@@ -176,7 +176,12 @@ clean-%:
 test-%: build clean-%
 	$(call group,Testing $*)
 	@echo "Testing $*..."
-	@docker compose $(call profiles,$*) up -d $(SERVICES_$*)
+	@docker compose $(call profiles,$*) up -d $(filter-out %-setup,$(SERVICES_$*))
+	@# Synchrnously run *-setup services since podman compose doesn't reliable
+	@# respect 'depends_on: service_completed_successfully'.
+	@for s in $(filter %-setup,$(SERVICES_$*)); do \
+		docker compose $(call profiles,$*) run --rm $$s || exit 1; \
+	done
 	@rm -f $(COVERAGE_DIR)/sccache.log
 	@docker compose $(call profiles,$*) run --rm test-$*
 	@docker compose $(call profiles,$*) down
