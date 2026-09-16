@@ -15,9 +15,9 @@
 use crate::cache::{FileObjectSource, Storage};
 use crate::compiler::args::*;
 use crate::compiler::{
-    CCompileCommand, DirectCacheType, Cacheable, ColorMode, Compilation, CompileCommand, Compiler,
-    CompilerArguments, CompilerHasher, CompilerKind, CompilerProxy, HashResult, Language,
-    SingleCompileCommand, c::ArtifactDescriptor,
+    CCompileCommand, Cacheable, ColorMode, Compilation, CompileCommand, Compiler,
+    CompilerArguments, CompilerHasher, CompilerKind, CompilerProxy, DirectCacheType, HashResult,
+    Language, SingleCompileCommand, c::ArtifactDescriptor,
 };
 #[cfg(feature = "dist-client")]
 use crate::compiler::{DistPackagers, OutputsRewriter};

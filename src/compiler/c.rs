@@ -687,10 +687,10 @@ where
             }),
             weak_toolchain_key,
             hash_key_type: if needs_preprocessing {
-                DirectCacheType::Miss 
+                DirectCacheType::Miss
             } else {
-                 DirectCacheType::NotAttempted
-            }
+                DirectCacheType::NotAttempted
+            },
         })
     }
 
