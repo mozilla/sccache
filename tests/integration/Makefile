@@ -141,7 +141,7 @@ endif
 		-w /sccache \
 		-e OPENSSL_NO_VENDOR=1 \
 		$(if $(WITH_COVERAGE),-e RUSTFLAGS="-Cinstrument-coverage -Ccodegen-units=1 -Copt-level=0 -Coverflow-checks=off" -e CARGO_INCREMENTAL=0 -e "LLVM_PROFILE_FILE=/tmp/build-%p-%m.profraw") \
-		rust:latest \
+		docker.io/library/rust:latest \
 		bash -c "apt-get update -qq && apt-get install -y -qq libssl-dev pkg-config && \
 		         cargo build --all-features $(BUILD_TARGET_DIR) && \
 		         chown -R $(UID):$(GID) target"
@@ -197,7 +197,7 @@ coverage-report:
 		-v sccache-coverage-tools:/usr/local/cargo/bin \
 		-v sccache-rustup:/usr/local/rustup \
 		-w /sccache \
-		rust:latest \
+		docker.io/library/rust:latest \
 		bash -c "rustup component add llvm-tools 2>/dev/null || true && \
 		         (which grcov >/dev/null 2>&1 || cargo install grcov --locked) && \
 		         mkdir -p target/integration-coverage/reports && \
