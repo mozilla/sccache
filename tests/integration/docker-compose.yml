@@ -14,7 +14,7 @@ x-test-runner: &test-runner
     - ../../target/integration-cargo-cache:/usr/local/cargo/registry:rw
     - ../../target/integration-coverage:/coverage:rw
   tmpfs:
-    - /build:exec,uid=${UID:-1000},gid=${GID:-1000},mode=1777
+    - /build:exec,mode=1777
   working_dir: /build
   environment:
     <<: *common-env
