@@ -176,7 +176,14 @@ clean-%:
 test-%: build clean-%
 	$(call group,Testing $*)
 	@echo "Testing $*..."
-	@docker compose $(call profiles,$*) up -d $(SERVICES_$*)
+	@docker compose $(call profiles,$*) up -d $(filter-out %-setup,$(SERVICES_$*))
+	@# The one-shot *-setup services provision buckets/containers. Start them with
+	@# `run`, which is synchronous, rather than relying on the test service's
+	@# depends_on: service_completed_successfully -- podman-compose ignores that
+	@# condition, and the test would race ahead of provisioning.
+	@for s in $(filter %-setup,$(SERVICES_$*)); do \
+		docker compose $(call profiles,$*) run --rm $$s || exit 1; \
+	done
 	@rm -f $(COVERAGE_DIR)/sccache.log
 	@docker compose $(call profiles,$*) run --rm test-$*
 	@docker compose $(call profiles,$*) down
