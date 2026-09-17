@@ -1363,9 +1363,13 @@ impl Config {
         conf_caches.merge(cache);
 
         // Environment variable takes precedence over file config if it is set
-        let server_startup_timeout = env_server_startup_timeout_ms
-            .or(file_server_startup_timeout_ms)
-            .map(std::time::Duration::from_millis);
+        let server_startup_timeout_ms =
+            env_server_startup_timeout_ms.or(file_server_startup_timeout_ms);
+        if let Some(0) = server_startup_timeout_ms {
+            bail!("server_startup_timeout_ms must be greater than 0");
+        }
+        let server_startup_timeout =
+            server_startup_timeout_ms.map(std::time::Duration::from_millis);
 
         // Environment variable takes precedence over file config if it is set
         let basedirs_raw = if let Some(basedirs) = env_basedirs {
@@ -1925,6 +1929,37 @@ fn config_server_startup_timeout_overrides() {
     };
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
     assert_eq!(config.server_startup_timeout, None);
+
+    // Test that zero is rejected, from env and from file
+    let env_conf = EnvConfig {
+        cache: Default::default(),
+        basedirs: None,
+        client_side_mode: None,
+        server_startup_timeout_ms: Some(0),
+    };
+    let file_conf = FileConfig {
+        cache: Default::default(),
+        dist: Default::default(),
+        server_startup_timeout_ms: None,
+        basedirs: vec![],
+        client_side_mode: false,
+    };
+    assert!(Config::from_env_and_file_configs(env_conf, file_conf).is_err());
+
+    let env_conf = EnvConfig {
+        cache: Default::default(),
+        basedirs: None,
+        client_side_mode: None,
+        server_startup_timeout_ms: None,
+    };
+    let file_conf = FileConfig {
+        cache: Default::default(),
+        dist: Default::default(),
+        server_startup_timeout_ms: Some(0),
+        basedirs: vec![],
+        client_side_mode: false,
+    };
+    assert!(Config::from_env_and_file_configs(env_conf, file_conf).is_err());
 }
 
 #[test]
