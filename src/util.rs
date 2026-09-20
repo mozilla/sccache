@@ -1392,6 +1392,45 @@ pub fn strip_basedirs<'a>(preprocessor_output: &'a [u8], basedirs: &[Vec<u8>]) -
     Cow::Owned(result)
 }
 
+/// The length of the basedir prefix of `path`, if it lies under one.
+///
+/// `path` is an absolute path encoded by [`encode_path`]. The length covers the
+/// trailing separator, so `path[..len]` is the basedir and `path[len..]` is the
+/// path relative to it. The longest basedir wins, as everywhere else.
+///
+/// Unlike [`strip_basedirs`] and [`strip_basedirs_from_arg`], which look for
+/// basedirs anywhere in a haystack that also holds non-path text, a path is all
+/// path, so this only matches at its start.
+pub fn basedir_prefix_len(path: &[u8], basedirs: &[Vec<u8>]) -> Option<usize> {
+    #[cfg(not(target_os = "windows"))]
+    let haystack: &[u8] = path;
+    #[cfg(target_os = "windows")]
+    let normalized = normalize_win_path(path);
+    #[cfg(target_os = "windows")]
+    let haystack: &[u8] = &normalized;
+
+    let len = basedirs
+        .iter()
+        .filter(|basedir| haystack.starts_with(basedir))
+        .map(|basedir| basedir.len())
+        .max()?;
+    unnormalized_len(path, haystack, len)
+}
+
+/// The length of the prefix of `path` that normalizes to `normalized[..len]`,
+/// which ends in a separator. Lowercasing can change the byte length of a
+/// non-ASCII character, but normalizing neither adds nor removes separators,
+/// so count those.
+fn unnormalized_len(path: &[u8], normalized: &[u8], len: usize) -> Option<usize> {
+    let is_separator = |b: &u8| matches!(b, b'/' | b'\\');
+    let separators = normalized[..len].iter().filter(|b| is_separator(b)).count();
+    path.iter()
+        .enumerate()
+        .filter(|(_, b)| is_separator(b))
+        .nth(separators.checked_sub(1)?)
+        .map(|(i, _)| i + 1)
+}
+
 /// Strip the base directories from a single compiler argument, for hashing.
 ///
 /// [`strip_basedirs`] looks for a basedir where preprocessor output would put
@@ -2486,6 +2525,31 @@ mod tests {
         let mut expected = b"c:/users/test".to_vec();
         expected.push(0xC3);
         assert_eq!(normalized, expected);
+    }
+
+    #[test]
+    fn test_unnormalized_len_with_lowercase_of_different_length() {
+        // KELVIN SIGN lowercases to an ASCII 'k', and LATIN CAPITAL LETTER I
+        // WITH DOT ABOVE to two characters, three bytes in all.
+        for dir in ["C:\\\u{212A}\\", "C:\\\u{130}\\"] {
+            let path = format!("{dir}include\\x.h");
+            let normalized = super::normalize_win_path(path.as_bytes());
+            let basedir = super::normalize_win_path(dir.as_bytes());
+            assert!(normalized.starts_with(&basedir));
+            assert_ne!(basedir.len(), dir.len());
+            assert_eq!(
+                super::unnormalized_len(path.as_bytes(), &normalized, basedir.len()),
+                Some(dir.len())
+            );
+        }
+    }
+
+    #[test]
+    fn test_basedir_prefix_len_without_trailing_separator() {
+        assert_eq!(
+            super::basedir_prefix_len(b"project/x.h", &[b"project".to_vec()]),
+            None
+        );
     }
 
     #[test]
