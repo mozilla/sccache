@@ -1252,6 +1252,30 @@ pub fn strip_basedirs<'a>(preprocessor_output: &'a [u8], basedirs: &[Vec<u8>]) -
     Cow::Owned(result)
 }
 
+/// The length of the basedir prefix of `path`, if it lies under one.
+///
+/// `path` is an absolute path encoded by [`encode_path`]. The length covers the
+/// trailing separator, so `path[..len]` is the basedir and `path[len..]` is the
+/// path relative to it. The longest basedir wins, as everywhere else.
+///
+/// Unlike [`strip_basedirs`] and [`strip_basedirs_from_arg`], which look for
+/// basedirs anywhere in a haystack that also holds non-path text, a path is all
+/// path, so this only matches at its start.
+pub fn basedir_prefix_len(path: &[u8], basedirs: &[Vec<u8>]) -> Option<usize> {
+    #[cfg(not(target_os = "windows"))]
+    let haystack: &[u8] = path;
+    #[cfg(target_os = "windows")]
+    let normalized = normalize_win_path(path);
+    #[cfg(target_os = "windows")]
+    let haystack: &[u8] = &normalized;
+
+    basedirs
+        .iter()
+        .filter(|basedir| haystack.starts_with(basedir))
+        .map(|basedir| basedir.len())
+        .max()
+}
+
 /// Strip the base directories from a single compiler argument, for hashing.
 ///
 /// [`strip_basedirs`] looks for a basedir where preprocessor output would put

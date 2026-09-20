@@ -58,5 +58,17 @@ to the C/C++ compiler one, but with additional elements:
 * The path of the input file
 * The hash of the input file
 
+A hit on this key hands back the C/C++ compiler key that was stored with the
+entry, so the hash above is never computed on that path. What stands in for it
+is the list of include files recorded with the entry: the entry only counts as
+a hit if every one of them is still on disk with the contents it had.
+
+With [`basedirs`](Configuration.md) that list needs re-rooting, because the key
+no longer names one checkout. An include file that lives under a base directory
+is recorded relative to it and looked for in the tree being compiled now - the
+base directory containing the input file, or the working directory if the input
+is outside all of them. An include outside every base directory, a system header
+say, is recorded and checked by its absolute path.
+
 Note that some compiler options can disable preprocessor cache mode. As of this
 writing, only `-Xpreprocessor` and `-Wp,*` do.

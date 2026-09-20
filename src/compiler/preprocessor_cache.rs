@@ -34,7 +34,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     config::PreprocessorCacheModeConfig,
-    util::{Digest, HashToDigest, MetadataCtimeExt, Timestamp, encode_path, strip_basedirs},
+    util::{
+        Digest, HashToDigest, MetadataCtimeExt, Timestamp, basedir_prefix_len, decode_path,
+        encode_path, strip_basedirs,
+    },
 };
 
 use super::Language;
@@ -42,7 +45,7 @@ use super::c::hash_arguments;
 
 /// The current format is 1 header byte for the version + bincode encoding
 /// of the [`PreprocessorCacheEntry`] struct.
-const FORMAT_VERSION: u8 = 1;
+const FORMAT_VERSION: u8 = 2;
 const MAX_PREPROCESSOR_CACHE_ENTRIES: usize = 100;
 const MAX_PREPROCESSOR_CACHE_FILE_INFO_ENTRIES: usize = 10000;
 
@@ -95,6 +98,7 @@ impl PreprocessorCacheEntry {
         compilation_time_start: SystemTime,
         result_key: &str,
         included_files: impl IntoIterator<Item = (String, PathBuf)>,
+        basedirs: &[Vec<u8>],
     ) {
         if self.results.len() > MAX_PREPROCESSOR_CACHE_ENTRIES {
             // Normally, there shouldn't be many result entries in the
@@ -131,8 +135,10 @@ impl PreprocessorCacheEntry {
                     }
                     _ => false,
                 };
+                let (path, under_basedir) = strip_basedir(&path, basedirs)?;
                 Ok(IncludeEntry {
-                    path: path.into_os_string(),
+                    path,
+                    under_basedir,
                     digest,
                     file_size: meta.len(),
                     mtime: if should_cache_time { mtime } else { None },
@@ -178,11 +184,12 @@ impl PreprocessorCacheEntry {
     pub fn lookup_result_digest(
         &mut self,
         config: PreprocessorCacheModeConfig,
+        tree_root: Option<&Path>,
         updated: &mut bool,
     ) -> Option<String> {
         // Check newest result first since it's more likely to match.
         for (digest, includes) in self.results.iter_mut().rev() {
-            let result_matches = Self::result_matches(digest, includes, config, updated);
+            let result_matches = Self::result_matches(digest, includes, config, tree_root, updated);
             if result_matches {
                 return Some(digest.clone());
             }
@@ -195,10 +202,18 @@ impl PreprocessorCacheEntry {
         digest: &str,
         includes: &mut [IncludeEntry],
         config: PreprocessorCacheModeConfig,
+        tree_root: Option<&Path>,
         updated: &mut bool,
     ) -> bool {
         for include in includes {
-            let path = Path::new(include.path.as_os_str());
+            let Some(path_buf) = include.path_in(tree_root) else {
+                debug!(
+                    "{} was recorded under a basedir but this compilation is not in one",
+                    Path::new(include.path.as_os_str()).display()
+                );
+                return false;
+            };
+            let path = path_buf.as_path();
             let meta = match std::fs::symlink_metadata(path) {
                 Ok(meta) => {
                     if meta.len() != include.file_size {
@@ -446,8 +461,19 @@ pub fn preprocessor_cache_entry_hash_key(
 /// Corresponds to a cached include file used in the pre-processor stage
 #[derive(Clone, Deserialize, Serialize, Debug, PartialEq, Eq)]
 pub struct IncludeEntry {
-    /// Its absolute path
+    /// Its absolute path, or its path relative to the basedir it lives under
+    /// when `under_basedir` is set
     path: OsString,
+    /// Whether `path` is relative to a basedir.
+    ///
+    /// A preprocessor cache entry is keyed by paths that basedirs have made
+    /// independent of the checkout, so every checkout listed shares it, but the
+    /// files it names belong to whichever checkout wrote it. Recording them
+    /// relative to their basedir lets the lookup re-root them at the tree being
+    /// compiled now, which is the only tree whose headers say anything about
+    /// this compilation. Do not infer this from `path` being relative: the
+    /// preprocessor can name a file outside every basedir relatively too.
+    under_basedir: bool,
     /// The hash of its contents
     digest: String,
     /// Its file size, in bytes
@@ -456,6 +482,62 @@ pub struct IncludeEntry {
     mtime: Option<Timestamp>,
     /// Its status change time, `None` if not recorded.
     ctime: Option<Timestamp>,
+}
+
+impl IncludeEntry {
+    /// Where this entry's file lives for the compilation being looked up.
+    ///
+    /// `None` when the entry was recorded under a basedir but this compilation
+    /// is not under one, which leaves nothing to re-root it against.
+    fn path_in(&self, tree_root: Option<&Path>) -> Option<PathBuf> {
+        let path = Path::new(self.path.as_os_str());
+        if self.under_basedir {
+            Some(tree_root?.join(path))
+        } else {
+            Some(path.to_path_buf())
+        }
+    }
+}
+
+/// The basedir the compilation is being run in, which is the tree its
+/// [`IncludeEntry`] paths are re-rooted at.
+///
+/// The input file decides, since that is the tree being compiled; the working
+/// directory is a fallback for a source file that lives outside every basedir.
+pub fn compilation_tree_root(
+    input_file: &Path,
+    cwd: &Path,
+    basedirs: &[Vec<u8>],
+) -> std::io::Result<Option<PathBuf>> {
+    if basedirs.is_empty() {
+        return Ok(None);
+    }
+    for path in [input_file, cwd] {
+        let mut encoded = vec![];
+        encode_path(&mut encoded, path)?;
+        // Basedirs carry a trailing separator so that they only match whole
+        // path components, which a directory spelled without one would miss.
+        if !matches!(encoded.last(), Some(b'/') | Some(b'\\')) {
+            encoded.push(b'/');
+        }
+        if let Some(len) = basedir_prefix_len(&encoded, basedirs) {
+            return Ok(Some(decode_path(&encoded[..len])?));
+        }
+    }
+    Ok(None)
+}
+
+/// Split an included file's absolute path at the basedir it lies under.
+fn strip_basedir(path: &Path, basedirs: &[Vec<u8>]) -> std::io::Result<(OsString, bool)> {
+    if basedirs.is_empty() {
+        return Ok((path.to_path_buf().into_os_string(), false));
+    }
+    let mut encoded = vec![];
+    encode_path(&mut encoded, path)?;
+    match basedir_prefix_len(&encoded, basedirs) {
+        Some(len) => Ok((decode_path(&encoded[len..])?.into_os_string(), true)),
+        None => Ok((path.to_path_buf().into_os_string(), false)),
+    }
 }
 
 #[derive(Debug)]
@@ -643,6 +725,154 @@ mod test {
         assert!(!finder.found_time());
         assert!(!finder.found_timestamp());
         assert!(!finder.found_date());
+    }
+
+    /// Bytes of a basedir as [`crate::config::Config`] normalizes them: with a
+    /// trailing separator, and lowercased slashes on Windows.
+    fn basedir_bytes(dir: &Path) -> Vec<u8> {
+        let bytes = format!("{}/", dir.display()).into_bytes();
+        #[cfg(target_os = "windows")]
+        return crate::util::normalize_win_path(&bytes);
+        #[cfg(not(target_os = "windows"))]
+        bytes
+    }
+
+    fn file_digest(path: &Path) -> String {
+        Digest::reader_sync(std::fs::File::open(path).unwrap()).unwrap()
+    }
+
+    /// Two checkouts listed as basedirs share a preprocessor cache entry, so an
+    /// entry written by one must be validated against the other's headers, not
+    /// against the ones that wrote it. See issue #2863.
+    #[test]
+    fn test_result_matches_checks_the_tree_being_compiled() {
+        use tempfile::TempDir;
+
+        let root = TempDir::new().unwrap();
+        let tree_a = root.path().join("treea");
+        let tree_b = root.path().join("treeb");
+        for (tree, contents) in [
+            (&tree_a, "struct S { int a; int b; };"),
+            (&tree_b, "struct S { int a; int pad; int b; };"),
+        ] {
+            std::fs::create_dir_all(tree.join("inc")).unwrap();
+            std::fs::write(tree.join("inc").join("cfg.h"), contents).unwrap();
+        }
+        let basedirs = vec![basedir_bytes(&tree_a), basedir_bytes(&tree_b)];
+
+        let header_a = tree_a.join("inc").join("cfg.h");
+        let mut entry = PreprocessorCacheEntry::new();
+        entry.add_result(
+            SystemTime::now(),
+            "object_key",
+            [(file_digest(&header_a), header_a)],
+            &basedirs,
+        );
+
+        let config = PreprocessorCacheModeConfig::activated();
+        let lookup = |tree_root: Option<&Path>| {
+            let mut updated = false;
+            entry
+                .clone()
+                .lookup_result_digest(config, tree_root, &mut updated)
+        };
+
+        assert_eq!(lookup(Some(&tree_a)), Some("object_key".to_string()));
+        assert_eq!(lookup(Some(&tree_b)), None, "treeb has a different cfg.h");
+        assert_eq!(lookup(None), None, "nothing to re-root the entry against");
+    }
+
+    /// The trees are interchangeable when they do agree, which is what makes
+    /// the shared entry worth having.
+    #[test]
+    fn test_result_matches_across_identical_trees() {
+        use tempfile::TempDir;
+
+        let root = TempDir::new().unwrap();
+        let tree_a = root.path().join("treea");
+        let tree_b = root.path().join("treeb");
+        for tree in [&tree_a, &tree_b] {
+            std::fs::create_dir_all(tree.join("inc")).unwrap();
+            std::fs::write(tree.join("inc").join("cfg.h"), "struct S { int a; };").unwrap();
+        }
+        let basedirs = vec![basedir_bytes(&tree_a), basedir_bytes(&tree_b)];
+
+        let header_a = tree_a.join("inc").join("cfg.h");
+        let mut entry = PreprocessorCacheEntry::new();
+        entry.add_result(
+            SystemTime::now(),
+            "object_key",
+            [(file_digest(&header_a), header_a)],
+            &basedirs,
+        );
+
+        let mut updated = false;
+        assert_eq!(
+            entry.lookup_result_digest(
+                PreprocessorCacheModeConfig::activated(),
+                Some(&tree_b),
+                &mut updated
+            ),
+            Some("object_key".to_string())
+        );
+    }
+
+    /// An include outside every basedir, a system header say, is not part of
+    /// any checkout and stays absolute.
+    #[test]
+    fn test_include_outside_basedirs_stays_absolute() {
+        use tempfile::TempDir;
+
+        let root = TempDir::new().unwrap();
+        let tree = root.path().join("tree");
+        std::fs::create_dir_all(&tree).unwrap();
+        let outside = root.path().join("outside.h");
+        std::fs::write(&outside, "struct S { int a; };").unwrap();
+        let basedirs = vec![basedir_bytes(&tree)];
+
+        let mut entry = PreprocessorCacheEntry::new();
+        entry.add_result(
+            SystemTime::now(),
+            "object_key",
+            [(file_digest(&outside), outside)],
+            &basedirs,
+        );
+
+        let mut updated = false;
+        assert_eq!(
+            entry.lookup_result_digest(
+                PreprocessorCacheModeConfig::activated(),
+                Some(&tree),
+                &mut updated
+            ),
+            Some("object_key".to_string())
+        );
+    }
+
+    #[test]
+    fn test_compilation_tree_root() {
+        use tempfile::TempDir;
+
+        let root = TempDir::new().unwrap();
+        let tree = root.path().join("tree");
+        let basedirs = vec![basedir_bytes(&tree)];
+        let outside = root.path().join("elsewhere");
+
+        let source = tree.join("src").join("main.c");
+        assert_eq!(
+            compilation_tree_root(&source, &outside, &basedirs).unwrap(),
+            Some(PathBuf::from(format!("{}/", tree.display())))
+        );
+        // The working directory stands in for a source file outside the trees.
+        assert_eq!(
+            compilation_tree_root(&outside.join("main.c"), &tree, &basedirs).unwrap(),
+            Some(PathBuf::from(format!("{}/", tree.display())))
+        );
+        assert_eq!(
+            compilation_tree_root(&outside.join("main.c"), &outside, &basedirs).unwrap(),
+            None
+        );
+        assert_eq!(compilation_tree_root(&source, &tree, &[]).unwrap(), None);
     }
 
     #[test]

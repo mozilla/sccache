@@ -27,6 +27,11 @@ server_startup_timeout_ms = 10000
 # spell a pathname are considered: the whole argument, the value of
 # an =-separated option, and the value glued to a short option.
 #
+# In preprocessor cache mode the header files remembered for a
+# compilation are looked for in the checkout being compiled, not
+# in the one that populated the cache, so two checkouts whose
+# headers differ do not share a result.
+#
 # Example:
 #   basedir = ["/home/user/project"] results in the path prefix rewrite:
 #   "/home/user/project/src/main.c" -> "src/main.c"

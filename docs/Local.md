@@ -37,6 +37,12 @@ The preprocessor cache may silently produce stale results in any of the followin
 - A macro such as `__TIME__` (etc) is used in the source code and `ignore_time_macros` is enabled
 - There are other external factors influencing the preprocessing result that sccache does not know about
 
+When [`basedirs`](Configuration.md) is set, every checkout listed shares a preprocessor cache entry, and the
+header files the entry remembers are looked for in the checkout being compiled rather than in the one that
+wrote the entry. Two checkouts whose headers differ therefore do not share a result. Headers outside every
+base directory are still remembered by absolute path, so a base directory pointing at a build tree separate
+from the source tree costs hits rather than correctness.
+
 Configuration options and their default values:
 
 - `use_preprocessor_cache_mode`: `true`. Whether to use preprocessor cache mode. This can be overridden for an sccache invocation by setting the environment variable `SCCACHE_DIRECT` to `true`/`on`/`1` or `false`/`off`/`0`.
