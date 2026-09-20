@@ -70,5 +70,10 @@ base directory containing the input file, or the working directory if the input
 is outside all of them. An include outside every base directory, a system header
 say, is recorded and checked by its absolute path.
 
+The list is only what the preprocessor opened. It does not record where the
+compiler looked and found nothing, so it cannot detect that an `#include` would
+resolve to a different file in this tree than in the one that wrote the entry.
+See the stale result notes in [the local doc](Local.md).
+
 Note that some compiler options can disable preprocessor cache mode. As of this
 writing, only `-Xpreprocessor` and `-Wp,*` do.

@@ -29,8 +29,10 @@ server_startup_timeout_ms = 10000
 #
 # In preprocessor cache mode the header files remembered for a
 # compilation are looked for in the checkout being compiled, not
-# in the one that populated the cache, so two checkouts whose
-# headers differ do not share a result.
+# in the one that populated the cache, so two checkouts that
+# differ in a header's contents do not share a result. Checkouts
+# that differ in which file an #include resolves to still can;
+# see docs/Local.md.
 #
 # Example:
 #   basedir = ["/home/user/project"] results in the path prefix rewrite:
