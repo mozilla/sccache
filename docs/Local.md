@@ -34,6 +34,11 @@ The preprocessor cache may silently produce stale results in any of the followin
 
 - When a source file was compiled and its results were cached, a header file would have been included if it existed, but it did
   not exist at the time. sccache does not know about such files, so it cannot invalidate the result if the header file later exists.
+  With `basedirs` this widens: a header that exists in one checkout and not in another, at a position the compiler searches first
+  (the including file's own directory, for a quoted include, or an earlier `-I`), makes the two checkouts resolve the same
+  `#include` to different files. sccache only remembers the files the preprocessor opened, never the directories it looked in and
+  found nothing, so it cannot tell the two apart and the second checkout can be handed the first one's object. Compiler search-path
+  precedence is not modelled.
 - A macro such as `__TIME__` (etc) is used in the source code and `ignore_time_macros` is enabled
 - There are other external factors influencing the preprocessing result that sccache does not know about
 
@@ -43,10 +48,15 @@ seconds before being hashed are not remembered, as their timestamps may not tell
 
 When [`basedirs`](Configuration.md) is set, every checkout listed shares a preprocessor cache entry, and the
 header files the entry remembers are looked for in the checkout being compiled (the base directory containing
-the input file, or else the working directory) rather than in the one that wrote the entry. Two checkouts
-whose headers differ therefore do not share a result. Headers outside every base directory are still
-remembered by absolute path, so a base directory pointing at a build tree separate from the source tree costs
-hits rather than correctness.
+the input file, or else the working directory) rather than in the one that wrote the entry. Two checkouts that
+resolve an `#include` to the same path but with different contents therefore do not share a result. Two
+checkouts that resolve it to different paths still can - see the stale result note above. Headers outside
+every base directory are still remembered by absolute path, so a build tree separate from the source tree and
+not listed costs hits rather than correctness. A header under a base directory other than the input file's,
+such as a separate build tree that is listed, is remembered by absolute path too and only counts for
+compilations whose input file is in the same base directory as the one that wrote the entry: a list of base
+directories does not say which build tree goes with which checkout, so such a result is not shared between
+checkouts.
 
 Configuration options and their default values:
 
