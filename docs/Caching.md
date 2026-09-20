@@ -62,8 +62,8 @@ entry, so the hash above is never computed on that path. What stands in for it
 is the list of include files recorded with the entry: the entry only counts as
 a hit if every one of them is still on disk with the contents it had.
 
-For how that list is checked when [`basedirs`](Configuration.md) is set, see
-[the local doc](Local.md).
+For how that list is checked when [`basedirs`](Configuration.md) is set, and
+what it cannot detect, see [the local doc](Local.md).
 
 Note that some compiler options can disable preprocessor cache mode. As of this
 writing, only `-Xpreprocessor` and `-Wp,*` do.
