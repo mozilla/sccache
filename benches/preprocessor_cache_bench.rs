@@ -64,7 +64,7 @@ fn preprocessor_cache_entry() -> (tempfile::TempDir, PreprocessorCacheEntry) {
     // seconds, so let the ones just written settle like real ones.
     std::thread::sleep(Duration::from_millis(2500));
     let mut entry = PreprocessorCacheEntry::new();
-    entry.add_result(SystemTime::UNIX_EPOCH, "result", includes);
+    entry.add_result(SystemTime::UNIX_EPOCH, "result", includes, &[], None);
     (dir, entry)
 }
 
@@ -79,11 +79,15 @@ fn preprocessor_cache_lookup(bencher: Bencher) {
     // at by an earlier build. CodSpeed may run the benchmark only once, which
     // would otherwise measure a first lookup instead.
     let mut updated = false;
-    assert!(entry.lookup_result_digest(config, &mut updated).is_some());
+    assert!(
+        entry
+            .lookup_result_digest(config, None, &mut updated)
+            .is_some()
+    );
 
     bencher.bench_local(|| {
         let mut updated = false;
-        let digest = entry.lookup_result_digest(config, &mut updated);
+        let digest = entry.lookup_result_digest(config, None, &mut updated);
         assert!(digest.is_some());
         black_box(digest)
     });
