@@ -13,7 +13,9 @@
 // limitations under the License.
 
 use crate::cache::{FileObjectSource, Storage};
-use crate::compiler::preprocessor_cache::preprocessor_cache_entry_hash_key;
+use crate::compiler::preprocessor_cache::{
+    compilation_tree_root, preprocessor_cache_entry_hash_key,
+};
 use crate::compiler::{
     Cacheable, ColorMode, Compilation, CompileCommand, Compiler, CompilerArguments, CompilerHasher,
     CompilerKind, HashResult, Language,
@@ -496,6 +498,16 @@ where
             None
         };
 
+        // The checkout this compilation belongs to. Basedirs make every checkout
+        // listed share one preprocessor cache entry, so the include files it
+        // records have to be checked against this tree's copies and not against
+        // the ones that happened to write the entry.
+        let tree_root = if preprocessor_key.is_some() {
+            compilation_tree_root(&absolute_input_path, &cwd, storage.basedirs())?
+        } else {
+            None
+        };
+
         let (preprocessor_output, include_files) = if needs_preprocessing {
             if let Some(preprocessor_key) = &preprocessor_key
                 && cache_control == CacheControl::Default
@@ -506,8 +518,11 @@ where
                     read_preprocessor_cache_entry(&mut seekable, preprocessor_key)
             {
                 let mut updated = false;
-                let hit = preprocessor_cache_entry
-                    .lookup_result_digest(preprocessor_cache_mode_config, &mut updated);
+                let hit = preprocessor_cache_entry.lookup_result_digest(
+                    preprocessor_cache_mode_config,
+                    tree_root.as_deref(),
+                    &mut updated,
+                );
 
                 let mut update_failed = false;
                 if updated {
@@ -680,7 +695,13 @@ where
                 .map(|(path, digest)| (digest, path))
                 .collect();
             files.sort_unstable_by(|a, b| a.1.cmp(&b.1));
-            preprocessor_cache_entry.add_result(start_of_compilation, &key, files);
+            preprocessor_cache_entry.add_result(
+                start_of_compilation,
+                &key,
+                files,
+                storage.basedirs(),
+                tree_root.as_deref(),
+            );
 
             if let Err(e) = storage
                 .put_preprocessor_cache_entry(&preprocessor_key, preprocessor_cache_entry)

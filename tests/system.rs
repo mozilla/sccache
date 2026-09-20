@@ -2397,6 +2397,210 @@ fn test_unreadable_preprocessor_cache_entry_is_a_miss() {
     stop_local_daemon();
 }
 
+/// Basedirs make every checkout listed share one preprocessor cache entry, so
+/// the include files the entry records have to be checked in the tree being
+/// compiled. Two checkouts whose headers disagree cannot have the same object.
+/// See issue #2863.
+#[test]
+#[serial]
+#[cfg(all(unix, not(target_os = "macos")))]
+fn test_basedirs_preprocessor_cache_checks_own_tree() {
+    let _ = env_logger::try_init();
+    let tempdir = tempfile::Builder::new()
+        .prefix("sccache_system_test")
+        .tempdir()
+        .unwrap();
+
+    let compiler = match find_compilers()
+        .into_iter()
+        .find(|c| c.name == "gcc" || c.name == "clang")
+    {
+        Some(compiler) => compiler,
+        None => {
+            warn!("No gcc or clang found, skipping test");
+            return;
+        }
+    };
+
+    // The two trees differ only in a header: offsetof(struct S, b) is 4 in the
+    // first and 8 in the second, which the object file spells out.
+    let trees: Vec<PathBuf> = ["treea", "treeb"]
+        .iter()
+        .map(|name| tempdir.path().join(name))
+        .collect();
+    let backdated =
+        filetime::FileTime::from_system_time(SystemTime::now() - Duration::from_secs(10));
+    for (tree, fields) in trees
+        .iter()
+        .zip(["int a; int b;", "int a; int pad; int b;"])
+    {
+        fs::create_dir_all(tree.join("inc")).unwrap();
+        let header = tree.join("inc").join("cfg.h");
+        fs::write(&header, format!("struct S {{ {fields} }};\n")).unwrap();
+        let source = tree.join("main.c");
+        fs::write(
+            &source,
+            "#include \"cfg.h\"\n\
+             int offset_of_b(void) { return (int)__builtin_offsetof(struct S, b); }\n",
+        )
+        .unwrap();
+        // Preprocessor cache mode refuses to record files modified during the
+        // compilation, and would not store an entry at all otherwise.
+        for file in [&header, &source] {
+            filetime::set_file_times(file, backdated, backdated).unwrap();
+        }
+    }
+
+    let mut sccache_cfg = sccache_client_cfg(tempdir.path(), true);
+    sccache_cfg.basedirs = trees
+        .iter()
+        .map(|tree| tree.to_str().unwrap().to_string())
+        .collect();
+    write_json_cfg(tempdir.path(), "sccache-cfg.json", &sccache_cfg);
+    let cached_cfg = tempdir.path().join("sccache-cached-cfg");
+    stop_local_daemon();
+    start_local_daemon(&tempdir.path().join("sccache-cfg.json"), &cached_cfg);
+    zero_stats();
+
+    let compile = |tree: &Path| {
+        sccache_command()
+            .args(compile_cmdline(
+                compiler.name,
+                &compiler.exe,
+                "main.c",
+                "main.o",
+                vec![OsString::from(format!("-I{}", tree.join("inc").display()))],
+            ))
+            .current_dir(tree)
+            .envs(compiler.env_vars.clone())
+            .assert()
+            .success();
+        fs::read(tree.join("main.o")).unwrap()
+    };
+
+    let object_a = compile(&trees[0]);
+    let object_b = compile(&trees[1]);
+    assert!(
+        object_a != object_b,
+        "treeb was handed treea's object file despite a different cfg.h"
+    );
+    get_stats(|info| {
+        assert_eq!(0, info.stats.cache_hits.all());
+        assert_eq!(2, info.stats.cache_misses.all());
+    });
+
+    // And the cache still works: treea's object is in it.
+    fs::remove_file(trees[0].join("main.o")).unwrap();
+    assert!(
+        object_a == compile(&trees[0]),
+        "treea's object came back changed"
+    );
+    get_stats(|info| {
+        assert_eq!(1, info.stats.cache_hits.all());
+        assert_eq!(2, info.stats.cache_misses.all());
+    });
+
+    stop_local_daemon();
+}
+
+/// A header read from a basedir other than the source's, here an out-of-source
+/// build tree, must be checked where the compiler found it, even when the
+/// source's basedir holds a file of the same name at the same relative path.
+#[test]
+#[serial]
+#[cfg(all(unix, not(target_os = "macos")))]
+fn test_basedirs_preprocessor_cache_checks_header_in_other_basedir() {
+    let _ = env_logger::try_init();
+    let tempdir = tempfile::Builder::new()
+        .prefix("sccache_system_test")
+        .tempdir()
+        .unwrap();
+
+    let compiler = match find_compilers()
+        .into_iter()
+        .find(|c| c.name == "gcc" || c.name == "clang")
+    {
+        Some(compiler) => compiler,
+        None => {
+            warn!("No gcc or clang found, skipping test");
+            return;
+        }
+    };
+
+    let src = tempdir.path().join("src");
+    let build = tempdir.path().join("build");
+    let header = build.join("gen").join("config.h");
+    let decoy = src.join("gen").join("config.h");
+    let source = src.join("main.c");
+    for dir in [&src, &build] {
+        fs::create_dir_all(dir.join("gen")).unwrap();
+    }
+    let backdated =
+        filetime::FileTime::from_system_time(SystemTime::now() - Duration::from_secs(10));
+    // Preprocessor cache mode refuses to record files modified during the
+    // compilation, and would not store an entry at all otherwise.
+    let write_backdated = |path: &Path, contents: &str| {
+        fs::write(path, contents).unwrap();
+        filetime::set_file_times(path, backdated, backdated).unwrap();
+    };
+    write_backdated(
+        &source,
+        "#include <gen/config.h>\nint value(void) { return CONFIG_VALUE; }\n",
+    );
+    write_backdated(&header, "#define CONFIG_VALUE 111\n");
+    // Never opened: angle brackets skip the source's own directory.
+    write_backdated(&decoy, "#define CONFIG_VALUE 111\n");
+
+    let mut sccache_cfg = sccache_client_cfg(tempdir.path(), true);
+    sccache_cfg.basedirs = [&src, &build]
+        .iter()
+        .map(|dir| dir.to_str().unwrap().to_string())
+        .collect();
+    write_json_cfg(tempdir.path(), "sccache-cfg.json", &sccache_cfg);
+    let cached_cfg = tempdir.path().join("sccache-cached-cfg");
+    stop_local_daemon();
+    start_local_daemon(&tempdir.path().join("sccache-cfg.json"), &cached_cfg);
+    zero_stats();
+
+    let object = src.join("main.o");
+    let compile = || {
+        sccache_command()
+            .args(compile_cmdline(
+                compiler.name,
+                &compiler.exe,
+                source.to_str().unwrap(),
+                object.to_str().unwrap(),
+                vec![OsString::from(format!("-I{}", build.display()))],
+            ))
+            .current_dir(&src)
+            .envs(compiler.env_vars.clone())
+            .assert()
+            .success();
+        fs::read(&object).unwrap()
+    };
+
+    let first = compile();
+    write_backdated(&header, "#define CONFIG_VALUE 222\n");
+    let second = compile();
+    assert!(
+        first != second,
+        "the object for the old build/gen/config.h was returned after it changed"
+    );
+    get_stats(|info| {
+        assert_eq!(0, info.stats.cache_hits.all());
+        assert_eq!(2, info.stats.cache_misses.all());
+    });
+
+    fs::remove_file(&object).unwrap();
+    assert!(second == compile(), "the object came back changed");
+    get_stats(|info| {
+        assert_eq!(1, info.stats.cache_hits.all());
+        assert_eq!(2, info.stats.cache_misses.all());
+    });
+
+    stop_local_daemon();
+}
+
 #[test]
 #[serial]
 fn test_stats_no_server() {
