@@ -263,10 +263,10 @@ impl LruDiskCache {
         size: Option<u64>,
         by: F,
     ) -> Result<()> {
-        if let Some(size) = size {
-            if !self.can_store(size) {
-                return Err(Error::FileTooLarge);
-            }
+        if let Some(size) = size
+            && !self.can_store(size)
+        {
+            return Err(Error::FileTooLarge);
         }
         let rel_path = key.as_ref();
         let path = self.rel_to_abs_path(rel_path);

@@ -29,8 +29,12 @@ use log::Level::Trace;
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::io::{self, IsTerminal, Write};
+#[cfg(not(windows))]
+use std::os::fd::AsRawFd;
 #[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
+#[cfg(windows)]
+use std::os::windows::io::AsRawHandle;
 use std::path::Path;
 use std::process;
 use std::sync::Arc;
@@ -52,10 +56,10 @@ const SERVER_STARTUP_TIMEOUT: Duration = Duration::from_millis(10000);
 /// Get the port on which the server should listen.
 fn get_addr() -> crate::net::SocketAddr {
     #[cfg(unix)]
-    if let Ok(addr) = env::var("SCCACHE_SERVER_UDS") {
-        if let Ok(uds) = crate::net::SocketAddr::parse_uds(&addr) {
-            return uds;
-        }
+    if let Ok(addr) = env::var("SCCACHE_SERVER_UDS")
+        && let Ok(uds) = crate::net::SocketAddr::parse_uds(&addr)
+    {
+        return uds;
     }
     let port = env::var("SCCACHE_SERVER_PORT")
         .ok()
@@ -164,7 +168,7 @@ fn create_error_log() -> Result<File> {
     let f = match OpenOptions::new().create(true).append(true).open(&name) {
         Ok(f) => f,
         Err(_) => {
-            bail!("Cannot open/write log file '{}'", &name);
+            bail!("Cannot open/write log file '{}'", name);
         }
     };
     Ok(f)
@@ -746,7 +750,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                     continue;
                 }
                 println!("=========================");
-                println!("Showing preprocessor entry file {}", &path.display());
+                println!("Showing preprocessor entry file {}", path.display());
                 let contents = std::fs::read(path)?;
                 let preprocessor_cache_entry =
                     crate::compiler::PreprocessorCacheEntry::read(&contents)?;
@@ -758,12 +762,16 @@ pub fn run_command(cmd: Command) -> Result<i32> {
             trace!("Command::InternalStartServer");
             if env::var("SCCACHE_ERROR_LOG").is_ok() {
                 let f = create_error_log()?;
+                #[cfg(not(windows))]
+                let preserve = [f.as_raw_fd()];
+                #[cfg(windows)]
+                let preserve = [f.as_raw_handle()];
                 // Can't report failure here, we're already daemonized.
-                daemonize()?;
+                daemonize(&preserve)?;
                 redirect_error_log(f)?;
             } else {
                 // We aren't asking for a log file
-                daemonize()?;
+                daemonize(&[])?;
             }
             server::start_server(config, &get_addr())?;
         }

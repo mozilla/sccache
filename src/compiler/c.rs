@@ -27,7 +27,7 @@ use crate::dist::pkg;
 use crate::mock_command::CommandCreatorSync;
 use crate::util::{
     Digest, HashToDigest, MetadataCtimeExt, TimeMacroFinder, Timestamp, decode_path, encode_path,
-    hash_all, strip_basedirs,
+    hash_all, strip_basedirs, strip_basedirs_from_arg,
 };
 use async_trait::async_trait;
 use fs_err as fs;
@@ -109,6 +109,8 @@ pub struct ParsedArguments {
     pub extra_dist_files: Vec<PathBuf>,
     /// Extra files that need to have their contents hashed.
     pub extra_hash_files: Vec<PathBuf>,
+    /// Whether the compiler runs a separate assembler to produce the object file.
+    pub uses_external_assembler: bool,
     /// Whether or not the `-showIncludes` argument is passed on MSVC
     pub msvc_show_includes: bool,
     /// Whether the compilation is generating profiling or coverage data.
@@ -177,6 +179,11 @@ pub trait CCompilerImpl: Clone + fmt::Debug + Send + Sync + 'static {
     fn plusplus(&self) -> bool;
     /// Return the compiler version reported by the compiler executable.
     fn version(&self) -> Option<String>;
+    /// Return the identity of the assembler the compiler would run, when it
+    /// runs one at all.
+    fn assembler_digest(&self) -> Option<String> {
+        None
+    }
     /// Determine whether `arguments` are supported by this compiler.
     fn parse_arguments(
         &self,
@@ -379,6 +386,13 @@ where
         let start_of_compilation = std::time::SystemTime::now();
 
         let extra_hashes = hash_all(&self.parsed_args.extra_hash_files, &pool.clone()).await?;
+        // The assembler that turns the compiler's output into the object file is
+        // as much a part of the result as the compiler itself.
+        let assembler_digest = if self.parsed_args.uses_external_assembler {
+            self.compiler.assembler_digest()
+        } else {
+            None
+        };
         // Create an argument vector containing both preprocessor and arch args, to
         // use in creating a hash key
         let mut preprocessor_and_arch_args = self.parsed_args.preprocessor_args.clone();
@@ -449,6 +463,7 @@ where
                 self.parsed_args.language,
                 &preprocessor_and_arch_args,
                 &extra_hashes,
+                assembler_digest.as_deref(),
                 &env_vars,
                 &absolute_input_path,
                 self.compiler.plusplus(),
@@ -460,71 +475,63 @@ where
         };
 
         let (preprocessor_output, include_files) = if needs_preprocessing {
-            if let Some(preprocessor_key) = &preprocessor_key {
-                if cache_control == CacheControl::Default {
-                    if let Some(mut seekable) = storage
-                        .get_preprocessor_cache_entry(preprocessor_key)
-                        .await?
+            if let Some(preprocessor_key) = &preprocessor_key
+                && cache_control == CacheControl::Default
+                && let Some(mut seekable) = storage
+                    .get_preprocessor_cache_entry(preprocessor_key)
+                    .await?
+            {
+                let mut buf = vec![];
+                seekable.read_to_end(&mut buf)?;
+                let mut preprocessor_cache_entry = PreprocessorCacheEntry::read(&buf)?;
+                let mut updated = false;
+                let hit = preprocessor_cache_entry
+                    .lookup_result_digest(preprocessor_cache_mode_config, &mut updated);
+
+                let mut update_failed = false;
+                if updated {
+                    // Time macros have been found, we need to update
+                    // the preprocessor cache entry. See [`PreprocessorCacheEntry::result_matches`].
+                    debug!("Preprocessor cache updated because of time macros: {preprocessor_key}");
+
+                    if let Err(e) = storage
+                        .put_preprocessor_cache_entry(preprocessor_key, preprocessor_cache_entry)
+                        .await
                     {
-                        let mut buf = vec![];
-                        seekable.read_to_end(&mut buf)?;
-                        let mut preprocessor_cache_entry = PreprocessorCacheEntry::read(&buf)?;
-                        let mut updated = false;
-                        let hit = preprocessor_cache_entry
-                            .lookup_result_digest(preprocessor_cache_mode_config, &mut updated);
+                        debug!("Failed to update preprocessor cache: {}", e);
+                        update_failed = true;
+                    }
+                }
 
-                        let mut update_failed = false;
-                        if updated {
-                            // Time macros have been found, we need to update
-                            // the preprocessor cache entry. See [`PreprocessorCacheEntry::result_matches`].
-                            debug!(
-                                "Preprocessor cache updated because of time macros: {preprocessor_key}"
-                            );
-
-                            if let Err(e) = storage
-                                .put_preprocessor_cache_entry(
-                                    preprocessor_key,
-                                    preprocessor_cache_entry,
-                                )
-                                .await
-                            {
-                                debug!("Failed to update preprocessor cache: {}", e);
-                                update_failed = true;
-                            }
-                        }
-
-                        if !update_failed {
-                            if let Some(key) = hit {
-                                debug!("Preprocessor cache hit: {preprocessor_key}");
-                                // A compiler binary may be a symlink to another and
-                                // so has the same digest, but that means
-                                // the toolchain will not contain the correct path
-                                // to invoke the compiler! Add the compiler
-                                // executable path to try and prevent this
-                                let weak_toolchain_key = format!(
-                                    "{}-{}",
-                                    self.executable.to_string_lossy(),
-                                    self.executable_digest
-                                );
-                                return Ok(HashResult {
-                                    key,
-                                    compilation: Box::new(CCompilation {
-                                        parsed_args: self.parsed_args.clone(),
-                                        is_locally_preprocessed: false,
-                                        #[cfg(feature = "dist-client")]
-                                        preprocessed_input: PREPROCESSING_SKIPPED_COMPILE_POISON
-                                            .to_vec(),
-                                        executable: self.executable.clone(),
-                                        compiler: self.compiler.to_owned(),
-                                        cwd: cwd.clone(),
-                                        env_vars: env_vars.clone(),
-                                    }),
-                                    weak_toolchain_key,
-                                });
-                            } else {
-                                debug!("Preprocessor cache miss: {preprocessor_key}");
-                            }
-                        }
+                if !update_failed {
+                    if let Some(key) = hit {
+                        debug!("Preprocessor cache hit: {preprocessor_key}");
+                        // A compiler binary may be a symlink to another and
+                        // so has the same digest, but that means
+                        // the toolchain will not contain the correct path
+                        // to invoke the compiler! Add the compiler
+                        // executable path to try and prevent this
+                        let weak_toolchain_key = format!(
+                            "{}-{}",
+                            self.executable.to_string_lossy(),
+                            self.executable_digest
+                        );
+                        return Ok(HashResult {
+                            key,
+                            compilation: Box::new(CCompilation {
+                                parsed_args: self.parsed_args.clone(),
+                                is_locally_preprocessed: false,
+                                #[cfg(feature = "dist-client")]
+                                preprocessed_input: PREPROCESSING_SKIPPED_COMPILE_POISON.to_vec(),
+                                executable: self.executable.clone(),
+                                compiler: self.compiler.to_owned(),
+                                cwd: cwd.clone(),
+                                env_vars: env_vars.clone(),
+                            }),
+                            weak_toolchain_key,
+                        });
+                    } else {
+                        debug!("Preprocessor cache miss: {preprocessor_key}");
                     }
                 }
             }
@@ -553,7 +560,7 @@ where
 
             let mut preprocessor_result = result.or_else(move |err| {
                 // Errors remove all traces of potential output.
-                debug!("removing files {:?}", &outputs);
+                debug!("removing files {:?}", outputs);
 
                 let v: std::result::Result<(), std::io::Error> =
                     outputs.values().try_for_each(|output| {
@@ -635,25 +642,26 @@ where
         .with_env_vars(&env_vars)
         .with_plusplus(self.compiler.plusplus())
         .with_basedirs(storage.basedirs())
+        .with_assembler_digest(assembler_digest.as_deref())
         .compute();
 
         // Cache the preprocessing step
-        if let Some(preprocessor_key) = preprocessor_key {
-            if !include_files.is_empty() {
-                let mut preprocessor_cache_entry = PreprocessorCacheEntry::new();
-                let mut files: Vec<_> = include_files
-                    .into_iter()
-                    .map(|(path, digest)| (digest, path))
-                    .collect();
-                files.sort_unstable_by(|a, b| a.1.cmp(&b.1));
-                preprocessor_cache_entry.add_result(start_of_compilation, &key, files);
+        if let Some(preprocessor_key) = preprocessor_key
+            && !include_files.is_empty()
+        {
+            let mut preprocessor_cache_entry = PreprocessorCacheEntry::new();
+            let mut files: Vec<_> = include_files
+                .into_iter()
+                .map(|(path, digest)| (digest, path))
+                .collect();
+            files.sort_unstable_by(|a, b| a.1.cmp(&b.1));
+            preprocessor_cache_entry.add_result(start_of_compilation, &key, files);
 
-                if let Err(e) = storage
-                    .put_preprocessor_cache_entry(&preprocessor_key, preprocessor_cache_entry)
-                    .await
-                {
-                    debug!("Failed to update preprocessor cache: {}", e);
-                }
+            if let Err(e) = storage
+                .put_preprocessor_cache_entry(&preprocessor_key, preprocessor_cache_entry)
+                .await
+            {
+                debug!("Failed to update preprocessor cache: {}", e);
             }
         }
 
@@ -749,7 +757,7 @@ fn process_preprocessed_file(
             // GCC precompiled header:
             || slice[1..].starts_with(PRAGMA_GCC_PCH_PREPROCESS)
             // HP/AIX:
-            || (&slice[1..5] == b"line "))
+            || slice[1..].starts_with(b"line "))
         && (start == 0 || bytes[start - 1] == b'\n')
         {
             match process_preprocessor_line(
@@ -1160,19 +1168,19 @@ fn include_is_too_new(
 ) -> bool {
     // The comparison using >= is intentional, due to a possible race between
     // starting compilation and writing the include file.
-    if let Some(mtime) = meta.modified {
-        if mtime >= time_of_compilation.into() {
-            debug!("Include file {} is too new", path.display());
-            return true;
-        }
+    if let Some(mtime) = meta.modified
+        && mtime >= time_of_compilation.into()
+    {
+        debug!("Include file {} is too new", path.display());
+        return true;
     }
 
     // The same >= logic as above applies to the change time of the file.
-    if let Some(ctime) = meta.ctime_or_creation {
-        if ctime >= time_of_compilation.into() {
-            debug!("Include file {} is too new", path.display());
-            return true;
-        }
+    if let Some(ctime) = meta.ctime_or_creation
+        && ctime >= time_of_compilation.into()
+    {
+        debug!("Include file {} is too new", path.display());
+        return true;
     }
 
     false
@@ -1449,7 +1457,7 @@ impl pkg::ToolchainPackager for CToolchainPackager {
 }
 
 /// The cache is versioned by the inputs to `HashKeyParams::compute`.
-pub const CACHE_VERSION: &[u8] = b"12";
+pub const CACHE_VERSION: &[u8] = b"13";
 
 /// Environment variables that are factored into the cache key.
 static CACHED_ENV_VARS: LazyLock<HashSet<&'static OsStr>> = LazyLock::new(|| {
@@ -1470,6 +1478,20 @@ static CACHED_ENV_VARS: LazyLock<HashSet<&'static OsStr>> = LazyLock::new(|| {
     .map(OsStr::new)
     .collect()
 });
+
+/// Feed the compiler arguments into `m`, with the base directories stripped.
+///
+/// The arguments are hashed verbatim, so any that spell out an absolute path -
+/// `-ffile-prefix-map=/home/user/project=.` above all - would tie the cache
+/// entry to one checkout of the tree. See [`strip_basedirs_from_arg`].
+pub fn hash_arguments(m: &mut Digest, arguments: &[OsString], basedirs: &[Vec<u8>]) {
+    for arg in arguments {
+        // Same shape as OsString's own Hash impl: the bytes, then a separator
+        // that cannot occur in them.
+        m.update(&strip_basedirs_from_arg(arg.as_encoded_bytes(), basedirs));
+        m.update(&[0xff]);
+    }
+}
 
 /// Parameters for computing a hash key for C/C++ compilation caching.
 ///
@@ -1498,6 +1520,7 @@ pub struct HashKeyParams<'a> {
     preprocessor_output: &'a [u8],
     plusplus: bool,
     basedirs: &'a [Vec<u8>],
+    assembler_digest: Option<&'a str>,
 }
 
 impl<'a> HashKeyParams<'a> {
@@ -1525,6 +1548,7 @@ impl<'a> HashKeyParams<'a> {
             env_vars: &[],
             plusplus: false,
             basedirs: &[],
+            assembler_digest: None,
         }
     }
 
@@ -1552,6 +1576,12 @@ impl<'a> HashKeyParams<'a> {
         self
     }
 
+    /// Sets the identity of the assembler the compiler will run, if any.
+    pub fn with_assembler_digest(mut self, assembler_digest: Option<&'a str>) -> Self {
+        self.assembler_digest = assembler_digest;
+        self
+    }
+
     /// Computes the hash key based on the configured parameters.
     ///
     /// If `basedirs` are provided, paths in the preprocessor output will be normalized by
@@ -1568,11 +1598,12 @@ impl<'a> HashKeyParams<'a> {
         m.update(&[self.plusplus as u8]);
         m.update(CACHE_VERSION);
         m.update(self.language.as_str().as_bytes());
-        for arg in self.arguments {
-            arg.hash(&mut HashToDigest { digest: &mut m });
-        }
+        hash_arguments(&mut m, self.arguments, self.basedirs);
         for hash in self.extra_hashes {
             m.update(hash.as_bytes());
+        }
+        if let Some(assembler_digest) = self.assembler_digest {
+            m.update(assembler_digest.as_bytes());
         }
 
         for (var, val) in self.env_vars.iter() {
@@ -1613,6 +1644,26 @@ mod test {
             .with_plusplus(true)
             .compute();
         assert_neq!(h1, h2);
+    }
+
+    #[test]
+    fn test_assembler_digest_differs() {
+        let args = ovec!["a", "b", "c"];
+        let h1 = HashKeyParams::new("abcd", Language::C, &args, b"hello world").compute();
+        let h2 = HashKeyParams::new("abcd", Language::C, &args, b"hello world")
+            .with_assembler_digest(Some("abcd"))
+            .compute();
+        let h3 = HashKeyParams::new("abcd", Language::C, &args, b"hello world")
+            .with_assembler_digest(Some("efgh"))
+            .compute();
+        assert_neq!(h1, h2);
+        assert_neq!(h2, h3);
+        // Not knowing the assembler must keep the key the compiler alone would give,
+        // so that caches predating assembler tracking stay usable.
+        let h4 = HashKeyParams::new("abcd", Language::C, &args, b"hello world")
+            .with_assembler_digest(None)
+            .compute();
+        assert_eq!(h1, h4);
     }
 
     #[test]
@@ -1911,6 +1962,56 @@ mod test {
         assert_eq!(&bytes, &original_bytes);
         assert!(success);
         assert_eq!(include_files.len(), 0);
+    }
+
+    #[test]
+    fn test_process_preprocessed_file_line_directive() {
+        let header = PathBuf::from("tests/test.h");
+        let fs_impl = TestFs {
+            metadata_results: Mutex::new(
+                [(
+                    header.clone(),
+                    PreprocessorFileMetadata {
+                        is_dir: false,
+                        is_file: true,
+                        modified: Some(Timestamp::new(12341234, 0)),
+                        ctime_or_creation: None,
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            ),
+            open_results: Mutex::new(
+                [(
+                    header.clone(),
+                    Box::new(&b"contents"[..]) as Box<dyn std::io::Read>,
+                )]
+                .into_iter()
+                .collect(),
+            ),
+        };
+        let mut bytes = br#"#line 1 "tests/test.h"
+int value;
+"#
+        .to_vec();
+        let mut include_files = HashMap::new();
+
+        let success = process_preprocessed_file(
+            Path::new("tests/test.c"),
+            Path::new(""),
+            &mut bytes,
+            &mut include_files,
+            PreprocessorCacheModeConfig::activated(),
+            std::time::SystemTime::now(),
+            fs_impl,
+        )
+        .unwrap();
+
+        assert!(success);
+        assert_eq!(
+            include_files.get(&header).map(String::as_str),
+            Some("a93900c371d997927c5bc568ea538bed59ae5c960021dcfe7b0b369da5267528")
+        );
     }
 
     /// A filesystem interface that only panics to test that we don't access it.

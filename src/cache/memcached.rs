@@ -16,8 +16,8 @@
 use std::time::Duration;
 
 use opendal::Operator;
-use opendal::layers::LoggingLayer;
 use opendal::services::Memcached;
+use opendal_layer_logging::LoggingLayer;
 
 use crate::errors::*;
 
@@ -45,9 +45,7 @@ impl MemcachedCache {
             .root(key_prefix)
             .default_ttl(Duration::from_secs(expiration.into()));
 
-        let op = Operator::new(builder)?
-            .layer(LoggingLayer::default())
-            .finish();
+        let op = Operator::new(builder)?.layer(LoggingLayer::default());
         Ok(op)
     }
 }

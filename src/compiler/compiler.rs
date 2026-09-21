@@ -35,7 +35,9 @@ use crate::dist::pkg;
 use crate::lru_disk_cache;
 use crate::mock_command::{CommandChild, CommandCreatorSync, RunCommand, exit_status};
 use crate::server;
-use crate::util::{fmt_duration_as_secs, resolve_compiler_avoiding_wrapper, run_input_output};
+use crate::util::{
+    Digest, fmt_duration_as_secs, resolve_compiler_avoiding_wrapper, run_input_output,
+};
 use crate::{counted_array, dist};
 use async_trait::async_trait;
 use filetime::FileTime;
@@ -44,6 +46,7 @@ use fs_err as fs;
 use itertools::Itertools as _;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
+use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::future::Future;
@@ -166,6 +169,14 @@ pub struct SingleCompileCommand {
     pub arguments: Vec<OsString>,
     pub env_vars: Vec<(OsString, OsString)>,
     pub cwd: PathBuf,
+    /// Whether this compiler participates in the GNU make jobserver.
+    ///
+    /// Deliberately a field rather than a defaulted builder method: the
+    /// compiler then makes every frontend answer, so a new one cannot
+    /// silently get this wrong. Getting it wrong in the `true` direction
+    /// costs a `fork` per compile; in the `false` direction it costs `rustc`
+    /// its parallelism limit, which is what the jobserver exists to enforce.
+    pub share_jobserver: bool,
 }
 
 #[async_trait]
@@ -196,6 +207,7 @@ impl CompileCommandImpl for SingleCompileCommand {
             arguments,
             env_vars,
             cwd,
+            share_jobserver,
         } = self;
         // Resolve compiler avoiding ccache wrappers to prevent double-caching.
         let resolved_executable = resolve_compiler_avoiding_wrapper(executable, env_vars);
@@ -204,6 +216,9 @@ impl CompileCommandImpl for SingleCompileCommand {
             .env_clear()
             .envs(env_vars.clone())
             .current_dir(cwd);
+        if *share_jobserver {
+            cmd.share_jobserver();
+        }
         run_input_output(cmd, None).await
     }
 }
@@ -1479,7 +1494,7 @@ where
         .await
         .map(|c| (Box::new(c) as Box<dyn Compiler<T>>, None));
     } else if is_known_c_compiler(executable) {
-        let cc = detect_c_compiler(creator, executable, args, env.to_vec(), pool).await;
+        let cc = detect_c_compiler(creator, executable, args, cwd, env.to_vec(), pool).await;
         return cc.map(|c| (c, None));
     } else {
         // Even if it does not look like rustc like it might still be rustc driver
@@ -1503,7 +1518,8 @@ where
             // in case we attempted to test for rustc while it didn't look like it, fallback to c compiler detection one lat time
             if maybe_rustc_executable.is_none() {
                 let executable = executable.to_path_buf();
-                let cc = detect_c_compiler(creator, executable, args, env.to_vec(), pool).await;
+                let cc =
+                    detect_c_compiler(creator, executable, args, cwd, env.to_vec(), pool).await;
                 cc.map(|c| (c, None))
             } else {
                 Err(e)
@@ -1536,10 +1552,10 @@ where
     child.env_clear().envs(env.to_vec()).args(&["-vV"]);
 
     let rustc_vv = run_input_output(child, None).await.map(|output| {
-        if let Ok(stdout) = String::from_utf8(output.stdout.clone()) {
-            if stdout.starts_with("rustc ") {
-                return Ok(stdout);
-            }
+        if let Ok(stdout) = String::from_utf8(output.stdout.clone())
+            && stdout.starts_with("rustc ")
+        {
+            return Ok(stdout);
         }
         Err(ProcessError(output))
     })?;
@@ -1564,7 +1580,7 @@ where
                         // take the pathbuf for rustc as resolved by the proxy
                         match proxy.resolve_proxied_executable(creator1, cwd, env).await {
                             Ok((resolved_path, _time)) => {
-                                trace!("Resolved path with rustup proxy {:?}", &resolved_path);
+                                trace!("Resolved path with rustup proxy {:?}", resolved_path);
                                 Ok((Some(proxy), resolved_path))
                             }
                             Err(e) => {
@@ -1641,10 +1657,141 @@ counted_array!(static ARGS: [ArgInfo<ArgData>; _] = [
     take_arg!("-ccbin", OsString, CanBeSeparated(b'='), Detect_PassThrough),
 ]);
 
+/// Ask `executable` for the version of the assembler it would run.
+///
+/// Going through the compiler rather than looking for `as` ourselves means the
+/// answer accounts for the search paths the compiler was built with.
+async fn assembler_version<T>(
+    creator: &T,
+    executable: &Path,
+    extra_args: &[&str],
+    env: &[(OsString, OsString)],
+) -> Option<String>
+where
+    T: CommandCreatorSync,
+{
+    let mut cmd = creator.clone().new_command_sync(executable);
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .envs(env.iter().map(|s| (&s.0, &s.1)))
+        .args(extra_args)
+        .arg("-Wa,--version")
+        // Empty input from stdin and the object to stdout, so that asking for a
+        // version leaves nothing behind. The assembler prints its version and
+        // exits without assembling, so the object never materializes.
+        .arg("-x")
+        .arg("assembler")
+        .arg("-c")
+        .arg("-")
+        .arg("-o")
+        .arg("-");
+    trace!("assembler_version: {:?}", cmd);
+    let output = cmd.spawn().await.ok()?.wait_with_output().await.ok()?;
+
+    if !output.status.success() {
+        debug!(
+            "Failed to get the assembler version: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return None;
+    }
+    // The rest of what `--version` prints is copyright boilerplate.
+    let version = str::from_utf8(&output.stdout)
+        .ok()?
+        .lines()
+        .next()?
+        .trim()
+        .to_owned();
+    if version.is_empty() {
+        return None;
+    }
+    Some(version)
+}
+
+/// Ask `executable` where the assembler it would run lives.
+async fn assembler_path<T>(
+    creator: &T,
+    executable: &Path,
+    extra_args: &[&str],
+    cwd: &Path,
+    env: &[(OsString, OsString)],
+) -> Option<PathBuf>
+where
+    T: CommandCreatorSync,
+{
+    let mut cmd = creator.clone().new_command_sync(executable);
+    cmd.stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .envs(env.iter().map(|s| (&s.0, &s.1)))
+        .args(extra_args)
+        .arg("-print-prog-name=as");
+    trace!("assembler_path: {:?}", cmd);
+    let output = cmd.spawn().await.ok()?.wait_with_output().await.ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+    let name = str::from_utf8(&output.stdout).ok()?.trim();
+    if name.is_empty() {
+        return None;
+    }
+    // GCC answers with a bare name when it leaves finding the assembler to
+    // $PATH, and clang does the same when there is nothing to find, so finish
+    // the search the way the compiler will: against the client's $PATH.
+    let paths = env
+        .iter()
+        .find(|(k, _)| k == "PATH")
+        .map(|(_, v)| v.clone())
+        .or_else(|| env::var_os("PATH"));
+    which::which_in(name, paths, cwd).ok()
+}
+
+/// Identify the assembler `executable` hands the compilation off to.
+///
+/// GCC never assembles by itself, and clang doesn't either when its integrated
+/// assembler is disabled, so without this the object file depends on a program
+/// that nothing in the cache key accounts for. The assembler gets identified the
+/// same way the compiler is, by both its contents and the version it reports:
+/// the contents catch a rebuild that didn't bump the version, the version speaks
+/// for wrappers like Apple's `as`, where the binary we find isn't what ends up
+/// doing the work.
+async fn detect_assembler<T>(
+    creator: &T,
+    executable: &Path,
+    extra_args: &[&str],
+    cwd: &Path,
+    env: &[(OsString, OsString)],
+    pool: &tokio::runtime::Handle,
+) -> Option<String>
+where
+    T: CommandCreatorSync,
+{
+    let version = assembler_version(creator, executable, extra_args, env).await;
+    let path = assembler_path(creator, executable, extra_args, cwd, env).await;
+    let contents = match &path {
+        Some(path) => Digest::file(path, pool)
+            .await
+            .map_err(|e| debug!("Failed to hash assembler {}: {}", path.display(), e))
+            .ok(),
+        None => None,
+    };
+    if version.is_none() && contents.is_none() {
+        return None;
+    }
+    debug!("Found assembler {:?} at {:?}", version, path);
+
+    let mut m = Digest::new();
+    m.update(version.unwrap_or_default().as_bytes());
+    m.update(contents.unwrap_or_default().as_bytes());
+    Some(m.finish())
+}
+
 async fn detect_c_compiler<T, P>(
     creator: T,
     executable: P,
     arguments: &[OsString],
+    cwd: &Path,
     env: Vec<(OsString, OsString)>,
     pool: tokio::runtime::Handle,
 ) -> Result<Box<dyn Compiler<T>>>
@@ -1759,11 +1906,21 @@ compiler_version=__VERSION__
         match kind {
             "clang" | "clang++" | "apple-clang" | "apple-clang++" => {
                 debug!("Found {}", kind);
+                let assembler_digest = detect_assembler(
+                    &creator,
+                    &executable,
+                    &["-fno-integrated-as"],
+                    cwd,
+                    &env,
+                    &pool,
+                )
+                .await;
                 return CCompiler::new(
                     Clang {
                         clangplusplus: kind.ends_with("++"),
                         is_appleclang: kind.starts_with("apple-"),
                         version: version.clone(),
+                        assembler_digest,
                     },
                     executable,
                     &pool,
@@ -1785,10 +1942,13 @@ compiler_version=__VERSION__
             }
             "gcc" | "g++" => {
                 debug!("Found {}", kind);
+                let assembler_digest =
+                    detect_assembler(&creator, &executable, &[], cwd, &env, &pool).await;
                 return CCompiler::new(
                     Gcc {
                         gplusplus: kind == "g++",
                         version: version.clone(),
+                        assembler_digest,
                     },
                     executable,
                     &pool,
@@ -1992,6 +2152,7 @@ mod test {
             &creator,
             Ok(MockChild::new(exit_status(0), "\n\ncompiler_id=gcc", "")),
         );
+        next_assembler(&creator, "GNU assembler (GNU Binutils) 2.42", "");
         let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &[], pool, None)
             .wait()
             .unwrap()
@@ -2017,11 +2178,51 @@ mod test {
             &creator,
             Ok(MockChild::new(exit_status(0), "compiler_id=clang\n", "")),
         );
+        next_assembler(&creator, "GNU assembler (GNU Binutils) 2.42", "");
         let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &[], pool, None)
             .wait()
             .unwrap()
             .0;
         assert_eq!(CompilerKind::C(CCompilerKind::Clang), c.kind());
+    }
+
+    #[test]
+    fn test_detect_compiler_assembler_probes() {
+        let f = TestFixture::new();
+        let runtime = single_threaded_runtime();
+        let pool = runtime.handle();
+        for (kind, integrated_as) in [("gcc", false), ("clang", true)] {
+            let compiler = f.mk_bin(kind).unwrap();
+            let creator = new_creator();
+            next_command(
+                &creator,
+                Ok(MockChild::new(
+                    exit_status(0),
+                    format!("compiler_id={}", kind),
+                    "",
+                )),
+            );
+            for (probe, output) in [
+                ("-Wa,--version", "GNU assembler (GNU Binutils) 2.42"),
+                ("-print-prog-name=as", "as"),
+            ] {
+                next_command_calls(&creator, move |args| {
+                    assert!(args.iter().any(|arg| arg == probe), "{:?}", args);
+                    // Clang answers for its own integrated assembler unless that
+                    // one is turned off; gcc has none to turn off.
+                    assert_eq!(
+                        integrated_as,
+                        args.iter().any(|arg| arg == "-fno-integrated-as"),
+                        "{:?}",
+                        args
+                    );
+                    Ok(MockChild::new(exit_status(0), output, ""))
+                });
+            }
+            detect_compiler(creator, &compiler, f.tempdir.path(), &[], &[], pool, None)
+                .wait()
+                .unwrap();
+        }
     }
 
     #[test]
@@ -2035,6 +2236,7 @@ mod test {
             &creator,
             Ok(MockChild::new(exit_status(0), "compiler_id=clang\n", "")),
         );
+        next_assembler(&creator, "GNU assembler (GNU Binutils) 2.42", "");
         let c = detect_compiler(creator, &clang, f.tempdir.path(), &[], &[], pool, None)
             .wait()
             .unwrap()
@@ -2056,6 +2258,7 @@ mod test {
             &creator,
             Ok(MockChild::new(exit_status(0), "compiler_id=clang\n", "")),
         );
+        next_assembler(&creator, "GNU assembler (GNU Binutils) 2.42", "");
         let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &[], pool, None)
             .wait()
             .unwrap()
@@ -2346,6 +2549,7 @@ LLVM version: 6.0",
             .map(|version| {
                 let output = format!("compiler_id=clang\ncompiler_version=\"{}.0.0\"", version);
                 next_command(&creator, Ok(MockChild::new(exit_status(0), output, "")));
+                next_assembler(&creator, "GNU assembler (GNU Binutils) 2.42", "");
                 let c = detect_compiler(
                     creator.clone(),
                     &clang,
@@ -2387,6 +2591,95 @@ LLVM version: 6.0",
 
     #[test_case(true ; "with preprocessor cache")]
     #[test_case(false ; "without preprocessor cache")]
+    fn test_assembler_affects_hash(preprocessor_cache_mode: bool) {
+        let f = TestFixture::new();
+        let clang = f.mk_bin("clang").unwrap();
+        let creator = new_creator();
+        let runtime = single_threaded_runtime();
+        let pool = runtime.handle();
+        let cwd = f.tempdir.path();
+        // Write a dummy input file so the preprocessor cache mode can work
+        std::fs::write(f.tempdir.path().join("foo.c"), "whatever").unwrap();
+
+        let key = |version: &str, path: &str, arguments: &[OsString]| {
+            next_command(
+                &creator,
+                Ok(MockChild::new(
+                    exit_status(0),
+                    "compiler_id=clang\ncompiler_version=\"16.0.0\"",
+                    "",
+                )),
+            );
+            next_assembler(&creator, version, path);
+            let c = detect_compiler(
+                creator.clone(),
+                &clang,
+                f.tempdir.path(),
+                &[],
+                &[],
+                pool,
+                None,
+            )
+            .wait()
+            .unwrap()
+            .0;
+            next_command(
+                &creator,
+                Ok(MockChild::new(exit_status(0), "preprocessor output", "")),
+            );
+            let mut hasher = match c.parse_arguments(arguments, ".".as_ref(), &[]) {
+                CompilerArguments::Ok(h) => h,
+                o => panic!("Bad result from parse_arguments: {:?}", o),
+            };
+            hasher
+                .generate_hash_key(
+                    &creator,
+                    cwd.to_path_buf(),
+                    vec![],
+                    false,
+                    pool,
+                    false,
+                    Arc::new(MockStorage::new(None, preprocessor_cache_mode)),
+                    CacheControl::Default,
+                )
+                .wait()
+                .unwrap()
+                .key
+        };
+
+        // Two assemblers reporting the same version, one of them a rebuild.
+        let mk_as = |name, contents: &'static str| {
+            mk_bin_contents(f.tempdir.path(), name, |mut f| {
+                f.write_all(contents.as_bytes())
+            })
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned()
+        };
+        let as1 = mk_as("as1", "assembler");
+        let as2 = mk_as("as2", "assembler, rebuilt");
+        let (as1, as2) = (as1.as_str(), as2.as_str());
+        let version = "GNU assembler (GNU Binutils) 2.42";
+
+        let external = ovec!["-c", "foo.c", "-o", "foo.o", "-fno-integrated-as"];
+        assert_ne!(
+            key(version, as1, &external),
+            key("GNU assembler (GNU Binutils) 2.44", as1, &external)
+        );
+        assert_ne!(key(version, as1, &external), key(version, as2, &external));
+
+        // With the integrated assembler, which is the default, no external
+        // assembler runs and none of this is our business.
+        let integrated = ovec!["-c", "foo.c", "-o", "foo.o"];
+        assert_eq!(
+            key(version, as1, &integrated),
+            key("GNU assembler (GNU Binutils) 2.44", as2, &integrated)
+        );
+    }
+
+    #[test_case(true ; "with preprocessor cache")]
+    #[test_case(false ; "without preprocessor cache")]
     fn test_common_args_affects_hash(preprocessor_cache_mode: bool) {
         let f = TestFixture::new();
         let creator = new_creator();
@@ -2414,6 +2707,7 @@ LLVM version: 6.0",
                     )),
                 );
                 next_command(&creator, Ok(MockChild::new(exit_status(0), output, "")));
+                next_assembler(&creator, "GNU assembler (GNU Binutils) 2.42", "");
                 let c = detect_compiler(
                     creator.clone(),
                     &f.bins[0],
@@ -2476,6 +2770,7 @@ LLVM version: 6.0",
                 std::fs::write(f.tempdir.path().join(file), "int foo(void) { return 0; }").unwrap();
 
                 next_command(&creator, Ok(MockChild::new(exit_status(0), output, "")));
+                next_assembler(&creator, "GNU assembler (GNU Binutils) 2.42", "");
                 let c = detect_compiler(
                     creator.clone(),
                     &clang,
@@ -2531,6 +2826,7 @@ LLVM version: 6.0",
             &creator,
             Ok(MockChild::new(exit_status(0), "compiler_id=gcc", "")),
         );
+        next_assembler(&creator, "GNU assembler (GNU Binutils) 2.42", "");
         let c = get_compiler_info(creator, &gcc, f.tempdir.path(), &[], &[], pool, None)
             .wait()
             .unwrap()
@@ -2569,6 +2865,7 @@ LLVM version: 6.0",
             &creator,
             Ok(MockChild::new(exit_status(0), "compiler_id=gcc", "")),
         );
+        next_assembler(&creator, "GNU assembler (GNU Binutils) 2.42", "");
         let c = get_compiler_info(
             creator.clone(),
             &gcc,
@@ -2698,6 +2995,7 @@ LLVM version: 6.0",
             &creator,
             Ok(MockChild::new(exit_status(0), "compiler_id=gcc", "")),
         );
+        next_assembler(&creator, "GNU assembler (GNU Binutils) 2.42", "");
         let c = get_compiler_info(
             creator.clone(),
             &gcc,
@@ -2821,6 +3119,7 @@ LLVM version: 6.0",
             &creator,
             Ok(MockChild::new(exit_status(0), "compiler_id=gcc", "")),
         );
+        next_assembler(&creator, "GNU assembler (GNU Binutils) 2.42", "");
         let c = get_compiler_info(
             creator.clone(),
             &gcc,
@@ -2911,6 +3210,7 @@ LLVM version: 6.0",
             &creator,
             Ok(MockChild::new(exit_status(0), "compiler_id=gcc", "")),
         );
+        next_assembler(&creator, "GNU assembler (GNU Binutils) 2.42", "");
         let c = get_compiler_info(
             creator.clone(),
             &gcc,
@@ -3003,6 +3303,7 @@ LLVM version: 6.0",
             &creator,
             Ok(MockChild::new(exit_status(0), "compiler_id=gcc", "")),
         );
+        next_assembler(&creator, "GNU assembler (GNU Binutils) 2.42", "");
         let c = get_compiler_info(
             creator.clone(),
             &gcc,
@@ -3138,6 +3439,7 @@ LLVM version: 6.0",
             f.write_all(b"file contents")?;
             Ok(MockChild::new(exit_status(0), "compiler_id=gcc", ""))
         });
+        next_assembler(&creator, "GNU assembler (GNU Binutils) 2.42", "");
         let c = get_compiler_info(
             creator.clone(),
             &gcc,
@@ -3229,6 +3531,7 @@ LLVM version: 6.0",
             &creator,
             Ok(MockChild::new(exit_status(0), "compiler_id=gcc", "")),
         );
+        next_assembler(&creator, "GNU assembler (GNU Binutils) 2.42", "");
         let c = get_compiler_info(
             creator.clone(),
             &gcc,
