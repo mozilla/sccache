@@ -132,7 +132,12 @@ impl ParsedArguments {
             .unwrap_or(Cow::Borrowed("Unknown filename"))
     }
 
-    #[cfg(feature = "dist-client")]
+    /// The distinct architectures given with `-arch`, in command line order.
+    pub fn archs(&self) -> Vec<&OsString> {
+        use itertools::Itertools as _;
+        self.arch_values().unique().collect()
+    }
+
     pub fn is_multiarch(&self) -> bool {
         let mut archs = self.arch_values();
         archs
@@ -140,7 +145,6 @@ impl ParsedArguments {
             .is_some_and(|first| archs.any(|arch| arch != first))
     }
 
-    #[cfg(feature = "dist-client")]
     fn arch_values(&self) -> impl Iterator<Item = &OsString> {
         self.arch_args
             .iter()
