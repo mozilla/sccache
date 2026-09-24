@@ -183,7 +183,7 @@ ArgData! { pub
 
 use self::ArgData::*;
 
-const ARCH_FLAG: &str = "-arch";
+pub(crate) const ARCH_FLAG: &str = "-arch";
 
 // Mostly taken from https://github.com/ccache/ccache/blob/master/src/ccache/compopt.cpp#L52-L183
 counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
@@ -1029,7 +1029,12 @@ where
     //    output is parsed by tools like CMake and must reflect the local toolchain
     // 2. ClangCUDA cannot be dist-compiled because Clang has separate host and
     //    device preprocessor outputs and cannot compile preprocessed CUDA files.
-    let dist_command = if has_verbose_flag || parsed_args.language == Language::Cuda {
+    // 3. The dist command does not carry the -arch flags, so a multi-arch
+    //    compilation would come back with a single-arch object.
+    let dist_command = if has_verbose_flag
+        || parsed_args.language == Language::Cuda
+        || parsed_args.is_multiarch()
+    {
         None
     } else {
         (|| {
@@ -2755,6 +2760,48 @@ mod test {
         assert_eq!(Cacheable::Yes, cacheable);
         // Ensure that we ran all processes.
         assert_eq!(0, creator.lock().unwrap().children.len());
+    }
+
+    #[test]
+    #[cfg(feature = "dist-client")]
+    fn test_compile_multiarch_is_not_distributed() {
+        let f = TestFixture::new();
+        let dist_command = |args: Vec<String>| {
+            let parsed_args = match parse_arguments_(args, false) {
+                CompilerArguments::Ok(args) => args,
+                o => panic!("Got unexpected parse result: {:?}", o),
+            };
+            let mut path_transformer = dist::PathTransformer::new();
+            generate_compile_commands(
+                &mut path_transformer,
+                &f.bins[0],
+                &parsed_args,
+                f.tempdir.path(),
+                &[],
+                CCompilerKind::Gcc,
+                false,
+                language_to_gcc_arg,
+            )
+            .unwrap()
+            .1
+        };
+        with_var("SCCACHE_CACHE_MULTIARCH", Some("1"), || {
+            assert!(
+                dist_command(stringvec!["-arch", "arm64", "-c", "foo.c", "-o", "foo.o"]).is_some()
+            );
+            assert!(
+                dist_command(stringvec![
+                    "-arch", "x86_64", "-arch", "x86_64", "-c", "foo.c", "-o", "foo.o"
+                ])
+                .is_some()
+            );
+            assert!(
+                dist_command(stringvec![
+                    "-arch", "x86_64", "-arch", "arm64", "-c", "foo.c", "-o", "foo.o"
+                ])
+                .is_none()
+            );
+        });
     }
 
     #[test]
