@@ -131,6 +131,21 @@ impl ParsedArguments {
             .map(|s| s.to_string_lossy())
             .unwrap_or(Cow::Borrowed("Unknown filename"))
     }
+
+    #[cfg(feature = "dist-client")]
+    pub fn is_multiarch(&self) -> bool {
+        let mut archs = self.arch_values();
+        archs
+            .next()
+            .is_some_and(|first| archs.any(|arch| arch != first))
+    }
+
+    #[cfg(feature = "dist-client")]
+    fn arch_values(&self) -> impl Iterator<Item = &OsString> {
+        self.arch_args
+            .iter()
+            .filter(|arg| *arg != super::gcc::ARCH_FLAG)
+    }
 }
 
 /// A generic implementation of the `Compilation` trait for C/C++ compilers.
