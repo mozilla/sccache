@@ -386,6 +386,7 @@ pub fn preprocessor_cache_entry_hash_key(
     env_vars: &[(OsString, OsString)],
     input_file: &Path,
     plusplus: bool,
+    multiarch: bool,
     config: PreprocessorCacheModeConfig,
     basedirs: &[Vec<u8>],
 ) -> anyhow::Result<Option<String>> {
@@ -397,6 +398,11 @@ pub fn preprocessor_cache_entry_hash_key(
     m.update(&[plusplus as u8]);
     m.update(&[FORMAT_VERSION]);
     m.update(language.as_str().as_bytes());
+    // Multi-arch compilations used to be preprocessed in a single pass that
+    // missed the code only one architecture sees: don't reuse those entries.
+    if multiarch {
+        m.update(b"multiarch-per-pass");
+    }
     hash_arguments(&mut m, arguments, basedirs);
     for hash in extra_hashes {
         m.update(hash.as_bytes());
@@ -738,6 +744,7 @@ mod test {
             &[],
             &file1_path,
             false,
+            false,
             config,
             &dirs,
         )
@@ -752,6 +759,7 @@ mod test {
             None,
             &[],
             &file2_path,
+            false,
             false,
             config,
             &dirs,
@@ -774,6 +782,7 @@ mod test {
             &[],
             &file1_path,
             false,
+            false,
             config,
             &dirs[..1],
         )
@@ -788,6 +797,7 @@ mod test {
             None,
             &[],
             &file2_path,
+            false,
             false,
             config,
             &dirs[1..],
@@ -810,6 +820,7 @@ mod test {
             &[],
             &file1_path,
             false,
+            false,
             config,
             &[],
         )
@@ -825,6 +836,7 @@ mod test {
             &[],
             &file2_path,
             false,
+            false,
             config,
             &[],
         )
@@ -835,5 +847,38 @@ mod test {
             hash1_no_basedirs, hash2_no_basedirs,
             "Hashes should be different without basedirs for files in different directories"
         );
+    }
+
+    #[test]
+    fn test_preprocessor_cache_entry_hash_key_multiarch() {
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let file = dir.path().join("test.c");
+        std::fs::write(&file, b"int main() { return 0; }").unwrap();
+        let basedir = dir.path().to_string_lossy().into_owned().into_bytes();
+        #[cfg(target_os = "windows")]
+        let basedir = crate::util::normalize_win_path(&basedir);
+        let key = |arguments: &[&str], multiarch: bool| {
+            let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
+            preprocessor_cache_entry_hash_key(
+                "test_digest",
+                Language::C,
+                &arguments,
+                &[],
+                None,
+                &[],
+                &file,
+                false,
+                multiarch,
+                PreprocessorCacheModeConfig::activated(),
+                std::slice::from_ref(&basedir),
+            )
+            .unwrap()
+            .unwrap()
+        };
+
+        let fat = ["-arch", "x86_64", "-arch", "arm64"];
+        assert_ne!(key(&fat, true), key(&fat, false));
     }
 }

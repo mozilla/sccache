@@ -486,6 +486,7 @@ where
                 &env_vars,
                 &absolute_input_path,
                 self.compiler.plusplus(),
+                self.parsed_args.is_multiarch(),
                 preprocessor_cache_mode_config,
                 storage.basedirs(),
             )?
