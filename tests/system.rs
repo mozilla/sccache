@@ -2083,6 +2083,214 @@ fn test_assembler_affects_cache(preprocessor_cache_mode: bool) {
     stop_local_daemon();
 }
 
+#[cfg(target_os = "macos")]
+fn start_multiarch_server(tempdir: &Path, preprocessor_cache_mode: bool) -> Option<Compiler> {
+    let compiler = match find_compilers().into_iter().find(|c| c.name == "clang") {
+        Some(compiler) => compiler,
+        None => {
+            warn!("No clang found, skipping test");
+            return None;
+        }
+    };
+
+    stop_local_daemon();
+    let sccache_cfg = sccache_client_cfg(tempdir, preprocessor_cache_mode);
+    write_json_cfg(tempdir, "sccache-cfg.json", &sccache_cfg);
+    // `sccache_command` strips SCCACHE_* variables, so opt the server into
+    // multi-arch caching explicitly.
+    assert!(
+        sccache_command()
+            .arg("--start-server")
+            .env("SCCACHE_CONF", tempdir.join("sccache-cfg.json"))
+            .env("SCCACHE_CACHED_CONF", tempdir.join("sccache-cached-cfg"))
+            .env("SCCACHE_CACHE_MULTIARCH", "1")
+            .status()
+            .unwrap()
+            .success()
+    );
+    Some(compiler)
+}
+
+/// Writes a source file dated in the past, so that the preprocessor cache
+/// doesn't consider it too recent to be trusted.
+#[cfg(target_os = "macos")]
+fn write_past_source(tempdir: &Path, filename: &str, contents: &str) {
+    write_source(tempdir, filename, contents);
+    let past = filetime::FileTime::from_system_time(SystemTime::now() - Duration::from_secs(10));
+    filetime::set_file_times(tempdir.join(filename), past, past).unwrap();
+}
+
+#[cfg(target_os = "macos")]
+fn compile_multiarch(
+    tempdir: &Path,
+    compiler: &Compiler,
+    args: &[OsString],
+    expected_hits: u64,
+    expected_misses: u64,
+) {
+    fs::remove_file(tempdir.join(OUTPUT)).ok();
+    sccache_command()
+        .args(args)
+        .current_dir(tempdir)
+        .envs(compiler.env_vars.clone())
+        .assert()
+        .success();
+    get_stats(move |info| {
+        assert_eq!(expected_hits, info.stats.cache_hits.all());
+        assert_eq!(expected_misses, info.stats.cache_misses.all());
+    });
+}
+
+#[cfg(target_os = "macos")]
+fn slice_symbols(object: &Path, arch: &str) -> String {
+    let output = Command::new("nm")
+        .args(["-arch", arch])
+        .arg(object)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    String::from_utf8(output.stdout).unwrap()
+}
+
+#[cfg(target_os = "macos")]
+const MULTIARCH_INCLUDING_SRC: &str = "#ifdef __SSE2__\n#include \"sse2_impl.h\"\n#endif\n\
+                                       #ifdef __ARM_NEON\n#include \"neon_impl.h\"\n#endif\n\
+                                       int common(void) { return 0; }\n";
+
+/// Code guarded by a macro only one target defines (`__SSE2__`, `__ARM_NEON`)
+/// must reach the key, or editing it hands back a stale slice. In a header,
+/// every pass's include files must be tracked by the preprocessor cache too.
+#[test_case(true, false ; "with preprocessor cache, code in the source")]
+#[test_case(false, false ; "without preprocessor cache, code in the source")]
+#[test_case(true, true ; "with preprocessor cache, code in headers")]
+#[test_case(false, true ; "without preprocessor cache, code in headers")]
+#[serial]
+#[cfg(target_os = "macos")]
+fn test_multiarch_slice_specific_code_affects_cache(
+    preprocessor_cache_mode: bool,
+    in_headers: bool,
+) {
+    let _ = env_logger::try_init();
+    let tempdir = tempfile::Builder::new()
+        .prefix("sccache_system_test")
+        .tempdir()
+        .unwrap();
+    let Some(compiler) = start_multiarch_server(tempdir.path(), preprocessor_cache_mode) else {
+        return;
+    };
+
+    const SRC: &str = "multiarch.c";
+    let write_slices = |sse2_symbol: &str, neon_symbol: &str| {
+        let sse2 = format!("int {sse2_symbol}(void) {{ return 1; }}\n");
+        let neon = format!("int {neon_symbol}(void) {{ return 2; }}\n");
+        if in_headers {
+            write_past_source(tempdir.path(), SRC, MULTIARCH_INCLUDING_SRC);
+            write_past_source(tempdir.path(), "sse2_impl.h", &sse2);
+            write_past_source(tempdir.path(), "neon_impl.h", &neon);
+        } else {
+            let source = format!(
+                "#ifdef __SSE2__\n{sse2}#endif\n#ifdef __ARM_NEON\n{neon}#endif\n\
+                 int common(void) {{ return 0; }}\n"
+            );
+            write_past_source(tempdir.path(), SRC, &source);
+        }
+    };
+    let args = compile_cmdline(
+        compiler.name,
+        &compiler.exe,
+        SRC,
+        OUTPUT,
+        vec_from!(OsString, "-arch", "x86_64", "-arch", "arm64"),
+    );
+    let compile = |sse2_symbol: &str, neon_symbol: &str, expected_hits, expected_misses| {
+        write_slices(sse2_symbol, neon_symbol);
+        compile_multiarch(
+            tempdir.path(),
+            &compiler,
+            &args,
+            expected_hits,
+            expected_misses,
+        );
+    };
+    let object = tempdir.path().join(OUTPUT);
+
+    zero_stats();
+    compile("sse2_v1", "neon_v1", 0, 1);
+    compile("sse2_v1", "neon_v1", 1, 1);
+    compile("sse2_v2", "neon_v1", 1, 2);
+    assert!(slice_symbols(&object, "x86_64").contains("_sse2_v2"));
+    assert!(slice_symbols(&object, "arm64").contains("_neon_v1"));
+    compile("sse2_v2", "neon_v2", 1, 3);
+    assert!(slice_symbols(&object, "x86_64").contains("_sse2_v2"));
+    assert!(slice_symbols(&object, "arm64").contains("_neon_v2"));
+    stop_local_daemon();
+}
+
+/// clang's per-arch jobs all write the same depfile, so it lists the last
+/// `-arch`'s includes only; sccache must match it on a miss and on a hit.
+#[test_case(true ; "with preprocessor cache")]
+#[test_case(false ; "without preprocessor cache")]
+#[serial]
+#[cfg(target_os = "macos")]
+fn test_multiarch_depfile_matches_compiler(preprocessor_cache_mode: bool) {
+    let _ = env_logger::try_init();
+    let tempdir = tempfile::Builder::new()
+        .prefix("sccache_system_test")
+        .tempdir()
+        .unwrap();
+    let Some(compiler) = start_multiarch_server(tempdir.path(), preprocessor_cache_mode) else {
+        return;
+    };
+
+    const SRC: &str = "multiarch.c";
+    const DEPFILE: &str = "multiarch.d";
+    write_past_source(tempdir.path(), SRC, MULTIARCH_INCLUDING_SRC);
+    write_past_source(tempdir.path(), "sse2_impl.h", "int sse2(void);\n");
+    write_past_source(tempdir.path(), "neon_impl.h", "int neon(void);\n");
+    let depfile = tempdir.path().join(DEPFILE);
+
+    zero_stats();
+    let mut expected_misses = 0;
+    for archs in [["x86_64", "arm64"], ["arm64", "x86_64"]] {
+        let args = compile_cmdline(
+            compiler.name,
+            &compiler.exe,
+            SRC,
+            OUTPUT,
+            vec_from!(
+                OsString, "-arch", archs[0], "-arch", archs[1], "-MD", "-MF", DEPFILE
+            ),
+        );
+        let status = Command::new(&args[0])
+            .args(&args[1..])
+            .current_dir(tempdir.path())
+            .envs(compiler.env_vars.clone())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let expected = fs::read_to_string(&depfile).unwrap();
+        let (last, other) = match archs[1] {
+            "arm64" => ("neon_impl.h", "sse2_impl.h"),
+            _ => ("sse2_impl.h", "neon_impl.h"),
+        };
+        assert!(expected.contains(last) && !expected.contains(other));
+
+        expected_misses += 1;
+        for expected_hits in [expected_misses - 1, expected_misses] {
+            fs::remove_file(&depfile).unwrap();
+            compile_multiarch(
+                tempdir.path(),
+                &compiler,
+                &args,
+                expected_hits,
+                expected_misses,
+            );
+            assert_eq!(fs::read_to_string(&depfile).unwrap(), expected);
+        }
+    }
+    stop_local_daemon();
+}
+
 #[test]
 #[serial]
 fn test_stats_no_server() {
