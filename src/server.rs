@@ -829,7 +829,7 @@ where
 }
 
 type SccacheRequest = Message<Request, Body<()>>;
-type SccacheResponse = Message<Response, Pin<Box<dyn Future<Output = Result<Response>> + Send>>>;
+type SccacheResponse = Message<Response, Pin<Box<dyn Stream<Item = Result<Response>> + Send>>>;
 
 /// Messages sent from all services to the main event loop indicating activity.
 ///
@@ -1109,12 +1109,14 @@ where
                     Message::WithoutBody(message) => {
                         sink.send(Frame::Message { message }).await?;
                     }
-                    Message::WithBody(message, body) => {
+                    Message::WithBody(message, mut body) => {
                         sink.send(Frame::Message { message }).await?;
-                        sink.send(Frame::Body {
-                            chunk: Some(util::spawn(body).await??),
-                        })
-                        .await?;
+                        while let Some(chunk) = body.next().await {
+                            sink.send(Frame::Body {
+                                chunk: Some(chunk?),
+                            })
+                            .await?;
+                        }
                         sink.send(Frame::Body { chunk: None }).await?;
                     }
                 }
@@ -1186,11 +1188,16 @@ where
         compile: Compile,
     ) -> Result<(CompileResponse, Option<CompileFinished>)> {
         match self.handle_compile(compile).await? {
-            Message::WithBody(Response::Compile(resp), body) => {
-                let finished = match body.await? {
-                    Response::CompileFinished(f) => f,
-                    _ => bail!("unexpected body response from compile_direct"),
-                };
+            Message::WithBody(Response::Compile(resp), mut body) => {
+                let mut finished = None;
+                while let Some(item) = body.next().await {
+                    match item? {
+                        Response::CompileFinished(f) => finished = Some(f),
+                        _ => bail!("unexpected body response from compile_direct"),
+                    }
+                }
+                let finished = finished
+                    .ok_or_else(|| anyhow!("compile body ended without CompileFinished"))?;
                 Ok((resp, Some(finished)))
             }
             Message::WithoutBody(Response::Compile(resp)) => Ok((resp, None)),
@@ -1380,11 +1387,12 @@ where
                     CompilerArguments::Ok(hasher) => {
                         debug!("parse_arguments: Ok: {:?}", cmd);
 
-                        let body = self
-                            .clone()
-                            .start_compile_task(c, hasher, cmd, cwd, env_vars)
-                            .and_then(|res| async { Ok(Response::CompileFinished(res)) })
-                            .boxed();
+                        let body = futures::stream::once(
+                            self.clone()
+                                .start_compile_task(c, hasher, cmd, cwd, env_vars)
+                                .map_ok(Response::CompileFinished),
+                        )
+                        .boxed();
 
                         return Message::WithBody(
                             Response::Compile(CompileResponse::CompileStarted),
