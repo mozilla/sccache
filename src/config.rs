@@ -460,6 +460,10 @@ pub struct WebdavCacheConfig {
     pub token: Option<String>,
     #[serde(default)]
     pub rw_mode: CacheModeConfig,
+    /// Skip PROPFIND/MKCOL calls before writes, for servers (e.g. Nexus raw
+    /// repositories) that only implement GET/HEAD/PUT/DELETE.
+    #[serde(default)]
+    pub disable_create_dir: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1136,6 +1140,8 @@ fn config_from_env() -> Result<EnvConfig> {
         let token = string_from_env_var("SCCACHE_WEBDAV_TOKEN");
         let rw_mode =
             cache_mode_from_env_var("SCCACHE_WEBDAV_RW_MODE").unwrap_or(CacheModeConfig::ReadWrite);
+        let disable_create_dir =
+            bool_from_env_var("SCCACHE_WEBDAV_DISABLE_CREATE_DIR")?.unwrap_or(false);
 
         Some(WebdavCacheConfig {
             endpoint,
@@ -1144,6 +1150,7 @@ fn config_from_env() -> Result<EnvConfig> {
             password,
             token,
             rw_mode,
+            disable_create_dir,
         })
     } else {
         None
@@ -2492,6 +2499,59 @@ fn test_s3_sse_kms_from_env() {
 
 #[test]
 #[serial(config_from_env)]
+#[cfg(feature = "webdav")]
+fn test_webdav_disable_create_dir_from_env() {
+    unsafe {
+        env::set_var("SCCACHE_WEBDAV_ENDPOINT", "https://example.com/webdav");
+        env::set_var("SCCACHE_WEBDAV_DISABLE_CREATE_DIR", "true");
+    }
+
+    let cfg = config_from_env();
+
+    unsafe {
+        env::remove_var("SCCACHE_WEBDAV_ENDPOINT");
+        env::remove_var("SCCACHE_WEBDAV_DISABLE_CREATE_DIR");
+    }
+
+    let env_cfg = cfg.unwrap();
+    match env_cfg.cache.webdav {
+        Some(WebdavCacheConfig {
+            disable_create_dir, ..
+        }) => {
+            assert!(disable_create_dir);
+        }
+        None => unreachable!(),
+    }
+}
+
+#[test]
+#[serial(config_from_env)]
+#[cfg(feature = "webdav")]
+fn test_webdav_disable_create_dir_defaults_to_false() {
+    unsafe {
+        env::set_var("SCCACHE_WEBDAV_ENDPOINT", "https://example.com/webdav");
+        env::remove_var("SCCACHE_WEBDAV_DISABLE_CREATE_DIR");
+    }
+
+    let cfg = config_from_env();
+
+    unsafe {
+        env::remove_var("SCCACHE_WEBDAV_ENDPOINT");
+    }
+
+    let env_cfg = cfg.unwrap();
+    match env_cfg.cache.webdav {
+        Some(WebdavCacheConfig {
+            disable_create_dir, ..
+        }) => {
+            assert!(!disable_create_dir);
+        }
+        None => unreachable!(),
+    }
+}
+
+#[test]
+#[serial(config_from_env)]
 #[cfg(feature = "azure")]
 fn test_azure_entra_storage_account_enables() {
     unsafe {
@@ -2848,6 +2908,7 @@ key_prefix = "webdavprefix"
 username = "webdavusername"
 password = "webdavpassword"
 token = "webdavtoken"
+disable_create_dir = true
 
 [cache.oss]
 bucket = "name"
@@ -2934,6 +2995,7 @@ key_prefix = "cosprefix"
                     password: Some("webdavpassword".to_string()),
                     token: Some("webdavtoken".to_string()),
                     rw_mode: CacheModeConfig::ReadWrite,
+                    disable_create_dir: true,
                 }),
                 oss: Some(OSSCacheConfig {
                     bucket: "name".to_owned(),

@@ -153,6 +153,8 @@ username = "alice"
 password = "secret12"
 # Mutually exclusive with username & password. Bearer token value
 token = "token123"
+# Skip PROPFIND/MKCOL calls before writes, for servers that don't support them
+disable_create_dir = false
 
 [cache.oss]
 bucket = "name"
@@ -325,6 +327,7 @@ When using Entra ID, credentials are read from the ambient `AZURE_*` environment
 * `SCCACHE_WEBDAV_PASSWORD` a password to authenticate with webdav service (optional).
 * `SCCACHE_WEBDAV_TOKEN` a token to authenticate with webdav service (optional) - may be used instead of login & password.
 * `SCCACHE_WEBDAV_RW_MODE` allows to use webdav backend in read-only mode if set to `READ_ONLY`
+* `SCCACHE_WEBDAV_DISABLE_CREATE_DIR` skip PROPFIND/MKCOL calls before writes, for servers that don't support them (optional).
 
 #### OSS
 
