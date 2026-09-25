@@ -460,15 +460,23 @@ pub fn fmt_duration_as_secs(duration: &Duration) -> String {
     format!("{}.{:03} s", duration.as_secs(), duration.subsec_millis())
 }
 
+/// Callback invoked with each complete stderr line (including its `\n`) as
+/// soon as it is read, before the process has exited.
+pub type StderrLineObserver = Box<dyn FnMut(&[u8]) + Send>;
+
 /// If `input`, write it to `child`'s stdin while also reading `child`'s stdout and stderr, then wait on `child` and return its status and output.
 ///
 /// This was lifted from `std::process::Child::wait_with_output` and modified
 /// to also write to stdin.
-async fn wait_with_input_output<T>(mut child: T, input: Option<Vec<u8>>) -> Result<process::Output>
+async fn wait_with_input_output<T>(
+    mut child: T,
+    input: Option<Vec<u8>>,
+    mut on_stderr_line: Option<StderrLineObserver>,
+) -> Result<process::Output>
 where
     T: CommandChild + 'static,
 {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
     let stdin = input.and_then(|i| {
         child.take_stdin().map(|mut stdin| async move {
             stdin.write_all(&i).await.context("failed to write stdin")
@@ -494,10 +502,31 @@ where
         match stderr {
             Some(mut stderr) => {
                 let mut buf = Vec::new();
-                stderr
-                    .read_to_end(&mut buf)
-                    .await
-                    .context("failed to read stderr")?;
+                match on_stderr_line.as_mut() {
+                    None => {
+                        stderr
+                            .read_to_end(&mut buf)
+                            .await
+                            .context("failed to read stderr")?;
+                    }
+                    Some(observe) => {
+                        let mut reader = tokio::io::BufReader::new(stderr);
+                        loop {
+                            let start = buf.len();
+                            // rustc's JSON emitter writes each notification followed by `b"\n"`
+                            // so it should be safe to split.
+                            // https://github.com/rust-lang/rust/blob/5ceaf6608eb354c2f5bbb3b8d974caa367dac81c/compiler/rustc_errors/src/json.rs#L88
+                            let read = reader
+                                .read_until(b'\n', &mut buf)
+                                .await
+                                .context("failed to read stderr")?;
+                            if read == 0 {
+                                break;
+                            }
+                            observe(&buf[start..]);
+                        }
+                    }
+                }
                 Result::Ok(Some(buf))
             }
             None => Ok(None),
@@ -526,7 +555,20 @@ where
 ///
 /// If the command returns a non-successful exit status, an error of `SccacheError::ProcessError`
 /// will be returned containing the process output.
-pub async fn run_input_output<C>(mut command: C, input: Option<Vec<u8>>) -> Result<process::Output>
+pub async fn run_input_output<C>(command: C, input: Option<Vec<u8>>) -> Result<process::Output>
+where
+    C: RunCommand,
+{
+    run_input_output_observing(command, input, None).await
+}
+
+/// Like [`run_input_output`] but additionally hands every complete stderr line
+/// to `on_stderr_line` as it arrives.
+pub async fn run_input_output_observing<C>(
+    mut command: C,
+    input: Option<Vec<u8>>,
+    on_stderr_line: Option<StderrLineObserver>,
+) -> Result<process::Output>
 where
     C: RunCommand,
 {
@@ -541,7 +583,7 @@ where
         .spawn()
         .await?;
 
-    wait_with_input_output(child, input)
+    wait_with_input_output(child, input, on_stderr_line)
         .await
         .and_then(|output| {
             if output.status.success() {
