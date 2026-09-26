@@ -125,7 +125,8 @@ fn get_clap_command() -> ClapCommand {
                                 .required(true),
                             flag_infer_long("secret-key")
                                 .help("Use specified key to create the token")
-                                .value_name("KEY"),
+                                .value_name("KEY")
+                                .allow_hyphen_values(true),
                             config_with_help_message(
                                 "Use the key from the scheduler config file at PATH",
                             ),
@@ -350,6 +351,26 @@ mod tests {
     }
 
     #[test]
+    fn auth_generate_jwt_hs256_server_token_allows_hyphenated_secret_key() {
+        let args = auth_generate_jwt_hs256_server_token(&[
+            "--server",
+            "127.0.0.1:4321",
+            "--secret-key",
+            "-9DumMyDuMMyRV6hR4sb37JFaVEmSiXVPKr-dummykU",
+        ]);
+        let server_socket: SocketAddr = "127.0.0.1:4321".parse().unwrap();
+        let server_id = ServerId::new(server_socket);
+
+        assert_args_parse_to_auth(
+            args,
+            AuthSubcommand::JwtHS256ServerToken {
+                server_id,
+                secret_key: "-9DumMyDuMMyRV6hR4sb37JFaVEmSiXVPKr-dummykU".to_owned(),
+            },
+        );
+    }
+
+    #[test]
     fn auth_generate_shared_token_good() {
         let raw_to_expected_bit_vals = &[
             ("64", 64 / 8),
@@ -368,4 +389,5 @@ mod tests {
             );
         }
     }
+
 }
