@@ -3,6 +3,20 @@
 export UID := $(shell id -u)
 export GID := $(shell id -g)
 
+# Rootless podman maps the container's UID to a subuid on the host, so files
+# written into bind mounts come back owned by that subuid rather than by us.
+# keep-id makes the mapping an identity for our own UID. Docker needs neither.
+IS_PODMAN := $(shell docker --version 2>/dev/null | grep -qi podman && echo 1)
+ifdef IS_PODMAN
+# Compose services run as $(UID) in-container; keep-id maps that to the same
+# host UID. The root-running build containers below need no mapping, because
+# rootless podman already maps container root to us -- and so must not chown.
+export COMPOSE_USERNS_MODE := keep-id
+CHOWN_BACK := true
+else
+CHOWN_BACK := chown -R $(UID):$(GID)
+endif
+
 PROJECT_ROOT := $(shell git rev-parse --show-toplevel)
 SCCACHE_BIN := $(PROJECT_ROOT)/target/debug/sccache
 
@@ -128,7 +142,8 @@ $(PROJECT_ROOT)/target/integration-cargo-cache:
 $(COVERAGE_DIR)/profraw:
 	@mkdir -p $@
 
-$(SCCACHE_BIN): $(PROJECT_ROOT)/Cargo.toml $(PROJECT_ROOT)/Cargo.lock
+$(SCCACHE_BIN): $(PROJECT_ROOT)/Cargo.toml $(PROJECT_ROOT)/Cargo.lock \
+               | $(PROJECT_ROOT)/target/integration-cargo-cache $(COVERAGE_DIR)/profraw
 	$(call group,Building $*)
 ifdef WITH_COVERAGE
 	@echo "Building sccache with coverage instrumentation in Docker..."
@@ -141,10 +156,10 @@ endif
 		-w /sccache \
 		-e OPENSSL_NO_VENDOR=1 \
 		$(if $(WITH_COVERAGE),-e RUSTFLAGS="-Cinstrument-coverage -Ccodegen-units=1 -Copt-level=0 -Coverflow-checks=off" -e CARGO_INCREMENTAL=0 -e "LLVM_PROFILE_FILE=/tmp/build-%p-%m.profraw") \
-		rust:latest \
+		docker.io/library/rust:latest \
 		bash -c "apt-get update -qq && apt-get install -y -qq libssl-dev pkg-config && \
 		         cargo build --all-features $(BUILD_TARGET_DIR) && \
-		         chown -R $(UID):$(GID) target"
+		         $(CHOWN_BACK) target"
 	@echo "Binary built: $(SCCACHE_BIN)"
 	@ls -lh $(SCCACHE_BIN)
 	$(call endgroup)
@@ -161,9 +176,16 @@ clean-%:
 test-%: build clean-%
 	$(call group,Testing $*)
 	@echo "Testing $*..."
-	@docker compose $(call profiles,$*) up --quiet-pull -d $(SERVICES_$*)
+	@docker compose $(call profiles,$*) up -d $(filter-out %-setup,$(SERVICES_$*))
+	@# The one-shot *-setup services provision buckets/containers. Start them with
+	@# `run`, which is synchronous, rather than relying on the test service's
+	@# depends_on: service_completed_successfully -- podman-compose ignores that
+	@# condition, and the test would race ahead of provisioning.
+	@for s in $(filter %-setup,$(SERVICES_$*)); do \
+		docker compose $(call profiles,$*) run --rm $$s || exit 1; \
+	done
 	@rm -f $(COVERAGE_DIR)/sccache.log
-	@docker compose $(call profiles,$*) run --quiet-pull --rm test-$*
+	@docker compose $(call profiles,$*) run --rm test-$*
 	@docker compose $(call profiles,$*) down
 	@echo "$* test completed"
 	$(call endgroup)
@@ -197,7 +219,7 @@ coverage-report:
 		-v sccache-coverage-tools:/usr/local/cargo/bin \
 		-v sccache-rustup:/usr/local/rustup \
 		-w /sccache \
-		rust:latest \
+		docker.io/library/rust:latest \
 		bash -c "rustup component add llvm-tools 2>/dev/null || true && \
 		         (which grcov >/dev/null 2>&1 || cargo install grcov --locked) && \
 		         mkdir -p target/integration-coverage/reports && \
@@ -211,7 +233,7 @@ coverage-report:
 		           --ignore '/*' \
 		           --ignore 'build.rs' \
 		           --excl-br-line '^\s*((debug_)?assert(_eq|_ne)?!|#\[derive\()' && \
-		         chown -R $(UID):$(GID) target/integration-coverage"
+		         $(CHOWN_BACK) target/integration-coverage"
 	$(call endgroup)
 	@echo ""
 	@echo "Coverage report generated:"
