@@ -143,6 +143,8 @@ You can check the status with `sccache --dist-status`, it should say something l
 
 ```
 $ sccache --dist-status
+{"SchedulerStatus":["https://sccache1.corpdmz.ber3.mozilla.com/",{"num_servers":3,"num_cpus":56,"in_progress":24,"servers":[{"address":"10.0.0.1:10501","num_cpus":16,"in_progress":8},{"address":"10.0.0.2:10501","num_cpus":20,"in_progress":8},{"address":"10.0.0.3:10501","num_cpus":20,"in_progress":8}]}]}
+```
 {"SchedulerStatus":["https://sccache1.corpdmz.ber3.mozilla.com/",{"num_servers":3,"num_cpus":56,"in_progress":24}]}
 ```
 
