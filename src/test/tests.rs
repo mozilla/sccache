@@ -294,3 +294,197 @@ fn test_server_compile() {
     // Ensure that it shuts down.
     child.join().unwrap();
 }
+
+/// A [`Write`] sink shared with the fake server.
+///
+/// This is needed so it can observe how much the client has written
+/// at a given point in the protocol exchange.
+#[derive(Clone, Default)]
+struct SharedWriter(Arc<Mutex<Vec<u8>>>);
+
+impl Write for SharedWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+const RMETA_NOTIFICATION: &[u8] = b"{\"artifact\":\"/t/libdep.rmeta\",\"emit\":\"metadata\"}\n";
+const OTHER_STDERR: &[u8] = b"{\"artifact\":\"/t/libdep.rlib\",\"emit\":\"link\"}\n";
+
+/// Accepts one connection as a fake daemon.
+///
+/// The fake one replies to a compile request until a `.rmeta` notification comes.
+/// It leaves it for caller to continue working on it.
+fn fake_daemon_until_rmeta_notification(listener: std::net::TcpListener) -> std::net::TcpStream {
+    use crate::protocol::{CompileResponse, Request, Response};
+    use crate::util::write_length_prefixed_bincode;
+    use byteorder::{BigEndian, ByteOrder};
+    use std::io::Read;
+
+    let (mut sock, _) = listener.accept().unwrap();
+    let mut len = [0; 4];
+    sock.read_exact(&mut len).unwrap();
+    let mut req = vec![0; BigEndian::read_u32(&len) as usize];
+    sock.read_exact(&mut req).unwrap();
+    assert!(matches!(
+        bincode::deserialize::<Request>(&req).unwrap(),
+        Request::Compile(_)
+    ));
+
+    write_length_prefixed_bincode(
+        &mut sock,
+        Response::Compile(CompileResponse::CompileStarted),
+    )
+    .unwrap();
+    write_length_prefixed_bincode(
+        &mut sock,
+        Response::ArtifactNotification(RMETA_NOTIFICATION.to_vec()),
+    )
+    .unwrap();
+    sock
+}
+
+/// Runs a client compiling `dep` against daemon at `addr`.
+fn compile_dep(
+    creator: Arc<Mutex<MockCommandCreator>>,
+    f: &TestFixture,
+    addr: &crate::net::SocketAddr,
+    stderr: &SharedWriter,
+) -> crate::errors::Result<i32> {
+    let rustc = f.mk_bin("rustc").unwrap();
+    let conn = connect_to_server(addr).unwrap();
+    let cmdline = vec![
+        "--crate-name".into(),
+        "dep".into(),
+        "src/lib.rs".into(),
+        "--emit=dep-info,metadata,link".into(),
+    ];
+    let mut stdout = Cursor::new(Vec::new());
+    let mut runtime = Runtime::new().unwrap();
+    do_compile(
+        creator,
+        &mut runtime,
+        conn,
+        &rustc,
+        cmdline,
+        f.tempdir.path(),
+        Some(f.paths.clone()),
+        vec![],
+        &mut stdout,
+        &mut stderr.clone(),
+    )
+}
+
+#[test]
+fn test_cli_rmeta_notification_delivery_from_daemon() {
+    use crate::compiler::ColorMode;
+    use crate::protocol::{CompileFinished, Response};
+    use crate::util::write_length_prefixed_bincode;
+
+    let _ = env_logger::try_init();
+    let f = TestFixture::new();
+    let stderr = SharedWriter::default();
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = crate::net::SocketAddr::Net(listener.local_addr().unwrap());
+    let server_stderr = stderr.clone();
+    let server = thread::spawn(move || -> Vec<u8> {
+        let mut sock = fake_daemon_until_rmeta_notification(listener);
+
+        // This waits until the client writes what it has at this point,
+        // to ensure stderr gets the notification before we proceed to write more.
+        sock.set_read_timeout(Some(Duration::from_millis(5)))
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        while server_stderr.0.lock().unwrap().is_empty() {
+            match sock.peek(&mut [0]) {
+                Ok(0) => break,
+                Ok(_) => panic!("unexpected data from client"),
+                Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => break,
+                Err(_) => assert!(
+                    std::time::Instant::now() < deadline,
+                    "client neither wrote nor hung up"
+                ),
+            }
+        }
+
+        let written_before_finished = server_stderr.0.lock().unwrap().clone();
+
+        // The client may have given up on us by now.
+        // The stderr is rustc's as-is, so it carries the notification too;
+        // the client is expected to drop that copy.
+        let _ = write_length_prefixed_bincode(
+            &mut sock,
+            Response::CompileFinished(CompileFinished {
+                retcode: Some(0),
+                signal: None,
+                stdout: vec![],
+                stderr: [RMETA_NOTIFICATION, OTHER_STDERR].concat(),
+                color_mode: ColorMode::Off,
+            }),
+        );
+        written_before_finished
+    });
+
+    let err = compile_dep(new_creator(), &f, &addr, &stderr).unwrap_err();
+    let written_before_finished = server.join().unwrap();
+
+    assert_eq!("unexpected response from server", err.to_string());
+    assert_eq!(
+        b"",
+        written_before_finished.as_slice(),
+        "stderr written before CompileFinished"
+    );
+    assert_eq!(
+        b"",
+        stderr.0.lock().unwrap().as_slice(),
+        "stderr written in total"
+    );
+}
+
+/// This makes sure that if the daemon dies between the rmeta notification and codegen,
+/// sccache falls back to a normal compilation.
+#[test]
+fn test_cli_rmeta_notification_delivery_after_daemon_disconnect() {
+    let _ = env_logger::try_init();
+    let f = TestFixture::new();
+    let stderr = SharedWriter::default();
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = crate::net::SocketAddr::Net(listener.local_addr().unwrap());
+    let server = thread::spawn(move || {
+        let sock = fake_daemon_until_rmeta_notification(listener);
+        // The daemon dies mid-compile.
+        drop(sock);
+    });
+
+    // The fallback compile.
+    let creator = new_creator();
+    next_command(
+        &creator,
+        Ok(MockChild::new(
+            exit_status(0),
+            "",
+            [RMETA_NOTIFICATION, OTHER_STDERR].concat(),
+        )),
+    );
+
+    let err = compile_dep(creator.clone(), &f, &addr, &stderr).unwrap_err();
+    server.join().unwrap();
+
+    assert_eq!("unexpected response from server", err.to_string());
+    assert_eq!(
+        1,
+        creator.lock().unwrap().children.len(),
+        "fallback rustc ran"
+    );
+    assert_eq!(
+        b"",
+        stderr.0.lock().unwrap().as_slice(),
+        "stderr written in total"
+    );
+}
