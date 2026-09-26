@@ -745,14 +745,15 @@ where
         args: cmdline.clone(),
         env_vars,
     };
-    let (compile_resp, finished) = runtime.block_on(service.compile_direct(compile))?;
+    let (compile_resp, finished, forwarded_notification) =
+        runtime.block_on(service.compile_direct(compile, &mut *stderr))?;
     let creator = C::new(jobserver);
     let exit_code = handle_compile_result(
         creator,
         runtime,
         compile_resp,
         finished,
-        false,
+        forwarded_notification,
         &exe_path,
         cmdline,
         cwd,
