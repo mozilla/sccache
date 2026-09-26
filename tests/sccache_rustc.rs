@@ -15,10 +15,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
-struct StopServer;
+struct StopServer(u16);
 impl Drop for StopServer {
     fn drop(&mut self) {
         let _ = Command::from_std(std::process::Command::new(env!("CARGO_BIN_EXE_sccache")))
+            .env("SCCACHE_SERVER_PORT", self.0.to_string())
+            .env_remove("SCCACHE_SERVER_UDS")
             .arg("--stop-server")
             .ok();
     }
@@ -58,14 +60,15 @@ fn test_symlinks() {
     let out_file = root.join("RUST_FILE");
 
     symlink(root.join("rust1"), &rust).unwrap();
-    drop(StopServer);
-    let _stop_server = StopServer;
-    run_sccache(root, &bin);
+    let port = 4321;
+    drop(StopServer(port));
+    let _stop_server = StopServer(port);
+    run_sccache(root, &bin, port);
     let output1 = fs::read(&out_file).unwrap();
 
     remove_file(&rust).unwrap();
     symlink(root.join("rust2"), &rust).unwrap();
-    run_sccache(root, &bin);
+    run_sccache(root, &bin, port);
     let output2 = fs::read(out_file).unwrap();
 
     assert_ne!(output1, output2);
@@ -140,7 +143,7 @@ fi
     set_permissions(&rustc, perm).unwrap();
 }
 
-fn run_sccache(root: &Path, path: &Path) {
+fn run_sccache(root: &Path, path: &Path, port: u16) {
     let mut paths: OsString = path.into();
     paths.push(":");
     paths.push(var_os("PATH").unwrap());
@@ -150,6 +153,8 @@ fn run_sccache(root: &Path, path: &Path) {
         .current_dir(root)
         .env("PATH", paths)
         .env("SCCACHE_DIR", root.join("sccache"))
+        .env("SCCACHE_SERVER_PORT", port.to_string())
+        .env_remove("SCCACHE_SERVER_UDS")
         .arg("rustc")
         .arg("RUST_FILE.rs")
         .arg("--crate-name=sccache_rustc_tests")
