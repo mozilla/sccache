@@ -28,6 +28,7 @@ pub struct MockStorage {
     tx: mpsc::UnboundedSender<Result<Cache>>,
     delay: Option<Duration>,
     preprocessor_cache_mode: bool,
+    basedirs: Vec<Vec<u8>>,
 }
 
 impl MockStorage {
@@ -39,7 +40,13 @@ impl MockStorage {
             rx: Arc::new(Mutex::new(rx)),
             delay,
             preprocessor_cache_mode,
+            basedirs: Vec::new(),
         }
+    }
+
+    pub(crate) fn with_basedirs(mut self, basedirs: Vec<Vec<u8>>) -> Self {
+        self.basedirs = basedirs;
+        self
     }
 
     /// Queue up `res` to be returned as the next result from `Storage::get`.
@@ -74,6 +81,9 @@ impl Storage for MockStorage {
     }
     async fn max_size(&self) -> Result<Option<u64>> {
         Ok(None)
+    }
+    fn basedirs(&self) -> &[Vec<u8>] {
+        &self.basedirs
     }
     fn preprocessor_cache_mode_config(&self) -> PreprocessorCacheModeConfig {
         PreprocessorCacheModeConfig {
