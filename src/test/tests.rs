@@ -430,18 +430,20 @@ fn test_cli_rmeta_notification_delivery_from_daemon() {
         written_before_finished
     });
 
-    let err = compile_dep(new_creator(), &f, &addr, &stderr).unwrap_err();
+    let retcode = compile_dep(new_creator(), &f, &addr, &stderr).unwrap();
     let written_before_finished = server.join().unwrap();
 
-    assert_eq!("unexpected response from server", err.to_string());
+    assert_eq!(0, retcode);
     assert_eq!(
-        b"",
+        RMETA_NOTIFICATION,
         written_before_finished.as_slice(),
         "stderr written before CompileFinished"
     );
+    // The daemon leaves rustc's stderr intact.
+    // Client will dedup stderr if already forwarded.
     assert_eq!(
-        b"",
-        stderr.0.lock().unwrap().as_slice(),
+        [RMETA_NOTIFICATION, OTHER_STDERR].concat(),
+        *stderr.0.lock().unwrap(),
         "stderr written in total"
     );
 }
@@ -473,18 +475,20 @@ fn test_cli_rmeta_notification_delivery_after_daemon_disconnect() {
         )),
     );
 
-    let err = compile_dep(creator.clone(), &f, &addr, &stderr).unwrap_err();
+    let retcode = compile_dep(creator.clone(), &f, &addr, &stderr).unwrap();
     server.join().unwrap();
 
-    assert_eq!("unexpected response from server", err.to_string());
+    assert_eq!(0, retcode);
     assert_eq!(
-        1,
+        0,
         creator.lock().unwrap().children.len(),
         "fallback rustc ran"
     );
+    // The fallback rustc emitted the notification the daemon had already streamed,
+    // and the client then dedups it.
     assert_eq!(
-        b"",
-        stderr.0.lock().unwrap().as_slice(),
+        [RMETA_NOTIFICATION, OTHER_STDERR].concat(),
+        *stderr.0.lock().unwrap(),
         "stderr written in total"
     );
 }

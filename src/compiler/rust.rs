@@ -2752,6 +2752,23 @@ fn parse_rustc_z_ls(stdout: &str) -> Result<Vec<&str>> {
     Ok(dep_names)
 }
 
+/// Whether `line` is rustc's `--json=artifacts` notification for a `.rmeta`.
+pub fn is_rmeta_artifact_notification(line: &[u8]) -> bool {
+    // Cheap reject before parsing as most stderr lines are diagnostics.
+    if memchr::memmem::find(line, b".rmeta").is_none() {
+        return false;
+    }
+    #[derive(serde::Deserialize)]
+    struct ArtifactNotification<'a> {
+        // `Cow` as Windows path may need escapes
+        #[serde(borrow)]
+        artifact: std::borrow::Cow<'a, str>,
+    }
+    serde_json::from_slice::<ArtifactNotification<'_>>(line)
+        .map(|n| n.artifact.ends_with(".rmeta"))
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -4138,5 +4155,36 @@ proc_macro false
         let args: Vec<OsString> = vec![OsString::from("@missing_file")];
         let result = parse_arguments(&args, cwd);
         assert!(matches!(result, CompilerArguments::CannotCache(..)));
+    }
+
+    #[test]
+    fn test_is_rmeta_artifact_notification() {
+        // rmeta notification
+        assert!(is_rmeta_artifact_notification(
+            br#"{"artifact":"/t/deps/libdep-1234.rmeta","emit":"metadata"}"#
+        ));
+        assert!(is_rmeta_artifact_notification(
+            b"{\"artifact\":\"/t/deps/libdep-1234.rmeta\",\"emit\":\"metadata\"}\n"
+        ));
+        // Paths with JSON escapes: Windows separators, or an escaped quote.
+        assert!(is_rmeta_artifact_notification(
+            br#"{"artifact":"C:\\t\\deps\\libdep-1234.rmeta","emit":"metadata"}"#
+        ));
+        assert!(is_rmeta_artifact_notification(
+            br#"{"artifact":"/t/de\"ps/libdep-1234.rmeta","emit":"metadata"}"#
+        ));
+
+        // not rmeta notification
+        assert!(!is_rmeta_artifact_notification(
+            br#"{"artifact":"/t/deps/libdep-1234.rlib","emit":"link"}"#
+        ));
+        assert!(!is_rmeta_artifact_notification(
+            br#"{"artifact":"/t/deps/dep-1234.d","emit":"dep-info"}"#
+        ));
+        assert!(!is_rmeta_artifact_notification(
+            br#"{"$message_type":"diagnostic","message":"unused variable","level":"warning"}"#
+        ));
+        assert!(!is_rmeta_artifact_notification(b"not json\n"));
+        assert!(!is_rmeta_artifact_notification(b""));
     }
 }
