@@ -63,15 +63,71 @@ fn test_symlinks() {
     let port = 4321;
     drop(StopServer(port));
     let _stop_server = StopServer(port);
-    run_sccache(root, &bin, port);
+    run_sccache(root, &bin, port, false);
     let output1 = fs::read(&out_file).unwrap();
 
     remove_file(&rust).unwrap();
     symlink(root.join("rust2"), &rust).unwrap();
-    run_sccache(root, &bin, port);
+    run_sccache(root, &bin, port, false);
     let output2 = fs::read(out_file).unwrap();
 
     assert_ne!(output1, output2);
+}
+
+#[test]
+fn test_rmeta_notification_delivery_on_miss_and_hit() {
+    rmeta_notification_delivery_on_miss_and_hit(4322, false);
+}
+
+#[test]
+fn test_rmeta_notification_delivery_on_miss_and_hit_client_side() {
+    rmeta_notification_delivery_on_miss_and_hit(4323, true);
+}
+
+/// Runs the real sccache and checks the caller sees the `.rmeta`
+/// notification exactly once on both the miss and the hit.
+fn rmeta_notification_delivery_on_miss_and_hit(port: u16, client_side: bool) {
+    let root = tempdir().unwrap();
+    let root = root.path();
+
+    fs::write(root.join("counter"), b"0").unwrap();
+    fs::write(root.join("RUST_FILE.rs"), []).unwrap();
+    create_mock_rustc(root.join("rust"));
+    let bin = root.join("rust/bin");
+    let out_file = root.join("RUST_FILE");
+
+    drop(StopServer(port));
+    let _stop_server = StopServer(port);
+
+    let miss = run_sccache(root, &bin, port, client_side);
+    let compiled_once = fs::read(&out_file).unwrap();
+    let hit = run_sccache(root, &bin, port, client_side);
+    assert_eq!(
+        compiled_once,
+        fs::read(&out_file).unwrap(),
+        "second run was not a hit"
+    );
+
+    for (name, stderr) in [("miss", &miss.stderr), ("hit", &hit.stderr)] {
+        let stderr = String::from_utf8_lossy(stderr);
+        let notifications: Vec<&str> = stderr
+            .lines()
+            .filter(|line| line.contains("\"artifact\""))
+            .collect();
+        assert_eq!(
+            1,
+            notifications
+                .iter()
+                .filter(|l| l.contains(".rmeta"))
+                .count(),
+            "{name}: .rmeta notification count in {stderr:?}"
+        );
+        assert_eq!(
+            1,
+            notifications.iter().filter(|l| l.contains(".rlib")).count(),
+            "{name}: .rlib notification count in {stderr:?}"
+        );
+    }
 }
 
 fn create_mock_rustc(dir: PathBuf) {
@@ -145,7 +201,7 @@ fi
     set_permissions(&rustc, perm).unwrap();
 }
 
-fn run_sccache(root: &Path, path: &Path, port: u16) -> std::process::Output {
+fn run_sccache(root: &Path, path: &Path, port: u16, client_side: bool) -> std::process::Output {
     let mut paths: OsString = path.into();
     paths.push(":");
     paths.push(var_os("PATH").unwrap());
@@ -157,6 +213,7 @@ fn run_sccache(root: &Path, path: &Path, port: u16) -> std::process::Output {
         .env("SCCACHE_DIR", root.join("sccache"))
         .env("SCCACHE_SERVER_PORT", port.to_string())
         .env_remove("SCCACHE_SERVER_UDS")
+        .envs(client_side.then_some(("SCCACHE_CLIENT_SIDE", "1")))
         .arg("rustc")
         .arg("RUST_FILE.rs")
         .arg("--crate-name=sccache_rustc_tests")

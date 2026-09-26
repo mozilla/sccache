@@ -2464,6 +2464,8 @@ fn waits_until_zero() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mock_command::{MockChild, MockCommandCreator, exit_status};
+    use crate::test::utils::{TestFixture, next_command, next_command_calls};
 
     struct StringWriter {
         buffer: String,
@@ -2591,5 +2593,153 @@ mod tests {
                 .unwrap();
             assert!(find_s1 < find_s2);
         }
+    }
+
+    const RMETA_NOTIFICATION: &[u8] = b"{\"artifact\":\"/t/libdep.rmeta\",\"emit\":\"metadata\"}\n";
+    const OTHER_STDERR: &[u8] = b"{\"artifact\":\"/t/libdep.rlib\",\"emit\":\"link\"}\n";
+
+    type MockCreator = Arc<std::sync::Mutex<MockCommandCreator>>;
+
+    fn mock_rustc_cache_miss(creator: &MockCreator, f: &TestFixture) {
+        // rustc -vV
+        next_command(
+            creator,
+            Ok(MockChild::new(
+                exit_status(0),
+                "rustc 1.90.0 (0000000 2026-01-01)\nhost: x86_64-unknown-linux-gnu\n",
+                "",
+            )),
+        );
+        // rustc +stable: not a rustup proxy
+        next_command(creator, Ok(MockChild::new(exit_status(1), "", "")));
+        // rustc --print=sysroot
+        next_command(
+            creator,
+            Ok(MockChild::new(
+                exit_status(0),
+                f.tempdir.path().to_str().unwrap(),
+                "",
+            )),
+        );
+        mock_rustc_hash_inputs(creator);
+        // The compile itself.
+        let out_dir = f.tempdir.path().to_path_buf();
+        next_command_calls(creator, move |_| {
+            std::fs::write(out_dir.join("libdep.rlib"), "rlib")?;
+            std::fs::write(out_dir.join("libdep.rmeta"), "rmeta")?;
+            Ok(MockChild::new(
+                exit_status(0),
+                "",
+                [RMETA_NOTIFICATION, OTHER_STDERR].concat(),
+            ))
+        });
+    }
+
+    fn mock_rustc_hash_inputs(creator: &MockCreator) {
+        // rustc --emit dep-info -o <file>
+        next_command_calls(creator, |args| {
+            let dep_file = args.iter().skip_while(|a| *a != "-o").nth(1).unwrap();
+            std::fs::write(dep_file, "libdep.rlib: lib.rs\nlib.rs:\n")?;
+            Ok(MockChild::new(exit_status(0), "", ""))
+        });
+        // rustc --print file-names
+        next_command(
+            creator,
+            Ok(MockChild::new(exit_status(0), "libdep.rlib\n", "")),
+        );
+    }
+
+    type MockService = SccacheService<MockCreator>;
+
+    /// A service whose mocked rustc is queued for one cache-miss compile of `dep`,
+    /// and then a request for that compile.
+    fn rustc_miss_fixture() -> (TestFixture, Runtime, MockService, Compile) {
+        use crate::cache::disk::DiskCache;
+        use crate::config::PreprocessorCacheModeConfig;
+
+        let _ = env_logger::try_init();
+        let f = TestFixture::new();
+        let rustc = f.mk_bin("rustc").unwrap();
+        // Windows uses bin, everything else uses lib. Just create both.
+        std::fs::create_dir(f.tempdir.path().join("lib")).unwrap();
+        std::fs::create_dir(f.tempdir.path().join("bin")).unwrap();
+        f.touch("lib.rs").unwrap();
+
+        let runtime = Runtime::new().unwrap();
+        let storage = Arc::new(DiskCache::new(
+            f.tempdir.path().join("cache"),
+            u64::MAX,
+            runtime.handle(),
+            PreprocessorCacheModeConfig::default(),
+            CacheMode::ReadWrite,
+            vec![],
+        ));
+        let service = MockService::mock_with_storage(storage, runtime.handle().clone());
+        mock_rustc_cache_miss(&service.creator, &f);
+
+        let compile = dep_compile(&f, &rustc);
+        (f, runtime, service, compile)
+    }
+
+    /// The request for compiling `dep`.
+    fn dep_compile(f: &TestFixture, rustc: &std::path::Path) -> Compile {
+        Compile {
+            exe: rustc.into(),
+            cwd: f.tempdir.path().into(),
+            args: [
+                "--crate-name",
+                "dep",
+                "lib.rs",
+                "--crate-type",
+                "lib",
+                "--emit=link,metadata",
+                "--out-dir",
+                f.tempdir.path().to_str().unwrap(),
+            ]
+            .into_iter()
+            .map(Into::into)
+            .collect(),
+            env_vars: vec![],
+        }
+    }
+
+    fn compile_body(
+        runtime: &Runtime,
+        service: &MockService,
+        compile: Compile,
+    ) -> (Vec<Response>, CompileFinished) {
+        let (resp, body) = match runtime.block_on(service.handle_compile(compile)).unwrap() {
+            Message::WithBody(Response::Compile(resp), body) => (resp, body),
+            other => panic!("unexpected response: {:?}", other.into_inner()),
+        };
+        assert!(matches!(resp, CompileResponse::CompileStarted));
+
+        let mut body = runtime.block_on(body.try_collect::<Vec<_>>()).unwrap();
+        let finished = match body.pop() {
+            Some(Response::CompileFinished(finished)) => finished,
+            other => panic!("body must end with CompileFinished, got {other:?}"),
+        };
+        (body, finished)
+    }
+
+    #[test]
+    fn daemon_mode_rmeta_notification_delivery_on_rustc_miss() {
+        let (_f, runtime, service, compile) = rustc_miss_fixture();
+
+        let (before_finished, finished) = compile_body(&runtime, &service, compile);
+
+        assert_eq!(Some(0), finished.retcode);
+        assert!(
+            before_finished.is_empty(),
+            "delivered while the compiler runs: {before_finished:?}"
+        );
+        // The daemon leaves rustc's stderr intact.
+        // Client will dedup stderr if already forwarded.
+        assert_eq!(
+            [RMETA_NOTIFICATION, OTHER_STDERR].concat(),
+            finished.stderr,
+            "stderr delivered with CompileFinished"
+        );
+        assert_eq!(0, service.creator.lock().unwrap().children.len());
     }
 }
