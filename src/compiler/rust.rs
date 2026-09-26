@@ -82,6 +82,167 @@ const LIBS_DIR: &str = "lib";
 #[cfg(windows)]
 const LIBS_DIR: &str = "bin";
 
+/// Entries in `rustlib` that rustc never loads while compiling:
+/// src -> the standard library sources
+/// etc -> the gdb/lldb pretty-printers.
+#[cfg(feature = "dist-client")]
+#[allow(unused)]
+const RUSTLIB_UNUSED_ENTRIES: &[&str] = &["src", "etc"];
+
+/// rustc's `rustlib` directory, from the `--print=target-libdir` output, which
+/// points at `$libdir/rustlib/$target/lib`.
+///
+/// `$libdir` is chosen when rustc is built, so it cannot be assumed to be
+/// [`LIBS_DIR`] for a rustc installed into a shared prefix such as `/usr`.
+#[cfg(feature = "dist-client")]
+#[allow(unused)]
+fn rustlib_dir(target_libdir: &Path) -> Option<&Path> {
+    target_libdir.ancestors().nth(2)
+}
+
+/// The entries under `rustlib` that need to end up in a toolchain package.
+#[cfg(feature = "dist-client")]
+#[allow(unused)]
+fn needed_rustlib_entries(rustlib_path: &Path) -> Result<Vec<PathBuf>> {
+    let mut entries = vec![];
+    for entry in fs::read_dir(rustlib_path)
+        .with_context(|| format!("Failed to list rustlib dir `{}`", rustlib_path.display()))?
+    {
+        let entry = entry?;
+        if RUSTLIB_UNUSED_ENTRIES
+            .iter()
+            .any(|unused| entry.file_name() == **unused)
+        {
+            continue;
+        }
+        entries.push(entry.path());
+    }
+    entries.sort();
+    Ok(entries)
+}
+
+#[test]
+#[cfg(feature = "dist-client")]
+fn test_rustlib_dir() {
+    // A self-contained toolchain, as unpacked by rustup.
+    assert_eq!(
+        rustlib_dir(Path::new(
+            "/Users/user/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/lib"
+        )),
+        Some(Path::new(
+            "/Users/user/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib"
+        ))
+    );
+    // A rustc installed into a shared prefix.
+    assert_eq!(
+        rustlib_dir(Path::new("/usr/lib64/rustlib/x86_64-unknown-linux-gnu/lib")),
+        Some(Path::new("/usr/lib64/rustlib"))
+    );
+    assert_eq!(rustlib_dir(Path::new("lib")), None);
+}
+
+#[test]
+#[cfg(feature = "dist-client")]
+fn test_needed_rustlib_entries() {
+    let tempdir = tempfile::Builder::new()
+        .prefix("sccache_test")
+        .tempdir()
+        .unwrap();
+    let rustlib = tempdir.path().join("rustlib");
+    for dir in [
+        "aarch64-unknown-linux-gnu",
+        "wasm32-unknown-unknown",
+        "src",
+        "etc",
+    ] {
+        fs::create_dir_all(rustlib.join(dir)).unwrap();
+    }
+    fs::write(rustlib.join("components"), "rustc\n").unwrap();
+
+    // Every installed target is kept, whichever they are; `src` and `etc` go.
+    assert_eq!(
+        needed_rustlib_entries(&rustlib).unwrap(),
+        vec![
+            rustlib.join("aarch64-unknown-linux-gnu"),
+            rustlib.join("components"),
+            rustlib.join("wasm32-unknown-unknown"),
+        ]
+    );
+}
+
+#[test]
+#[cfg(feature = "dist-client")]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+fn test_toolchain_package_through_symlinked_libdir() {
+    use crate::dist::pkg::ToolchainPackager;
+    use std::io::Read;
+
+    let tempdir = tempfile::Builder::new()
+        .prefix("sccache_test")
+        .tempdir()
+        .unwrap();
+    // `tarify_path` resolves every symlink in the path, so the expectations
+    // below have to be built from a path that has none of its own.
+    let root = tempdir.path().canonicalize().unwrap();
+    let sysroot = root.join("sysroot");
+
+    // A real ELF, so that `add_executable_and_deps` can run ldd against it.
+    fs::create_dir_all(sysroot.join("bin")).unwrap();
+    fs::copy("/bin/true", sysroot.join("bin/rustc")).unwrap();
+
+    let rustlib = sysroot.join("lib/rustlib");
+    fs::create_dir_all(rustlib.join("fake-target/lib")).unwrap();
+    fs::create_dir_all(rustlib.join("src")).unwrap();
+    fs::write(rustlib.join("fake-target/lib/libstd.so"), []).unwrap();
+    fs::write(rustlib.join("src/lib.rs"), []).unwrap();
+    fs::write(rustlib.join("components"), "rustc\n").unwrap();
+    // The case this guards: rustc reports a libdir reached through a symlink.
+    std::os::unix::fs::symlink("lib", sysroot.join("lib64")).unwrap();
+
+    let pkg = tempdir.path().join("toolchain.tar.gz");
+    Box::new(RustToolchainPackager {
+        sysroot: sysroot.clone(),
+        target_libdir: sysroot.join("lib64/rustlib/fake-target/lib"),
+    })
+    .write_pkg(fs::File::create(&pkg).unwrap())
+    .unwrap();
+
+    let mut buf = vec![];
+    flate2::read::GzDecoder::new(fs::File::open(&pkg).unwrap())
+        .read_to_end(&mut buf)
+        .unwrap();
+    let mut archive = tar::Archive::new(buf.as_slice());
+    let entries: Vec<(PathBuf, Option<PathBuf>)> = archive
+        .entries()
+        .unwrap()
+        .map(|e| {
+            let e = e.unwrap();
+            (
+                e.path().unwrap().into_owned(),
+                e.link_name().unwrap().map(|l| l.into_owned()),
+            )
+        })
+        .collect();
+
+    let tarified = |p: &Path| p.strip_prefix("/").unwrap().to_path_buf();
+    let has = |p: &Path| entries.iter().any(|(name, _)| *name == tarified(p));
+
+    // Contents land under the resolved libdir, not the `lib64` spelling.
+    assert!(has(&rustlib.join("fake-target/lib/libstd.so")));
+    assert!(has(&rustlib.join("components")));
+    assert!(has(&sysroot.join("bin/rustc")));
+    // ... and `lib64` is recorded as a symlink, so both spellings resolve on
+    // the server.
+    assert!(entries.iter().any(|(name, link)| {
+        *name == tarified(&sysroot.join("lib64")) && link.as_deref() == Some(&sysroot.join("lib"))
+    }));
+    // `rustlib/src` is still excluded.
+    assert!(!has(&rustlib.join("src/lib.rs")));
+}
+
 /// A struct on which to hang a `Compiler` impl.
 #[derive(Debug, Clone)]
 pub struct Rust {
@@ -109,6 +270,9 @@ pub struct Rust {
     version: String,
     /// The path to the rustc sysroot.
     sysroot: PathBuf,
+    /// The `--print=target-libdir` of this rustc, i.e. `$libdir/rustlib/$target/lib`.
+    #[cfg(feature = "dist-client")]
+    target_libdir: PathBuf,
     /// The digests of all the shared libraries in rustc's $sysroot/lib (or /bin on Windows).
     compiler_shlibs_digests: Vec<String>,
     /// A shared, caching reader for rlib dependencies
@@ -127,6 +291,9 @@ pub struct RustHasher {
     version: String,
     /// The path to the rustc sysroot.
     sysroot: PathBuf,
+    /// The `--print=target-libdir` of this rustc, i.e. `$libdir/rustlib/$target/lib`.
+    #[cfg(feature = "dist-client")]
+    target_libdir: PathBuf,
     /// The digests of all the shared libraries in rustc's $sysroot/lib (or /bin on Windows).
     compiler_shlibs_digests: Vec<String>,
     /// A shared, caching reader for rlib dependencies
@@ -200,6 +367,9 @@ pub struct RustCompilation {
     host: String,
     /// The sysroot for this rustc
     sysroot: PathBuf,
+    /// The `--print=target-libdir` of this rustc, i.e. `$libdir/rustlib/$target/lib`.
+    #[cfg(feature = "dist-client")]
+    target_libdir: PathBuf,
     /// A shared, caching reader for rlib dependencies
     #[cfg(feature = "dist-client")]
     rlib_dep_reader: Option<Arc<RlibDepReader>>,
@@ -426,13 +596,17 @@ impl Rust {
         cmd.stdout(process::Stdio::piped())
             .stderr(process::Stdio::null())
             .arg("--print=sysroot")
+            .arg("--print=target-libdir")
             .env_clear()
             .envs(env_vars.to_vec());
         let sysroot_and_libs = async move {
             let output = run_input_output(cmd, None).await?;
             //debug!("output.and_then: {}", output);
             let outstr = String::from_utf8(output.stdout).context("Error parsing sysroot")?;
-            let sysroot = PathBuf::from(outstr.trim_end());
+            let mut lines = outstr.lines();
+            let sysroot = PathBuf::from(lines.next().context("rustc didn't print a sysroot")?);
+            let target_libdir =
+                PathBuf::from(lines.next().context("rustc didn't print a target-libdir")?);
             let libs_path = sysroot.join(LIBS_DIR);
             let mut libs = fs::read_dir(&libs_path)
                 .with_context(|| format!("Failed to list rustc sysroot: `{:?}`", libs_path))?
@@ -456,7 +630,7 @@ impl Rust {
                 libs.push(path);
             }
             libs.sort();
-            Result::Ok((sysroot, libs))
+            Result::Ok((sysroot, target_libdir, libs))
         };
 
         #[cfg(feature = "dist-client")]
@@ -469,7 +643,7 @@ impl Rust {
                     .map_err(anyhow::Error::from)
             };
 
-            let ((sysroot, libs), rlib_dep_reader) =
+            let ((sysroot, target_libdir, libs), rlib_dep_reader) =
                 futures::future::try_join(sysroot_and_libs, rlib_dep_reader).await?;
 
             let rlib_dep_reader = match rlib_dep_reader {
@@ -487,6 +661,7 @@ impl Rust {
                 host,
                 version: rustc_verbose_version.to_string(),
                 sysroot,
+                target_libdir,
                 compiler_shlibs_digests: digests,
                 rlib_dep_reader,
             })
@@ -494,7 +669,7 @@ impl Rust {
 
         #[cfg(not(feature = "dist-client"))]
         {
-            let (sysroot, libs) = sysroot_and_libs.await?;
+            let (sysroot, _target_libdir, libs) = sysroot_and_libs.await?;
             hash_all(&libs, &pool).await.map(move |digests| Rust {
                 executable,
                 host,
@@ -517,6 +692,7 @@ where
     fn get_toolchain_packager(&self) -> Box<dyn pkg::ToolchainPackager> {
         Box::new(RustToolchainPackager {
             sysroot: self.sysroot.clone(),
+            target_libdir: self.target_libdir.clone(),
         })
     }
     /// Parse `arguments` as rustc command-line arguments, determine if
@@ -542,6 +718,8 @@ where
                 host: self.host.clone(),
                 version: self.version.clone(),
                 sysroot: self.sysroot.clone(),
+                #[cfg(feature = "dist-client")]
+                target_libdir: self.target_libdir.clone(),
                 compiler_shlibs_digests: self.compiler_shlibs_digests.clone(),
                 #[cfg(feature = "dist-client")]
                 rlib_dep_reader: self.rlib_dep_reader.clone(),
@@ -1726,6 +1904,8 @@ where
                 executable: self.executable.clone(),
                 host: self.host.clone(),
                 sysroot: self.sysroot.clone(),
+                #[cfg(feature = "dist-client")]
+                target_libdir: self.target_libdir.clone(),
                 arguments,
                 inputs,
                 outputs,
@@ -1922,6 +2102,7 @@ impl<T: CommandCreatorSync> Compilation<T> for RustCompilation {
             inputs,
             crate_link_paths,
             sysroot,
+            target_libdir,
             crate_types,
             dep_info,
             rlib_dep_reader,
@@ -1941,7 +2122,10 @@ impl<T: CommandCreatorSync> Compilation<T> for RustCompilation {
             path_transformer,
             rlib_dep_reader,
         });
-        let toolchain_packager = Box::new(RustToolchainPackager { sysroot });
+        let toolchain_packager = Box::new(RustToolchainPackager {
+            sysroot,
+            target_libdir,
+        });
         let outputs_rewriter = Box::new(RustOutputsRewriter { dep_info });
 
         Ok((inputs_packager, toolchain_packager, outputs_rewriter))
@@ -2304,6 +2488,7 @@ impl pkg::InputsPackager for RustInputsPackager {
 #[allow(unused)]
 struct RustToolchainPackager {
     sysroot: PathBuf,
+    target_libdir: PathBuf,
 }
 
 #[cfg(feature = "dist-client")]
@@ -2317,19 +2502,37 @@ impl pkg::ToolchainPackager for RustToolchainPackager {
             "Packaging Rust compiler for sysroot {}",
             self.sysroot.display()
         );
-        let RustToolchainPackager { sysroot } = *self;
+        let RustToolchainPackager {
+            sysroot,
+            target_libdir,
+        } = *self;
 
         let mut package_builder = pkg::ToolchainPackageBuilder::new();
         package_builder.add_common()?;
 
-        let bins_path = sysroot.join(BINS_DIR);
-        let sysroot_executable = bins_path.join("rustc").with_extension(EXE_EXTENSION);
+        // The server only ever runs rustc, so the rest of `$sysroot/bin` (cargo,
+        // rustdoc, rust-analyzer, ...) is left out.
+        let sysroot_executable = sysroot
+            .join(BINS_DIR)
+            .join("rustc")
+            .with_extension(EXE_EXTENSION);
         package_builder.add_executable_and_deps(sysroot_executable)?;
 
-        package_builder.add_dir_contents(&bins_path)?;
-        if BINS_DIR != LIBS_DIR {
-            let libs_path = sysroot.join(LIBS_DIR);
-            package_builder.add_dir_contents(&libs_path)?;
+        // rustlib holds everything rustc loads at runtime: the target libraries,
+        // `rust-lld` and the llvm-tools. Packaging the whole libdir instead would,
+        // for example, drag in all of `/usr/lib` for a rustc installed into /usr.
+        let rustlib_path = rustlib_dir(&target_libdir)
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| sysroot.join(LIBS_DIR).join("rustlib"));
+
+        for path in needed_rustlib_entries(&rustlib_path)? {
+            // Ignore anything that is neither a directory nor a file, such as a
+            // dangling symlink, as `add_dir_contents` does.
+            if path.is_dir() {
+                package_builder.add_dir_contents(&path)?;
+            } else if path.is_file() {
+                package_builder.add_file(path)?;
+            }
         }
 
         package_builder.into_compressed_tar(f)
@@ -3549,6 +3752,8 @@ proc_macro false
             host: "x86-64-unknown-unknown-unknown".to_owned(),
             version: TEST_RUSTC_VERSION.to_string(),
             sysroot: f.tempdir.path().join("sysroot"),
+            #[cfg(feature = "dist-client")]
+            target_libdir: f.tempdir.path().join("sysroot/lib/rustlib/fake-target/lib"),
             compiler_shlibs_digests: vec![FAKE_DIGEST.to_owned()],
             #[cfg(feature = "dist-client")]
             rlib_dep_reader: None,
@@ -3683,6 +3888,8 @@ proc_macro false
             host: "x86-64-unknown-unknown-unknown".to_owned(),
             version: TEST_RUSTC_VERSION.to_string(),
             sysroot: f.tempdir.path().join("sysroot"),
+            #[cfg(feature = "dist-client")]
+            target_libdir: f.tempdir.path().join("sysroot/lib/rustlib/fake-target/lib"),
             compiler_shlibs_digests: vec![],
             #[cfg(feature = "dist-client")]
             rlib_dep_reader: None,
