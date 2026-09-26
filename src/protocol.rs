@@ -68,6 +68,14 @@ pub enum Response {
     StoragePutPreprocessorEntry(Result<(), String>),
     /// Response for `Request::RecordStats`.
     RecordStats,
+
+    /// A rustc artifact notification delivered while the compiler is still running.
+    ///
+    /// The line also stays in [`CompileFinished::stderr`].
+    /// The client that has forwarded the notification must drop that copy.
+    ///
+    /// Currently only `.rmeta` notifications are sent (for Cargo pipelining).
+    ArtifactNotification(Vec<u8>),
 }
 
 /// Possible responses from the server for a `Compile` request.
