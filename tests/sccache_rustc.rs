@@ -127,8 +127,10 @@ while [ "$#" -gt 0 ]; do
 done
 
 if [ "$build" -eq 1 ]; then
+    echo '{{"artifact":"'"$PWD"'/libsccache_rustc_tests.rmeta","emit":"metadata"}}' >&2
     echo $(($(cat counter) + 1)) > counter
     cp counter RUST_FILE
+    echo '{{"artifact":"'"$PWD"'/libsccache_rustc_tests.rlib","emit":"link"}}' >&2
 fi
 "#,
         dir.display(),
@@ -140,7 +142,7 @@ fi
     set_permissions(&rustc, perm).unwrap();
 }
 
-fn run_sccache(root: &Path, path: &Path, port: u16) {
+fn run_sccache(root: &Path, path: &Path, port: u16) -> std::process::Output {
     let mut paths: OsString = path.into();
     paths.push(":");
     paths.push(var_os("PATH").unwrap());
@@ -159,5 +161,8 @@ fn run_sccache(root: &Path, path: &Path, port: u16) {
         .arg("--emit=link")
         .arg("--out-dir")
         .arg(root)
-        .unwrap();
+        .assert()
+        .success()
+        .get_output()
+        .clone()
 }
