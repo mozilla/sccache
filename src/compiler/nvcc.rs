@@ -1314,16 +1314,19 @@ where
                                 },
                             )),
                         CompilerArguments::Ok(hasher) => {
+                            let env_vars = env_vars
+                                .iter()
+                                .chain([("SCCACHE_DIRECT".into(), "false".into())].iter())
+                                .cloned()
+                                .collect::<Vec<_>>();
+                            let storage = srvc.storage_for_request(&env_vars)?;
                             srvc.start_compile_task(
                                 compiler,
                                 hasher,
                                 args,
                                 cwd.to_owned(),
-                                env_vars
-                                    .iter()
-                                    .chain([("SCCACHE_DIRECT".into(), "false".into())].iter())
-                                    .cloned()
-                                    .collect::<Vec<_>>(),
+                                env_vars,
+                                storage,
                             )
                             .await
                         }
