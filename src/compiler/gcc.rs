@@ -2669,7 +2669,7 @@ mod test {
             too_hard_for_preprocessor_cache_mode: None,
         };
         let runtime = single_threaded_runtime();
-        let storage = MockStorage::new(None, false);
+        let storage = MockStorage::default();
         let storage: std::sync::Arc<MockStorage> = std::sync::Arc::new(storage);
         let service = server::SccacheService::mock_with_storage(storage, runtime.handle().clone());
         let compiler = &f.bins[0];
@@ -2731,7 +2731,7 @@ mod test {
             too_hard_for_preprocessor_cache_mode: None,
         };
         let runtime = single_threaded_runtime();
-        let storage = MockStorage::new(None, false);
+        let storage = MockStorage::default();
         let storage: std::sync::Arc<MockStorage> = std::sync::Arc::new(storage);
         let service = server::SccacheService::mock_with_storage(storage, runtime.handle().clone());
         let compiler = &f.bins[0];
@@ -2791,7 +2791,7 @@ mod test {
             too_hard_for_preprocessor_cache_mode: None,
         };
         let runtime = single_threaded_runtime();
-        let storage = MockStorage::new(None, false);
+        let storage = MockStorage::default();
         let storage: std::sync::Arc<MockStorage> = std::sync::Arc::new(storage);
         let service = server::SccacheService::mock_with_storage(storage, runtime.handle().clone());
         let compiler = &f.bins[0];
