@@ -2047,6 +2047,83 @@ fn test_can_trim_this() {
     assert!(!can_trim_this(&rlib_file));
 }
 
+/// Extract the crate name and extension from a library file path in a crate
+/// link directory.
+///
+/// Filenames are normally `lib<crate>-<metadata-hash>.<ext>`, but cdylib and
+/// staticlib outputs can have no metadata hash (e.g. `libcrc_fast.rmeta` from a
+/// crate with `crate-type = ["lib", "cdylib", "staticlib"]`). In that case
+/// `rsplitn(2, '-')` yields a single element, so the whole filename is the
+/// libname.
+#[cfg(feature = "dist-client")]
+fn crate_name_and_ext_from_lib_path(path: &Path) -> Option<(&str, &str)> {
+    let ext = path.extension()?.to_str()?;
+    // file_stem strips the extension, giving e.g. `libcrc_fast` from
+    // `libcrc_fast.rmeta`. rsplitn on the stem then correctly handles both
+    // `libfoo-HASH` (normal) and `libcrc_fast` (cdylib, no hash) cases.
+    let stem = path.file_stem()?.to_str()?;
+    let mut rev_name_split = stem.rsplitn(2, '-');
+    let _extra_filename_and_ext = rev_name_split.next();
+    let libname = rev_name_split.next().unwrap_or(stem);
+    if libname.starts_with(DLL_PREFIX) && ext == DLL_EXTENSION {
+        Some((&libname[DLL_PREFIX.len()..], ext))
+    } else if libname.starts_with(RLIB_PREFIX) && (ext == RLIB_EXTENSION || ext == RMETA_EXTENSION) {
+        Some((&libname[RLIB_PREFIX.len()..], ext))
+    } else {
+        None
+    }
+}
+
+#[test]
+#[cfg(feature = "dist-client")]
+fn test_crate_name_and_ext_from_lib_path() {
+    use std::path::Path;
+
+    // Normal rlib with metadata hash suffix
+    let p = Path::new("libfoo-abc123.rlib");
+    assert_eq!(crate_name_and_ext_from_lib_path(p), Some(("foo", "rlib")));
+
+    // Normal rmeta with metadata hash suffix
+    let p = Path::new("libfoo-abc123.rmeta");
+    assert_eq!(crate_name_and_ext_from_lib_path(p), Some(("foo", "rmeta")));
+
+    // cdylib output with no metadata hash suffix (crate-type includes cdylib)
+    let p = Path::new("libcrc_fast.rmeta");
+    assert_eq!(
+        crate_name_and_ext_from_lib_path(p),
+        Some(("crc_fast", "rmeta"))
+    );
+
+    // cdylib output with no metadata hash suffix, rlib variant
+    let p = Path::new("libcrc_fast.rlib");
+    assert_eq!(
+        crate_name_and_ext_from_lib_path(p),
+        Some(("crc_fast", "rlib"))
+    );
+
+    // Dynamic library with metadata hash
+    let p = Path::new("libfoo-abc123.so");
+    assert_eq!(crate_name_and_ext_from_lib_path(p), Some(("foo", "so")));
+
+    // Dynamic library without metadata hash (cdylib)
+    let p = Path::new("libcrc_fast.so");
+    assert_eq!(
+        crate_name_and_ext_from_lib_path(p),
+        Some(("crc_fast", "so"))
+    );
+
+    // Not a library file
+    let p = Path::new("foo.txt");
+    assert_eq!(crate_name_and_ext_from_lib_path(p), None);
+
+    // Path with multiple dashes in crate name
+    let p = Path::new("libxai_file_utils-abc123.rmeta");
+    assert_eq!(
+        crate_name_and_ext_from_lib_path(p),
+        Some(("xai_file_utils", "rmeta"))
+    );
+}
+
 #[cfg(feature = "dist-client")]
 fn maybe_add_cargo_toml(input_path: &Path, verify: bool) -> Option<PathBuf> {
     let lib_rs = PathBuf::new().join("src").join("lib.rs");
@@ -2199,32 +2276,11 @@ impl pkg::InputsPackager for RustInputsPackager {
 
                 {
                     // Take a look at the path and see if it's something we care about
-                    let libname: &str = match path.file_name().and_then(|s| s.to_str()) {
-                        Some(name) => {
-                            let mut rev_name_split = name.rsplitn(2, '-');
-                            let _extra_filename_and_ext = rev_name_split.next();
-                            let libname = if let Some(libname) = rev_name_split.next() {
-                                libname
-                            } else {
-                                continue;
-                            };
-                            assert!(rev_name_split.next().is_none());
-                            libname
-                        }
-                        None => continue,
-                    };
-                    let (crate_name, ext): (&str, _) = match path.extension() {
-                        Some(ext) if libname.starts_with(DLL_PREFIX) && ext == DLL_EXTENSION => {
-                            (&libname[DLL_PREFIX.len()..], ext)
-                        }
-                        Some(ext) if libname.starts_with(RLIB_PREFIX) && ext == RLIB_EXTENSION => {
-                            (&libname[RLIB_PREFIX.len()..], ext)
-                        }
-                        Some(ext) if libname.starts_with(RLIB_PREFIX) && ext == RMETA_EXTENSION => {
-                            (&libname[RLIB_PREFIX.len()..], ext)
-                        }
-                        _ => continue,
-                    };
+                    let (crate_name, ext): (&str, &str) =
+                        match crate_name_and_ext_from_lib_path(&path) {
+                            Some(c) => c,
+                            None => continue,
+                        };
                     if let Some((_, ref dep_crate_names)) = rlib_dep_reader_and_names {
                         // We have a list of crate names we care about, see if this lib is a candidate
                         if !dep_crate_names.contains(crate_name) {
@@ -2326,10 +2382,18 @@ impl pkg::ToolchainPackager for RustToolchainPackager {
         let sysroot_executable = bins_path.join("rustc").with_extension(EXE_EXTENSION);
         package_builder.add_executable_and_deps(sysroot_executable)?;
 
-        package_builder.add_dir_contents(&bins_path)?;
+        // Package the Rust standard library subtree instead of the entire
+        // sysroot lib directory. Distros like Void Linux report `/usr` as the
+        // sysroot, so packaging `$sysroot/lib` would drag in the whole system
+        // library tree (several GiB) rather than just the Rust stdlib.
         if BINS_DIR != LIBS_DIR {
             let libs_path = sysroot.join(LIBS_DIR);
-            package_builder.add_dir_contents(&libs_path)?;
+            let rustlib_path = libs_path.join("rustlib");
+            if rustlib_path.is_dir() {
+                package_builder.add_dir_contents(&rustlib_path)?;
+            } else {
+                package_builder.add_dir_contents(&libs_path)?;
+            }
         }
 
         package_builder.into_compressed_tar(f)
@@ -2715,6 +2779,15 @@ fn parse_rustc_z_ls(stdout: &str) -> Result<Vec<&str>> {
             .parse()
             .context("Could not parse number from rustc -Z ls")?;
         let libstring = line_splits
+            .next()
+            .context("No lib string on line from rustc -Z ls")?;
+        // The libstring may contain additional metadata after the crate name
+        // (e.g., "crc_fast hash 05bce6... host_hash None kind Unconditional public"
+        // when the crate has no -HASH suffix). Take only the first
+        // whitespace-delimited token so rsplitn(-) below operates on just
+        // the crate name, not the entire trailing metadata.
+        let libstring = libstring
+            .split_whitespace()
             .next()
             .context("No lib string on line from rustc -Z ls")?;
         if num != dep_names.len() + 1 {
@@ -3398,6 +3471,39 @@ proc_macro false
         assert_eq!(res[0], "lucet_runtime");
         assert_eq!(res[1], "lucet_runtime_internals");
         assert_eq!(res[2], "lucet_runtime_macros");
+    }
+
+    #[cfg(feature = "dist-client")]
+    #[test]
+    fn test_parse_rustc_z_ls_modern_no_hash_suffix() {
+        // Modern rustc (1.75+) prints extended metadata per dep line:
+        //   N libname[-hash] hash HASH host_hash ... kind ... public
+        // Crates without a -HASH suffix (e.g. crc_fast, a proc-macro-style
+        // library built with a deterministic hash) appear as:
+        //   N crc_fast hash 05bce6... host_hash None kind Unconditional public
+        // The parser must extract just "crc_fast", not the entire trailing
+        // metadata, so that RustInputsPackager can match it against rmeta
+        // files in crate_link_paths.
+        let output = "Crate info:
+name xai_file_utils
+hash 42fac6f0 stable_crate_id StableCrateId(12206970385906972588)
+=External Dependencies=
+1 std-453218b5e9634890 hash c76be37888b32288681053863554e618 host_hash None kind Unconditional public
+2 core-5f5c0031517c19c4 hash 4e0d60221dfd8f9efa10e2a33c921b61 host_hash None kind Unconditional public
+3 crc_fast hash 05bce60290e56777e3ae6d3ddcc01e6c host_hash None kind Unconditional public
+4 crc-8c7d86e779319534 hash 49e85fac7c830ee1def0dd1674e740b0 host_hash None kind Unconditional public
+5 aws_sdk_s3-c49a342c963fe6e9 hash 119191ef3d4a8059aee3abebc4c4b5bf host_hash None kind Unconditional public
+
+";
+        let res = parse_rustc_z_ls(output);
+        assert!(res.is_ok());
+        let res = res.unwrap();
+        assert_eq!(res.len(), 5);
+        assert_eq!(res[0], "std");
+        assert_eq!(res[1], "core");
+        assert_eq!(res[2], "crc_fast");
+        assert_eq!(res[3], "crc");
+        assert_eq!(res[4], "aws_sdk_s3");
     }
 
     #[cfg(feature = "dist-client")]
