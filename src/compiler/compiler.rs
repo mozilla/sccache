@@ -36,7 +36,8 @@ use crate::lru_disk_cache;
 use crate::mock_command::{CommandChild, CommandCreatorSync, RunCommand, exit_status};
 use crate::server;
 use crate::util::{
-    Digest, fmt_duration_as_secs, resolve_compiler_avoiding_wrapper, run_input_output,
+    Digest, StderrLineObserver, fmt_duration_as_secs, resolve_compiler_avoiding_wrapper,
+    run_input_output, run_input_output_observing,
 };
 use crate::{counted_array, dist};
 use async_trait::async_trait;
@@ -196,7 +197,7 @@ impl CompileCommandImpl for SingleCompileCommand {
 
     async fn execute<T>(
         &self,
-        _: &server::SccacheService<T>,
+        service: &server::SccacheService<T>,
         creator: &T,
     ) -> Result<process::Output>
     where
@@ -219,7 +220,18 @@ impl CompileCommandImpl for SingleCompileCommand {
         if *share_jobserver {
             cmd.share_jobserver();
         }
-        run_input_output(cmd, None).await
+        match service.notification_tx() {
+            Some(tx) => {
+                let tx = tx.clone();
+                let observer: StderrLineObserver = Box::new(move |line| {
+                    if super::rust::is_rmeta_artifact_notification(line) {
+                        let _ = tx.unbounded_send(line.to_vec());
+                    }
+                });
+                run_input_output_observing(cmd, None, Some(observer)).await
+            }
+            None => run_input_output(cmd, None).await,
+        }
     }
 }
 
