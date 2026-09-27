@@ -502,10 +502,9 @@ where
                 && let Some(mut seekable) = storage
                     .get_preprocessor_cache_entry(preprocessor_key)
                     .await?
+                && let Some(mut preprocessor_cache_entry) =
+                    read_preprocessor_cache_entry(&mut seekable, preprocessor_key)
             {
-                let mut buf = vec![];
-                seekable.read_to_end(&mut buf)?;
-                let mut preprocessor_cache_entry = PreprocessorCacheEntry::read(&buf)?;
                 let mut updated = false;
                 let hit = preprocessor_cache_entry
                     .lookup_result_digest(preprocessor_cache_mode_config, &mut updated);
@@ -737,6 +736,26 @@ const HASH_31_COMMAND_LINE_NEWLINE: &[u8] = b"# 31 \"<command-line>\"\n";
 const HASH_32_COMMAND_LINE_2_NEWLINE: &[u8] = b"# 32 \"<command-line>\" 2\n";
 const INCBIN_DIRECTIVE: &[u8] = b".incbin";
 const COMPRESSED_CLANG_OFFLOAD_BUNDLE_MAGIC: &[u8] = b"CCOB";
+
+/// An entry that cannot be read, such as one truncated by a crash, is a miss
+/// rather than a failed compilation: the miss path overwrites it.
+fn read_preprocessor_cache_entry(
+    mut entry: impl io::Read,
+    key: &str,
+) -> Option<PreprocessorCacheEntry> {
+    let mut buf = vec![];
+    let result = entry
+        .read_to_end(&mut buf)
+        .map_err(Into::into)
+        .and_then(|_| PreprocessorCacheEntry::read(&buf));
+    match result {
+        Ok(entry) => Some(entry),
+        Err(e) => {
+            debug!("Ignoring unreadable preprocessor cache entry {key}: {e}");
+            None
+        }
+    }
+}
 
 /// Remember the include files in the preprocessor output if it can be cached.
 /// Returns `false` if preprocessor cache mode should be disabled.
