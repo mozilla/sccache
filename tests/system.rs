@@ -2291,6 +2291,84 @@ fn test_multiarch_depfile_matches_compiler(preprocessor_cache_mode: bool) {
     stop_local_daemon();
 }
 
+/// A preprocessor cache entry sccache cannot read, whether truncated or in a
+/// format it does not know, must not fail the compilation.
+#[test]
+#[serial]
+#[cfg(all(unix, not(target_os = "macos")))]
+fn test_unreadable_preprocessor_cache_entry_is_a_miss() {
+    let _ = env_logger::try_init();
+    let tempdir = tempfile::Builder::new()
+        .prefix("sccache_system_test")
+        .tempdir()
+        .unwrap();
+
+    let compiler = match find_compilers()
+        .into_iter()
+        .find(|c| c.name == "gcc" || c.name == "clang")
+    {
+        Some(compiler) => compiler,
+        None => {
+            warn!("No gcc or clang found, skipping test");
+            return;
+        }
+    };
+
+    copy_to_tempdir(&[INPUT], tempdir.path());
+    // Preprocessor cache mode does not store an entry for a file modified
+    // during the compilation.
+    let backdated =
+        filetime::FileTime::from_system_time(SystemTime::now() - Duration::from_secs(10));
+    filetime::set_file_times(tempdir.path().join(INPUT), backdated, backdated).unwrap();
+
+    let sccache_cfg = sccache_client_cfg(tempdir.path(), true);
+    write_json_cfg(tempdir.path(), "sccache-cfg.json", &sccache_cfg);
+    let cached_cfg = tempdir.path().join("sccache-cached-cfg");
+    stop_local_daemon();
+    start_local_daemon(&tempdir.path().join("sccache-cfg.json"), &cached_cfg);
+
+    let compile = |expected_hits: u64| {
+        zero_stats();
+        fs::remove_file(tempdir.path().join(OUTPUT)).ok();
+        sccache_command()
+            .args(compile_cmdline(
+                compiler.name,
+                &compiler.exe,
+                INPUT,
+                OUTPUT,
+                Vec::new(),
+            ))
+            .current_dir(tempdir.path())
+            .envs(compiler.env_vars.clone())
+            .assert()
+            .success();
+        get_stats(move |info| {
+            assert_eq!(expected_hits, info.stats.cache_hits.all());
+            assert_eq!(1 - expected_hits, info.stats.cache_misses.all());
+        });
+    };
+
+    compile(0);
+
+    let entries: Vec<_> =
+        walkdir::WalkDir::new(sccache_cfg.cache.disk.unwrap().dir.join("preprocessor"))
+            .into_iter()
+            .map(|entry| entry.unwrap())
+            .filter(|entry| entry.file_type().is_file())
+            .collect();
+    assert!(
+        !entries.is_empty(),
+        "no preprocessor cache entry was stored"
+    );
+    for entry in entries {
+        fs::write(entry.path(), [0xff]).unwrap();
+    }
+
+    // The object is still cached; only the preprocessor cache is unusable.
+    compile(1);
+    stop_local_daemon();
+}
+
 #[test]
 #[serial]
 fn test_stats_no_server() {
