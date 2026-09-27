@@ -2783,4 +2783,21 @@ mod tests {
         );
         assert_eq!(0, service.creator.lock().unwrap().children.len());
     }
+
+    #[test]
+    fn client_side_mode_rmeta_notification_delivery_on_rustc_miss() {
+        let (_f, runtime, service, compile) = rustc_miss_fixture();
+
+        let (resp, finished) = runtime.block_on(service.compile_direct(compile)).unwrap();
+        let finished = finished.expect("compile started");
+
+        assert!(matches!(resp, CompileResponse::CompileStarted));
+        assert_eq!(Some(0), finished.retcode);
+        assert_eq!(
+            [RMETA_NOTIFICATION, OTHER_STDERR].concat(),
+            finished.stderr,
+            "stderr delivered with CompileFinished"
+        );
+        assert_eq!(0, service.creator.lock().unwrap().children.len());
+    }
 }
