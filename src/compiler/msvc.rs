@@ -274,6 +274,9 @@ ArgData! {
     XClang(OsString), // -Xclang ...
     Clang(OsString), // -clang:...
     ExternalIncludePath(PathBuf),
+    ClangModuleFile(OsString),
+    ClangModuleOutput(OsString),
+    ClangLanguage(OsString),
 }
 
 use self::ArgData::*;
@@ -475,6 +478,8 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("fastfail", PassThrough),
     msvc_take_arg!("favor:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("feature:", OsString, Concatenated, PassThroughWithSuffix),
+    msvc_take_arg!("fmodule-file", OsString, Concatenated(b'='), ClangModuleFile),
+    msvc_take_arg!("fmodule-output", OsString, Concatenated(b'='), ClangModuleOutput),
     msvc_flag!("fno-sanitize-address-asan-compat-lib", PassThrough),
     msvc_flag!("fno-sanitize-address-vcasan-lib", PassThrough),
     msvc_take_arg!("fno-sanitize-coverage", OsString, Concatenated(b'='), PassThroughWithSuffix),
@@ -549,6 +554,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_take_arg!("we", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("winsysroot", PathBuf, CanBeSeparated, PassThroughWithPath),
     msvc_take_arg!("wo", OsString, Concatenated, PassThroughWithSuffix),
+    msvc_take_arg!("x", OsString, Separated, ClangLanguage),
     take_arg!("@", PathBuf, Concatenated, TooHardPath),
 ]);
 
@@ -576,6 +582,8 @@ pub fn parse_arguments(
     let mut xclangs: Vec<OsString> = vec![];
     let mut clangs: Vec<OsString> = vec![];
     let mut profile_generate = false;
+    let mut module_output = None;
+    let mut cxx_module = false;
     let mut multiple_input = false;
     let mut multiple_input_files = Vec::new();
 
@@ -624,6 +632,15 @@ pub fn parse_arguments(
             }
             Some(XClang(s)) => xclangs.push(s.clone()),
             Some(Clang(s)) => clangs.push(s.clone()),
+            Some(ClangModuleFile(val)) if is_clang && !val.is_empty() => {
+                let val = val.to_string_lossy();
+                extra_hash_files.push(cwd.join(val.split_once('=').map_or(&*val, |(_, p)| p)));
+            }
+            Some(ClangModuleOutput(p)) if !p.is_empty() => module_output = Some(PathBuf::from(p)),
+            Some(ClangLanguage(lang)) if is_clang && lang == "c++-module" => cxx_module = true,
+            Some(ClangModuleFile(_)) | Some(ClangModuleOutput(_)) | Some(ClangLanguage(_)) => {
+                cannot_cache!(arg.flag_str().expect("Can't be Argument::Raw/UnknownFlag"))
+            }
             None => {
                 match arg {
                     Argument::Raw(ref val) if val == "--" => {
@@ -651,6 +668,9 @@ pub fn parse_arguments(
                         .iter_os_strings(),
                 ),
             Some(ProgramDatabase(_))
+            | Some(ClangModuleFile(_))
+            | Some(ClangModuleOutput(_))
+            | Some(ClangLanguage(_))
             | Some(DebugInfo)
             | Some(PassThrough)
             | Some(PassThroughWithPath(_))
@@ -793,7 +813,12 @@ pub fn parse_arguments(
             format!("{:?}", multiple_input_files)
         );
     }
+    // Either flag alone leaves clang-cl's BMI unwritten or untracked.
+    if cxx_module != module_output.is_some() {
+        cannot_cache!("-x c++-module without -fmodule-output= or vice versa");
+    }
     let (input, language) = match input_arg {
+        Some(i) if cxx_module => (i.clone(), Language::CxxModule),
         Some(i) => match Language::from_file_name(Path::new(&i)) {
             Some(l) => (i.clone(), l),
             None => cannot_cache!("unknown source language"),
@@ -848,6 +873,15 @@ pub fn parse_arguments(
                 );
             }
         }
+    }
+    if let Some(path) = module_output {
+        outputs.insert(
+            "module",
+            ArtifactDescriptor {
+                path,
+                optional: false,
+            },
+        );
     }
     if language == Language::Cxx
         && let Some(obj) = outputs.get("obj")
@@ -1871,6 +1905,60 @@ mod test {
             extra_hash_files,
             ovec!(std::env::current_dir().unwrap().join("xyz.profdata"))
         );
+    }
+
+    #[test]
+    fn test_parse_arguments_clang_cl_cxx20_modules() {
+        let args = ovec![
+            "-c",
+            "-x",
+            "c++-module",
+            "-fmodule-output=m.pcm",
+            "-fmodule-file=n=n.pcm",
+            "-fmodule-file=o.pcm",
+            "m.cpp"
+        ];
+        let a = match parse_arguments_clang(args.clone()) {
+            CompilerArguments::Ok(a) => a,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(Language::CxxModule, a.language);
+        assert_eq!(Path::new("m.pcm"), a.outputs["module"].path);
+        assert!(!a.outputs["module"].optional);
+        assert_eq!(args[1..6], a.common_args);
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(
+            ovec![cwd.join("n.pcm"), cwd.join("o.pcm")],
+            a.extra_hash_files
+        );
+        let a = match parse_arguments_clang(ovec!["-c", "-fmodule-file=o.pcm", "u.cpp"]) {
+            CompilerArguments::Ok(a) => a,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(ovec![cwd.join("o.pcm")], a.extra_hash_files);
+
+        let paired = "-x c++-module without -fmodule-output= or vice versa";
+        for (args, why) in [
+            (ovec!["-c", "-x", "c++-module", "m.cpp"], paired),
+            (ovec!["-c", "-fmodule-output=m.pcm", "m.cppm"], paired),
+            (ovec!["-c", "-fmodule-output", "m.cppm"], "-fmodule-output"),
+            (ovec!["-c", "-fmodule-file=", "u.cpp"], "-fmodule-file"),
+            (ovec!["-c", "-x", "c++", "m.cpp"], "-x"),
+        ] {
+            assert_eq!(
+                CompilerArguments::CannotCache(why, None),
+                parse_arguments_clang(args)
+            );
+        }
+        for (args, why) in [
+            (ovec!["-c", "-fmodule-file=m.pcm", "u.cpp"], "-fmodule-file"),
+            (args, "-x"),
+        ] {
+            assert_eq!(
+                CompilerArguments::CannotCache(why, None),
+                parse_arguments(args)
+            );
+        }
     }
 
     #[test]
