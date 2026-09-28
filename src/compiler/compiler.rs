@@ -169,6 +169,14 @@ pub struct SingleCompileCommand {
     pub arguments: Vec<OsString>,
     pub env_vars: Vec<(OsString, OsString)>,
     pub cwd: PathBuf,
+    /// Whether this compiler participates in the GNU make jobserver.
+    ///
+    /// Deliberately a field rather than a defaulted builder method: the
+    /// compiler then makes every frontend answer, so a new one cannot
+    /// silently get this wrong. Getting it wrong in the `true` direction
+    /// costs a `fork` per compile; in the `false` direction it costs `rustc`
+    /// its parallelism limit, which is what the jobserver exists to enforce.
+    pub share_jobserver: bool,
 }
 
 #[async_trait]
@@ -199,6 +207,7 @@ impl CompileCommandImpl for SingleCompileCommand {
             arguments,
             env_vars,
             cwd,
+            share_jobserver,
         } = self;
         // Resolve compiler avoiding ccache wrappers to prevent double-caching.
         let resolved_executable = resolve_compiler_avoiding_wrapper(executable, env_vars);
@@ -207,6 +216,9 @@ impl CompileCommandImpl for SingleCompileCommand {
             .env_clear()
             .envs(env_vars.clone())
             .current_dir(cwd);
+        if *share_jobserver {
+            cmd.share_jobserver();
+        }
         run_input_output(cmd, None).await
     }
 }
@@ -2658,6 +2670,94 @@ LLVM version: 6.0",
             .collect();
         assert_eq!(results.len(), 2);
         assert_ne!(results[0].key, results[1].key);
+    }
+
+    #[test_case(true ; "with preprocessor cache")]
+    #[test_case(false ; "without preprocessor cache")]
+    fn test_multiarch_hash_covers_every_arch(preprocessor_cache_mode: bool) {
+        let f = TestFixture::new();
+        let clang = f.mk_bin("clang").unwrap();
+        let runtime = single_threaded_runtime();
+        let pool = runtime.handle();
+        let cwd = f.tempdir.path();
+        // Write a dummy input file so the preprocessor cache mode can work
+        std::fs::write(f.tempdir.path().join("foo.c"), "whatever").unwrap();
+
+        let key = |arguments: &[OsString], x86_64_output: &str, arm64_output: &str| {
+            let creator = new_creator();
+            next_command(
+                &creator,
+                Ok(MockChild::new(
+                    exit_status(0),
+                    "compiler_id=clang\ncompiler_version=\"16.0.0\"",
+                    "",
+                )),
+            );
+            next_assembler(&creator, "GNU assembler (GNU Binutils) 2.42", "");
+            let c = detect_compiler(
+                creator.clone(),
+                &clang,
+                f.tempdir.path(),
+                &[],
+                &[],
+                pool,
+                None,
+            )
+            .wait()
+            .unwrap()
+            .0;
+            let outputs = [
+                ("x86_64", x86_64_output.to_owned()),
+                ("arm64", arm64_output.to_owned()),
+            ];
+            for _ in 0..outputs.len() {
+                let outputs = outputs.clone();
+                next_command_calls(&creator, move |args| {
+                    let output = outputs
+                        .iter()
+                        .find(|(arch, _)| args.iter().any(|a| a == arch))
+                        .map(|(_, output)| output.clone())
+                        .unwrap_or_default();
+                    Ok(MockChild::new(exit_status(0), output, ""))
+                });
+            }
+            let mut hasher = match c.parse_arguments(arguments, ".".as_ref(), &[]) {
+                CompilerArguments::Ok(h) => h,
+                o => panic!("Bad result from parse_arguments: {:?}", o),
+            };
+            hasher
+                .generate_hash_key(
+                    &creator,
+                    cwd.to_path_buf(),
+                    vec![],
+                    false,
+                    pool,
+                    false,
+                    Arc::new(MockStorage::new(None, preprocessor_cache_mode)),
+                    CacheControl::Default,
+                )
+                .wait()
+                .unwrap()
+                .key
+        };
+
+        temp_env::with_var("SCCACHE_CACHE_MULTIARCH", Some("1"), || {
+            let fat = ovec![
+                "-arch", "x86_64", "-arch", "arm64", "-c", "foo.c", "-o", "foo.o"
+            ];
+            assert_eq!(
+                key(&fat, "x86_64 code\n", "arm64 code\n"),
+                key(&fat, "x86_64 code\n", "arm64 code\n")
+            );
+            assert_ne!(
+                key(&fat, "x86_64 code\n", "arm64 code\n"),
+                key(&fat, "x86_64 code\n", "arm64 code, changed\n")
+            );
+            assert_ne!(
+                key(&fat, "x86_64 code\n", "arm64 code\n"),
+                key(&fat, "x86_64 code, changed\n", "arm64 code\n")
+            );
+        });
     }
 
     #[test_case(true ; "with preprocessor cache")]

@@ -46,6 +46,15 @@ jobs:
       - name: Test
         run: cd tests/integration && WITH_COVERAGE=1 make test-${{ matrix.type }}
 
+      - name: Show sccache log
+        if: failure()
+        run: |
+          if [ -f target/integration-coverage/sccache.log ]; then
+            cat target/integration-coverage/sccache.log
+          else
+            echo "No sccache log was produced."
+          fi
+
       - name: Build report
         run: |
           cd tests/integration
