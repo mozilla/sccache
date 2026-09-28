@@ -66,7 +66,7 @@ export SCCACHE_MEMCACHED_KEY_PREFIX="/chain-test-l2/"
 
 # L3: S3 configuration
 export SCCACHE_BUCKET="test"
-export SCCACHE_ENDPOINT="http://minio:9000"
+export SCCACHE_ENDPOINT="http://silo:9000"
 export SCCACHE_REGION="us-east-1"
 export SCCACHE_S3_USE_SSL="false"
 export SCCACHE_S3_KEY_PREFIX="chain-test-l3/"
