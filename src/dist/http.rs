@@ -741,32 +741,34 @@ mod server {
                     "Adding new certificate for {} to scheduler",
                     server_id.addr()
                 );
-                let mut client_builder = reqwest::blocking::ClientBuilder::new();
-                // Add the new/updated certificate for this server
-                client_builder = client_builder.add_root_certificate(
-                    reqwest::Certificate::from_pem(&cert_pem)
-                        .context("failed to interpret pem as certificate")?,
-                );
-                // Add all OTHER existing certificates (skip the one we're updating)
-                for (sid, (_, existing_cert_pem)) in certs.iter() {
-                    if sid == &server_id {
-                        continue;
+                let previous = certs.insert(server_id, (cert_digest, cert_pem));
+                let build_client = |certs: &HashMap<ServerId, (Vec<u8>, Vec<u8>)>| {
+                    let mut client_builder = reqwest::blocking::ClientBuilder::new();
+                    for (_, cert_pem) in certs.values() {
+                        client_builder = client_builder.add_root_certificate(
+                            reqwest::Certificate::from_pem(cert_pem)
+                                .context("failed to interpret pem as certificate")?,
+                        );
                     }
-                    client_builder = client_builder.add_root_certificate(
-                        reqwest::Certificate::from_pem(existing_cert_pem)
-                            .context("failed to interpret pem as certificate")?,
-                    );
+                    client_builder
+                        // Disable connection pool to avoid broken connection
+                        // between runtime
+                        .pool_max_idle_per_host(0)
+                        .build()
+                        .context("failed to create a HTTP client")
+                };
+                match build_client(certs) {
+                    Ok(new_client) => *client = new_client,
+                    Err(e) => {
+                        // Restore the map to match the client, otherwise the digest
+                        // check above would skip the rebuild on the next heartbeat.
+                        match previous {
+                            Some(previous) => certs.insert(server_id, previous),
+                            None => certs.remove(&server_id),
+                        };
+                        return Err(e);
+                    }
                 }
-                // Finish the client
-                let new_client = client_builder
-                    // Disable connection pool to avoid broken connection
-                    // between runtime
-                    .pool_max_idle_per_host(0)
-                    .build()
-                    .context("failed to create a HTTP client")?;
-                // Use the updated certificates
-                *client = new_client;
-                certs.insert(server_id, (cert_digest, cert_pem));
                 Ok(())
             }
 
