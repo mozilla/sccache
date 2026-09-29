@@ -1436,7 +1436,8 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                 // We can't cache non-rlib/staticlib crates, because rustc invokes the
                 // system linker to link them, and we don't know about all the linker inputs.
                 if !others.is_empty() {
-                    let others: Vec<&str> = others.iter().map(String::as_str).collect();
+                    let mut others: Vec<&str> = others.iter().map(String::as_str).collect();
+                    others.sort_unstable();
                     let others_string = others.join(",");
                     cannot_cache!("crate-type", others_string)
                 }
@@ -3162,6 +3163,25 @@ LLVM version: 15.0.2
                 "/foo/target/debug/deps/liblibc-89a24418d48d484a.rlib",
                 "/foo/target/debug/deps/liblog-2f7366be74992849.rlib"
             ]
+        );
+    }
+
+    #[test]
+    fn test_parse_arguments_non_cacheable_crate_types_are_deterministic() {
+        let result = fails!(
+            "--emit",
+            "link",
+            "foo.rs",
+            "--out-dir",
+            "out",
+            "--crate-name",
+            "foo",
+            "--crate-type",
+            "proc-macro,bin"
+        );
+        assert_eq!(
+            result,
+            CompilerArguments::CannotCache("crate-type", Some("bin,proc-macro".to_string()))
         );
     }
 
