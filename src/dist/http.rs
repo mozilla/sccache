@@ -754,7 +754,7 @@ mod server {
                     }
                     client_builder = client_builder.add_root_certificate(
                         reqwest::Certificate::from_pem(existing_cert_pem)
-                            .expect("previously valid cert"),
+                            .context("failed to interpret pem as certificate")?,
                     );
                 }
                 // Finish the client
