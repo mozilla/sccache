@@ -862,6 +862,10 @@ where
     compile_cmd
         .execute(&service, &creator)
         .await
+        .or_else(|e| match e.downcast::<ProcessError>() {
+            Ok(ProcessError(output)) => Ok(output),
+            Err(e) => Err(e),
+        })
         .map(move |o| (cacheable, DistType::NoDist, o))
 }
 
@@ -896,6 +900,10 @@ where
             return compile_cmd
                 .execute(service, &creator)
                 .await
+                .or_else(|e| match e.downcast::<ProcessError>() {
+                    Ok(ProcessError(output)) => Ok(output),
+                    Err(e) => Err(e),
+                })
                 .map(move |o| (cacheable, DistType::NoDist, o));
         }
     };
@@ -985,7 +993,7 @@ where
                 )
             })?;
 
-        let mut jc = match jres {
+        let jc = match jres {
             dist::RunJobResult::Complete(jc) => jc,
             dist::RunJobResult::JobNotFound => bail!("Job {} not found on server", job_id),
         };
@@ -1051,12 +1059,23 @@ where
         );
 
         if jc.output.code != 0 {
-            // Add server info to help diagnose host-specific failures, e.g. due to flaky hardware.
-            // Failed builds are not cached so this tampering should not cause too much trouble.
+            // The remote job ran (so this is not a transport/allocation
+            // error the `or_else` fallback below already handles) but the
+            // compiler exited non-zero on the worker. That can be a genuine
+            // compile error, or an artifact of distribution: e.g. a proc
+            // macro reading a file relative to its own crate directory
+            // through plain fs I/O instead of rustc's dep-info, so the file
+            // was never packaged for the worker (wayland-client's
+            // `generate_interfaces!("wayland.xml")`). Route it through
+            // `try_or_cleanup!`, removing the outputs the failed job wrote,
+            // and on into the local fallback: a dist-only failure recovers,
+            // and a genuine error reproduces locally with local diagnostics.
             let server_info = format!("sccache: Job failed on server {}:\n", server_id.addr());
-            jc.output
-                .stderr
-                .splice(0..0, server_info.as_bytes().to_vec());
+            let remote_failure: Result<()> = Err(anyhow!(
+                "{server_info}{}",
+                String::from_utf8_lossy(&jc.output.stderr)
+            ));
+            try_or_cleanup!(remote_failure);
         }
 
         Ok((DistType::Ok(server_id), jc.output.into()))
@@ -1086,6 +1105,10 @@ where
                 compile_cmd
                     .execute(service, &creator)
                     .await
+                    .or_else(|e| match e.downcast::<ProcessError>() {
+                        Ok(ProcessError(output)) => Ok(output),
+                        Err(e) => Err(e),
+                    })
                     .map(|o| (DistType::Error, o))
             }
         })
@@ -3700,6 +3723,123 @@ LLVM version: 6.0",
             assert_eq!(exit_status(0), res.status);
             assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
             assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
+        }
+    }
+
+    /// A remote job that runs but exits non-zero must fall back to a local
+    /// compile like any other dist failure: a failure that only happens on
+    /// the worker (e.g. a proc macro reading a crate-relative file the dist
+    /// packager never shipped) recovers, and a genuine error is reported
+    /// from the local compiler rather than the worker's output.
+    #[test_case(0 ; "dist-only failure recovers locally")]
+    #[test_case(1 ; "genuine failure reported by local compiler")]
+    #[cfg(feature = "dist-client")]
+    fn test_compiler_get_cached_or_compile_dist_nonzero_exit_falls_back(
+        local_code: ExitStatusValue,
+    ) {
+        drop(env_logger::try_init());
+        let creator = new_creator();
+        let f = TestFixture::new();
+        let gcc = f.mk_bin("gcc").unwrap();
+        let runtime = Runtime::new().unwrap();
+        let pool = runtime.handle().clone();
+        std::fs::write(f.tempdir.path().join("foo.c"), "whatever").unwrap();
+        let storage = Arc::new(DiskCache::new(
+            f.tempdir.path().join("cache"),
+            u64::MAX,
+            &pool,
+            PreprocessorCacheModeConfig::default(),
+            CacheMode::ReadWrite,
+            vec![],
+        ));
+        // Pretend to be GCC.
+        next_command(
+            &creator,
+            Ok(MockChild::new(exit_status(0), "compiler_id=gcc", "")),
+        );
+        next_assembler(&creator, "GNU assembler (GNU Binutils) 2.42", "");
+        let c = get_compiler_info(
+            creator.clone(),
+            &gcc,
+            f.tempdir.path(),
+            &[],
+            &[],
+            &pool,
+            None,
+        )
+        .wait()
+        .unwrap()
+        .0;
+        // The preprocessor invocation.
+        next_command(
+            &creator,
+            Ok(MockChild::new(exit_status(0), "preprocessor output", "")),
+        );
+        // The local compile the failed remote job falls back to.
+        const LOCAL_STDOUT: &[u8] = b"local stdout";
+        const LOCAL_STDERR: &[u8] = b"local stderr";
+        let obj = f.tempdir.path().join("foo.o");
+        let o = obj.clone();
+        next_command_calls(&creator, move |_| {
+            if local_code == 0 {
+                File::create(&o)?.write_all(b"local contents")?;
+            }
+            Ok(MockChild::new(
+                exit_status(local_code),
+                LOCAL_STDOUT,
+                LOCAL_STDERR,
+            ))
+        });
+        // The worker runs the job, writes the output, and exits non-zero.
+        let dist_client = test_dist::OneshotClient::new(
+            1,
+            vec![],
+            b"error: proc macro panicked: Failed to open protocol file".to_vec(),
+        );
+        let service = server::SccacheService::mock_with_dist_client(
+            dist_client.clone(),
+            storage.clone(),
+            pool.clone(),
+        );
+        let arguments = ovec!["-c", "foo.c", "-o", "foo.o"];
+        let mut hasher = match c.parse_arguments(&arguments, ".".as_ref(), &[]) {
+            CompilerArguments::Ok(h) => h,
+            o => panic!("Bad result from parse_arguments: {:?}", o),
+        };
+        let (cached, res) = hasher
+            .get_cached_or_compile(
+                &service,
+                Some(dist_client),
+                creator,
+                storage,
+                arguments,
+                f.tempdir.path().to_path_buf(),
+                vec![],
+                CacheControl::ForceRecache,
+                pool,
+            )
+            .wait()
+            .unwrap();
+        assert_eq!(exit_status(local_code), res.status);
+        assert_eq!(LOCAL_STDOUT, res.stdout.as_slice());
+        assert_eq!(LOCAL_STDERR, res.stderr.as_slice());
+        match cached {
+            CompileResult::CacheMiss(MissType::ForcedRecache, DistType::Error, _, f)
+                if local_code == 0 =>
+            {
+                // The worker's output was removed and replaced by the local one.
+                assert_eq!(
+                    b"local contents".as_slice(),
+                    fs::read(&obj).unwrap().as_slice()
+                );
+                // wait on cache write future so we don't race with it!
+                f.wait().unwrap();
+            }
+            CompileResult::CompileFailed(DistType::Error, _) if local_code != 0 => {
+                // The failed worker's output is not left behind.
+                assert!(!obj.exists());
+            }
+            _ => panic!("Unexpected compile result: {:?}", cached),
         }
     }
 }
