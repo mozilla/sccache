@@ -1066,6 +1066,129 @@ fn test_mixed_readonly_chain_is_readwrite_in_check() {
     });
 }
 
+struct CheckFailingStorage;
+
+#[async_trait]
+impl Storage for CheckFailingStorage {
+    async fn get(&self, _key: &str) -> Result<Cache> {
+        Err(anyhow!("intentional check failure"))
+    }
+
+    async fn put(&self, _key: &str, _entry: CacheWrite) -> Result<Duration> {
+        Err(anyhow!("intentional check failure"))
+    }
+
+    async fn check(&self) -> Result<CacheMode> {
+        Err(anyhow!("intentional check failure"))
+    }
+
+    fn location(&self) -> String {
+        "CheckFailingStorage".to_owned()
+    }
+
+    async fn current_size(&self) -> Result<Option<u64>> {
+        Ok(None)
+    }
+
+    async fn max_size(&self) -> Result<Option<u64>> {
+        Ok(None)
+    }
+}
+
+#[test]
+fn test_unavailable_l1_does_not_block_healthy_l0() {
+    let runtime = RuntimeBuilder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let l0 = Arc::new(InMemoryStorage::new());
+    let l1 = Arc::new(CheckFailingStorage);
+    let storage = MultiLevelStorage::new(vec![l0 as Arc<dyn Storage>, l1 as Arc<dyn Storage>]);
+
+    runtime.block_on(async {
+        assert!(matches!(
+            storage.check().await.unwrap(),
+            CacheMode::ReadWrite
+        ));
+    });
+}
+
+#[test]
+fn test_unavailable_l1_keeps_readonly_l0_chain_potentially_writable() {
+    let runtime = RuntimeBuilder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let l0 = Arc::new(ReadOnlyStorage(Arc::new(InMemoryStorage::new())));
+    let l1 = Arc::new(CheckFailingStorage);
+    let storage = MultiLevelStorage::new(vec![l0 as Arc<dyn Storage>, l1 as Arc<dyn Storage>]);
+
+    runtime.block_on(async {
+        assert!(matches!(
+            storage.check().await.unwrap(),
+            CacheMode::ReadWrite
+        ));
+    });
+}
+
+#[test]
+fn test_unavailable_l1_remains_fatal_with_all_write_policy() {
+    let runtime = RuntimeBuilder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let l0 = Arc::new(InMemoryStorage::new());
+    let l1 = Arc::new(CheckFailingStorage);
+    let storage = MultiLevelStorage::with_write_error_policy(
+        vec![l0 as Arc<dyn Storage>, l1 as Arc<dyn Storage>],
+        WriteErrorPolicy::All,
+    );
+
+    runtime.block_on(async {
+        assert!(storage.check().await.is_err());
+    });
+}
+
+#[test]
+fn test_unavailable_l0_is_tolerated_with_ignore_write_policy() {
+    let runtime = RuntimeBuilder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let l0 = Arc::new(CheckFailingStorage);
+    let storage = MultiLevelStorage::with_write_error_policy(
+        vec![l0 as Arc<dyn Storage>],
+        WriteErrorPolicy::Ignore,
+    );
+
+    runtime.block_on(async {
+        assert!(matches!(
+            storage.check().await.unwrap(),
+            CacheMode::ReadWrite
+        ));
+    });
+}
+
+#[test]
+fn test_unavailable_l0_remains_fatal() {
+    let runtime = RuntimeBuilder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let l0 = Arc::new(CheckFailingStorage);
+    let l1 = Arc::new(InMemoryStorage::new());
+    let storage = MultiLevelStorage::new(vec![l0 as Arc<dyn Storage>, l1 as Arc<dyn Storage>]);
+
+    runtime.block_on(async {
+        assert!(storage.check().await.is_err());
+    });
+}
+
 #[test]
 fn test_all_readonly_chain_is_readonly_in_check() {
     // Only a chain in which EVERY level is read-only is itself read-only.

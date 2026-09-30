@@ -908,9 +908,23 @@ impl Storage for MultiLevelStorage {
                     result = CacheMode::ReadWrite;
                     trace!("Cache level {} is read-write", idx);
                 }
-                Err(e) => {
-                    warn!("Error checking cache level {}: {}", idx, e);
-                    return Err(e);
+                Err(error)
+                    if self.write_error_policy == WriteErrorPolicy::All
+                        || (idx == 0 && self.write_error_policy == WriteErrorPolicy::L0) =>
+                {
+                    warn!("Error checking required cache level {}: {}", idx, error);
+                    return Err(error);
+                }
+                Err(error) => {
+                    // A tolerated check failure must not make the composite
+                    // permanently read-only. The level may recover and be
+                    // writable later; actual write failures are handled by
+                    // write_error_policy.
+                    result = CacheMode::ReadWrite;
+                    warn!(
+                        "Cache level {} is unavailable during startup check: {}; continuing and treating it as potentially writable",
+                        idx, error
+                    );
                 }
             }
         }
