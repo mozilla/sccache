@@ -221,6 +221,7 @@ Multi-level caching enables hierarchical cache storage with automatic backfill. 
   - `l0` - fail only if L0 (first level) write fails (default, balances reliability and performance)
   - `all` - fail if any read-write level fails (most strict)
   - Read-only levels are always skipped and never cause failures
+* `SCCACHE_MULTILEVEL_SLOW_WRITE_CONCURRENCY` limits concurrent writes/backfills to slower cache levels (default: `4`; minimum: `1`)
 
 **Basic example**:
 ```bash

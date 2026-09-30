@@ -29,13 +29,13 @@ use crate::protocol::{
     Compile, CompileFinished, CompileResponse, Request, Response, StorageHandshakeInfo,
 };
 use crate::util;
-#[cfg(feature = "dist-client")]
 use anyhow::Context as _;
 use bytes::{Bytes, BytesMut, buf::BufMut};
 use filetime::FileTime;
 use fs::metadata;
 use fs_err as fs;
 use futures::channel::mpsc;
+use futures::channel::oneshot;
 use futures::future::FutureExt;
 use futures::{Sink, SinkExt, Stream, StreamExt, TryFutureExt, future};
 use number_prefix::NumberPrefix;
@@ -676,6 +676,7 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
             timeout,
             wait,
         } = self;
+        let storage = Arc::clone(&service.storage);
 
         // Create our "server future" which will simply handle all incoming
         // connections in separate tasks.
@@ -692,6 +693,9 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
                 #[allow(clippy::let_underscore_future)]
                 let _ = tokio::spawn(conn);
             }
+
+            #[allow(unreachable_code)]
+            Ok::<(), io::Error>(())
         };
 
         // Right now there's a whole bunch of ways to shut down this server for
@@ -711,7 +715,7 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
         });
 
         let shutdown_idle = async {
-            ShutdownOrInactive {
+            let done = ShutdownOrInactive {
                 rx,
                 timeout: if timeout != Duration::new(0, 0) {
                     Some(Box::pin(sleep(timeout)))
@@ -722,13 +726,14 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
             }
             .await;
             info!("shutting down due to being idle or request");
+            done
         };
 
-        runtime.block_on(async {
+        let shutdown_ack = runtime.block_on(async {
             futures::select! {
-                server = server.fuse() => server,
-                _res = shutdown.fuse() => Ok(()),
-                _res = shutdown_idle.fuse() => Ok::<_, io::Error>(()),
+                server = server.fuse() => server.map(|()| None),
+                _res = shutdown.fuse() => Ok(None),
+                done = shutdown_idle.fuse() => Ok::<_, io::Error>(done),
             }
         })?;
 
@@ -746,7 +751,40 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
         //
         // Note that we cap the amount of time this can take, however, as we
         // don't want to wait *too* long.
-        runtime.block_on(async { time::timeout(SHUTDOWN_TIMEOUT, wait).await })?;
+        let allowed_remaining = usize::from(shutdown_ack.is_some());
+        let clients_timed_out = runtime
+            .block_on(async {
+                time::timeout(
+                    SHUTDOWN_TIMEOUT,
+                    wait.with_allowed_remaining(allowed_remaining),
+                )
+                .await
+            })
+            .is_err();
+        warn_on_shutdown_timeout(clients_timed_out, "waiting for active client connections");
+
+        info!(
+            "draining detached cache work for at most {} seconds",
+            SHUTDOWN_TIMEOUT.as_secs()
+        );
+        let cache_drain_timed_out = runtime
+            .block_on(async { time::timeout(SHUTDOWN_TIMEOUT, storage.drain_background()).await })
+            .is_err();
+        warn_on_shutdown_timeout(cache_drain_timed_out, "draining background cache work");
+
+        if let Some(done) = shutdown_ack {
+            let _ = done.send(());
+            // Keep the runtime alive until the shutdown RPC has written its response and
+            // released its final service reference. Otherwise `--stop-server` can observe
+            // EOF after the drain completed but before `ShuttingDown` reached the client.
+            let shutdown_client_timed_out = runtime
+                .block_on(async { time::timeout(SHUTDOWN_TIMEOUT, wait).await })
+                .is_err();
+            warn_on_shutdown_timeout(
+                shutdown_client_timed_out,
+                "finishing the shutdown client connection",
+            );
+        }
 
         info!("ok, fully shutting down now");
 
@@ -849,7 +887,7 @@ pub enum ServerMessage {
     /// A message sent whenever a request is received.
     Request,
     /// Message sent whenever a shutdown request is received.
-    Shutdown,
+    Shutdown(oneshot::Sender<()>),
 }
 
 impl<C> Service<SccacheRequest> for Arc<SccacheService<C>>
@@ -897,18 +935,16 @@ where
                 }
                 Request::Shutdown => {
                     debug!("handle_client: shutdown");
+                    let info = me.get_info().await?;
+                    let (done_tx, done_rx) = oneshot::channel();
                     let mut tx = me.tx.clone();
-                    future::try_join(
-                        async {
-                            let _ = tx.send(ServerMessage::Shutdown).await;
-                            Ok(())
-                        },
-                        me.get_info(),
-                    )
-                    .await
-                    .map(move |(_, info)| {
-                        Message::WithoutBody(Response::ShuttingDown(Box::new(info)))
-                    })
+                    tx.send(ServerMessage::Shutdown(done_tx))
+                        .await
+                        .context("failed to request server shutdown")?;
+                    done_rx
+                        .await
+                        .context("server shutdown ended before cache drain completed")?;
+                    Ok(Message::WithoutBody(Response::ShuttingDown(Box::new(info))))
                 }
                 Request::StorageHandshake => {
                     debug!("handle_client: storage_handshake");
@@ -2409,6 +2445,12 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
     }
 }
 
+fn warn_on_shutdown_timeout(timed_out: bool, phase: &str) {
+    if timed_out {
+        warn!("timed out while {phase}");
+    }
+}
+
 struct ShutdownOrInactive {
     rx: mpsc::Receiver<ServerMessage>,
     timeout: Option<Pin<Box<Sleep>>>,
@@ -2416,34 +2458,37 @@ struct ShutdownOrInactive {
 }
 
 impl Future for ShutdownOrInactive {
-    type Output = ();
+    type Output = Option<oneshot::Sender<()>>;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<oneshot::Sender<()>>> {
         loop {
             match Pin::new(&mut self.rx).poll_next(cx) {
                 Poll::Pending => break,
                 // Shutdown received!
-                Poll::Ready(Some(ServerMessage::Shutdown)) => return Poll::Ready(()),
+                Poll::Ready(Some(ServerMessage::Shutdown(done))) => {
+                    return Poll::Ready(Some(done));
+                }
                 Poll::Ready(Some(ServerMessage::Request)) => {
                     if self.timeout_dur != Duration::new(0, 0) {
                         self.timeout = Some(Box::pin(sleep(self.timeout_dur)));
                     }
                 }
                 // All services have shut down, in theory this isn't possible...
-                Poll::Ready(None) => return Poll::Ready(()),
+                Poll::Ready(None) => return Poll::Ready(None),
             }
         }
         match self.timeout {
             None => Poll::Pending,
-            Some(ref mut timeout) => timeout.as_mut().poll(cx),
+            Some(ref mut timeout) => timeout.as_mut().poll(cx).map(|()| None),
         }
     }
 }
 
-/// Helper future which tracks the `ActiveInfo` below. This future will resolve
-/// once all instances of `ActiveInfo` have been dropped.
+/// Tracks `ActiveInfo` instances and resolves once no more than the configured
+/// number remain.
 pub(crate) struct WaitUntilZero {
     info: std::sync::Weak<std::sync::Mutex<Info>>,
+    allowed_remaining: usize,
 }
 
 #[derive(Clone)]
@@ -2456,9 +2501,11 @@ struct Info {
     waker: Option<Waker>,
 }
 
-impl Drop for Info {
+impl Drop for ActiveInfo {
     fn drop(&mut self) {
-        if let Some(waker) = self.waker.as_ref() {
+        if let Ok(info) = self.info.lock()
+            && let Some(waker) = info.waker.as_ref()
+        {
             waker.wake_by_ref();
         }
     }
@@ -2469,7 +2516,20 @@ impl WaitUntilZero {
     pub(crate) fn new() -> (WaitUntilZero, ActiveInfo) {
         let info = Arc::new(std::sync::Mutex::new(Info { waker: None }));
 
-        (WaitUntilZero { info: Arc::downgrade(&info) }, ActiveInfo { info })
+        (
+            WaitUntilZero {
+                info: Arc::downgrade(&info),
+                allowed_remaining: 0,
+            },
+            ActiveInfo { info },
+        )
+    }
+
+    fn with_allowed_remaining(&self, allowed_remaining: usize) -> Self {
+        Self {
+            info: self.info.clone(),
+            allowed_remaining,
+        }
     }
 }
 
@@ -2480,7 +2540,15 @@ impl std::future::Future for WaitUntilZero {
         match self.info.upgrade() {
             None => std::task::Poll::Ready(()),
             Some(arc) => {
+                // Serialize the count check with `ActiveInfo::drop()`. Otherwise a
+                // service could drop to the allowed count between the check and
+                // waker registration, leaving no later drop to wake this future.
                 let mut info = arc.lock().expect("we can't panic when holding lock");
+                // `upgrade` itself contributes one temporary strong reference.
+                let active = Arc::strong_count(&arc).saturating_sub(1);
+                if active <= self.allowed_remaining {
+                    return std::task::Poll::Ready(());
+                }
                 info.waker = Some(cx.waker().clone());
                 std::task::Poll::Pending
             }
@@ -2489,7 +2557,7 @@ impl std::future::Future for WaitUntilZero {
 }
 
 #[test]
-fn waits_until_zero() {
+fn waits_until_active_limit() {
     let (wait, _active) = WaitUntilZero::new();
     assert_eq!(wait.now_or_never(), None);
 
@@ -2506,6 +2574,38 @@ fn waits_until_zero() {
     drop(active);
     drop(active2);
     assert_eq!(wait.now_or_never(), Some(()));
+
+    let (wait, _active) = WaitUntilZero::new();
+    assert_eq!(wait.with_allowed_remaining(1).now_or_never(), Some(()));
+
+    let (wait, active) = WaitUntilZero::new();
+    let _active2 = active.clone();
+    assert_eq!(wait.with_allowed_remaining(1).now_or_never(), None);
+}
+
+#[test]
+fn shutdown_message_variant_is_constructible() {
+    let (done, _rx) = oneshot::channel();
+    let message = ServerMessage::Shutdown(done);
+    assert!(matches!(message, ServerMessage::Shutdown(_)));
+}
+
+#[test]
+fn shutdown_timeout_warning_handles_both_states() {
+    warn_on_shutdown_timeout(false, "test phase");
+    warn_on_shutdown_timeout(true, "test phase");
+}
+
+#[test]
+fn shutdown_or_inactive_resolves_when_channel_closes() {
+    let (tx, rx) = mpsc::channel(1);
+    drop(tx);
+    let shutdown = ShutdownOrInactive {
+        rx,
+        timeout: None,
+        timeout_dur: Duration::ZERO,
+    };
+    assert!(matches!(shutdown.now_or_never(), Some(None)));
 }
 
 #[cfg(test)]
