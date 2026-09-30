@@ -447,6 +447,7 @@ mod test {
                     multilevel: Some(config::MultiLevelConfig {
                         chain: vec!["s3".to_owned()],
                         write_error_policy: config::WriteErrorPolicy::default(),
+                        slow_write_concurrency: 4,
                     }),
                     ..Default::default()
                 },
