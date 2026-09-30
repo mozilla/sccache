@@ -190,7 +190,9 @@ impl OverlayBuilder {
                 entry.clone()
             } else {
                 trace!("Creating toolchain directory for {}", tc.archive_id);
-                fs::create_dir(&toolchain_dir)?;
+                if !toolchain_dir.exists() {
+                    fs::create_dir(&toolchain_dir)?;
+                }
 
                 let mut tccache = tccache.lock().unwrap();
                 let toolchain_rdr = match tccache.get(tc) {
