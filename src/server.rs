@@ -257,6 +257,7 @@ impl DistClientContainer {
     pub async fn get_status(&self) -> DistInfo {
         let mut guard = self.state.lock().await;
         let state = &mut *guard;
+        Self::maybe_recreate_state(state).await;
         let (client, scheduler_url) = match state {
             DistClientState::Disabled => return DistInfo::Disabled("disabled".to_string()),
             DistClientState::FailWithMessage(cfg, _) => {
@@ -2533,6 +2534,34 @@ mod tests {
         fn write(&mut self, text: &str) {
             self.buffer.push_str(&format!("{}\n", text));
         }
+    }
+
+    #[test]
+    #[cfg(feature = "dist-client")]
+    fn test_dist_status_retries_expired_client_state() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let config = DistClientConfig {
+            pool: runtime.handle().clone(),
+            scheduler_url: None,
+            auth: config::DistAuth::Token {
+                token: String::new(),
+            },
+            cache_dir: PathBuf::new(),
+            toolchain_cache_size: 0,
+            toolchains: vec![],
+            rewrite_includes_only: false,
+        };
+        let container = DistClientContainer::new_with_state(DistClientState::RetryCreateAt(
+            Box::new(config),
+            Instant::now().checked_sub(Duration::from_secs(1)).unwrap(),
+        ));
+
+        let status = runtime.block_on(container.get_status());
+
+        assert!(matches!(status, DistInfo::Disabled(_)));
     }
 
     #[test]
