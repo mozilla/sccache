@@ -1499,7 +1499,15 @@ where
         for d in &self.compiler_shlibs_digests {
             m.update(d.as_bytes());
         }
-        let weak_toolchain_key = m.clone().finish();
+        // The dist toolchain archive embeds absolute sysroot paths, so identical
+        // rustc binaries under a relocated sysroot (e.g. a moved RUSTUP_HOME) must
+        // not reuse an archive whose rustc lives elsewhere. The C compiler keys on
+        // its executable path for the same reason. The cache key is unaffected.
+        let weak_toolchain_key = {
+            let mut weak = m.clone();
+            self.sysroot.hash(&mut HashToDigest { digest: &mut weak });
+            weak.finish()
+        };
         // 3. The full commandline (self.arguments)
         // TODO: there will be full paths here, it would be nice to
         // normalize them so we can get cross-machine cache hits.
@@ -2046,6 +2054,62 @@ fn test_can_trim_this() {
     let _wasm_file = create_file(tempdir, "test.wasm", |_f| Ok(())).unwrap();
     assert!(!can_trim_this(&rlib_file));
 }
+/// Extract the crate name and extension from a library file path in a crate
+/// link directory.
+///
+/// Filenames are normally `lib<crate>-<metadata-hash>.<ext>`, but cdylib and
+/// staticlib outputs can have no metadata hash. In that case, use the whole
+/// file stem as the library name.
+#[cfg(feature = "dist-client")]
+fn crate_name_and_ext_from_lib_path(path: &Path) -> Option<(&str, &str)> {
+    let ext = path.extension()?.to_str()?;
+    let stem = path.file_stem()?.to_str()?;
+    let mut rev_name_split = stem.rsplitn(2, '-');
+    let _extra_filename = rev_name_split.next();
+    let libname = rev_name_split.next().unwrap_or(stem);
+    if libname.starts_with(DLL_PREFIX) && ext == DLL_EXTENSION {
+        Some((&libname[DLL_PREFIX.len()..], ext))
+    } else if libname.starts_with(RLIB_PREFIX) && (ext == RLIB_EXTENSION || ext == RMETA_EXTENSION)
+    {
+        Some((&libname[RLIB_PREFIX.len()..], ext))
+    } else {
+        None
+    }
+}
+
+#[test]
+#[cfg(feature = "dist-client")]
+fn test_crate_name_and_ext_from_lib_path() {
+    assert_eq!(
+        crate_name_and_ext_from_lib_path(Path::new("libfoo-abc123.rlib")),
+        Some(("foo", "rlib"))
+    );
+    assert_eq!(
+        crate_name_and_ext_from_lib_path(Path::new("libfoo-abc123.rmeta")),
+        Some(("foo", "rmeta"))
+    );
+    assert_eq!(
+        crate_name_and_ext_from_lib_path(Path::new("libcrc_fast.rmeta")),
+        Some(("crc_fast", "rmeta"))
+    );
+    assert_eq!(
+        crate_name_and_ext_from_lib_path(Path::new("libcrc_fast.rlib")),
+        Some(("crc_fast", "rlib"))
+    );
+    assert_eq!(
+        crate_name_and_ext_from_lib_path(Path::new("libfoo-abc123.so")),
+        Some(("foo", "so"))
+    );
+    assert_eq!(
+        crate_name_and_ext_from_lib_path(Path::new("libcrc_fast.so")),
+        Some(("crc_fast", "so"))
+    );
+    assert_eq!(crate_name_and_ext_from_lib_path(Path::new("foo.txt")), None);
+    assert_eq!(
+        crate_name_and_ext_from_lib_path(Path::new("libxai_file_utils-abc123.rmeta")),
+        Some(("xai_file_utils", "rmeta"))
+    );
+}
 
 #[cfg(feature = "dist-client")]
 fn maybe_add_cargo_toml(input_path: &Path, verify: bool) -> Option<PathBuf> {
@@ -2199,32 +2263,11 @@ impl pkg::InputsPackager for RustInputsPackager {
 
                 {
                     // Take a look at the path and see if it's something we care about
-                    let libname: &str = match path.file_name().and_then(|s| s.to_str()) {
-                        Some(name) => {
-                            let mut rev_name_split = name.rsplitn(2, '-');
-                            let _extra_filename_and_ext = rev_name_split.next();
-                            let libname = if let Some(libname) = rev_name_split.next() {
-                                libname
-                            } else {
-                                continue;
-                            };
-                            assert!(rev_name_split.next().is_none());
-                            libname
-                        }
-                        None => continue,
-                    };
-                    let (crate_name, ext): (&str, _) = match path.extension() {
-                        Some(ext) if libname.starts_with(DLL_PREFIX) && ext == DLL_EXTENSION => {
-                            (&libname[DLL_PREFIX.len()..], ext)
-                        }
-                        Some(ext) if libname.starts_with(RLIB_PREFIX) && ext == RLIB_EXTENSION => {
-                            (&libname[RLIB_PREFIX.len()..], ext)
-                        }
-                        Some(ext) if libname.starts_with(RLIB_PREFIX) && ext == RMETA_EXTENSION => {
-                            (&libname[RLIB_PREFIX.len()..], ext)
-                        }
-                        _ => continue,
-                    };
+                    let (crate_name, ext): (&str, &str) =
+                        match crate_name_and_ext_from_lib_path(&path) {
+                            Some(c) => c,
+                            None => continue,
+                        };
                     if let Some((_, ref dep_crate_names)) = rlib_dep_reader_and_names {
                         // We have a list of crate names we care about, see if this lib is a candidate
                         if !dep_crate_names.contains(crate_name) {
@@ -2329,7 +2372,12 @@ impl pkg::ToolchainPackager for RustToolchainPackager {
         package_builder.add_dir_contents(&bins_path)?;
         if BINS_DIR != LIBS_DIR {
             let libs_path = sysroot.join(LIBS_DIR);
-            package_builder.add_dir_contents(&libs_path)?;
+            let rustlib_path = libs_path.join("rustlib");
+            if rustlib_path.is_dir() {
+                package_builder.add_dir_contents(&rustlib_path)?;
+            } else {
+                package_builder.add_dir_contents(&libs_path)?;
+            }
         }
 
         package_builder.into_compressed_tar(f)
@@ -2715,6 +2763,11 @@ fn parse_rustc_z_ls(stdout: &str) -> Result<Vec<&str>> {
             .parse()
             .context("Could not parse number from rustc -Z ls")?;
         let libstring = line_splits
+            .next()
+            .context("No lib string on line from rustc -Z ls")?;
+        // Modern rustc may append metadata after a crate without a hash suffix.
+        let libstring = libstring
+            .split_whitespace()
             .next()
             .context("No lib string on line from rustc -Z ls")?;
         if num != dep_names.len() + 1 {
@@ -3402,6 +3455,24 @@ proc_macro false
 
     #[cfg(feature = "dist-client")]
     #[test]
+    fn test_parse_rustc_z_ls_modern_no_hash_suffix() {
+        let output = "Crate info:
+name xai_file_utils
+hash 42fac6f0 stable_crate_id StableCrateId(12206970385906972588)
+=External Dependencies=
+1 std-453218b5e9634890 hash c76be37888b32288681053863554e618 host_hash None kind Unconditional public
+2 core-5f5c0031517c19c4 hash 4e0d60221dfd8f9efa10e2a33c921b61 host_hash None kind Unconditional public
+3 crc_fast hash 05bce60290e56777e3ae6d3ddcc01e6c host_hash None kind Unconditional public
+4 crc-8c7d86e779319534 hash 49e85fac7c830ee1def0dd1674e740b0 host_hash None kind Unconditional public
+5 aws_sdk_s3-c49a342c963fe6e9 hash 119191ef3d4a8059aee3abebc4c4b5bf host_hash None kind Unconditional public
+
+";
+        let res = parse_rustc_z_ls(output).unwrap();
+        assert_eq!(res, &["std", "core", "crc_fast", "crc", "aws_sdk_s3"]);
+    }
+
+    #[cfg(feature = "dist-client")]
+    #[test]
     fn test_rlib_dep_reader_call() {
         let mut env_vars = vec![];
         if let Some(rustup_home) = std::env::var_os("RUSTUP_HOME") {
@@ -3661,6 +3732,28 @@ proc_macro false
     where
         F: Fn(&Path) -> Result<()>,
     {
+        hash_result(
+            f,
+            args,
+            env_vars,
+            pre_func,
+            preprocessor_cache_mode,
+            f.tempdir.path().join("sysroot"),
+        )
+        .key
+    }
+
+    fn hash_result<F>(
+        f: &TestFixture,
+        args: &[&'static str],
+        env_vars: &[(OsString, OsString)],
+        pre_func: F,
+        preprocessor_cache_mode: bool,
+        sysroot: PathBuf,
+    ) -> HashResult<Arc<Mutex<MockCommandCreator>>>
+    where
+        F: Fn(&Path) -> Result<()>,
+    {
         let oargs = args.iter().map(OsString::from).collect::<Vec<OsString>>();
         let parsed_args = match parse_arguments(&oargs, f.tempdir.path()) {
             CompilerArguments::Ok(parsed_args) => parsed_args,
@@ -3682,7 +3775,7 @@ proc_macro false
             executable: "rustc".into(),
             host: "x86-64-unknown-unknown-unknown".to_owned(),
             version: TEST_RUSTC_VERSION.to_string(),
-            sysroot: f.tempdir.path().join("sysroot"),
+            sysroot,
             compiler_shlibs_digests: vec![],
             #[cfg(feature = "dist-client")]
             rlib_dep_reader: None,
@@ -3708,12 +3801,35 @@ proc_macro false
             )
             .wait()
             .unwrap()
-            .key
     }
 
     #[allow(clippy::unnecessary_unwrap)]
     fn nothing(_path: &Path) -> Result<()> {
         Ok(())
+    }
+
+    #[test]
+    fn test_weak_toolchain_key_tracks_sysroot() {
+        // Same rustc bytes under a relocated sysroot: artifacts stay shareable,
+        // but the dist toolchain archive (absolute paths) must be rebuilt.
+        let f = TestFixture::new();
+        let args = [
+            "--emit",
+            "link",
+            "foo.rs",
+            "--out-dir",
+            "out",
+            "--crate-name",
+            "foo",
+            "--crate-type",
+            "lib",
+        ];
+        let old = hash_result(&f, &args, &[], nothing, false, "/old/rustup/sysroot".into());
+        let moved = hash_result(&f, &args, &[], nothing, false, "/new/rustup/sysroot".into());
+        let again = hash_result(&f, &args, &[], nothing, false, "/new/rustup/sysroot".into());
+        assert_eq!(old.key, moved.key);
+        assert_ne!(old.weak_toolchain_key, moved.weak_toolchain_key);
+        assert_eq!(moved.weak_toolchain_key, again.weak_toolchain_key);
     }
 
     #[test_case(true ; "with preprocessor cache")]
