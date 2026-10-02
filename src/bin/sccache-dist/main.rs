@@ -343,6 +343,10 @@ struct JobDetail {
 // To avoid deadlicking, make sure to do all locking at once (i.e. no further locking in a downward scope),
 // in alphabetical order
 pub struct Scheduler {
+    // Build servers may survive a scheduler restart and retain pending job IDs.
+    // Start each scheduler instance in a different ID range so a restarted
+    // scheduler does not immediately reuse IDs still known to surviving servers.
+    job_id_base: u64,
     job_count: AtomicUsize,
 
     // Currently running jobs, can never be Complete
@@ -365,11 +369,21 @@ struct ServerDetails {
 
 impl Scheduler {
     pub fn new() -> Self {
+        Self::with_job_id_base(OsRng.next_u64())
+    }
+
+    fn with_job_id_base(job_id_base: u64) -> Self {
         Scheduler {
+            job_id_base,
             job_count: AtomicUsize::new(0),
             jobs: Mutex::new(BTreeMap::new()),
             servers: Mutex::new(HashMap::new()),
         }
+    }
+
+    fn next_job_id(&self) -> JobId {
+        let job_count = self.job_count.fetch_add(1, Ordering::SeqCst) as u64;
+        JobId(self.job_id_base.wrapping_add(job_count))
     }
 
     fn prune_servers(
@@ -495,8 +509,7 @@ impl SchedulerIncoming for Scheduler {
 
                 // Assign the job to our best choice
                 if let Some((server_id, server_details)) = best.or(best_err) {
-                    let job_count = self.job_count.fetch_add(1, Ordering::SeqCst) as u64;
-                    let job_id = JobId(job_count);
+                    let job_id = self.next_job_id();
                     assert!(server_details.jobs_assigned.insert(job_id));
                     assert!(
                         server_details
@@ -870,6 +883,16 @@ impl ServerIncoming for Server {
 #[cfg(test)]
 mod scheduler_tests {
     use super::*;
+
+    #[test]
+    fn scheduler_instances_namespace_job_ids() {
+        let scheduler0 = Scheduler::with_job_id_base(0x1000);
+        let scheduler1 = Scheduler::with_job_id_base(0x2000);
+
+        assert_eq!(scheduler0.next_job_id(), JobId(0x1000));
+        assert_eq!(scheduler0.next_job_id(), JobId(0x1001));
+        assert_eq!(scheduler1.next_job_id(), JobId(0x2000));
+    }
 
     struct TestJobAuthorizer;
 
