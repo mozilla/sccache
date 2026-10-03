@@ -728,6 +728,7 @@ pub fn parse_arguments(
                 | Some(ModuleOnlyFlag)
                 | Some(IntegratedAs)
                 | Some(NoIntegratedAs)
+                | Some(ExtraHashFileRequiringPath(_))
                 | Some(TooHard(_)) => cannot_cache!(
                     arg.flag_str()
                         .unwrap_or("Can't handle complex arguments through clang",)
