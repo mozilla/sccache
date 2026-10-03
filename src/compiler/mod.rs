@@ -36,3 +36,4 @@ mod counted_array;
 pub use crate::compiler::c::CCompilerKind;
 pub use crate::compiler::compiler::*;
 pub use crate::compiler::preprocessor_cache::PreprocessorCacheEntry;
+pub use crate::compiler::rust::is_rmeta_artifact_notification;

@@ -826,10 +826,18 @@ where
     /// This field causes [WaitUntilZero] to wait until this struct drops.
     #[allow(dead_code)]
     info: ActiveInfo,
+
+    /// Notifications to deliver to the client while compiler is still running,
+    /// as [`Response::ArtifactNotification`], before [`CompileFinished`].
+    ///
+    /// * `Some` only on the clone [`SccacheService::check_compiler`] gives a
+    ///   rustc compile task.
+    /// * `None` on the shared service and every other clone.
+    notification_tx: Option<futures::channel::mpsc::UnboundedSender<Vec<u8>>>,
 }
 
 type SccacheRequest = Message<Request, Body<()>>;
-type SccacheResponse = Message<Response, Pin<Box<dyn Future<Output = Result<Response>> + Send>>>;
+type SccacheResponse = Message<Response, Pin<Box<dyn Stream<Item = Result<Response>> + Send>>>;
 
 /// Messages sent from all services to the main event loop indicating activity.
 ///
@@ -1012,6 +1020,7 @@ where
             creator: C::new(client),
             tx,
             info,
+            notification_tx: None,
         }
     }
 
@@ -1033,6 +1042,7 @@ where
             creator: C::new(&client),
             tx,
             info,
+            notification_tx: None,
         }
     }
 
@@ -1068,6 +1078,7 @@ where
             creator: C::new(&client),
             tx,
             info,
+            notification_tx: None,
         }
     }
 
@@ -1109,12 +1120,14 @@ where
                     Message::WithoutBody(message) => {
                         sink.send(Frame::Message { message }).await?;
                     }
-                    Message::WithBody(message, body) => {
+                    Message::WithBody(message, mut body) => {
                         sink.send(Frame::Message { message }).await?;
-                        sink.send(Frame::Body {
-                            chunk: Some(util::spawn(body).await??),
-                        })
-                        .await?;
+                        while let Some(chunk) = body.next().await {
+                            sink.send(Frame::Body {
+                                chunk: Some(chunk?),
+                            })
+                            .await?;
+                        }
                         sink.send(Frame::Body { chunk: None }).await?;
                     }
                 }
@@ -1155,6 +1168,14 @@ where
         std::mem::take(&mut *s)
     }
 
+    /// Artifact notifications to deliver to the client while the compiler is
+    /// still running before [`CompileFinished`].
+    ///
+    /// See [`SccacheService::notification_tx`] for more.
+    pub fn notification_tx(&self) -> Option<&futures::channel::mpsc::UnboundedSender<Vec<u8>>> {
+        self.notification_tx.as_ref()
+    }
+
     async fn merge_stats(&self, delta: ServerStats) {
         *self.stats.lock().await += delta;
     }
@@ -1179,21 +1200,36 @@ where
 
     /// Run a compile entirely in the current process (used in client-side mode).
     ///
-    /// Returns the `CompileResponse` variant and, when compilation started, the
-    /// accompanying `CompileFinished` result.
+    /// Returns a tuple of
+    ///
+    /// * the `CompileResponse` variant, and
+    /// * when compilation started, the accompanying `CompileFinished` result, and
+    /// * whether a notification was written to `stderr` while the compiler was running.
     pub async fn compile_direct(
         &self,
         compile: Compile,
-    ) -> Result<(CompileResponse, Option<CompileFinished>)> {
+        stderr: &mut dyn Write,
+    ) -> Result<(CompileResponse, Option<CompileFinished>, bool)> {
         match self.handle_compile(compile).await? {
-            Message::WithBody(Response::Compile(resp), body) => {
-                let finished = match body.await? {
-                    Response::CompileFinished(f) => f,
-                    _ => bail!("unexpected body response from compile_direct"),
-                };
-                Ok((resp, Some(finished)))
+            Message::WithBody(Response::Compile(resp), mut body) => {
+                let mut finished = None;
+                let mut forwarded_notification = false;
+                while let Some(item) = body.next().await {
+                    match item? {
+                        Response::ArtifactNotification(chunk) => {
+                            stderr.write_all(&chunk)?;
+                            stderr.flush()?;
+                            forwarded_notification = true;
+                        }
+                        Response::CompileFinished(f) => finished = Some(f),
+                        _ => bail!("unexpected body response from compile_direct"),
+                    }
+                }
+                let finished = finished
+                    .ok_or_else(|| anyhow!("compile body ended without CompileFinished"))?;
+                Ok((resp, Some(finished), forwarded_notification))
             }
-            Message::WithoutBody(Response::Compile(resp)) => Ok((resp, None)),
+            Message::WithoutBody(Response::Compile(resp)) => Ok((resp, None, false)),
             _ => bail!("unexpected response from handle_compile in compile_direct"),
         }
     }
@@ -1380,11 +1416,29 @@ where
                     CompilerArguments::Ok(hasher) => {
                         debug!("parse_arguments: Ok: {:?}", cmd);
 
-                        let body = self
-                            .clone()
-                            .start_compile_task(c, hasher, cmd, cwd, env_vars)
-                            .and_then(|res| async { Ok(Response::CompileFinished(res)) })
-                            .boxed();
+                        let body = if c.kind() == CompilerKind::Rust {
+                            // Only rustc emits artifact notifications,
+                            // for `.rmeta` pipelining.
+                            let (tx, rx) = futures::channel::mpsc::unbounded();
+                            let mut me = self.clone();
+                            me.notification_tx = Some(tx);
+                            let finished = util::spawn_on(
+                                &self.rt,
+                                me.start_compile_task(c, hasher, cmd, cwd, env_vars),
+                            );
+                            rx.map(|chunk| Ok(Response::ArtifactNotification(chunk)))
+                                .chain(futures::stream::once(async move {
+                                    finished.await?.map(Response::CompileFinished)
+                                }))
+                                .boxed()
+                        } else {
+                            futures::stream::once(
+                                self.clone()
+                                    .start_compile_task(c, hasher, cmd, cwd, env_vars)
+                                    .map_ok(Response::CompileFinished),
+                            )
+                            .boxed()
+                        };
 
                         return Message::WithBody(
                             Response::Compile(CompileResponse::CompileStarted),
@@ -2456,6 +2510,8 @@ fn waits_until_zero() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mock_command::{MockChild, MockCommandCreator, exit_status};
+    use crate::test::utils::{TestFixture, next_command, next_command_calls};
 
     struct StringWriter {
         buffer: String,
@@ -2583,5 +2639,183 @@ mod tests {
                 .unwrap();
             assert!(find_s1 < find_s2);
         }
+    }
+
+    const RMETA_NOTIFICATION: &[u8] = b"{\"artifact\":\"/t/libdep.rmeta\",\"emit\":\"metadata\"}\n";
+    const OTHER_STDERR: &[u8] = b"{\"artifact\":\"/t/libdep.rlib\",\"emit\":\"link\"}\n";
+
+    type MockCreator = Arc<std::sync::Mutex<MockCommandCreator>>;
+
+    fn mock_rustc_cache_miss(creator: &MockCreator, f: &TestFixture) {
+        // rustc -vV
+        next_command(
+            creator,
+            Ok(MockChild::new(
+                exit_status(0),
+                "rustc 1.90.0 (0000000 2026-01-01)\nhost: x86_64-unknown-linux-gnu\n",
+                "",
+            )),
+        );
+        // rustc +stable: not a rustup proxy
+        next_command(creator, Ok(MockChild::new(exit_status(1), "", "")));
+        // rustc --print=sysroot
+        next_command(
+            creator,
+            Ok(MockChild::new(
+                exit_status(0),
+                f.tempdir.path().to_str().unwrap(),
+                "",
+            )),
+        );
+        mock_rustc_hash_inputs(creator);
+        // The compile itself.
+        let out_dir = f.tempdir.path().to_path_buf();
+        next_command_calls(creator, move |_| {
+            std::fs::write(out_dir.join("libdep.rlib"), "rlib")?;
+            std::fs::write(out_dir.join("libdep.rmeta"), "rmeta")?;
+            Ok(MockChild::new(
+                exit_status(0),
+                "",
+                [RMETA_NOTIFICATION, OTHER_STDERR].concat(),
+            ))
+        });
+    }
+
+    fn mock_rustc_hash_inputs(creator: &MockCreator) {
+        // rustc --emit dep-info -o <file>
+        next_command_calls(creator, |args| {
+            let dep_file = args.iter().skip_while(|a| *a != "-o").nth(1).unwrap();
+            std::fs::write(dep_file, "libdep.rlib: lib.rs\nlib.rs:\n")?;
+            Ok(MockChild::new(exit_status(0), "", ""))
+        });
+        // rustc --print file-names
+        next_command(
+            creator,
+            Ok(MockChild::new(exit_status(0), "libdep.rlib\n", "")),
+        );
+    }
+
+    type MockService = SccacheService<MockCreator>;
+
+    /// A service whose mocked rustc is queued for one cache-miss compile of `dep`,
+    /// and then a request for that compile.
+    fn rustc_miss_fixture() -> (TestFixture, Runtime, MockService, Compile) {
+        use crate::cache::disk::DiskCache;
+        use crate::config::PreprocessorCacheModeConfig;
+
+        let _ = env_logger::try_init();
+        let f = TestFixture::new();
+        let rustc = f.mk_bin("rustc").unwrap();
+        // Windows uses bin, everything else uses lib. Just create both.
+        std::fs::create_dir(f.tempdir.path().join("lib")).unwrap();
+        std::fs::create_dir(f.tempdir.path().join("bin")).unwrap();
+        f.touch("lib.rs").unwrap();
+
+        let runtime = Runtime::new().unwrap();
+        let storage = Arc::new(DiskCache::new(
+            f.tempdir.path().join("cache"),
+            u64::MAX,
+            runtime.handle(),
+            PreprocessorCacheModeConfig::default(),
+            CacheMode::ReadWrite,
+            vec![],
+        ));
+        let service = MockService::mock_with_storage(storage, runtime.handle().clone());
+        mock_rustc_cache_miss(&service.creator, &f);
+
+        let compile = dep_compile(&f, &rustc);
+        (f, runtime, service, compile)
+    }
+
+    /// The request for compiling `dep`.
+    fn dep_compile(f: &TestFixture, rustc: &std::path::Path) -> Compile {
+        Compile {
+            exe: rustc.into(),
+            cwd: f.tempdir.path().into(),
+            args: [
+                "--crate-name",
+                "dep",
+                "lib.rs",
+                "--crate-type",
+                "lib",
+                "--emit=link,metadata",
+                "--out-dir",
+                f.tempdir.path().to_str().unwrap(),
+            ]
+            .into_iter()
+            .map(Into::into)
+            .collect(),
+            env_vars: vec![],
+        }
+    }
+
+    fn compile_body(
+        runtime: &Runtime,
+        service: &MockService,
+        compile: Compile,
+    ) -> (Vec<Response>, CompileFinished) {
+        let (resp, body) = match runtime.block_on(service.handle_compile(compile)).unwrap() {
+            Message::WithBody(Response::Compile(resp), body) => (resp, body),
+            other => panic!("unexpected response: {:?}", other.into_inner()),
+        };
+        assert!(matches!(resp, CompileResponse::CompileStarted));
+
+        let mut body = runtime.block_on(body.try_collect::<Vec<_>>()).unwrap();
+        let finished = match body.pop() {
+            Some(Response::CompileFinished(finished)) => finished,
+            other => panic!("body must end with CompileFinished, got {other:?}"),
+        };
+        (body, finished)
+    }
+
+    #[test]
+    fn daemon_mode_rmeta_notification_delivery_on_rustc_miss() {
+        let (_f, runtime, service, compile) = rustc_miss_fixture();
+
+        let (before_finished, finished) = compile_body(&runtime, &service, compile);
+
+        assert_eq!(Some(0), finished.retcode);
+        assert!(
+            matches!(
+                before_finished.as_slice(),
+                [Response::ArtifactNotification(chunk)] if chunk == RMETA_NOTIFICATION
+            ),
+            "delivered while the compiler runs: {before_finished:?}"
+        );
+        // The daemon leaves rustc's stderr intact.
+        // Client will dedup stderr if already forwarded.
+        assert_eq!(
+            [RMETA_NOTIFICATION, OTHER_STDERR].concat(),
+            finished.stderr,
+            "stderr delivered with CompileFinished"
+        );
+        assert_eq!(0, service.creator.lock().unwrap().children.len());
+    }
+
+    #[test]
+    fn client_side_mode_rmeta_notification_delivery_on_rustc_miss() {
+        let (_f, runtime, service, compile) = rustc_miss_fixture();
+
+        let mut stderr = Vec::new();
+        let (resp, finished, forwarded) = runtime
+            .block_on(service.compile_direct(compile, &mut stderr))
+            .unwrap();
+        let finished = finished.expect("compile started");
+
+        assert!(matches!(resp, CompileResponse::CompileStarted));
+        assert_eq!(Some(0), finished.retcode);
+        assert!(forwarded);
+        assert_eq!(
+            RMETA_NOTIFICATION,
+            stderr.as_slice(),
+            "forwarded while the compiler runs"
+        );
+        // The caller drops the copy in `CompileFinished`.
+        assert_eq!(
+            [RMETA_NOTIFICATION, OTHER_STDERR].concat(),
+            finished.stderr,
+            "stderr delivered with CompileFinished"
+        );
+        assert_eq!(0, service.creator.lock().unwrap().children.len());
     }
 }

@@ -15,13 +15,13 @@
 use crate::cache::{IpcStorage, storage_from_config};
 use crate::client::{ServerConnection, connect_to_server, connect_with_retry};
 use crate::cmdline::{Command, StatsFormat};
-use crate::compiler::ColorMode;
+use crate::compiler::{ColorMode, is_rmeta_artifact_notification};
 use crate::config::{Config, default_disk_cache_dir};
 use crate::jobserver::Client;
 use crate::mock_command::{CommandChild, CommandCreatorSync, ProcessCommandCreator, RunCommand};
 use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
 use crate::server::{self, DistInfo, ServerInfo, ServerStartup, ServerStats};
-use crate::util::{daemonize, new_client_runtime};
+use crate::util::{daemonize, new_client_runtime, run_input_output};
 use byteorder::{BigEndian, ByteOrder};
 use fs::{File, OpenOptions};
 use fs_err as fs;
@@ -528,35 +528,42 @@ fn handle_compile_response<T>(
 where
     T: CommandCreatorSync,
 {
+    let mut forwarded_notification = false;
     let result = match &response {
         CompileResponse::CompileStarted => {
             debug!("Server sent CompileStarted");
-            // Wait for CompileFinished.
-            match conn.read_one_response() {
-                Ok(Response::CompileFinished(result)) => Some(result),
-                Ok(_) => bail!("unexpected response from server"),
-                Err(e) => {
-                    match e.downcast_ref::<io::Error>() {
-                        Some(io_e) if io_e.kind() == io::ErrorKind::UnexpectedEof => {
-                            eprintln!(
-                                "sccache: warning: The server looks like it shut down \
-                                 unexpectedly, compiling locally instead"
-                            );
-                        }
-                        _ => {
-                            //TODO: something better here?
-                            if ignore_all_server_io_errors() {
+            loop {
+                match conn.read_one_response() {
+                    Ok(Response::ArtifactNotification(chunk)) => {
+                        stderr.write_all(&chunk)?;
+                        stderr.flush()?;
+                        forwarded_notification = true;
+                    }
+                    Ok(Response::CompileFinished(result)) => break Some(result),
+                    Ok(_) => bail!("unexpected response from server"),
+                    Err(e) => {
+                        match e.downcast_ref::<io::Error>() {
+                            Some(io_e) if io_e.kind() == io::ErrorKind::UnexpectedEof => {
                                 eprintln!(
-                                    "sccache: warning: error reading compile response from server \
-                                     compiling locally instead"
+                                    "sccache: warning: The server looks like it shut down \
+                                     unexpectedly, compiling locally instead"
                                 );
-                            } else {
-                                return Err(e)
-                                    .context("error reading compile response from server");
+                            }
+                            _ => {
+                                //TODO: something better here?
+                                if ignore_all_server_io_errors() {
+                                    eprintln!(
+                                        "sccache: warning: error reading compile response from server \
+                                         compiling locally instead"
+                                    );
+                                } else {
+                                    return Err(e)
+                                        .context("error reading compile response from server");
+                                }
                             }
                         }
+                        break None;
                     }
-                    None
                 }
             }
         }
@@ -564,18 +571,32 @@ where
     };
 
     handle_compile_result(
-        creator, runtime, response, result, exe, cmdline, cwd, stdout, stderr,
+        creator,
+        runtime,
+        response,
+        result,
+        forwarded_notification,
+        exe,
+        cmdline,
+        cwd,
+        stdout,
+        stderr,
     )
 }
 
 /// Dispatch the outcome of a compile, whether received from the daemon over IPC
 /// or produced by a local `SccacheService` in client-side mode.
+///
+/// * `forwarded_notification`
+///   is whether a [`Response::ArtifactNotification`] already reached `stderr`,
+///   in which case its copy in compiler's stderr is dropped.
 #[allow(clippy::too_many_arguments)]
 fn handle_compile_result<T>(
     mut creator: T,
     runtime: &mut Runtime,
     response: CompileResponse,
     finished: Option<CompileFinished>,
+    forwarded_notification: bool,
     exe: &Path,
     cmdline: Vec<OsString>,
     cwd: &Path,
@@ -587,7 +608,10 @@ where
 {
     match response {
         CompileResponse::CompileStarted => {
-            if let Some(finished) = finished {
+            if let Some(mut finished) = finished {
+                if forwarded_notification {
+                    finished.stderr = without_rmeta_artifact_notifications(&finished.stderr);
+                }
                 return handle_compile_finished(finished, stdout, stderr);
             }
             // Server disconnected before sending CompileFinished; fall back to local compilation.
@@ -607,13 +631,30 @@ where
         trace!("running command: {:?}", cmd);
     }
 
-    let status = runtime.block_on(async move {
-        let child = cmd.spawn().await?;
-        child
-            .wait()
-            .await
-            .with_context(|| "failed to wait for a child")
-    })?;
+    let status = if !forwarded_notification {
+        runtime.block_on(async move {
+            let child = cmd.spawn().await?;
+            child
+                .wait()
+                .await
+                .with_context(|| "failed to wait for a child")
+        })?
+    } else {
+        // The `.rmeta` notification was already forwarded so drop them from local rustc's copy.
+        // Assumption: this rewrites artifacts which callers may be reading,
+        // which is safe only while rustc output is deterministic (it is as of 1.98.1)
+        let output = match runtime.block_on(run_input_output(cmd, None)) {
+            Ok(output) => output,
+            Err(e) => match e.downcast::<ProcessError>() {
+                Ok(ProcessError(output)) => output,
+                Err(e) => return Err(e).context("failed to wait for a child"),
+            },
+        };
+        stdout.write_all(&output.stdout)?;
+        stderr.write_all(&without_rmeta_artifact_notifications(&output.stderr))?;
+        stderr.flush()?;
+        output.status
+    };
 
     Ok(status.code().unwrap_or_else(|| {
         if let Some(sig) = status_signal(status) {
@@ -622,6 +663,16 @@ where
         // Arbitrary.
         2
     }))
+}
+
+/// Drop `.rmeta` artifact notification lines from `stderr`
+/// when they have already been forwarded to the caller.
+fn without_rmeta_artifact_notifications(stderr: &[u8]) -> Vec<u8> {
+    stderr
+        .split_inclusive(|&b| b == b'\n')
+        .filter(|line| !is_rmeta_artifact_notification(line))
+        .collect::<Vec<_>>()
+        .concat()
 }
 
 /// Send a `Compile` request to the sccache server `conn`, and handle the response.
@@ -694,13 +745,15 @@ where
         args: cmdline.clone(),
         env_vars,
     };
-    let (compile_resp, finished) = runtime.block_on(service.compile_direct(compile))?;
+    let (compile_resp, finished, forwarded_notification) =
+        runtime.block_on(service.compile_direct(compile, &mut *stderr))?;
     let creator = C::new(jobserver);
     let exit_code = handle_compile_result(
         creator,
         runtime,
         compile_resp,
         finished,
+        forwarded_notification,
         &exe_path,
         cmdline,
         cwd,
