@@ -101,7 +101,10 @@ while [ "$#" -gt 0 ]; do
             exit 1
             ;;
         --print=sysroot)
-            exec echo {}
+            echo {0}
+            ;;
+        --print=target-libdir)
+            echo {0}/lib/rustlib/unknown/lib
             ;;
         --print)
             shift
