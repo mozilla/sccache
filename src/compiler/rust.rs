@@ -86,7 +86,10 @@ const LIBS_DIR: &str = "bin";
 /// src -> the standard library sources
 /// etc -> the gdb/lldb pretty-printers.
 #[cfg(feature = "dist-client")]
-#[allow(unused)]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 const RUSTLIB_UNUSED_ENTRIES: &[&str] = &["src", "etc"];
 
 /// rustc's `rustlib` directory, from the `--print=target-libdir` output, which
@@ -95,14 +98,20 @@ const RUSTLIB_UNUSED_ENTRIES: &[&str] = &["src", "etc"];
 /// `$libdir` is chosen when rustc is built, so it cannot be assumed to be
 /// [`LIBS_DIR`] for a rustc installed into a shared prefix such as `/usr`.
 #[cfg(feature = "dist-client")]
-#[allow(unused)]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 fn rustlib_dir(target_libdir: &Path) -> Option<&Path> {
     target_libdir.ancestors().nth(2)
 }
 
 /// The entries under `rustlib` that need to end up in a toolchain package.
 #[cfg(feature = "dist-client")]
-#[allow(unused)]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 fn needed_rustlib_entries(rustlib_path: &Path) -> Result<Vec<PathBuf>> {
     let mut entries = vec![];
     for entry in fs::read_dir(rustlib_path)
@@ -123,6 +132,10 @@ fn needed_rustlib_entries(rustlib_path: &Path) -> Result<Vec<PathBuf>> {
 
 #[test]
 #[cfg(feature = "dist-client")]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 fn test_rustlib_dir() {
     // A self-contained toolchain, as unpacked by rustup.
     assert_eq!(
@@ -143,6 +156,10 @@ fn test_rustlib_dir() {
 
 #[test]
 #[cfg(feature = "dist-client")]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 fn test_needed_rustlib_entries() {
     let tempdir = tempfile::Builder::new()
         .prefix("sccache_test")
