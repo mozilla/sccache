@@ -289,6 +289,7 @@ where
         unhashed_args: vec![],
         extra_dist_files: vec![],
         extra_hash_files: vec![],
+        uses_external_assembler: false,
         msvc_show_includes: false,
         profile_generate: false,
         color_mode: ColorMode::Auto,
@@ -391,6 +392,7 @@ fn generate_compile_commands(
         arguments,
         env_vars: env_vars.to_owned(),
         cwd: cwd.to_owned(),
+        share_jobserver: false,
     };
 
     Ok((command, None, Cacheable::Yes))
@@ -723,6 +725,7 @@ mod test {
             unhashed_args: vec![],
             extra_dist_files: vec![],
             extra_hash_files: vec![],
+            uses_external_assembler: false,
             msvc_show_includes: false,
             profile_generate: false,
             color_mode: ColorMode::Auto,
@@ -777,6 +780,7 @@ mod test {
             unhashed_args: ovec!["--threads", "2"],
             extra_dist_files: vec![],
             extra_hash_files: vec![],
+            uses_external_assembler: false,
             msvc_show_includes: false,
             profile_generate: false,
             color_mode: ColorMode::Auto,

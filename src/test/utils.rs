@@ -91,6 +91,23 @@ pub fn next_command(creator: &Arc<Mutex<MockCommandCreator>>, child: Result<Mock
     creator.lock().unwrap().next_command_spawns(child);
 }
 
+/// Queue the answers to the two probes gcc/clang detection makes to identify the
+/// assembler, in the order they are run: its version, then where it lives.
+pub fn next_assembler(creator: &Arc<Mutex<MockCommandCreator>>, version: &str, path: &str) {
+    for (probe, output) in [("-Wa,--version", version), ("-print-prog-name=as", path)] {
+        let output = output.to_owned();
+        next_command_calls(creator, move |args| {
+            assert!(
+                args.iter().any(|arg| arg == probe),
+                "{} missing from assembler probe: {:?}",
+                probe,
+                args
+            );
+            Ok(MockChild::new(exit_status(0), &output, ""))
+        });
+    }
+}
+
 pub fn next_command_calls<C: Fn(&[OsString]) -> Result<MockChild> + Send + 'static>(
     creator: &Arc<Mutex<MockCommandCreator>>,
     call: C,

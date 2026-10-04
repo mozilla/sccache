@@ -29,6 +29,10 @@ impl Storage for ReadOnlyStorage {
         self.0.get(key).await
     }
 
+    async fn get_with_raw(&self, key: &str) -> Result<(Cache, Option<Bytes>)> {
+        self.0.get_with_raw(key).await
+    }
+
     /// Put `entry` in the cache under `key`.
     ///
     /// Returns a `Future` that will provide the result or error when the put is

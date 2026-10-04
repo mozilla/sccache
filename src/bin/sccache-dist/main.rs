@@ -219,7 +219,7 @@ fn run(command: Command) -> Result<i32> {
                 }
             };
 
-            daemonize()?;
+            daemonize(&[])?;
             let scheduler = Scheduler::new();
             let http_scheduler = dist::http::Scheduler::new(
                 public_addr,
