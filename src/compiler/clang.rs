@@ -1142,6 +1142,65 @@ mod test {
     }
 
     #[test]
+    fn test_parse_arguments_coverage_gcno_optional_for_assembly() {
+        // Clang parses its arguments through gcc::parse_arguments, and like gcc
+        // it accepts the coverage flags for assembly inputs while never
+        // emitting a .gcno note file for them. The .gcno output therefore has
+        // to be optional, or caching the compile aborts with "failed to zip up
+        // compiler outputs" (see issue #2275).
+        for (input, language) in [
+            ("foo.s", Language::Assembler),
+            ("foo.S", Language::AssemblerToPreprocess),
+        ] {
+            for flag in ["--coverage", "-ftest-coverage"] {
+                let a = parses!(flag, "-c", input, "-o", "foo.o");
+                assert_eq!(language, a.language);
+                assert_map_contains!(
+                    a.outputs,
+                    (
+                        "obj",
+                        ArtifactDescriptor {
+                            path: PathBuf::from("foo.o"),
+                            optional: false
+                        }
+                    ),
+                    (
+                        "gcno",
+                        ArtifactDescriptor {
+                            path: PathBuf::from("foo.gcno"),
+                            optional: true
+                        }
+                    )
+                );
+                assert!(a.profile_generate);
+            }
+        }
+
+        // C/C++ does emit a note file, so there it stays required and a missing
+        // one is still an error.
+        let a = parses!("--coverage", "-c", "foo.c", "-o", "foo.o");
+        assert_eq!(Language::C, a.language);
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.o"),
+                    optional: false
+                }
+            ),
+            (
+                "gcno",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.gcno"),
+                    optional: false
+                }
+            )
+        );
+        assert!(a.profile_generate);
+    }
+
+    #[test]
     fn test_parse_arguments_profile_instr_use() {
         let a = parses!(
             "-c",
