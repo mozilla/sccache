@@ -1977,9 +1977,25 @@ fn test_sccache_command(preprocessor_cache_mode: bool) {
             &tempdir.path().join("sccache-cfg.json"),
             &sccache_cached_cfg_path,
         );
+        let wrote_preprocessor_entries = preprocessor_cache_mode
+            && compilers
+                .iter()
+                .any(|c| matches!(c.name, "gcc" | "clang" | "clang++"));
         for compiler in compilers {
             run_sccache_command_tests(compiler, tempdir.path(), preprocessor_cache_mode);
             zero_stats();
+        }
+        if wrote_preprocessor_entries {
+            let entries_dir = tempdir.path().join("client-cache").join("preprocessor");
+            sccache_command()
+                .arg("--debug-preprocessor-cache")
+                .env("SCCACHE_CONF", tempdir.path().join("sccache-cfg.json"))
+                .assert()
+                .success()
+                .stdout(predicate::str::contains(format!(
+                    "Showing preprocessor entry file {}",
+                    entries_dir.display()
+                )));
         }
         stop_local_daemon();
     }
