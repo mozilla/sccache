@@ -86,10 +86,8 @@ fn write_empty_preprocessor_entry(cache_dir: &Path) -> Result<String> {
     fs::create_dir_all(&entries_dir)?;
     let entry = entries_dir.join("entry");
     fs::write(&entry, b"")?;
-    Ok(format!(
-        "Showing preprocessor entry file {}",
-        entry.display()
-    ))
+    let expected = format!("Showing preprocessor entry file {}", entry.display());
+    Ok(expected)
 }
 
 fn debug_preprocessor_cache_cmd(tempdir: &Path) -> Command {
