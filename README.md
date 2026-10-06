@@ -326,7 +326,7 @@ This is most useful when using sccache for Rust compilation, as rustc supports u
 
 ---
 
-Normalizing Paths with `SCCACHE_BASEDIRS`
+Normalizing paths with `SCCACHE_BASEDIRS`
 -----------------------------------------
 
 By default, sccache requires absolute paths to match for cache hits. To enable cache sharing across different build directories, you can set `SCCACHE_BASEDIRS` to strip a base directory from paths before hashing:
@@ -347,13 +347,26 @@ Base directories are stripped from the preprocessed source and from the compiler
 
 In an argument only the places that are expected to spell a pathname are considered: the whole argument, the value of an option written with an `=` (either half of a prefix map), and the value glued to a short option such as `-I`. A base directory appearing anywhere else is left alone, so a definition the compiler bakes into the output verbatim, `-DROOT="/home/user/project"`, still counts. A match also has to end where a path component ends, so a sibling `/home/user/project-docs` is not one.
 
+For Rust compilations, sccache normalizes matching absolute source arguments,
+the source side of `--remap-path-prefix`, Cargo path variables, tracked
+environment dependency values that are absolute paths, and the current working
+directory before computing the cache key.
+
 This is similar to ccache's `CCACHE_BASEDIR` and helps when:
 * Building the same project from different directories
 * Sharing cache between CI jobs with different checkout paths
 * Multiple developers working with different username paths
 * Working with multiple project checkouts simultaneously
 
-**Note:** Only absolute paths are supported. Relative paths will prevent server from starting.
+**Note:** Only absolute paths are supported. A relative request value fails that
+compiler invocation. A relative config-file value prevents the server from
+starting.
+
+**Rust note:** This setting normalizes cache-key inputs; it does not rewrite
+paths embedded in compiled artifacts. If a crate deliberately embeds an
+absolute path, for example with `env!("CARGO_MANIFEST_DIR")`, a cache hit from
+another checkout can contain the path from the compilation that populated the
+cache. Use this opt-in setting only when that behavior is acceptable.
 
 You can also configure this in the sccache config file:
 
@@ -364,6 +377,17 @@ basedirs = ["/home/user/project"]
 # Or multiple directories
 basedirs = ["/home/user/project", "/home/user/workspace"]
 ```
+
+The environment variable applies to each compiler invocation. Its value
+overrides the config-file value for that request, so a persistent sccache
+daemon can serve builds from different checkout roots without a restart. Set
+`SCCACHE_BASEDIRS=""` on an invocation to disable the config-file fallback for
+that request.
+
+Only the config file defines the daemon's fallback. A `SCCACHE_BASEDIRS` value
+in the environment that starts the daemon does not become global daemon state.
+Statistics report the config-file fallback and do not accumulate paths from
+individual requests.
 
 ---
 

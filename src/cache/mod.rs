@@ -14,6 +14,7 @@
 
 #[cfg(feature = "azure")]
 pub mod azure;
+pub(crate) mod basedirs;
 #[allow(clippy::module_inception)]
 pub mod cache;
 pub mod cache_io;
@@ -52,6 +53,7 @@ pub mod webdav;
 ))]
 pub(crate) mod http_client;
 
+pub(crate) use crate::cache::basedirs::with_basedirs;
 pub use crate::cache::cache::*;
 pub use crate::cache::cache_io::*;
 pub use crate::cache::ipc_storage::IpcStorage;
