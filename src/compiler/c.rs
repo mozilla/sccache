@@ -131,6 +131,25 @@ impl ParsedArguments {
             .map(|s| s.to_string_lossy())
             .unwrap_or(Cow::Borrowed("Unknown filename"))
     }
+
+    /// The distinct architectures given with `-arch`, in command line order.
+    pub fn archs(&self) -> Vec<&OsString> {
+        use itertools::Itertools as _;
+        self.arch_values().unique().collect()
+    }
+
+    pub fn is_multiarch(&self) -> bool {
+        let mut archs = self.arch_values();
+        archs
+            .next()
+            .is_some_and(|first| archs.any(|arch| arch != first))
+    }
+
+    fn arch_values(&self) -> impl Iterator<Item = &OsString> {
+        self.arch_args
+            .iter()
+            .filter(|arg| *arg != super::gcc::ARCH_FLAG)
+    }
 }
 
 /// A generic implementation of the `Compilation` trait for C/C++ compilers.
@@ -467,6 +486,7 @@ where
                 &env_vars,
                 &absolute_input_path,
                 self.compiler.plusplus(),
+                self.parsed_args.is_multiarch(),
                 preprocessor_cache_mode_config,
                 storage.basedirs(),
             )?

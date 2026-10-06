@@ -604,6 +604,7 @@ pub fn build_single_cache(
                 c.username.as_deref(),
                 c.password.as_deref(),
                 c.token.as_deref(),
+                c.disable_create_dir,
             )
             .map_err(|err| anyhow!("create webdav cache failed: {err:?}"))?;
 
