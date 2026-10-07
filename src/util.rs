@@ -1311,7 +1311,9 @@ pub fn strip_basedirs<'a>(preprocessor_output: &'a [u8], basedirs: &[Vec<u8>]) -
 ///   option such as `-include-pch <path>`;
 /// * the value of an option written with an `=`, as in `--sysroot=<path>` or
 ///   either half of `-ffile-prefix-map=<path>=<path>`;
-/// * the value glued to a short option, as in `-I<path>` or `-L<path>`.
+/// * the value glued to an option, as in `-I<path>`, `-L<path>` or
+///   `-external:I<path>`, also when it starts with a drive letter, as in
+///   `-IC:\path` or `/IC:\path`.
 ///
 /// A basedir sitting anywhere else is left alone, so `-DROOT="/home/user/project"`
 /// keeps a definition the compiler will bake into the output verbatim.  A match
@@ -1385,16 +1387,30 @@ pub fn strip_basedirs_from_arg<'a>(arg: &'a [u8], basedirs: &[Vec<u8>]) -> Cow<'
 /// See [`strip_basedirs_from_arg`] for what they are and why the rest of the
 /// argument is off limits.
 fn pathname_positions(arg: &[u8]) -> impl Iterator<Item = usize> + '_ {
-    // The value glued to a short option: everything up to the first byte that
-    // cannot be part of an option name. `-I/path` yields 2, `-isystem/path` 8.
-    let glued = if arg.first() == Some(&b'-') {
-        let name_len = arg[1..]
-            .iter()
-            .take_while(|b| b.is_ascii_alphanumeric() || **b == b'-' || **b == b'_')
-            .count();
-        Some(1 + name_len)
-    } else {
-        None
+    // The value glued to an option starts where the option name ends:
+    // `-I/path` yields 2, `-isystem/path` 8 and `-external:I/path` 11. A drive
+    // letter belongs to the value even though it reads like part of the name:
+    // `-IC:\path` yields 2. Options spelled with a `/` glue only a drive
+    // letter, as in `/IC:\path`; otherwise the `/` starts an absolute path.
+    let glued = match arg.first() {
+        Some(b'-' | b'/') => {
+            let end = 1 + arg[1..]
+                .iter()
+                .take_while(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b':'))
+                .count();
+            let drive = end >= 4
+                && arg[end - 2].is_ascii_alphabetic()
+                && arg[end - 1] == b':'
+                && matches!(arg.get(end), Some(b'/' | b'\\'));
+            if drive {
+                Some(end - 2)
+            } else if arg[0] == b'-' {
+                Some(end)
+            } else {
+                None
+            }
+        }
+        _ => None,
     };
 
     // The whole argument, the value of each `=`-separated option, and the one
@@ -1930,12 +1946,44 @@ mod tests {
             b"-isystemabseil"
         );
         assert_eq!(strip(b"-L/home/user/project/lib"), b"-Llib");
+        assert_eq!(
+            strip(b"-external:I/home/user/project/include"),
+            b"-external:Iinclude"
+        );
 
         // The value of an =-separated option, and both halves of a prefix map.
         assert_eq!(strip(b"--sysroot=/home/user/project/sys"), b"--sysroot=sys");
         assert_eq!(
             strip(b"-ffile-prefix-map=/home/user/project/build=/home/user/project"),
             b"-ffile-prefix-map=build="
+        );
+    }
+
+    #[test]
+    fn test_strip_basedirs_from_arg_drive_letter() {
+        // The basedir and arguments in the form normalize_win_path gives them
+        // on Windows, lowercase with forward slashes, so this runs anywhere.
+        let basedir = b"c:/users/user/project/".to_vec();
+        let strip = |arg: &[u8]| {
+            super::strip_basedirs_from_arg(arg, std::slice::from_ref(&basedir)).into_owned()
+        };
+
+        // `-external:I` and `/I` are MSVC spellings.
+        assert_eq!(strip(b"-ic:/users/user/project/include"), b"-iinclude");
+        assert_eq!(
+            strip(b"-external:ic:/users/user/project/third_party/include"),
+            b"-external:ithird_party/include"
+        );
+        assert_eq!(strip(b"/ic:/users/user/project/include"), b"/iinclude");
+
+        // A quoted definition and a sibling directory are left alone.
+        assert_eq!(
+            strip(b"-droot=\"c:/users/user/project\""),
+            b"-droot=\"c:/users/user/project\""
+        );
+        assert_eq!(
+            strip(b"-ic:/users/user/project-docs/include"),
+            b"-ic:/users/user/project-docs/include"
         );
     }
 
