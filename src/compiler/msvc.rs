@@ -59,9 +59,21 @@ impl CCompilerImpl for Msvc {
         &self,
         arguments: &[OsString],
         cwd: &Path,
-        _env_vars: &[(OsString, OsString)],
+        env_vars: &[(OsString, OsString)],
     ) -> CompilerArguments<ParsedArguments> {
-        parse_arguments(arguments, cwd, self.is_clang)
+        let Ok(prefix) = cl_env_args(env_vars, "CL") else {
+            return CompilerArguments::CannotCache("CL environment variable value broken", None);
+        };
+        let Ok(suffix) = cl_env_args(env_vars, "_CL_") else {
+            return CompilerArguments::CannotCache("_CL_ environment variable value broken", None);
+        };
+        if prefix.is_empty() && suffix.is_empty() {
+            return parse_arguments(arguments, cwd, self.is_clang);
+        }
+        let mut combined = prefix;
+        combined.extend_from_slice(arguments);
+        combined.extend(suffix);
+        parse_arguments(&combined, cwd, self.is_clang)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -554,6 +566,57 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
 
 // TODO: what to do with precompiled header flags? eg: /Yc, /YI, /Yu
 
+fn cl_env_var_matches(key: &OsStr, name: &str) -> bool {
+    #[cfg(windows)]
+    {
+        key.eq_ignore_ascii_case(name)
+    }
+    #[cfg(not(windows))]
+    {
+        key == name
+    }
+}
+
+/// Options from `CL` are prepended and options from `_CL_` are appended.
+/// The first `#` in each token stands for `=`.
+fn cl_env_args(
+    env_vars: &[(OsString, OsString)],
+    name: &str,
+) -> std::result::Result<Vec<OsString>, &'static str> {
+    let Some((_, value)) = env_vars
+        .iter()
+        .find(|(key, _)| cl_env_var_matches(key, name))
+    else {
+        return Ok(Vec::new());
+    };
+    let Some(value) = value.to_str() else {
+        let error_message = match name {
+            "CL" => "non-utf8 CL environment variable value",
+            "_CL_" => "non-utf8 _CL_ environment variable value",
+            _ => "non-utf8 value of unexpected environment variable",
+        };
+        return Err(error_message);
+    };
+    let value = value.to_owned();
+    Ok(SplitMsvcResponseFileArgs::from(&value)
+        .map(OsString::from)
+        .collect())
+}
+
+fn is_cl_env_var(key: &OsStr) -> bool {
+    cl_env_var_matches(key, "CL") || cl_env_var_matches(key, "_CL_")
+}
+
+/// `cl` applies `CL` and `_CL_` itself, so drop them after they have been
+/// folded into the command line.
+fn without_cl_env_vars(env_vars: &[(OsString, OsString)]) -> Vec<(OsString, OsString)> {
+    env_vars
+        .iter()
+        .filter(|(key, _)| !is_cl_env_var(key))
+        .cloned()
+        .collect()
+}
+
 pub fn parse_arguments(
     arguments: &[OsString],
     cwd: &Path,
@@ -1001,7 +1064,7 @@ fn preprocess_cmd<T>(
         .args(&parsed_args.dependency_args)
         .args(&parsed_args.common_args)
         .env_clear()
-        .envs(env_vars.to_vec())
+        .envs(without_cl_env_vars(env_vars))
         .current_dir(cwd);
 
     if is_clang {
@@ -1142,6 +1205,8 @@ fn generate_compile_commands(
     #[cfg(not(feature = "dist-client"))]
     let _ = path_transformer;
 
+    let env_vars = without_cl_env_vars(env_vars);
+
     trace!("compile");
     let out_file = match parsed_args.outputs.get("obj") {
         Some(obj) => &obj.path,
@@ -1177,7 +1242,7 @@ fn generate_compile_commands(
     let command = SingleCompileCommand {
         executable: executable.to_owned(),
         arguments,
-        env_vars: env_vars.to_owned(),
+        env_vars: env_vars.clone(),
         cwd: cwd.to_owned(),
         share_jobserver: false,
     };
@@ -1207,7 +1272,7 @@ fn generate_compile_commands(
         Some(dist::CompileCommand {
             executable: path_transformer.as_dist(executable)?,
             arguments,
-            env_vars: dist::osstring_tuples_to_strings(env_vars)?,
+            env_vars: dist::osstring_tuples_to_strings(&env_vars)?,
             cwd: path_transformer.as_dist(cwd)?,
         })
     })();
@@ -1536,6 +1601,110 @@ mod test {
         assert!(preprocessor_args.is_empty());
         assert!(common_args.is_empty());
         assert!(!msvc_show_includes);
+    }
+
+    #[test]
+    fn test_parse_arguments_cl_env() {
+        let msvc = Msvc {
+            includes_prefix: String::new(),
+            is_clang: false,
+            version: None,
+        };
+        let cwd = std::env::current_dir().unwrap();
+        let args = ovec!["-c", "foo.c", "-Fofoo.obj"];
+        let env = vec![
+            ("CL".into(), "/Zp2 /Ox /Ipath /DDEBUG#1 /DFOO#A#B".into()),
+            ("_CL_".into(), "/Foother.obj".into()),
+        ];
+        let ParsedArguments {
+            outputs,
+            preprocessor_args,
+            common_args,
+            ..
+        } = match msvc.parse_arguments(&args, &cwd, &env) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(common_args, ovec!["/Zp2", "/Ox"]);
+        assert_eq!(preprocessor_args, ovec!["/Ipath", "/DDEBUG#1", "/DFOO#A#B"]);
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("other.obj"),
+                    optional: false
+                }
+            )
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_parse_arguments_cl_env_lowercase() {
+        let msvc = Msvc {
+            includes_prefix: String::new(),
+            is_clang: false,
+            version: None,
+        };
+        let cwd = std::env::current_dir().unwrap();
+        let args = ovec!["-c", "foo.c", "-Fofoo.obj"];
+        let env = vec![
+            ("cl".into(), "/Zp2 /Ox /Ipath /DDEBUG#1".into()),
+            ("_cl_".into(), "/Foother.obj".into()),
+        ];
+        let ParsedArguments {
+            outputs,
+            preprocessor_args,
+            common_args,
+            ..
+        } = match msvc.parse_arguments(&args, &cwd, &env) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(common_args, ovec!["/Zp2", "/Ox"]);
+        assert_eq!(preprocessor_args, ovec!["/Ipath", "/DDEBUG#1"]);
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("other.obj"),
+                    optional: false
+                }
+            )
+        );
+    }
+
+    fn non_utf8_os_string() -> OsString {
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStringExt;
+            // Unpaired surrogate: not valid Unicode.
+            OsString::from_wide(&[0xD800])
+        }
+        #[cfg(not(windows))]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            OsString::from_vec(vec![0xFF])
+        }
+    }
+
+    #[test]
+    fn test_cl_env_args_non_utf8() {
+        let value = non_utf8_os_string();
+        assert_eq!(
+            cl_env_args(&[("CL".into(), value.clone())], "CL"),
+            Err("non-utf8 CL environment variable value")
+        );
+        assert_eq!(
+            cl_env_args(&[("_CL_".into(), value.clone())], "_CL_"),
+            Err("non-utf8 _CL_ environment variable value")
+        );
+        assert_eq!(
+            cl_env_args(&[("OTHER".into(), value)], "OTHER"),
+            Err("non-utf8 value of unexpected environment variable")
+        );
     }
 
     #[test]
@@ -3145,6 +3314,69 @@ mod test {
         .unwrap();
         let expected_args = ovec!["-c", "-Fofoo.obj", "--", "foo.c"];
         assert_eq!(command.arguments, expected_args);
+    }
+
+    #[test]
+    fn test_compile_strips_cl_env() {
+        let msvc = Msvc {
+            includes_prefix: String::new(),
+            is_clang: false,
+            version: None,
+        };
+        let cwd = std::env::current_dir().unwrap();
+        let args = ovec!["-c", "foo.c", "-Fofoo.obj"];
+        let env = vec![
+            ("CL".into(), "/Ox".into()),
+            ("INCLUDE".into(), "C:\\inc".into()),
+            ("_CL_".into(), "/Gy".into()),
+        ];
+        let parsed_args = match msvc.parse_arguments(&args, &cwd, &env) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        let f = TestFixture::new();
+        let compiler = &f.bins[0];
+        let mut path_transformer = dist::PathTransformer::new();
+        let (command, dist_command, _) = generate_compile_commands(
+            &mut path_transformer,
+            compiler,
+            &parsed_args,
+            f.tempdir.path(),
+            &env,
+        )
+        .unwrap();
+        assert!(command.arguments.iter().any(|arg| arg == "/Ox"));
+        assert!(command.arguments.iter().any(|arg| arg == "/Gy"));
+        assert!(
+            command
+                .env_vars
+                .iter()
+                .all(|(key, _)| key != "CL" && key != "_CL_")
+        );
+        assert!(
+            command
+                .env_vars
+                .iter()
+                .any(|(key, value)| key == "INCLUDE" && value == "C:\\inc")
+        );
+        #[cfg(feature = "dist-client")]
+        {
+            let dist_command = dist_command.expect("dist command");
+            assert!(
+                dist_command
+                    .env_vars
+                    .iter()
+                    .all(|(key, _)| key != "CL" && key != "_CL_")
+            );
+            assert!(
+                dist_command
+                    .env_vars
+                    .iter()
+                    .any(|(key, value)| key == "INCLUDE" && value == "C:\\inc")
+            );
+        }
+        #[cfg(not(feature = "dist-client"))]
+        assert!(dist_command.is_none());
     }
 
     #[test]
