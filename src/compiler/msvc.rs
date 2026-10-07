@@ -973,7 +973,7 @@ fn normpath(path: &str) -> String {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn preprocess_cmd<T>(
+fn preprocess_cmd<T>(
     cmd: &mut T,
     parsed_args: &ParsedArguments,
     cwd: &Path,
