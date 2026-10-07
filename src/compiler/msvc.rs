@@ -711,8 +711,7 @@ pub fn parse_arguments(
                 input_arg = Some(path.clone().into_os_string());
             }
             Some(ClangModuleFile(val)) if is_clang && !val.is_empty() => {
-                let val = val.to_string_lossy();
-                extra_hash_files.push(cwd.join(val.split_once('=').map_or(&*val, |(_, p)| p)));
+                extra_hash_files.push(cwd.join(gcc::module_file_path(val)));
             }
             Some(ClangModuleOutput(p)) if !p.is_empty() => module_output = Some(PathBuf::from(p)),
             Some(ClangLanguage(lang)) if is_clang && lang == "c++-module" => cxx_module = true,
