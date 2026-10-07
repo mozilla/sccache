@@ -19,9 +19,11 @@ use fs::File;
 use fs_err as fs;
 use object::read::archive::ArchiveFile;
 use object::read::macho::{FatArch, MachOFatFile32, MachOFatFile64};
+use object::{Object as _, ObjectSection as _};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::cell::Cell;
+use std::env::consts::DLL_EXTENSION;
 use std::ffi::{OsStr, OsString};
 use std::hash::Hasher;
 use std::io::prelude::*;
@@ -443,6 +445,54 @@ pub async fn hash_all_archives(
         fmt_duration_as_secs(&start.elapsed())
     );
     Ok(hashes.into_iter().map(|res| res.unwrap()).collect())
+}
+
+/// Calculate the digest of each `--extern` input in `files` on background threads in `pool`.
+///
+/// A dynamic library, which is how a proc-macro is built, is hashed by its `.rustc`
+/// metadata section rather than as a whole file. On macOS the linker writes the
+/// library's own output path into it, so the same proc-macro built into two target
+/// directories would hash differently and every crate using it would miss the cache.
+/// The metadata section does not depend on the output path. Everything else, and a
+/// library without that section, is hashed whole as before.
+pub async fn hash_all_externs(
+    files: &[PathBuf],
+    pool: &tokio::runtime::Handle,
+) -> Result<Vec<String>> {
+    let start = time::Instant::now();
+    let count = files.len();
+    let iter = files.iter().map(|path| async move {
+        if path.extension() == Some(OsStr::new(DLL_EXTENSION)) {
+            let library = path.clone();
+            let metadata_digest = pool
+                .spawn_blocking(move || -> Result<Option<String>> {
+                    let data = fs::read(&library)?;
+                    Ok(rustc_metadata_section(&data).map(|metadata| {
+                        let mut m = Digest::new();
+                        m.update(metadata);
+                        m.finish()
+                    }))
+                })
+                .await??;
+            if let Some(digest) = metadata_digest {
+                return Ok(digest);
+            }
+        }
+        Digest::file(path, pool).await
+    });
+    let hashes = futures::future::try_join_all(iter).await?;
+    trace!(
+        "Hashed {} externs in {}",
+        count,
+        fmt_duration_as_secs(&start.elapsed())
+    );
+    Ok(hashes)
+}
+
+fn rustc_metadata_section(data: &[u8]) -> Option<&[u8]> {
+    let file = object::File::parse(data).ok()?;
+    let section = file.section_by_name(".rustc")?;
+    section.data().ok().filter(|bytes| !bytes.is_empty())
 }
 
 fn hash_regular_archive(m: &mut Digest, data: &[u8]) -> Result<()> {
@@ -1574,9 +1624,33 @@ pub fn resolve_compiler_avoiding_wrapper(
 
 #[cfg(test)]
 mod tests {
-    use super::{Digest, OsStrExt, TimeMacroFinder, resolve_compiler_avoiding_wrapper};
+    use super::{
+        Digest, OsStrExt, TimeMacroFinder, hash_all_externs, resolve_compiler_avoiding_wrapper,
+    };
+    use crate::test::utils::single_threaded_runtime;
+    use std::env::consts::DLL_EXTENSION;
     use std::ffi::{OsStr, OsString};
     use std::path::Path;
+
+    #[test]
+    fn test_hash_all_externs_hashes_whole_files_without_rustc_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let rlib = dir.path().join("libfoo.rlib");
+        let not_an_object = dir.path().join(format!("libbar.{DLL_EXTENSION}"));
+        let missing = dir.path().join(format!("libmissing.{DLL_EXTENSION}"));
+        std::fs::write(&rlib, b"an rlib").unwrap();
+        std::fs::write(&not_an_object, b"not an object file").unwrap();
+
+        let runtime = single_threaded_runtime();
+        let pool = runtime.handle();
+        let whole = |path| runtime.block_on(Digest::file(path, pool)).unwrap();
+        let files = [rlib.clone(), not_an_object.clone()];
+        let hashes = runtime.block_on(hash_all_externs(&files, pool)).unwrap();
+        assert_eq!(hashes, vec![whole(&rlib), whole(&not_an_object)]);
+
+        let missing_result = runtime.block_on(hash_all_externs(&[missing], pool));
+        assert!(missing_result.is_err());
+    }
 
     #[test]
     fn test_resolve_compiler_avoiding_ccache_filters_path() {
