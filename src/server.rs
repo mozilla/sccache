@@ -2658,12 +2658,15 @@ mod tests {
         );
         // rustc +stable: not a rustup proxy
         next_command(creator, Ok(MockChild::new(exit_status(1), "", "")));
-        // rustc --print=sysroot
+        // rustc --print=sysroot --print=target-libdir
+        let sysroot = f.tempdir.path().to_str().unwrap();
+        let sysroot_and_target_libdir =
+            format!("{sysroot}\n{sysroot}/lib/rustlib/x86_64-unknown-linux-gnu/lib");
         next_command(
             creator,
             Ok(MockChild::new(
                 exit_status(0),
-                f.tempdir.path().to_str().unwrap(),
+                sysroot_and_target_libdir,
                 "",
             )),
         );
