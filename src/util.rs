@@ -447,14 +447,8 @@ pub async fn hash_all_archives(
     Ok(hashes.into_iter().map(|res| res.unwrap()).collect())
 }
 
-/// Calculate the digest of each `--extern` input in `files` on background threads in `pool`.
-///
-/// A dynamic library, which is how a proc-macro is built, is hashed by its `.rustc`
-/// metadata section rather than as a whole file. On macOS the linker writes the
-/// library's own output path into it, so the same proc-macro built into two target
-/// directories would hash differently and every crate using it would miss the cache.
-/// The metadata section does not depend on the output path. Everything else, and a
-/// library without that section, is hashed whole as before.
+/// Calculate the digest of each `--extern` input in `files`. A dylib, which is how a proc-macro
+/// is built, is hashed by its `.rustc` metadata alone, since on macOS the rest embeds its path.
 pub async fn hash_all_externs(
     files: &[PathBuf],
     pool: &tokio::runtime::Handle,
@@ -462,23 +456,17 @@ pub async fn hash_all_externs(
     let start = time::Instant::now();
     let count = files.len();
     let iter = files.iter().map(|path| async move {
-        if path.extension() == Some(OsStr::new(DLL_EXTENSION)) {
-            let library = path.clone();
-            let metadata_digest = pool
-                .spawn_blocking(move || -> Result<Option<String>> {
-                    let data = fs::read(&library)?;
-                    Ok(rustc_metadata_section(&data).map(|metadata| {
-                        let mut m = Digest::new();
-                        m.update(metadata);
-                        m.finish()
-                    }))
-                })
-                .await??;
-            if let Some(digest) = metadata_digest {
-                return Ok(digest);
-            }
+        if path.extension() != Some(OsStr::new(DLL_EXTENSION)) {
+            return Digest::file(path, pool).await;
         }
-        Digest::file(path, pool).await
+        let library = path.clone();
+        pool.spawn_blocking(move || -> Result<String> {
+            let data = fs::read(&library)?;
+            let mut m = Digest::new();
+            m.update(rustc_metadata_section(&data).unwrap_or(&data));
+            Ok(m.finish())
+        })
+        .await?
     });
     let hashes = futures::future::try_join_all(iter).await?;
     trace!(
@@ -1628,9 +1616,42 @@ mod tests {
         Digest, OsStrExt, TimeMacroFinder, hash_all_externs, resolve_compiler_avoiding_wrapper,
     };
     use crate::test::utils::single_threaded_runtime;
+    use object::write::Object as WriteObject;
+    use object::{Architecture, BinaryFormat, Endianness, SectionKind};
     use std::env::consts::DLL_EXTENSION;
     use std::ffi::{OsStr, OsString};
     use std::path::Path;
+
+    fn object_with(metadata: &[u8], code: &[u8]) -> Vec<u8> {
+        let mut obj = WriteObject::new(BinaryFormat::Elf, Architecture::X86_64, Endianness::Little);
+        let text = obj.add_section(Vec::new(), b".text".to_vec(), SectionKind::Text);
+        obj.append_section_data(text, code, 1);
+        let rustc = obj.add_section(Vec::new(), b".rustc".to_vec(), SectionKind::Data);
+        obj.append_section_data(rustc, metadata, 1);
+        obj.write().unwrap()
+    }
+
+    #[test]
+    fn test_hash_all_externs_hashes_a_dylib_by_its_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let write = |name: &str, bytes: Vec<u8>| {
+            let path = dir.path().join(format!("{name}.{DLL_EXTENSION}"));
+            std::fs::write(&path, bytes).unwrap();
+            path
+        };
+        let files = [
+            write("a", object_with(b"meta", b"code")),
+            write("b", object_with(b"meta", b"other code, longer")),
+            write("c", object_with(b"changed", b"code")),
+        ];
+
+        let runtime = single_threaded_runtime();
+        let hashes = runtime
+            .block_on(hash_all_externs(&files, runtime.handle()))
+            .unwrap();
+        assert_eq!(hashes[0], hashes[1]);
+        assert_ne!(hashes[0], hashes[2]);
+    }
 
     #[test]
     fn test_hash_all_externs_hashes_whole_files_without_rustc_metadata() {
