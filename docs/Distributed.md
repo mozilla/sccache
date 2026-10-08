@@ -383,6 +383,21 @@ token = "my server's token"
 ```
 
 
+#### Load-aware worker capacity
+
+On Linux, a build server can opt into yielding its distributed capacity while the host is busy with non-sccache work. Set `SCCACHE_DIST_MAX_HOST_CPU_PERCENT` to a CPU-busy threshold from `0` to `100`:
+
+```bash
+export SCCACHE_DIST_MAX_HOST_CPU_PERCENT=50
+export SCCACHE_DIST_REENABLE_AFTER_SECONDS=300  # optional; default 300
+sccache-dist server --config /path/to/server.toml
+```
+
+The server advertises zero CPUs only when host CPU usage exceeds the threshold **and no distributed jobs are currently running**. Existing distributed jobs are never displaced. Once disabled, capacity is restored only after CPU usage remains below the threshold for `SCCACHE_DIST_REENABLE_AFTER_SECONDS`.
+
+If `SCCACHE_DIST_MAX_HOST_CPU_PERCENT` is unset, the worker behaves exactly as before. The option is Linux-only because it samples aggregate CPU time from `/proc/stat`.
+
+
 #### [builder]
 
 The `[builder]` section can be can be one of:
