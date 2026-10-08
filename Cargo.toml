@@ -139,6 +139,7 @@ version-compare = { version = "0.1.1", optional = true }
 
 [dev-dependencies]
 assert_cmd = "2.0.13"
+object = { version = "0.37", features = ["write"] }
 cc = "1.0"
 chrono = "0.4.42"
 divan = { package = "codspeed-divan-compat", version = "4" }
