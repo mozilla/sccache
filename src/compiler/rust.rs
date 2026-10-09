@@ -3894,6 +3894,88 @@ proc_macro false
         assert_eq!(out, vec!["foo.a", "foo.rlib", "foo.rmeta"]);
     }
 
+    #[test]
+    fn test_generate_hash_key_dep_info() {
+        let f = TestFixture::new();
+        f.touch("foo.rs").unwrap();
+        fs::create_dir(f.tempdir.path().join("out")).unwrap();
+        let emit = ["dep-info", "link", "metadata"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        let mut hasher = Box::new(RustHasher {
+            executable: "rustc".into(),
+            host: "x86-64-unknown-unknown-unknown".to_owned(),
+            version: TEST_RUSTC_VERSION.to_string(),
+            sysroot: f.tempdir.path().join("sysroot"),
+            #[cfg(feature = "dist-client")]
+            target_libdir: f.tempdir.path().join("sysroot/lib/rustlib/fake-target/lib"),
+            compiler_shlibs_digests: vec![],
+            dist_archive: Some("/toolchains/rust.tar.gz".into()),
+            #[cfg(feature = "dist-client")]
+            rlib_dep_reader: None,
+            parsed_args: ParsedArguments {
+                arguments: vec![],
+                output_dir: "out".into(),
+                externs: vec![],
+                crate_link_paths: vec![],
+                staticlibs: vec![],
+                crate_name: "foo".into(),
+                crate_types: CrateTypes {
+                    rlib: true,
+                    staticlib: false,
+                },
+                dep_info: Some("foo-abc.d".into()),
+                emit,
+                color_mode: ColorMode::Auto,
+                has_json: false,
+                profile: None,
+                gcno: None,
+                target_json: None,
+            },
+        });
+        let creator = new_creator();
+        mock_dep_info(&creator, &["foo.rs"]);
+        mock_file_names(&creator, &["libfoo-abc.rlib"]);
+        let runtime = single_threaded_runtime();
+        let pool = runtime.handle().clone();
+        let res = hasher
+            .generate_hash_key(
+                &creator,
+                f.tempdir.path().to_owned(),
+                vec![],
+                false,
+                &pool,
+                false,
+                Arc::new(MockStorage::new(None, false)),
+                CacheControl::Default,
+            )
+            .wait()
+            .unwrap();
+
+        let mut out = res.compilation.outputs().map(|k| k.key).collect::<Vec<_>>();
+        out.sort();
+        assert_eq!(out, ["libfoo-abc.rlib", "libfoo-abc.rmeta"]);
+        let out_dir = Path::new("out");
+        assert_eq!(
+            fs::read_to_string(f.tempdir.path().join("out/foo-abc.d")).unwrap(),
+            format!(
+                "{d}: /toolchains/rust.tar.gz foo.rs
+
+{rlib}: /toolchains/rust.tar.gz foo.rs
+
+{rmeta}: /toolchains/rust.tar.gz foo.rs
+
+/toolchains/rust.tar.gz:
+foo.rs:
+",
+                d = out_dir.join("foo-abc.d").display(),
+                rlib = out_dir.join("libfoo-abc.rlib").display(),
+                rmeta = out_dir.join("libfoo-abc.rmeta").display(),
+            )
+        );
+    }
+
     fn hash_key<F>(
         f: &TestFixture,
         args: &[&'static str],
