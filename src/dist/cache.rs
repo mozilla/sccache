@@ -214,7 +214,10 @@ mod client {
                         debug!("Using cached toolchain {} -> {}", weak_key, tc.archive_id);
                         return Ok((tc, None));
                     }
-                    Err(LruError::FileNotInCache) => {
+                    Err(error)
+                        if matches!(&error, LruError::FileNotInCache)
+                            || matches!(&error, LruError::Io(error) if error.kind() == std::io::ErrorKind::NotFound) =>
+                    {
                         debug!(
                             "Weak toolchain mapping {} -> {} is stale; repackaging",
                             weak_key, tc.archive_id
@@ -368,6 +371,39 @@ mod client {
 
             assert_eq!(repacked, toolchain);
             assert!(second.get_toolchain(&repacked)?.is_some());
+            Ok(())
+        }
+
+        #[cfg(all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ))]
+        #[test]
+        fn missing_archive_file_repackages_without_restart() -> anyhow::Result<()> {
+            let td = tempfile::Builder::new().prefix("sccache").tempdir()?;
+            let cache_dir = td.path().join("cache");
+
+            let client = ClientToolchains::new(&cache_dir, 1024 * 1024, &[])?;
+            let (toolchain, _) = client.put_toolchain(
+                "/my/compiler".as_ref(),
+                "weak_key",
+                Box::new(StaticToolchainPackager),
+            )?;
+
+            let archive_path = cache_dir
+                .join("tc")
+                .join(&toolchain.archive_id[0..1])
+                .join(&toolchain.archive_id[1..2])
+                .join(&toolchain.archive_id);
+            std::fs::remove_file(archive_path)?;
+
+            let (repacked, _) = client.put_toolchain(
+                "/my/compiler".as_ref(),
+                "weak_key",
+                Box::new(StaticToolchainPackager),
+            )?;
+            assert_eq!(repacked, toolchain);
+            assert!(client.get_toolchain(&repacked)?.is_some());
             Ok(())
         }
 
