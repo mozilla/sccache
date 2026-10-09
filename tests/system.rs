@@ -1981,8 +1981,15 @@ fn test_sccache_command(preprocessor_cache_mode: bool) {
             run_sccache_command_tests(compiler, tempdir.path(), preprocessor_cache_mode);
             zero_stats();
         }
+        // The preprocessor dir is created as soon as the disk cache is used,
+        // but entries are only written by compilers that support preprocessor
+        // cache mode (not MSVC), so check for an actual entry file.
         let entries_dir = tempdir.path().join("client-cache").join("preprocessor");
-        if entries_dir.exists() {
+        let has_entries = walkdir::WalkDir::new(&entries_dir)
+            .into_iter()
+            .filter_map(Result::ok)
+            .any(|e| e.file_type().is_file());
+        if has_entries {
             sccache_command()
                 .arg("--debug-preprocessor-cache")
                 .env("SCCACHE_CONF", tempdir.path().join("sccache-cfg.json"))
