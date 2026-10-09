@@ -1502,11 +1502,6 @@ where
             };
 
             let mut stats = me.stats.lock().await;
-            let direct_mode_capable = me
-                .storage
-                .preprocessor_cache_mode_config()
-                .use_preprocessor_cache_mode
-                && lang.needs_c_preprocessing();
             match result {
                 Ok((compiled, out)) => {
                     let mut dist_type = DistType::NoDist;
@@ -1517,17 +1512,23 @@ where
 
                             stats.cache_errors.increment(&kind, &lang);
                         }
-                        CompileResult::CacheHit(duration, cache_type) => {
+                        CompileResult::CacheHit(duration, direct_cache_type) => {
                             debug!("[{}]: compile result: cache hit", out_pretty);
                             stats.cache_hits.increment(&kind, &lang);
-                            if cache_type == DirectCacheType::Hit {
+                            if direct_cache_type == DirectCacheType::Hit {
                                 stats.direct_cache_hits.increment(&kind, &lang);
-                            } else if cache_type == DirectCacheType::Miss && direct_mode_capable {
+                            } else if direct_cache_type == DirectCacheType::Miss {
                                 stats.direct_cache_misses.increment(&kind, &lang);
                             }
                             stats.cache_read_hit_duration += duration;
                         }
-                        CompileResult::CacheMiss(miss_type, dt, duration, future) => {
+                        CompileResult::CacheMiss(
+                            miss_type,
+                            dt,
+                            duration,
+                            direct_cache_type,
+                            future,
+                        ) => {
                             debug!("[{}]: compile result: cache miss", out_pretty);
                             dist_type = dt;
 
@@ -1546,7 +1547,7 @@ where
                             }
                             stats.compilations += 1;
                             stats.cache_misses.increment(&kind, &lang);
-                            if direct_mode_capable {
+                            if direct_cache_type == DirectCacheType::Miss {
                                 stats.direct_cache_misses.increment(&kind, &lang);
                             }
                             stats.compiler_write_duration += duration;
@@ -1944,12 +1945,12 @@ impl ServerStats {
             set_compiler_stat!(stats_vec, self.cache_hits, "Cache hits");
             set_compiler_stat!(stats_vec, self.direct_cache_hits, "Direct cache hits");
             set_compiler_stat!(stats_vec, self.cache_misses, "Cache misses");
-            set_compiler_stat!(stats_vec, self.direct_cache_misses, "Cache misses");
+            set_compiler_stat!(stats_vec, self.direct_cache_misses, "Direct cache misses");
         } else {
             set_lang_stat!(stats_vec, self.cache_hits, "Cache hits");
             set_lang_stat!(stats_vec, self.direct_cache_hits, "Direct cache hits");
             set_lang_stat!(stats_vec, self.cache_misses, "Cache misses");
-            set_lang_stat!(stats_vec, self.direct_cache_misses, "Direct cache hits");
+            set_lang_stat!(stats_vec, self.direct_cache_misses, "Direct cache misses");
         }
 
         self.set_percentage_stats(&mut stats_vec, advanced);

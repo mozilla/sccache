@@ -528,7 +528,7 @@ where
                                 env_vars: env_vars.clone(),
                             }),
                             weak_toolchain_key,
-                            hash_key_type: DirectCacheType::Hit,
+                            direct_cache_type: DirectCacheType::Hit,
                         });
                     } else {
                         debug!("Preprocessor cache miss: {preprocessor_key}");
@@ -646,7 +646,7 @@ where
         .compute();
 
         // Cache the preprocessing step
-        if let Some(preprocessor_key) = preprocessor_key
+        if let Some(ref preprocessor_key) = preprocessor_key
             && !include_files.is_empty()
         {
             let mut preprocessor_cache_entry = PreprocessorCacheEntry::new();
@@ -673,6 +673,10 @@ where
             self.executable.to_string_lossy(),
             self.executable_digest
         );
+
+        let direct_attempted = needs_preprocessing
+            && preprocessor_key.is_some()
+            && cache_control == CacheControl::Default;
         Ok(HashResult {
             key,
             compilation: Box::new(CCompilation {
@@ -686,7 +690,7 @@ where
                 env_vars,
             }),
             weak_toolchain_key,
-            hash_key_type: if needs_preprocessing {
+            direct_cache_type: if direct_attempted {
                 DirectCacheType::Miss
             } else {
                 DirectCacheType::NotAttempted

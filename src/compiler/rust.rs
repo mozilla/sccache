@@ -1739,7 +1739,7 @@ where
                 rlib_dep_reader: self.rlib_dep_reader.clone(),
             }),
             weak_toolchain_key,
-            hash_key_type: DirectCacheType::NotAttempted,
+            direct_cache_type: DirectCacheType::NotAttempted,
         })
     }
 

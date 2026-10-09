@@ -194,6 +194,7 @@ const INPUT_FOR_CUDA_C: &str = "test_c.cu";
 const INPUT_FOR_HIP_A: &str = "test_a.hip";
 const INPUT_FOR_HIP_B: &str = "test_b.hip";
 const INPUT_FOR_HIP_C: &str = "test_c.hip";
+const INPUT_FOR_DIRECT_MODE_STATS: &str = "test_preprocessor_cache.c";
 const OUTPUT: &str = "test.o";
 #[cfg(unix)]
 const NULL_PATH: &str = "/dev/null";
@@ -741,6 +742,9 @@ fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path, preprocessor_ca
         test_basic_compile(compiler.clone(), tempdir);
         test_basic_compile_into_null(compiler.clone(), tempdir);
         test_basic_compile_into_dev_stdout(compiler.clone(), tempdir);
+        if preprocessor_cache_mode {
+            test_direct_mode_stats(compiler.clone(), tempdir);
+        }
     }
     test_compile_with_define(compiler.clone(), tempdir);
     if compiler.name == "cl.exe" {
@@ -2217,4 +2221,57 @@ fn test_symlinked_exe() {
 
         fs::remove_file(&sccache_compiler_alias).unwrap();
     }
+}
+
+fn test_direct_mode_stats(compiler: Compiler, tempdir: &Path) {
+    let Compiler {
+        name,
+        exe,
+        env_vars,
+    } = compiler;
+
+    copy_to_tempdir(&[INPUT_FOR_DIRECT_MODE_STATS], tempdir);
+    zero_stats();
+
+    let out_file = tempdir.join(OUTPUT);
+
+    // first build
+    sccache_command()
+        .args(compile_cmdline(
+            name,
+            &exe,
+            INPUT_FOR_DIRECT_MODE_STATS,
+            OUTPUT,
+            Vec::new(),
+        ))
+        .current_dir(tempdir)
+        .envs(env_vars.clone())
+        .assert()
+        .success();
+    get_stats(|info| {
+        assert_eq!(1, info.stats.cache_misses.all());
+        assert_eq!(&1, info.stats.direct_cache_misses.get("C/C++").unwrap());
+        assert_eq!(0, info.stats.direct_cache_hits.all());
+    });
+
+    fs::remove_file(&out_file).unwrap();
+
+    // rebuild
+    sccache_command()
+        .args(compile_cmdline(
+            name,
+            &exe,
+            INPUT_FOR_DIRECT_MODE_STATS,
+            OUTPUT,
+            Vec::new(),
+        ))
+        .current_dir(tempdir)
+        .envs(env_vars)
+        .assert()
+        .success();
+    get_stats(|info| {
+        assert_eq!(1, info.stats.cache_hits.all());
+        assert_eq!(&1, info.stats.direct_cache_hits.get("C/C++").unwrap());
+        assert_eq!(1, info.stats.direct_cache_misses.all());
+    });
 }
