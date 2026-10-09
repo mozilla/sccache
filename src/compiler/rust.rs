@@ -557,6 +557,51 @@ fn parse_env_dep_info(dep_info: &str) -> Vec<(OsString, OsString)> {
     env_deps
 }
 
+/// Rewrite the dep-info of a `--emit dep-info -o <file>` invocation
+/// into one with a rule per `targets`.
+///
+/// The dep-info-only invocation has a single rule, naming `<file>`.
+/// It is replaced by one rule per `targets`, with the same prerequisites;
+/// the rest is kept verbatim.
+///
+/// Like rustc, targets are unescaped and prerequisites have spaces escaped. See
+/// <https://github.com/rust-lang/rust/blob/1d81eb4ad9cd207e3e638bd32b17ec4fce8412a6/compiler/rustc_interface/src/passes.rs#L712-L726>
+///
+/// `extra_prerequisites` are added to every rule, each with a phony rule.
+fn dep_info_with_targets<'a>(
+    dep_info: &str,
+    targets: impl IntoIterator<Item = &'a Path>,
+    extra_prerequisites: impl IntoIterator<Item = &'a Path>,
+) -> Result<String> {
+    let (rule, rest) = dep_info.split_once('\n').unwrap_or((dep_info, ""));
+    let (_, prerequisites) = rule
+        .split_once(": ")
+        .context("dep-info does not start with a rule")?;
+    let extra_prerequisites = extra_prerequisites
+        .into_iter()
+        .map(|p| p.to_string_lossy().replace(' ', "\\ "))
+        .collect::<Vec<_>>();
+    let prerequisites = extra_prerequisites
+        .iter()
+        .map(String::as_str)
+        .chain((!prerequisites.is_empty()).then_some(prerequisites))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut out = String::new();
+    for target in targets {
+        out.push_str(&target.to_string_lossy());
+        out.push_str(": ");
+        out.push_str(&prerequisites);
+        out.push_str("\n\n");
+    }
+    for prerequisite in &extra_prerequisites {
+        out.push_str(prerequisite);
+        out.push_str(":\n");
+    }
+    out.push_str(rest.strip_prefix('\n').unwrap_or(rest));
+    Ok(out)
+}
+
 /// Run `rustc --print file-names` to get the outputs of compilation.
 async fn get_compiler_outputs<T>(
     creator: &T,
@@ -3504,6 +3549,76 @@ bar.rs:
             pathvec!["abc.rs", "bar.rs", "baz.rs"],
             parse_dep_info(deps, "")
         );
+    }
+
+    #[test]
+    fn test_dep_info_with_targets() {
+        // What `rustc --emit dep-info -o /tmp/x/deps.d` writes.
+        let deps = "/tmp/x/deps.d: src/lib.rs src/../LICENSE
+
+src/lib.rs:
+src/../LICENSE:
+
+# env-dep:FOO=bar
+# env-dep:BAZ
+";
+        let targets = [
+            Path::new("out/foo-abc.d"),
+            Path::new("out/libfoo-abc.rlib"),
+            Path::new("out/libfoo-abc.rmeta"),
+        ];
+        assert_eq!(
+            dep_info_with_targets(deps, targets, []).unwrap(),
+            "out/foo-abc.d: src/lib.rs src/../LICENSE
+
+out/libfoo-abc.rlib: src/lib.rs src/../LICENSE
+
+out/libfoo-abc.rmeta: src/lib.rs src/../LICENSE
+
+src/lib.rs:
+src/../LICENSE:
+
+# env-dep:FOO=bar
+# env-dep:BAZ
+"
+        );
+    }
+
+    #[test]
+    fn test_dep_info_with_targets_does_not_escape_targets() {
+        let deps = "/tmp/x/deps.d: a\\ b.rs\n\na\\ b.rs:\n";
+        assert_eq!(
+            dep_info_with_targets(deps, [Path::new("out dir/foo.d")], []).unwrap(),
+            "out dir/foo.d: a\\ b.rs\n\na\\ b.rs:\n"
+        );
+    }
+
+    #[test]
+    fn test_dep_info_with_targets_extra_prerequisites() {
+        let deps = "/tmp/x/deps.d: src/lib.rs\n\nsrc/lib.rs:\n\n# env-dep:FOO=a: b\n";
+        assert_eq!(
+            dep_info_with_targets(
+                deps,
+                [Path::new("out/foo.d"), Path::new("out/libfoo.rlib")],
+                [Path::new("/toolchains/my rust.tar.gz")],
+            )
+            .unwrap(),
+            "out/foo.d: /toolchains/my\\ rust.tar.gz src/lib.rs
+
+out/libfoo.rlib: /toolchains/my\\ rust.tar.gz src/lib.rs
+
+/toolchains/my\\ rust.tar.gz:
+src/lib.rs:
+
+# env-dep:FOO=a: b
+"
+        );
+    }
+
+    #[test]
+    fn test_dep_info_with_targets_requires_a_rule() {
+        assert!(dep_info_with_targets("", [Path::new("foo.d")], []).is_err());
+        assert!(dep_info_with_targets("# env-dep:FOO\n", [Path::new("foo.d")], []).is_err());
     }
 
     #[test]
