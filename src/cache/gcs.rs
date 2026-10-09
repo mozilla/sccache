@@ -15,6 +15,8 @@
 
 use crate::cache::CacheMode;
 use crate::errors::*;
+use base64::Engine;
+use base64::prelude::BASE64_STANDARD;
 use opendal::Operator;
 use opendal::{OperationContext, services::Gcs};
 use opendal_layer_logging::LoggingLayer;
@@ -54,7 +56,10 @@ impl GCSCache {
         }
 
         if let Some(path) = cred_path {
-            builder = builder.credential_path(path);
+            builder = match credential_with_default_format(path) {
+                Some(credential) => builder.credential(&credential),
+                None => builder.credential_path(path),
+            };
         }
 
         if let Some(cred_url) = credential_url {
@@ -76,6 +81,28 @@ impl GCSCache {
             .layer(LoggingLayer::default());
         Ok(op)
     }
+}
+
+// AIP-4117 defaults an omitted credential_source.format to plain text, but
+// reqsign-google currently requires it for file and URL sources. Normalize only
+// those credentials in memory, leaving other formats and validation to OpenDAL.
+// Remove this workaround once OpenDAL includes the released fix for
+// https://github.com/apache/reqsign/pull/910
+fn credential_with_default_format(path: &str) -> Option<String> {
+    let content = std::fs::read(path).ok()?;
+    let mut credential: serde_json::Value = serde_json::from_slice(&content).ok()?;
+    if credential.get("type")?.as_str()? != "external_account" {
+        return None;
+    }
+    let source = credential.get_mut("credential_source")?.as_object_mut()?;
+    if source.contains_key("format")
+        || source.contains_key("environment_id")
+        || !(source.contains_key("file") || source.contains_key("url"))
+    {
+        return None;
+    }
+    source.insert("format".to_owned(), serde_json::json!({"type": "text"}));
+    Some(BASE64_STANDARD.encode(serde_json::to_vec(&credential).ok()?))
 }
 
 /// Fetch token from TaskCluster for GCS authentication
@@ -112,4 +139,192 @@ async fn fetch_taskcluster_token(url: &str, scope: &str) -> Result<String> {
 struct TaskClusterToken {
     access_token: String,
     expire_time: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use opendal::{Buffer, HttpBody, HttpTransport, HttpTransporter};
+    use serde_json::json;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct FederationTransport {
+        subject_token: String,
+        scope: &'static str,
+        exchanges: Arc<AtomicUsize>,
+    }
+
+    impl HttpTransport for FederationTransport {
+        async fn fetch(
+            &self,
+            req: http::Request<Buffer>,
+        ) -> opendal::Result<http::Response<HttpBody>> {
+            let (status, body) = match req.uri().to_string().as_str() {
+                "https://issuer.example/token" => {
+                    assert_eq!(req.method(), http::Method::GET);
+                    assert_eq!(req.headers()["x-test-identity"], "test-identity");
+                    (200, self.subject_token.clone())
+                }
+                "https://sts.googleapis.com/v1/token" => {
+                    assert_eq!(req.method(), http::Method::POST);
+                    let body = req.body().to_bytes();
+                    let form: HashMap<_, _> = url::form_urlencoded::parse(&body).collect();
+                    assert_eq!(form["subject_token"], "test-subject-token");
+                    assert_eq!(form["scope"], self.scope);
+                    assert_eq!(
+                        form["grant_type"],
+                        "urn:ietf:params:oauth:grant-type:token-exchange"
+                    );
+                    self.exchanges.fetch_add(1, Ordering::SeqCst);
+                    (
+                        200,
+                        json!({
+                            "access_token": "test-access-token",
+                            "token_type": "Bearer",
+                            "expires_in": 3600
+                        })
+                        .to_string(),
+                    )
+                }
+                url if url.starts_with("https://storage.googleapis.com/") => {
+                    assert_eq!(req.headers()["authorization"], "Bearer test-access-token");
+                    (404, String::new())
+                }
+                url => panic!("unexpected request, including credential fallback: {url}"),
+            };
+            let size = body.len() as u64;
+            let stream = futures::stream::iter([Ok(Buffer::from(body))]);
+            Ok(http::Response::builder()
+                .status(status)
+                .body(HttpBody::new(stream, Some(size)))
+                .unwrap())
+        }
+    }
+
+    async fn check_external_account(source_type: &str, format: Option<serde_json::Value>) {
+        for mode in [CacheMode::ReadOnly, CacheMode::ReadWrite] {
+            let dir = tempfile::tempdir().unwrap();
+            let token_path = dir.path().join("subject-token");
+            let subject_token = if format.as_ref().and_then(|f| f["type"].as_str()) == Some("json")
+            {
+                json!({"id_token": "test-subject-token"}).to_string()
+            } else {
+                "test-subject-token\n".to_owned()
+            };
+            std::fs::write(&token_path, &subject_token).unwrap();
+            let mut source = match source_type {
+                "file" => json!({"file": token_path}),
+                "url" => json!({
+                    "url": "https://issuer.example/token",
+                    "headers": {"x-test-identity": "test-identity"}
+                }),
+                _ => unreachable!(),
+            };
+            if let Some(format) = &format {
+                source["format"] = format.clone();
+            }
+            let credential = json!({
+                "type": "external_account",
+                "audience": "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/test/providers/test",
+                "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+                "token_url": "https://sts.googleapis.com/v1/token",
+                "credential_source": source
+            })
+            .to_string();
+            let credential_path = dir.path().join("external-account.json");
+            std::fs::write(&credential_path, &credential).unwrap();
+            let exchanges = Arc::new(AtomicUsize::new(0));
+            let op = GCSCache::build(
+                "test-bucket",
+                "",
+                credential_path.to_str(),
+                None,
+                mode,
+                None,
+            )
+            .unwrap()
+            .with_context(
+                OperationContext::new().with_http_transport(HttpTransporter::new(
+                    FederationTransport {
+                        subject_token,
+                        scope: rw_to_scope(mode),
+                        exchanges: exchanges.clone(),
+                    },
+                )),
+            );
+
+            for _ in 0..2 {
+                let err = op.read(".sccache_check").await.unwrap_err();
+                assert_eq!(err.kind(), opendal::ErrorKind::NotFound, "{err:?}");
+            }
+            // Repeated requests reuse the exchanged access token.
+            assert_eq!(exchanges.load(Ordering::SeqCst), 1);
+            assert_eq!(
+                std::fs::read_to_string(credential_path).unwrap(),
+                credential
+            );
+        }
+    }
+
+    #[test]
+    fn test_credential_with_default_format_leaves_other_credentials_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("credential.json");
+        assert!(credential_with_default_format(path.to_str().unwrap()).is_none());
+        for credential in [
+            "not json".to_owned(),
+            json!({"type": "service_account", "private_key": "unchanged"}).to_string(),
+            json!({"type": "authorized_user", "refresh_token": "unchanged"}).to_string(),
+            json!({"type": "external_account"}).to_string(),
+        ] {
+            std::fs::write(&path, credential).unwrap();
+            assert!(credential_with_default_format(path.to_str().unwrap()).is_none());
+        }
+        for source in [
+            json!({"file": "token", "format": {"type": "text"}}),
+            json!({"url": "https://issuer.example/token", "format": {
+                "type": "json", "subject_token_field_name": "id_token"
+            }}),
+            json!({"file": "token", "format": null}),
+            json!({"file": "token", "format": {}}),
+            json!({"file": "token", "format": {"type": "invalid"}}),
+            json!({"environment_id": "aws1", "url": "http://169.254.169.254"}),
+            json!({"executable": {"command": "get-token"}}),
+            json!({}),
+        ] {
+            let credential = json!({
+                "type": "external_account",
+                "credential_source": source
+            });
+            std::fs::write(&path, credential.to_string()).unwrap();
+            assert!(
+                credential_with_default_format(path.to_str().unwrap()).is_none(),
+                "{credential}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_external_account_file_without_format() {
+        check_external_account("file", None).await;
+    }
+
+    #[tokio::test]
+    async fn test_external_account_url_without_format() {
+        check_external_account("url", None).await;
+    }
+
+    #[tokio::test]
+    async fn test_external_account_explicit_formats() {
+        for source_type in ["file", "url"] {
+            for format in [
+                json!({"type": "text"}),
+                json!({"type": "json", "subject_token_field_name": "id_token"}),
+            ] {
+                check_external_account(source_type, Some(format)).await;
+            }
+        }
+    }
 }
