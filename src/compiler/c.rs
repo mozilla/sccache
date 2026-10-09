@@ -1517,6 +1517,14 @@ static CACHED_ENV_VARS: LazyLock<HashSet<&'static OsStr>> = LazyLock::new(|| {
         "WATCHOS_DEPLOYMENT_TARGET",
         "SDKROOT",
         "CCC_OVERRIDE_OPTIONS",
+        // Cached diagnostics are replayed verbatim on a hit, so the settings
+        // that select the diagnostic language have to be part of the key.
+        "LANG",
+        "LANGUAGE",
+        "LC_ALL",
+        "LC_CTYPE",
+        "LC_MESSAGES",
+        "VSLANG",
     ]
     .iter()
     .map(OsStr::new)
@@ -1844,6 +1852,27 @@ mod test {
 
             assert_neq!(h1, h2);
             assert_neq!(h2, h3);
+        }
+    }
+
+    #[test]
+    fn test_locale_env_vars_in_cache_key() {
+        let args = ovec!["a", "b", "c"];
+        for var in [
+            "LANG",
+            "LANGUAGE",
+            "LC_ALL",
+            "LC_CTYPE",
+            "LC_MESSAGES",
+            "VSLANG",
+        ] {
+            assert!(CACHED_ENV_VARS.contains(OsStr::new(var)));
+            let h1 = HashKeyParams::new("abcd", Language::C, &args, b"hello world").compute();
+            let vars = vec![(OsString::from(var), OsString::from("de_DE.UTF-8"))];
+            let h2 = HashKeyParams::new("abcd", Language::C, &args, b"hello world")
+                .with_env_vars(&vars)
+                .compute();
+            assert_neq!(h1, h2);
         }
     }
 
