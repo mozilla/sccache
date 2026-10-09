@@ -20,7 +20,7 @@ use crate::compiler::{
     SingleCompileCommand, c::ArtifactDescriptor,
 };
 #[cfg(feature = "dist-client")]
-use crate::compiler::{DistPackagers, OutputsRewriter};
+use crate::compiler::{DistPackagers, NoopOutputsRewriter};
 #[cfg(feature = "dist-client")]
 use crate::dist::pkg;
 #[cfg(feature = "dist-client")]
@@ -292,6 +292,8 @@ pub struct Rust {
     target_libdir: PathBuf,
     /// The digests of all the shared libraries in rustc's $sysroot/lib (or /bin on Windows).
     compiler_shlibs_digests: Vec<String>,
+    /// The custom dist toolchain archive for this rustc, if configured.
+    dist_archive: Option<PathBuf>,
     /// A shared, caching reader for rlib dependencies
     #[cfg(feature = "dist-client")]
     rlib_dep_reader: Option<Arc<RlibDepReader>>,
@@ -313,6 +315,8 @@ pub struct RustHasher {
     target_libdir: PathBuf,
     /// The digests of all the shared libraries in rustc's $sysroot/lib (or /bin on Windows).
     compiler_shlibs_digests: Vec<String>,
+    /// The custom dist toolchain archive for this rustc, if configured.
+    dist_archive: Option<PathBuf>,
     /// A shared, caching reader for rlib dependencies
     #[cfg(feature = "dist-client")]
     rlib_dep_reader: Option<Arc<RlibDepReader>>,
@@ -402,8 +406,6 @@ pub struct RustCompilation {
     crate_name: String,
     /// The crate types that will be generated
     crate_types: CrateTypes,
-    /// If dependency info is being emitted, the name of the dep info file.
-    dep_info: Option<PathBuf>,
     /// The current working directory
     cwd: PathBuf,
     /// The environment variables
@@ -422,9 +424,11 @@ static ALLOWED_EMIT: LazyLock<HashSet<&'static str>> =
     LazyLock::new(|| ["link", "metadata", "dep-info"].iter().copied().collect());
 
 /// Version number for cache key.
-const CACHE_VERSION: &[u8] = b"6";
+const CACHE_VERSION: &[u8] = b"7";
 
 /// Run `rustc --emit=dep-info` to get the list of source files and env-deps.
+///
+/// Also returns the dep-info text, from which the dep-info output is written.
 async fn get_source_files_and_env_deps<T>(
     creator: &T,
     crate_name: &str,
@@ -433,7 +437,7 @@ async fn get_source_files_and_env_deps<T>(
     cwd: &Path,
     env_vars: &[(OsString, OsString)],
     pool: &tokio::runtime::Handle,
-) -> Result<(Vec<PathBuf>, Vec<(OsString, OsString)>)>
+) -> Result<(Vec<PathBuf>, Vec<(OsString, OsString)>, String)>
 where
     T: CommandCreatorSync,
 {
@@ -465,7 +469,7 @@ where
         })
         .await?;
 
-    parsed.map(move |(files, env_deps)| {
+    parsed.map(move |(files, env_deps, dep_info)| {
         trace!(
             "[{}]: got {} source files and {} env-deps from dep-info in {}",
             crate_name,
@@ -475,13 +479,16 @@ where
         );
         // Just to make sure we capture temp_dir.
         drop(temp_dir);
-        (files, env_deps)
+        (files, env_deps, dep_info)
     })
 }
 
-/// Parse dependency info from `file` and return a Vec of files mentioned.
-/// Treat paths as relative to `cwd`.
-fn parse_dep_file<T, U>(file: T, cwd: U) -> Result<(Vec<PathBuf>, Vec<(OsString, OsString)>)>
+/// Parse dependency info from `file` and return a Vec of files mentioned, the env-deps,
+/// and the raw text. Treat paths as relative to `cwd`.
+fn parse_dep_file<T, U>(
+    file: T,
+    cwd: U,
+) -> Result<(Vec<PathBuf>, Vec<(OsString, OsString)>, String)>
 where
     T: AsRef<Path>,
     U: AsRef<Path>,
@@ -489,7 +496,7 @@ where
     let mut f = fs::File::open(file.as_ref())?;
     let mut deps = String::new();
     f.read_to_string(&mut deps)?;
-    Ok((parse_dep_info(&deps, cwd), parse_env_dep_info(&deps)))
+    Ok((parse_dep_info(&deps, cwd), parse_env_dep_info(&deps), deps))
 }
 
 fn parse_dep_info<T>(dep_info: &str, cwd: T) -> Vec<PathBuf>
@@ -664,6 +671,7 @@ impl Rust {
             .arg("--print=target-libdir")
             .env_clear()
             .envs(env_vars.to_vec());
+        let hashed_archive = dist_archive.clone();
         let sysroot_and_libs = async move {
             let output = run_input_output(cmd, None).await?;
             //debug!("output.and_then: {}", output);
@@ -690,7 +698,7 @@ impl Rust {
                     })
                 })
                 .collect::<Vec<_>>();
-            if let Some(path) = dist_archive {
+            if let Some(path) = hashed_archive {
                 trace!("Hashing {:?} along with rustc libs.", path);
                 libs.push(path);
             }
@@ -728,6 +736,7 @@ impl Rust {
                 sysroot,
                 target_libdir,
                 compiler_shlibs_digests: digests,
+                dist_archive,
                 rlib_dep_reader,
             })
         }
@@ -741,6 +750,7 @@ impl Rust {
                 version: rustc_verbose_version.to_string(),
                 sysroot,
                 compiler_shlibs_digests: digests,
+                dist_archive,
             })
         }
     }
@@ -786,6 +796,7 @@ where
                 #[cfg(feature = "dist-client")]
                 target_libdir: self.target_libdir.clone(),
                 compiler_shlibs_digests: self.compiler_shlibs_digests.clone(),
+                dist_archive: self.dist_archive.clone(),
                 #[cfg(feature = "dist-client")]
                 rlib_dep_reader: self.rlib_dep_reader.clone(),
                 parsed_args: args,
@@ -1665,7 +1676,7 @@ where
         // Find all the source files and hash them
         let source_hashes_pool = pool.clone();
         let source_files_and_hashes_and_env_deps = async {
-            let (source_files, env_deps) = get_source_files_and_env_deps(
+            let (source_files, env_deps, dep_info) = get_source_files_and_env_deps(
                 creator,
                 &self.parsed_args.crate_name,
                 &self.executable,
@@ -1676,7 +1687,7 @@ where
             )
             .await?;
             let source_hashes = hash_all(&source_files, &source_hashes_pool).await?;
-            Ok((source_files, source_hashes, env_deps))
+            Ok((source_files, source_hashes, env_deps, dep_info))
         };
 
         // Turn arguments into a simple Vec<OsString> to calculate outputs.
@@ -1736,7 +1747,7 @@ where
 
         // Invoke the compiler and perform all hashing operations on the files.
         let (
-            (source_files, source_hashes, mut env_deps),
+            (source_files, source_hashes, mut env_deps, dep_info_text),
             extern_hashes,
             staticlib_hashes,
             target_json_hash,
@@ -1899,6 +1910,38 @@ where
             }
         }
 
+        // Write dep-info from this invocation rather than restoring it from the cache,
+        // which may come from another directory or machine (mozilla/sccache#984).
+        //
+        // Like rustc, it is written before compiling, so a failed compile leaves it behind.
+        // cargo reads dep-info only after rustc succeeds. See
+        //
+        // * https://github.com/rust-lang/rust/blob/1d81eb4ad9cd207/compiler/rustc_driver_impl/src/lib.rs#L311-L325
+        // * https://github.com/rust-lang/cargo/blob/29c5daa1afc2623/src/compiler/mod.rs#L529-L551
+        if let Some(dep_info) = &self.parsed_args.dep_info {
+            let dep_info = self.parsed_args.output_dir.join(dep_info);
+            let targets = std::iter::once(dep_info.clone())
+                .chain(outputs.iter().map(|o| self.parsed_args.output_dir.join(o)))
+                .collect::<Vec<_>>();
+            // Add the custom dist toolchain archive, if any, as a prerequisite,
+            // so swapping it out would trigger a rebuild.
+            // A local compile doesn't use the archive, and rustc overwrites this file anyway.
+            let text = dep_info_with_targets(
+                &dep_info_text,
+                targets.iter().map(|p| p.as_path()),
+                self.dist_archive.as_deref(),
+            )
+            .with_context(|| {
+                format!(
+                    "Failed to derive dep-info for {}",
+                    self.parsed_args.crate_name
+                )
+            })?;
+            let path = cwd.join(&dep_info);
+            fs::write(&path, text)
+                .with_context(|| format!("Failed to write dep-info to {}", path.display()))?;
+        }
+
         // Convert output files into a map of basename -> full
         // path, and remove some unneeded / non-existing ones,
         // see https://github.com/rust-lang/rust/pull/68799.
@@ -1915,19 +1958,6 @@ where
                 )
             })
             .collect::<HashMap<_, _>>();
-        let dep_info = if let Some(dep_info) = &self.parsed_args.dep_info {
-            let p = self.parsed_args.output_dir.join(dep_info);
-            outputs.insert(
-                dep_info.to_string_lossy().into_owned(),
-                ArtifactDescriptor {
-                    path: p.clone(),
-                    optional: false,
-                },
-            );
-            Some(p)
-        } else {
-            None
-        };
         if let Some(profile) = &self.parsed_args.profile {
             let p = self.parsed_args.output_dir.join(profile);
             outputs.insert(
@@ -1978,7 +2008,6 @@ where
                 crate_link_paths: self.parsed_args.crate_link_paths.clone(),
                 crate_name: self.parsed_args.crate_name.clone(),
                 crate_types: self.parsed_args.crate_types.clone(),
-                dep_info,
                 cwd,
                 env_vars,
                 #[cfg(feature = "dist-client")]
@@ -2170,7 +2199,6 @@ impl<T: CommandCreatorSync> Compilation<T> for RustCompilation {
             sysroot,
             target_libdir,
             crate_types,
-            dep_info,
             rlib_dep_reader,
             env_vars,
             ..
@@ -2192,7 +2220,7 @@ impl<T: CommandCreatorSync> Compilation<T> for RustCompilation {
             sysroot,
             target_libdir,
         });
-        let outputs_rewriter = Box::new(RustOutputsRewriter { dep_info });
+        let outputs_rewriter = Box::new(NoopOutputsRewriter);
 
         Ok((inputs_packager, toolchain_packager, outputs_rewriter))
     }
@@ -2603,126 +2631,6 @@ impl pkg::ToolchainPackager for RustToolchainPackager {
 
         package_builder.into_compressed_tar(f)
     }
-}
-
-#[cfg(feature = "dist-client")]
-struct RustOutputsRewriter {
-    dep_info: Option<PathBuf>,
-}
-
-#[cfg(feature = "dist-client")]
-impl OutputsRewriter for RustOutputsRewriter {
-    fn handle_outputs(
-        self: Box<Self>,
-        path_transformer: &dist::PathTransformer,
-        output_paths: &[PathBuf],
-        extra_inputs: &[PathBuf],
-    ) -> Result<()> {
-        use std::io::Write;
-
-        // Outputs in dep files (the files at the beginning of lines) are untransformed at this point -
-        // remap-path-prefix is documented to only apply to 'inputs'.
-        trace!("Pondering on rewriting dep file {:?}", self.dep_info);
-        if let Some(dep_info) = self.dep_info {
-            let extra_input_str = extra_inputs
-                .iter()
-                .fold(String::new(), |s, p| s + " " + &p.to_string_lossy());
-            for dep_info_local_path in output_paths {
-                trace!("Comparing with {}", dep_info_local_path.display());
-                if dep_info == *dep_info_local_path {
-                    info!("Replacing using the transformer {:?}", path_transformer);
-                    // Found the dep info file, read it in
-                    let f = fs::File::open(&dep_info)
-                        .with_context(|| "Failed to open dep info file")?;
-                    let mut deps = String::new();
-                    { f }.read_to_string(&mut deps)?;
-                    // Replace all the output paths, at the beginning of lines
-                    for (local_path, dist_path) in get_path_mappings(path_transformer) {
-                        let re_str = format!("(?m)^{}", regex::escape(&dist_path));
-                        let local_path_str = local_path.to_str().with_context(|| {
-                            format!(
-                                "could not convert {} to string for RE replacement",
-                                local_path.display()
-                            )
-                        })?;
-                        error!(
-                            "RE replacing {} with {} in {}",
-                            re_str, local_path_str, deps
-                        );
-                        let re = regex::Regex::new(&re_str).expect("Invalid regex");
-                        deps = re.replace_all(&deps, local_path_str).into_owned();
-                    }
-                    if !extra_inputs.is_empty() {
-                        deps = deps.replace(": ", &format!(":{} ", extra_input_str));
-                    }
-                    // Write the depinfo file
-                    let f =
-                        fs::File::create(&dep_info).context("Failed to recreate dep info file")?;
-                    { f }.write_all(deps.as_bytes())?;
-                    return Ok(());
-                }
-            }
-            // We expected there to be dep info, but none of the outputs matched
-            bail!("No outputs matched dep info file {}", dep_info.display());
-        }
-        Ok(())
-    }
-}
-
-#[test]
-#[cfg(all(feature = "dist-client", target_os = "windows"))]
-fn test_rust_outputs_rewriter() {
-    use crate::compiler::compiler::OutputsRewriter;
-    use crate::test::utils::create_file;
-    use std::io::Write;
-
-    let mut pt = dist::PathTransformer::new();
-    pt.as_dist(Path::new("c:\\")).unwrap();
-    let mappings: Vec<_> = pt.disk_mappings().collect();
-    assert!(mappings.len() == 1);
-    let linux_prefix = &mappings[0].1;
-
-    let depinfo_data = format!("{prefix}/sccache/target/x86_64-unknown-linux-gnu/debug/deps/sccache_dist-c6f3229b9ef0a5c3.rmeta: src/bin/sccache-dist/main.rs src/bin/sccache-dist/build.rs src/bin/sccache-dist/token_check.rs
-
-{prefix}/sccache/target/x86_64-unknown-linux-gnu/debug/deps/sccache_dist-c6f3229b9ef0a5c3.d: src/bin/sccache-dist/main.rs src/bin/sccache-dist/build.rs src/bin/sccache-dist/token_check.rs
-
-src/bin/sccache-dist/main.rs:
-src/bin/sccache-dist/build.rs:
-src/bin/sccache-dist/token_check.rs:
-", prefix=linux_prefix);
-
-    let depinfo_resulting_data = format!("{prefix}/sccache/target/x86_64-unknown-linux-gnu/debug/deps/sccache_dist-c6f3229b9ef0a5c3.rmeta: src/bin/sccache-dist/main.rs src/bin/sccache-dist/build.rs src/bin/sccache-dist/token_check.rs
-
-{prefix}/sccache/target/x86_64-unknown-linux-gnu/debug/deps/sccache_dist-c6f3229b9ef0a5c3.d: src/bin/sccache-dist/main.rs src/bin/sccache-dist/build.rs src/bin/sccache-dist/token_check.rs
-
-src/bin/sccache-dist/main.rs:
-src/bin/sccache-dist/build.rs:
-src/bin/sccache-dist/token_check.rs:
-", prefix="c:");
-
-    let tempdir = tempfile::Builder::new()
-        .prefix("sccache_test")
-        .tempdir()
-        .unwrap();
-    let tempdir = tempdir.path();
-    let depinfo_file = create_file(tempdir, "depinfo.d", |mut f| {
-        f.write_all(depinfo_data.as_bytes())
-    })
-    .unwrap();
-
-    let ror = Box::new(RustOutputsRewriter {
-        dep_info: Some(depinfo_file.clone()),
-    });
-    let () = ror
-        .handle_outputs(&pt, std::slice::from_ref(&depinfo_file), &[])
-        .unwrap();
-
-    let mut s = String::new();
-    fs::File::open(depinfo_file)
-        .unwrap()
-        .read_to_string(&mut s)
-        .unwrap();
-    assert_eq!(s, depinfo_resulting_data);
 }
 
 #[cfg(feature = "dist-client")]
@@ -3908,6 +3816,7 @@ proc_macro false
             #[cfg(feature = "dist-client")]
             target_libdir: f.tempdir.path().join("sysroot/lib/rustlib/fake-target/lib"),
             compiler_shlibs_digests: vec![FAKE_DIGEST.to_owned()],
+            dist_archive: None,
             #[cfg(feature = "dist-client")]
             rlib_dep_reader: None,
             parsed_args: ParsedArguments {
@@ -4126,6 +4035,7 @@ foo.rs:
             #[cfg(feature = "dist-client")]
             target_libdir: f.tempdir.path().join("sysroot/lib/rustlib/fake-target/lib"),
             compiler_shlibs_digests: vec![],
+            dist_archive: None,
             #[cfg(feature = "dist-client")]
             rlib_dep_reader: None,
             parsed_args,
