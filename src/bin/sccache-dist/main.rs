@@ -721,7 +721,13 @@ impl SchedulerIncoming for Scheduler {
                 (JobState::Started, JobState::Complete) => {
                     let (job_id, _) = entry.remove_entry();
                     if let Some(entry) = server_details {
-                        assert!(entry.jobs_assigned.remove(&job_id))
+                        if !entry.jobs_assigned.remove(&job_id) {
+                            warn!(
+                                "Completed job {} was already absent from server {} assignment set",
+                                job_id,
+                                server_id.addr()
+                            );
+                        }
                     } else {
                         bail!("Job was marked as finished, but server is not known to scheduler")
                     }
@@ -851,5 +857,115 @@ impl ServerIncoming for Server {
             .do_update_job_state(job_id, JobState::Complete)
             .context("Updating job state failed")?;
         res
+    }
+}
+
+#[cfg(test)]
+mod scheduler_tests {
+    use super::*;
+
+    struct TestJobAuthorizer;
+
+    impl JobAuthorizer for TestJobAuthorizer {
+        fn generate_token(&self, _job_id: JobId) -> Result<String> {
+            Ok(String::new())
+        }
+
+        fn verify_token(&self, _job_id: JobId, _token: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    struct ReapDuringAssign<'a> {
+        scheduler: &'a Scheduler,
+        server_id: ServerId,
+        server_nonce: ServerNonce,
+    }
+
+    impl SchedulerOutgoing for ReapDuringAssign<'_> {
+        fn do_assign_job(
+            &self,
+            server_id: ServerId,
+            job_id: JobId,
+            _tc: Toolchain,
+            _auth: String,
+        ) -> Result<AssignJobResult> {
+            assert_eq!(server_id, self.server_id);
+
+            {
+                let mut servers = self.scheduler.servers.lock().unwrap();
+                let details = servers.get_mut(&server_id).unwrap();
+                *details.jobs_unclaimed.get_mut(&job_id).unwrap() = Instant::now()
+                    .checked_sub(UNCLAIMED_PENDING_TIMEOUT + Duration::from_secs(1))
+                    .unwrap();
+            }
+
+            let heartbeat = self.scheduler.handle_heartbeat_server(
+                server_id,
+                self.server_nonce.clone(),
+                1,
+                Box::new(TestJobAuthorizer),
+            )?;
+            assert!(!heartbeat.is_new);
+
+            Ok(AssignJobResult {
+                state: JobState::Pending,
+                need_toolchain: false,
+            })
+        }
+    }
+
+    #[test]
+    fn completion_after_assignment_cleanup_is_tolerated() {
+        let scheduler = Scheduler::new();
+        let server_id: ServerId = "127.0.0.1:10501".parse().unwrap();
+        let server_nonce = ServerNonce::new();
+
+        scheduler
+            .handle_heartbeat_server(
+                server_id,
+                server_nonce.clone(),
+                1,
+                Box::new(TestJobAuthorizer),
+            )
+            .unwrap();
+
+        let requester = ReapDuringAssign {
+            scheduler: &scheduler,
+            server_id,
+            server_nonce,
+        };
+        let allocation = scheduler
+            .handle_alloc_job(
+                &requester,
+                Toolchain {
+                    archive_id: "test-toolchain".to_owned(),
+                },
+            )
+            .unwrap();
+        let job_id = match allocation {
+            AllocJobResult::Success { job_alloc, .. } => job_alloc.job_id,
+            AllocJobResult::Fail { msg } => panic!("unexpected allocation failure: {msg}"),
+        };
+
+        assert!(scheduler.jobs.lock().unwrap().contains_key(&job_id));
+        assert!(
+            !scheduler
+                .servers
+                .lock()
+                .unwrap()
+                .get(&server_id)
+                .unwrap()
+                .jobs_assigned
+                .contains(&job_id)
+        );
+
+        for state in [JobState::Ready, JobState::Started, JobState::Complete] {
+            assert!(matches!(
+                scheduler.handle_update_job_state(job_id, server_id, state),
+                Ok(UpdateJobStateResult::Success)
+            ));
+        }
+        assert!(!scheduler.jobs.lock().unwrap().contains_key(&job_id));
     }
 }
