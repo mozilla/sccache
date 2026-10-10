@@ -314,39 +314,76 @@ mod client {
             target_os = "linux",
             any(target_arch = "x86_64", target_arch = "aarch64")
         ))]
-        struct StaticToolchainPackager;
+        mod stale_weak_mapping {
+            use super::ClientToolchains;
+            use std::io::Write;
 
-        #[cfg(all(
-            target_os = "linux",
-            any(target_arch = "x86_64", target_arch = "aarch64")
-        ))]
-        impl crate::dist::pkg::ToolchainPackager for StaticToolchainPackager {
-            fn write_pkg(self: Box<Self>, mut f: super::fs::File) -> crate::errors::Result<()> {
-                f.write_all(b"toolchain_contents")?;
+            struct StaticToolchainPackager;
+
+            impl crate::dist::pkg::ToolchainPackager for StaticToolchainPackager {
+                fn write_pkg(self: Box<Self>, mut f: fs_err::File) -> crate::errors::Result<()> {
+                    f.write_all(b"toolchain_contents")?;
+                    Ok(())
+                }
+            }
+
+            fn cached_toolchain() -> anyhow::Result<(
+                tempfile::TempDir,
+                std::path::PathBuf,
+                ClientToolchains,
+                crate::dist::Toolchain,
+            )> {
+                let td = tempfile::Builder::new().prefix("sccache").tempdir()?;
+                let cache_dir = td.path().join("cache");
+                let client = ClientToolchains::new(&cache_dir, 1024 * 1024, &[])?;
+                let (toolchain, _) = client.put_toolchain(
+                    "/my/compiler".as_ref(),
+                    "weak_key",
+                    Box::new(StaticToolchainPackager),
+                )?;
+                assert!(client.get_toolchain(&toolchain)?.is_some());
+                Ok((td, cache_dir, client, toolchain))
+            }
+
+            #[test]
+            fn stale_weak_mapping_repackages_missing_archive() -> anyhow::Result<()> {
+                let (_td, cache_dir, first, toolchain) = cached_toolchain()?;
+                drop(first);
+
+                std::fs::remove_dir_all(cache_dir.join("tc"))?;
+
+                let second = ClientToolchains::new(&cache_dir, 1024 * 1024, &[])?;
+                let (repacked, _) = second.put_toolchain(
+                    "/my/compiler".as_ref(),
+                    "weak_key",
+                    Box::new(StaticToolchainPackager),
+                )?;
+
+                assert_eq!(repacked, toolchain);
+                assert!(second.get_toolchain(&repacked)?.is_some());
                 Ok(())
             }
-        }
 
-        #[cfg(all(
-            target_os = "linux",
-            any(target_arch = "x86_64", target_arch = "aarch64")
-        ))]
-        fn cached_toolchain() -> anyhow::Result<(
-            tempfile::TempDir,
-            std::path::PathBuf,
-            ClientToolchains,
-            crate::dist::Toolchain,
-        )> {
-            let td = tempfile::Builder::new().prefix("sccache").tempdir()?;
-            let cache_dir = td.path().join("cache");
-            let client = ClientToolchains::new(&cache_dir, 1024 * 1024, &[])?;
-            let (toolchain, _) = client.put_toolchain(
-                "/my/compiler".as_ref(),
-                "weak_key",
-                Box::new(StaticToolchainPackager),
-            )?;
-            assert!(client.get_toolchain(&toolchain)?.is_some());
-            Ok((td, cache_dir, client, toolchain))
+            #[test]
+            fn missing_archive_file_repackages_without_restart() -> anyhow::Result<()> {
+                let (_td, cache_dir, client, toolchain) = cached_toolchain()?;
+
+                let archive_path = cache_dir
+                    .join("tc")
+                    .join(&toolchain.archive_id[0..1])
+                    .join(&toolchain.archive_id[1..2])
+                    .join(&toolchain.archive_id);
+                std::fs::remove_file(archive_path)?;
+
+                let (repacked, _) = client.put_toolchain(
+                    "/my/compiler".as_ref(),
+                    "weak_key",
+                    Box::new(StaticToolchainPackager),
+                )?;
+                assert_eq!(repacked, toolchain);
+                assert!(client.get_toolchain(&repacked)?.is_some());
+                Ok(())
+            }
         }
 
         struct PanicToolchainPackager;
@@ -363,54 +400,6 @@ mod client {
             fn write_pkg(self: Box<Self>, _f: super::fs::File) -> crate::errors::Result<()> {
                 panic!("should not have called packager")
             }
-        }
-
-        #[cfg(all(
-            target_os = "linux",
-            any(target_arch = "x86_64", target_arch = "aarch64")
-        ))]
-        #[test]
-        fn stale_weak_mapping_repackages_missing_archive() -> anyhow::Result<()> {
-            let (_td, cache_dir, first, toolchain) = cached_toolchain()?;
-            drop(first);
-
-            std::fs::remove_dir_all(cache_dir.join("tc"))?;
-
-            let second = ClientToolchains::new(&cache_dir, 1024 * 1024, &[])?;
-            let (repacked, _) = second.put_toolchain(
-                "/my/compiler".as_ref(),
-                "weak_key",
-                Box::new(StaticToolchainPackager),
-            )?;
-
-            assert_eq!(repacked, toolchain);
-            assert!(second.get_toolchain(&repacked)?.is_some());
-            Ok(())
-        }
-
-        #[cfg(all(
-            target_os = "linux",
-            any(target_arch = "x86_64", target_arch = "aarch64")
-        ))]
-        #[test]
-        fn missing_archive_file_repackages_without_restart() -> anyhow::Result<()> {
-            let (_td, cache_dir, client, toolchain) = cached_toolchain()?;
-
-            let archive_path = cache_dir
-                .join("tc")
-                .join(&toolchain.archive_id[0..1])
-                .join(&toolchain.archive_id[1..2])
-                .join(&toolchain.archive_id);
-            std::fs::remove_file(archive_path)?;
-
-            let (repacked, _) = client.put_toolchain(
-                "/my/compiler".as_ref(),
-                "weak_key",
-                Box::new(StaticToolchainPackager),
-            )?;
-            assert_eq!(repacked, toolchain);
-            assert!(client.get_toolchain(&repacked)?.is_some());
-            Ok(())
         }
 
         #[test]
