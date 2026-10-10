@@ -214,22 +214,16 @@ mod client {
                         debug!("Using cached toolchain {} -> {}", weak_key, tc.archive_id);
                         return Ok((tc, None));
                     }
-                    Err(LruError::FileNotInCache) => {
-                        debug!(
-                            "Weak toolchain mapping {} -> {} is stale; repackaging",
-                            weak_key, tc.archive_id
-                        );
-                    }
-                    Err(LruError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-                        debug!(
-                            "Weak toolchain mapping {} -> {} is stale; repackaging",
-                            weak_key, tc.archive_id
-                        );
-                    }
+                    Err(LruError::FileNotInCache) => {}
+                    Err(LruError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
                     Err(e) => {
                         return Err(e).context("error while validating cached toolchain");
                     }
                 }
+                debug!(
+                    "Weak toolchain mapping {} -> {} is stale; repackaging",
+                    weak_key, tc.archive_id
+                );
             }
             debug!("Weak key {} requires toolchain packaging", weak_key);
             let tmpfile = tempfile::NamedTempFile::new_in(self.cache_dir.join("toolchain_tmp"))?;
