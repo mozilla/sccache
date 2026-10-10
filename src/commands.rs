@@ -16,7 +16,7 @@ use crate::cache::{IpcStorage, storage_from_config};
 use crate::client::{ServerConnection, connect_to_server, connect_with_retry};
 use crate::cmdline::{Command, StatsFormat};
 use crate::compiler::{ColorMode, is_rmeta_artifact_notification};
-use crate::config::{Config, default_disk_cache_dir};
+use crate::config::Config;
 use crate::jobserver::Client;
 use crate::mock_command::{CommandChild, CommandCreatorSync, ProcessCommandCreator, RunCommand};
 use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
@@ -795,7 +795,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
         }
         Command::DebugPreprocessorCacheEntries => {
             trace!("Command::DebugPreprocessorCacheEntries");
-            let entries_dir = default_disk_cache_dir().join("preprocessor");
+            let entries_dir = config.fallback_cache.dir.join("preprocessor");
             for entry in WalkDir::new(entries_dir).sort_by_file_name() {
                 let preprocessor_cache_entry_file = entry?;
                 let path = preprocessor_cache_entry_file.path();
