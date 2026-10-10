@@ -892,6 +892,11 @@ mod scheduler_tests {
         assert_eq!(scheduler0.next_job_id(), JobId(0x1000));
         assert_eq!(scheduler0.next_job_id(), JobId(0x1001));
         assert_eq!(scheduler1.next_job_id(), JobId(0x2000));
+
+        let wrapping = Scheduler::with_job_id_base(u64::MAX - 1);
+        assert_eq!(wrapping.next_job_id(), JobId(u64::MAX - 1));
+        assert_eq!(wrapping.next_job_id(), JobId(u64::MAX));
+        assert_eq!(wrapping.next_job_id(), JobId(0));
     }
 
     struct TestJobAuthorizer;
