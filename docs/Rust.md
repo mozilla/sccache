@@ -7,6 +7,7 @@ sccache includes support for caching Rust compilation. This includes many caveat
 * Compilation from stdin is not supported, a source file must be provided.
 * Values from `env!` require Rust >= 1.46 to be tracked in caching.
 * Procedural macros that read files from the filesystem may not be cached properly.
+* A procedural macro is identified by its crate metadata, so a change to native code it links, with no change to its Rust source or dependencies, is not seen.
 * `rustc`'s incremental compilation needs to be disabled. See [The Cargo Book](https://doc.rust-lang.org/cargo/reference/profiles.html#incremental)
 * Crates that invoke the system linker cannot be cached. Examples are `bin`, `dylib`, `cdylib`, and `proc-macro` crates.
 

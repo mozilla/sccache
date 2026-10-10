@@ -143,6 +143,7 @@ cc = "1.0"
 chrono = "0.4.42"
 divan = { package = "codspeed-divan-compat", version = "4" }
 filetime = "0.2"
+object = { version = "0.37", features = ["write"] }
 predicates = "=3.1.0"
 serial_test = "3.1"
 temp-env = "0.3.6"

@@ -409,3 +409,85 @@ fn test_rust_cargo_cmd_readonly_preemtive_block() -> Result<()> {
         .try_success()?;
     Ok(())
 }
+
+/// Test that a crate using a proc-macro hits the cache when the proc-macro was built into a
+/// different target directory. On macOS the linker writes the proc-macro dylib's own path into
+/// it, so hashing the whole file gave every target directory its own key.
+#[test]
+#[serial]
+fn test_rust_cargo_proc_macro_in_another_target_dir() -> Result<()> {
+    let test_info = SccacheTest::new(None)?;
+    let root = test_info.tempdir.path();
+    let src = root.join("src");
+    fs::create_dir_all(src.join("pm/src"))?;
+    fs::create_dir_all(src.join("user/src"))?;
+    fs::write(
+        src.join("Cargo.toml"),
+        r#"[workspace]
+        members = ["pm", "user"]
+        resolver = "2"
+        "#,
+    )?;
+    fs::write(
+        src.join("pm/Cargo.toml"),
+        r#"[package]
+        name = "pm"
+        version = "0.1.0"
+        edition = "2021"
+        [lib]
+        proc-macro = true
+        "#,
+    )?;
+    fs::write(
+        src.join("pm/src/lib.rs"),
+        r#"use proc_macro::TokenStream;
+        #[proc_macro]
+        pub fn answer(_: TokenStream) -> TokenStream {
+            "42".parse().unwrap()
+        }
+        "#,
+    )?;
+    fs::write(
+        src.join("user/Cargo.toml"),
+        r#"[package]
+        name = "user"
+        version = "0.1.0"
+        edition = "2021"
+        [dependencies]
+        pm = { path = "../pm" }
+        "#,
+    )?;
+    fs::write(
+        src.join("user/src/lib.rs"),
+        "pub fn answer() -> u32 { pm::answer!() }\n",
+    )?;
+
+    // The target directory goes on the command line, because sccache hashes every `CARGO_*`
+    // variable and an exported CARGO_TARGET_DIR would itself make the keys differ.
+    let env = test_info
+        .env
+        .iter()
+        .filter(|(var, _)| *var != "CARGO_TARGET_DIR")
+        .cloned()
+        .collect::<Vec<_>>();
+    for target_dir in ["t1", "target-two"] {
+        Command::new(CARGO.as_os_str())
+            .args(["build", "--color=never", "--target-dir"])
+            .arg(root.join(target_dir))
+            .envs(env.iter().cloned())
+            .current_dir(&src)
+            .assert()
+            .try_success()?;
+    }
+
+    test_info
+        .show_stats()?
+        .try_stdout(
+            predicates::str::contains(
+                r#""cache_hits":{"counts":{"Rust":1},"adv_counts":{"rust":1}}"#,
+            )
+            .from_utf8(),
+        )?
+        .try_success()?;
+    Ok(())
+}
