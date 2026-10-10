@@ -24,6 +24,7 @@ use std::env;
 use std::fs;
 use std::io::Cursor;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tempfile::Builder as TempBuilder;
 use tokio::runtime::Builder as RuntimeBuilder;
@@ -290,6 +291,298 @@ impl Storage for InMemoryStorage {
             .insert(key.to_string(), data.to_vec());
         Ok(Duration::ZERO)
     }
+}
+
+struct SlowWriteStorage {
+    delay: Duration,
+    in_flight: AtomicUsize,
+    max_in_flight: AtomicUsize,
+    writes: AtomicUsize,
+}
+
+impl SlowWriteStorage {
+    fn new(delay: Duration) -> Self {
+        Self {
+            delay,
+            in_flight: AtomicUsize::new(0),
+            max_in_flight: AtomicUsize::new(0),
+            writes: AtomicUsize::new(0),
+        }
+    }
+}
+
+#[async_trait]
+impl Storage for SlowWriteStorage {
+    async fn get(&self, _key: &str) -> Result<Cache> {
+        Ok(Cache::Miss)
+    }
+
+    async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration> {
+        self.put_raw(key, entry.finish()?.into()).await
+    }
+
+    async fn put_raw(&self, _key: &str, _data: Bytes) -> Result<Duration> {
+        let in_flight = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+        self.max_in_flight.fetch_max(in_flight, Ordering::SeqCst);
+        sleep(self.delay).await;
+        self.writes.fetch_add(1, Ordering::SeqCst);
+        self.in_flight.fetch_sub(1, Ordering::SeqCst);
+        Ok(self.delay)
+    }
+
+    async fn check(&self) -> Result<CacheMode> {
+        Ok(CacheMode::ReadWrite)
+    }
+
+    fn location(&self) -> String {
+        "SlowWrite".to_owned()
+    }
+
+    async fn current_size(&self) -> Result<Option<u64>> {
+        Ok(None)
+    }
+
+    async fn max_size(&self) -> Result<Option<u64>> {
+        Ok(None)
+    }
+}
+
+#[test]
+fn test_slow_write_storage_trait_methods() {
+    let runtime = RuntimeBuilder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let storage = SlowWriteStorage::new(Duration::ZERO);
+
+    runtime.block_on(async {
+        assert_eq!(
+            storage.put("direct", CacheWrite::default()).await.unwrap(),
+            Duration::ZERO
+        );
+        assert_eq!(storage.current_size().await.unwrap(), None);
+        assert_eq!(storage.max_size().await.unwrap(), None);
+    });
+}
+
+#[test]
+fn test_background_task_join_error_is_drained() {
+    let runtime = RuntimeBuilder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let tasks = BackgroundTasks::default();
+        tasks.spawn(async { panic!("expected background-task panic") });
+        tasks.drain().await;
+    });
+}
+
+#[test]
+fn test_closed_slow_level_semaphore_stops_background_work() {
+    let runtime = RuntimeBuilder::new_multi_thread()
+        .enable_all()
+        .worker_threads(2)
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        // L0 policy: cover the detached slower-level write cancellation path.
+        let l1 = Arc::new(SlowWriteStorage::new(Duration::ZERO));
+        let storage = MultiLevelStorage::with_write_error_policy_and_concurrency(
+            vec![
+                Arc::new(InMemoryStorage::new()) as Arc<dyn Storage>,
+                l1.clone(),
+            ],
+            WriteErrorPolicy::L0,
+            1,
+        );
+        storage.slow_level_semaphore.close();
+        storage
+            .put_raw("closed-l0", Bytes::from_static(b"entry"))
+            .await
+            .unwrap();
+        storage.drain_background().await;
+        assert_eq!(l1.writes.load(Ordering::SeqCst), 0);
+
+        // All policy: cover setup failure propagation inside the registered task.
+        let storage = MultiLevelStorage::with_write_error_policy_and_concurrency(
+            vec![
+                Arc::new(InMemoryStorage::new()) as Arc<dyn Storage>,
+                Arc::new(SlowWriteStorage::new(Duration::ZERO)) as Arc<dyn Storage>,
+            ],
+            WriteErrorPolicy::All,
+            1,
+        );
+        storage.slow_level_semaphore.close();
+        storage
+            .put_raw("closed-all", Bytes::from_static(b"entry"))
+            .await
+            .unwrap();
+        storage.drain_background().await;
+
+        // Backfill: a hit in L2 attempts an L1 backfill through the closed semaphore.
+        let l2 = Arc::new(InMemoryStorage::new());
+        l2.put("closed-backfill", CacheWrite::default())
+            .await
+            .unwrap();
+        let storage = MultiLevelStorage::new(vec![
+            Arc::new(InMemoryStorage::new()) as Arc<dyn Storage>,
+            Arc::new(SlowWriteStorage::new(Duration::ZERO)) as Arc<dyn Storage>,
+            l2 as Arc<dyn Storage>,
+        ]);
+        storage.slow_level_semaphore.close();
+        assert!(matches!(
+            storage.get("closed-backfill").await.unwrap(),
+            Cache::Hit(_)
+        ));
+        storage.drain_background().await;
+
+        // Preprocessor writes use the same slow-level bound. Exercise both
+        // successful permit acquisition and the closed-semaphore early return.
+        let storage = MultiLevelStorage::new(vec![
+            Arc::new(InMemoryStorage::new()) as Arc<dyn Storage>,
+            Arc::new(InMemoryStorage::new()) as Arc<dyn Storage>,
+        ]);
+        storage
+            .put_preprocessor_cache_entry("open-preprocessor", PreprocessorCacheEntry::default())
+            .await
+            .unwrap();
+        storage.slow_level_semaphore.close();
+        storage
+            .put_preprocessor_cache_entry("closed-preprocessor", PreprocessorCacheEntry::default())
+            .await
+            .unwrap();
+    });
+}
+
+#[test]
+fn test_positive_slow_write_concurrency_from_config() {
+    let runtime = RuntimeBuilder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let tempdir = TempBuilder::new()
+        .prefix("sccache-positive-concurrency")
+        .tempdir()
+        .unwrap();
+    let config = Config {
+        cache_configs: crate::config::CacheConfigs {
+            disk: Some(crate::config::DiskCacheConfig {
+                dir: tempdir.path().to_path_buf(),
+                ..Default::default()
+            }),
+            multilevel: Some(crate::config::MultiLevelConfig {
+                chain: vec!["disk".to_owned()],
+                write_error_policy: WriteErrorPolicy::default(),
+                slow_write_concurrency: 2,
+            }),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let storage = MultiLevelStorage::from_config(&config, runtime.handle())
+        .unwrap()
+        .unwrap();
+    assert_eq!(storage.slow_level_semaphore.available_permits(), 2);
+}
+
+#[test]
+fn test_zero_slow_write_concurrency_is_rejected() {
+    let runtime = RuntimeBuilder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let tempdir = TempBuilder::new()
+        .prefix("sccache-zero-concurrency")
+        .tempdir()
+        .unwrap();
+    let config = Config {
+        cache_configs: crate::config::CacheConfigs {
+            disk: Some(crate::config::DiskCacheConfig {
+                dir: tempdir.path().to_path_buf(),
+                ..Default::default()
+            }),
+            multilevel: Some(crate::config::MultiLevelConfig {
+                chain: vec!["disk".to_owned()],
+                write_error_policy: WriteErrorPolicy::default(),
+                slow_write_concurrency: 0,
+            }),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let error = MultiLevelStorage::from_config(&config, runtime.handle())
+        .err()
+        .expect("zero slow_write_concurrency should be rejected");
+    assert!(
+        error
+            .to_string()
+            .contains("slow_write_concurrency must be at least 1")
+    );
+}
+
+#[test]
+fn test_slow_level_write_concurrency_and_drain() {
+    let runtime = RuntimeBuilder::new_multi_thread()
+        .enable_all()
+        .worker_threads(2)
+        .build()
+        .unwrap();
+
+    let l0 = Arc::new(InMemoryStorage::new());
+    let l1 = Arc::new(SlowWriteStorage::new(Duration::from_millis(25)));
+    let storage = MultiLevelStorage::with_write_error_policy_and_concurrency(
+        vec![l0 as Arc<dyn Storage>, l1.clone() as Arc<dyn Storage>],
+        WriteErrorPolicy::L0,
+        2,
+    );
+
+    runtime.block_on(async {
+        for i in 0..8 {
+            storage
+                .put_raw(&format!("queued-{i}"), Bytes::from_static(b"entry"))
+                .await
+                .unwrap();
+        }
+
+        storage.drain_background().await;
+
+        assert_eq!(l1.writes.load(Ordering::SeqCst), 8);
+        assert_eq!(l1.in_flight.load(Ordering::SeqCst), 0);
+        assert!(l1.max_in_flight.load(Ordering::SeqCst) <= 2);
+    });
+}
+
+#[test]
+fn test_backfill_is_tracked_by_drain() {
+    let runtime = RuntimeBuilder::new_multi_thread()
+        .enable_all()
+        .worker_threads(2)
+        .build()
+        .unwrap();
+
+    let l0 = Arc::new(SlowWriteStorage::new(Duration::from_millis(25)));
+    let l1 = Arc::new(InMemoryStorage::new());
+    let storage = MultiLevelStorage::new(vec![
+        l0.clone() as Arc<dyn Storage>,
+        l1.clone() as Arc<dyn Storage>,
+    ]);
+
+    runtime.block_on(async {
+        l1.put("backfill", CacheWrite::default()).await.unwrap();
+        assert!(matches!(
+            storage.get("backfill").await.unwrap(),
+            Cache::Hit(_)
+        ));
+
+        storage.drain_background().await;
+
+        assert_eq!(l0.writes.load(Ordering::SeqCst), 1);
+        assert_eq!(l0.in_flight.load(Ordering::SeqCst), 0);
+    });
 }
 
 #[test]

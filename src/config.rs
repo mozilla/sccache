@@ -76,6 +76,10 @@ impl fmt::Display for WriteErrorPolicy {
     }
 }
 
+fn default_multilevel_slow_write_concurrency() -> usize {
+    4
+}
+
 /// Configuration for multi-level cache.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MultiLevelConfig {
@@ -85,6 +89,9 @@ pub struct MultiLevelConfig {
     /// Write failure handling policy
     #[serde(default)]
     pub write_error_policy: WriteErrorPolicy,
+    /// Maximum number of concurrent operations against slower cache levels.
+    #[serde(default = "default_multilevel_slow_write_concurrency")]
+    pub slow_write_concurrency: usize,
 }
 
 static CACHED_CONFIG_PATH: LazyLock<PathBuf> = LazyLock::new(CachedConfig::file_config_path);
@@ -1246,9 +1253,18 @@ fn config_from_env() -> Result<EnvConfig> {
             .and_then(|s| s.parse::<WriteErrorPolicy>().ok())
             .unwrap_or_default();
 
+        let slow_write_concurrency =
+            number_from_env_var::<usize>("SCCACHE_MULTILEVEL_SLOW_WRITE_CONCURRENCY")
+                .transpose()?
+                .unwrap_or_else(default_multilevel_slow_write_concurrency);
+        if slow_write_concurrency == 0 {
+            bail!("SCCACHE_MULTILEVEL_SLOW_WRITE_CONCURRENCY must be at least 1");
+        }
+
         Some(MultiLevelConfig {
             chain,
             write_error_policy,
+            slow_write_concurrency,
         })
     } else {
         None
@@ -3130,6 +3146,57 @@ size = "7g"
     );
 }
 
+#[test]
+fn test_multilevel_slow_write_concurrency_serde_default() {
+    let config: MultiLevelConfig = toml::from_str("chain = [\"disk\"]").unwrap();
+    assert_eq!(config.slow_write_concurrency, 4);
+    let serialized = toml::to_string(&config).unwrap();
+    assert!(serialized.contains("slow_write_concurrency = 4"));
+}
+
+#[test]
+#[serial(config_from_env)]
+fn test_multilevel_slow_write_concurrency_env_override() {
+    unsafe {
+        env::set_var("SCCACHE_MULTILEVEL_CHAIN", "disk,s3");
+        env::set_var("SCCACHE_MULTILEVEL_SLOW_WRITE_CONCURRENCY", "7");
+    }
+    let config = config_from_env().unwrap();
+    unsafe {
+        env::remove_var("SCCACHE_MULTILEVEL_CHAIN");
+        env::remove_var("SCCACHE_MULTILEVEL_SLOW_WRITE_CONCURRENCY");
+    }
+
+    assert_eq!(
+        config.cache.multilevel,
+        Some(MultiLevelConfig {
+            chain: vec!["disk".to_string(), "s3".to_string()],
+            write_error_policy: WriteErrorPolicy::default(),
+            slow_write_concurrency: 7,
+        })
+    );
+}
+
+#[test]
+#[serial(config_from_env)]
+fn test_zero_multilevel_slow_write_concurrency_env_is_rejected() {
+    unsafe {
+        env::set_var("SCCACHE_MULTILEVEL_CHAIN", "disk");
+        env::set_var("SCCACHE_MULTILEVEL_SLOW_WRITE_CONCURRENCY", "0");
+    }
+    let result = config_from_env();
+    unsafe {
+        env::remove_var("SCCACHE_MULTILEVEL_CHAIN");
+        env::remove_var("SCCACHE_MULTILEVEL_SLOW_WRITE_CONCURRENCY");
+    }
+    let error = result.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("SCCACHE_MULTILEVEL_SLOW_WRITE_CONCURRENCY must be at least 1")
+    );
+}
+
 // Integration tests: Config normalization + strip_basedirs usage
 
 #[test]
@@ -3501,6 +3568,7 @@ fn test_get_cache_levels_invalid_level() {
         multilevel: Some(MultiLevelConfig {
             chain: vec!["unknown_cache".to_string()],
             write_error_policy: WriteErrorPolicy::default(),
+            slow_write_concurrency: default_multilevel_slow_write_concurrency(),
         }),
         ..Default::default()
     };
@@ -3521,6 +3589,7 @@ fn test_get_cache_levels_missing_config() {
         multilevel: Some(MultiLevelConfig {
             chain: vec!["s3".to_string()],
             write_error_policy: WriteErrorPolicy::default(),
+            slow_write_concurrency: default_multilevel_slow_write_concurrency(),
         }),
         ..Default::default()
     };

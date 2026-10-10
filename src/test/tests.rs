@@ -19,7 +19,7 @@ use crate::commands::{do_compile, request_shutdown, request_stats};
 use crate::config::PreprocessorCacheModeConfig;
 use crate::jobserver::Client;
 use crate::mock_command::*;
-use crate::server::{DistClientContainer, SccacheServer, ServerMessage};
+use crate::server::{DistClientContainer, SccacheServer};
 use crate::test::utils::*;
 use fs::File;
 use fs_err as fs;
@@ -44,7 +44,7 @@ struct ServerOptions {
 ///
 /// * The port on which the server is listening.
 /// * A `Sender` which can be used to send messages to the server.
-///   (Most usefully, ServerMessage::Shutdown.)
+///   to request an explicit shutdown.
 /// * An `Arc`-and-`Mutex`-wrapped `MockCommandCreator` which the server will
 ///   use for all process creation.
 /// * The `JoinHandle` for the server thread.
@@ -53,7 +53,7 @@ fn run_server_thread<T>(
     options: T,
 ) -> (
     crate::net::SocketAddr,
-    Sender<ServerMessage>,
+    Sender<()>,
     Arc<Mutex<MockCommandCreator>>,
     thread::JoinHandle<()>,
 )
@@ -70,7 +70,7 @@ where
         .unwrap_or(u64::MAX);
     // Create a server on a background thread, get some useful bits from it.
     let (tx, rx) = mpsc::channel();
-    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let handle = thread::spawn(move || {
         let runtime = Runtime::new().unwrap();
         let dist_client = DistClientContainer::new_disabled();
@@ -161,7 +161,7 @@ fn test_server_stats() {
     // Include sccache ver (cli) to validate.
     assert_eq!(env!("CARGO_PKG_VERSION"), info.version);
     // Now signal it to shut down.
-    sender.send(ServerMessage::Shutdown).ok().unwrap();
+    sender.send(()).ok().unwrap();
     // Ensure that it shuts down.
     child.join().unwrap();
 }
@@ -211,7 +211,7 @@ fn test_server_unsupported_compiler() {
     // Make sure we ran the mock processes.
     assert_eq!(0, server_creator.lock().unwrap().children.len());
     // Shut down the server.
-    sender.send(ServerMessage::Shutdown).ok().unwrap();
+    sender.send(()).ok().unwrap();
     // Ensure that it shuts down.
     child.join().unwrap();
 }
@@ -290,7 +290,7 @@ fn test_server_compile() {
     assert_eq!(STDOUT, stdout.into_inner().as_slice());
     assert_eq!(STDERR, stderr.into_inner().as_slice());
     // Shut down the server.
-    sender.send(ServerMessage::Shutdown).ok().unwrap();
+    sender.send(()).ok().unwrap();
     // Ensure that it shuts down.
     child.join().unwrap();
 }

@@ -124,6 +124,13 @@ pub trait Storage: Send + Sync {
         Err(anyhow!("put_raw not implemented for this storage backend"))
     }
 
+    /// Wait for detached background work owned by this storage to finish.
+    ///
+    /// Most storage backends perform no detached work, so the default is a
+    /// no-op. Composite caches override this so graceful shutdown can persist
+    /// best-effort slower-level writes without arbitrary sleeps in callers.
+    async fn drain_background(&self) {}
+
     /// Check the cache capability.
     ///
     /// - `Ok(CacheMode::ReadOnly)` means cache can only be used to `get`
@@ -832,6 +839,7 @@ mod test {
                     multilevel: Some(config::MultiLevelConfig {
                         chain: vec!["s3".to_owned()],
                         write_error_policy: config::WriteErrorPolicy::default(),
+                        slow_write_concurrency: 4,
                     }),
                     ..Default::default()
                 },
