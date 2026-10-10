@@ -1284,9 +1284,7 @@ fn config_from_env() -> Result<EnvConfig> {
             .collect()
     });
 
-    let dist_cache_dir = env::var_os("SCCACHE_DIST_CLIENT_CACHE_DIR")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from);
+    let dist_cache_dir = env::var_os("SCCACHE_DIST_CLIENT_CACHE_DIR").map(PathBuf::from);
     let client_side_mode = bool_from_env_var("SCCACHE_CLIENT_SIDE")?;
 
     Ok(EnvConfig {
@@ -3153,55 +3151,29 @@ size = "7g"
 #[test]
 #[serial(config_from_env)]
 fn test_dist_client_cache_dir_env_overrides_file_config() {
-    let env_cache_dir = PathBuf::from("/env-dist-cache");
-    unsafe {
-        env::set_var("SCCACHE_DIST_CLIENT_CACHE_DIR", &env_cache_dir);
-    }
-    let env_conf = config_from_env().unwrap();
-    unsafe {
-        env::remove_var("SCCACHE_DIST_CLIENT_CACHE_DIR");
-    }
+    for env_cache_dir in [PathBuf::from("/env-dist-cache"), PathBuf::new()] {
+        unsafe {
+            env::set_var("SCCACHE_DIST_CLIENT_CACHE_DIR", &env_cache_dir);
+        }
+        let env_conf = config_from_env().unwrap();
+        unsafe {
+            env::remove_var("SCCACHE_DIST_CLIENT_CACHE_DIR");
+        }
 
-    let config = Config::from_env_and_file_configs(
-        env_conf,
-        FileConfig {
-            dist: DistConfig {
-                cache_dir: PathBuf::from("/file-dist-cache"),
+        let config = Config::from_env_and_file_configs(
+            env_conf,
+            FileConfig {
+                dist: DistConfig {
+                    cache_dir: PathBuf::from("/file-dist-cache"),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
-            ..Default::default()
-        },
-    )
-    .unwrap();
+        )
+        .unwrap();
 
-    assert_eq!(config.dist.cache_dir, env_cache_dir);
-}
-
-#[test]
-#[serial(config_from_env)]
-fn test_empty_dist_client_cache_dir_env_uses_file_config() {
-    unsafe {
-        env::set_var("SCCACHE_DIST_CLIENT_CACHE_DIR", "");
+        assert_eq!(config.dist.cache_dir, env_cache_dir);
     }
-    let env_conf = config_from_env().unwrap();
-    unsafe {
-        env::remove_var("SCCACHE_DIST_CLIENT_CACHE_DIR");
-    }
-
-    let file_cache_dir = PathBuf::from("/file-dist-cache");
-    let config = Config::from_env_and_file_configs(
-        env_conf,
-        FileConfig {
-            dist: DistConfig {
-                cache_dir: file_cache_dir.clone(),
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-    )
-    .unwrap();
-
-    assert_eq!(config.dist.cache_dir, file_cache_dir);
 }
 
 // Integration tests: Config normalization + strip_basedirs usage
