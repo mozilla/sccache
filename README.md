@@ -377,7 +377,7 @@ Known Caveats
 ### Rust
 
 * Crates that invoke the system linker cannot be cached. This includes `bin`, `dylib`, `cdylib`, and `proc-macro` crates. You may be able to improve compilation time of large `bin` crates by converting them to a `lib` crate with a thin `bin` wrapper.
-* Incrementally compiled crates cannot be cached. By default, in the debug profile Cargo will use incremental compilation for workspace members and path dependencies. [You can disable incremental compilation.](https://doc.rust-lang.org/cargo/reference/profiles.html#incremental)
+* Incrementally compiled crates cannot be cached. By default, in the debug profile Cargo will use incremental compilation for workspace members and path dependencies. [You can disable incremental compilation.](https://doc.rust-lang.org/cargo/reference/profiles.html#incremental) sccache exits with an error if `CARGO_INCREMENTAL=1` is set; `SCCACHE_ALLOW_INCREMENTAL=1` lets the build proceed, leaving only those crates uncached.
 
 [More details on Rust caveats](/docs/Rust.md)
 
