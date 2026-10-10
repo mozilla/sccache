@@ -330,6 +330,16 @@ pub struct RustupProxy {
     proxy_executable: PathBuf,
 }
 
+fn rust_dist_toolchain_weak_key(base: &Digest, sysroot: &Path) -> String {
+    let mut weak = base.clone();
+    weak.update(b"rust-dist-sysroot-v1");
+    // Distributed Rust toolchain archives preserve the sysroot's absolute layout.
+    // The weak map must therefore distinguish identical toolchain contents installed
+    // at different paths even though ordinary compile cache keys can remain portable.
+    sysroot.hash(&mut HashToDigest { digest: &mut weak });
+    weak.finish()
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParsedArguments {
     /// The full commandline, with all parsed arguments
@@ -1769,7 +1779,7 @@ where
         for d in &self.compiler_shlibs_digests {
             m.update(d.as_bytes());
         }
-        let weak_toolchain_key = m.clone().finish();
+        let weak_toolchain_key = rust_dist_toolchain_weak_key(&m, &self.sysroot);
         // 3. The full commandline (self.arguments)
         // TODO: there will be full paths here, it would be nice to
         // normalize them so we can get cross-machine cache hits.
@@ -2960,6 +2970,19 @@ mod test {
     use std::io::{self, Write};
     use std::sync::{Arc, Mutex};
     use test_case::test_case;
+
+    #[test]
+    fn rust_dist_toolchain_weak_key_tracks_sysroot_path() {
+        let mut base = Digest::new();
+        base.update(b"same-toolchain-contents");
+
+        let first = rust_dist_toolchain_weak_key(&base, Path::new("toolchains/first"));
+        let repeated = rust_dist_toolchain_weak_key(&base, Path::new("toolchains/first"));
+        let second = rust_dist_toolchain_weak_key(&base, Path::new("toolchains/second"));
+
+        assert_eq!(first, repeated);
+        assert_ne!(first, second);
+    }
 
     fn _parse_arguments(arguments: &[String]) -> CompilerArguments<ParsedArguments> {
         let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
