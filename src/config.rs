@@ -842,6 +842,7 @@ pub fn try_read_config_file<T: DeserializeOwned>(path: &Path) -> Result<Option<T
 pub struct EnvConfig {
     cache: CacheConfigs,
     basedirs: Option<Vec<String>>,
+    dist_cache_dir: Option<PathBuf>,
     client_side_mode: Option<bool>,
 }
 
@@ -1283,11 +1284,15 @@ fn config_from_env() -> Result<EnvConfig> {
             .collect()
     });
 
+    let dist_cache_dir = env::var_os("SCCACHE_DIST_CLIENT_CACHE_DIR")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
     let client_side_mode = bool_from_env_var("SCCACHE_CLIENT_SIDE")?;
 
     Ok(EnvConfig {
         cache,
         basedirs,
+        dist_cache_dir,
         client_side_mode,
     })
 }
@@ -1349,7 +1354,7 @@ impl Config {
 
         let FileConfig {
             cache,
-            dist,
+            mut dist,
             server_startup_timeout_ms,
             basedirs: file_basedirs,
             client_side_mode: file_client_side_mode,
@@ -1362,9 +1367,14 @@ impl Config {
         let EnvConfig {
             cache,
             basedirs: env_basedirs,
+            dist_cache_dir: env_dist_cache_dir,
             client_side_mode: env_client_side_mode,
         } = env_conf;
         conf_caches.merge(cache);
+
+        if let Some(cache_dir) = env_dist_cache_dir {
+            dist.cache_dir = cache_dir;
+        }
 
         // Environment variable takes precedence over file config if it is set
         let basedirs_raw = if let Some(basedirs) = env_basedirs {
@@ -1775,6 +1785,7 @@ fn config_overrides() {
             ..Default::default()
         },
         basedirs: None,
+        dist_cache_dir: None,
         client_side_mode: None,
     };
 
@@ -1872,6 +1883,7 @@ fn config_basedirs_overrides() {
     let env_conf = EnvConfig {
         cache: Default::default(),
         basedirs: vec!["C:/env/basedir".to_string()].into(),
+        dist_cache_dir: None,
         client_side_mode: None,
     };
 
@@ -1890,6 +1902,7 @@ fn config_basedirs_overrides() {
     let env_conf = EnvConfig {
         cache: Default::default(),
         basedirs: None,
+        dist_cache_dir: None,
         client_side_mode: None,
     };
 
@@ -1908,6 +1921,7 @@ fn config_basedirs_overrides() {
     let env_conf = EnvConfig {
         cache: Default::default(),
         basedirs: vec![].into(),
+        dist_cache_dir: None,
         client_side_mode: None,
     };
 
@@ -1926,6 +1940,7 @@ fn config_basedirs_overrides() {
     let env_conf = EnvConfig {
         cache: Default::default(),
         basedirs: vec![].into(),
+        dist_cache_dir: None,
         client_side_mode: None,
     };
 
@@ -1948,6 +1963,7 @@ fn config_basedirs_overrides() {
     let env_conf = EnvConfig {
         cache: Default::default(),
         basedirs: vec!["/env/basedir".to_string()].into(),
+        dist_cache_dir: None,
         client_side_mode: None,
     };
 
@@ -1966,6 +1982,7 @@ fn config_basedirs_overrides() {
     let env_conf = EnvConfig {
         cache: Default::default(),
         basedirs: None,
+        dist_cache_dir: None,
         client_side_mode: None,
     };
 
@@ -1984,6 +2001,7 @@ fn config_basedirs_overrides() {
     let env_conf = EnvConfig {
         cache: Default::default(),
         basedirs: vec![].into(),
+        dist_cache_dir: None,
         client_side_mode: None,
     };
 
@@ -2002,6 +2020,7 @@ fn config_basedirs_overrides() {
     let env_conf = EnvConfig {
         cache: Default::default(),
         basedirs: vec![].into(),
+        dist_cache_dir: None,
         client_side_mode: None,
     };
 
@@ -2018,6 +2037,7 @@ fn config_basedirs_overrides() {
     let env_conf = EnvConfig {
         cache: Default::default(),
         basedirs: None,
+        dist_cache_dir: None,
         client_side_mode: None,
     };
 
@@ -3130,6 +3150,60 @@ size = "7g"
     );
 }
 
+#[test]
+#[serial(config_from_env)]
+fn test_dist_client_cache_dir_env_overrides_file_config() {
+    let env_cache_dir = PathBuf::from("/env-dist-cache");
+    unsafe {
+        env::set_var("SCCACHE_DIST_CLIENT_CACHE_DIR", &env_cache_dir);
+    }
+    let env_conf = config_from_env().unwrap();
+    unsafe {
+        env::remove_var("SCCACHE_DIST_CLIENT_CACHE_DIR");
+    }
+
+    let config = Config::from_env_and_file_configs(
+        env_conf,
+        FileConfig {
+            dist: DistConfig {
+                cache_dir: PathBuf::from("/file-dist-cache"),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(config.dist.cache_dir, env_cache_dir);
+}
+
+#[test]
+#[serial(config_from_env)]
+fn test_empty_dist_client_cache_dir_env_uses_file_config() {
+    unsafe {
+        env::set_var("SCCACHE_DIST_CLIENT_CACHE_DIR", "");
+    }
+    let env_conf = config_from_env().unwrap();
+    unsafe {
+        env::remove_var("SCCACHE_DIST_CLIENT_CACHE_DIR");
+    }
+
+    let file_cache_dir = PathBuf::from("/file-dist-cache");
+    let config = Config::from_env_and_file_configs(
+        env_conf,
+        FileConfig {
+            dist: DistConfig {
+                cache_dir: file_cache_dir.clone(),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(config.dist.cache_dir, file_cache_dir);
+}
+
 // Integration tests: Config normalization + strip_basedirs usage
 
 #[test]
@@ -3142,6 +3216,7 @@ fn test_integration_config_normalizes_and_strips() {
     let env_conf = EnvConfig {
         cache: Default::default(),
         basedirs: None,
+        dist_cache_dir: None,
         client_side_mode: None,
     };
 
@@ -3177,6 +3252,7 @@ fn test_integration_normalized_path_with_double_slashes() {
     let env_conf = EnvConfig {
         cache: Default::default(),
         basedirs: None,
+        dist_cache_dir: None,
         client_side_mode: None,
     };
 
@@ -3208,6 +3284,7 @@ fn test_integration_windows_path_normalization() {
     let env_conf = EnvConfig {
         cache: Default::default(),
         basedirs: None,
+        dist_cache_dir: None,
         client_side_mode: None,
     };
 
@@ -3240,6 +3317,7 @@ fn test_integration_cow_borrowed_when_no_match() {
     let env_conf = EnvConfig {
         cache: Default::default(),
         basedirs: None,
+        dist_cache_dir: None,
         client_side_mode: None,
     };
 
@@ -3272,6 +3350,7 @@ fn test_integration_cow_borrowed_when_empty_basedirs() {
     let env_conf = EnvConfig {
         cache: Default::default(),
         basedirs: None,
+        dist_cache_dir: None,
         client_side_mode: None,
     };
 
@@ -3303,6 +3382,7 @@ fn test_integration_multiple_basedirs_longest_match() {
     let env_conf = EnvConfig {
         cache: Default::default(),
         basedirs: None,
+        dist_cache_dir: None,
         client_side_mode: None,
     };
 
@@ -3339,6 +3419,7 @@ fn test_integration_paths_with_dots_normalized() {
     let env_conf = EnvConfig {
         cache: Default::default(),
         basedirs: None,
+        dist_cache_dir: None,
         client_side_mode: None,
     };
 
@@ -3371,6 +3452,7 @@ fn test_integration_windows_mixed_slashes() {
     let env_conf = EnvConfig {
         cache: Default::default(),
         basedirs: None,
+        dist_cache_dir: None,
         client_side_mode: None,
     };
 
