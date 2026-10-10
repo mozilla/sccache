@@ -682,7 +682,10 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
         // connections in separate tasks.
         let server = async move {
             loop {
-                let socket = listener.accept().await?;
+                let socket = match listener.accept().await {
+                    Ok(socket) => socket,
+                    Err(error) => break Err::<(), io::Error>(error),
+                };
                 trace!("incoming connection");
                 let conn = service.clone().bind(socket).map_err(|res| {
                     error!("Failed to bind socket: {}", res);
@@ -693,9 +696,6 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
                 #[allow(clippy::let_underscore_future)]
                 let _ = tokio::spawn(conn);
             }
-
-            #[allow(unreachable_code)]
-            Ok::<(), io::Error>(())
         };
 
         // Right now there's a whole bunch of ways to shut down this server for
@@ -731,7 +731,7 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
 
         let shutdown_ack = runtime.block_on(async {
             futures::select! {
-                server = server.fuse() => server.map(|()| None),
+                server = server.fuse() => std::result::Result::map(server, |()| None),
                 _res = shutdown.fuse() => Ok(None),
                 done = shutdown_idle.fuse() => Ok::<_, io::Error>(done),
             }

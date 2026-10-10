@@ -3156,6 +3156,29 @@ fn test_multilevel_slow_write_concurrency_serde_default() {
 
 #[test]
 #[serial(config_from_env)]
+fn test_multilevel_slow_write_concurrency_env_override() {
+    unsafe {
+        env::set_var("SCCACHE_MULTILEVEL_CHAIN", "disk,s3");
+        env::set_var("SCCACHE_MULTILEVEL_SLOW_WRITE_CONCURRENCY", "7");
+    }
+    let config = config_from_env().unwrap();
+    unsafe {
+        env::remove_var("SCCACHE_MULTILEVEL_CHAIN");
+        env::remove_var("SCCACHE_MULTILEVEL_SLOW_WRITE_CONCURRENCY");
+    }
+
+    assert_eq!(
+        config.cache.multilevel,
+        Some(MultiLevelConfig {
+            chain: vec!["disk".to_string(), "s3".to_string()],
+            write_error_policy: WriteErrorPolicy::default(),
+            slow_write_concurrency: 7,
+        })
+    );
+}
+
+#[test]
+#[serial(config_from_env)]
 fn test_zero_multilevel_slow_write_concurrency_env_is_rejected() {
     unsafe {
         env::set_var("SCCACHE_MULTILEVEL_CHAIN", "disk");
