@@ -55,7 +55,9 @@ impl GCSCache {
             builder = builder.service_account(service_account);
         }
 
-        let env_cred_path = std::env::var("GOOGLE_APPLICATION_CREDENTIALS").ok();
+        let env_cred_path = std::env::var("GOOGLE_APPLICATION_CREDENTIALS")
+            .ok()
+            .filter(|s| !s.is_empty());
         if let Some(path) = cred_path.or(env_cred_path.as_deref()) {
             builder = match credential_with_default_format(path) {
                 Some(credential) => builder.credential(&credential),
@@ -238,44 +240,42 @@ mod tests {
             .to_string();
             let credential_path = dir.path().join("external-account.json");
             std::fs::write(&credential_path, &credential).unwrap();
-            let exchanges = Arc::new(AtomicUsize::new(0));
             // An explicit credential path must take precedence over the environment.
-            let env_path = if credentials_from_env {
-                credential_path.clone()
+            let (env_paths, key_path) = if credentials_from_env {
+                (vec![Some(credential_path.clone())], None)
             } else {
-                dir.path().join("unused-credentials.json")
-            };
-            let op = temp_env::with_var("GOOGLE_APPLICATION_CREDENTIALS", Some(env_path), || {
-                GCSCache::build(
-                    "test-bucket",
-                    "",
-                    if credentials_from_env {
-                        None
-                    } else {
-                        credential_path.to_str()
-                    },
-                    None,
-                    mode,
-                    None,
+                (
+                    vec![
+                        Some(dir.path().join("unused-credentials.json")),
+                        Some("".into()),
+                        None,
+                    ],
+                    credential_path.to_str(),
                 )
-            })
-            .unwrap()
-            .with_context(
-                OperationContext::new().with_http_transport(HttpTransporter::new(
-                    FederationTransport {
-                        subject_token,
-                        scope: rw_to_scope(mode),
-                        exchanges: exchanges.clone(),
-                    },
-                )),
-            );
+            };
+            for env_path in env_paths {
+                let exchanges = Arc::new(AtomicUsize::new(0));
+                let op = temp_env::with_var("GOOGLE_APPLICATION_CREDENTIALS", env_path, || {
+                    GCSCache::build("test-bucket", "", key_path, None, mode, None)
+                })
+                .unwrap()
+                .with_context(
+                    OperationContext::new().with_http_transport(HttpTransporter::new(
+                        FederationTransport {
+                            subject_token: subject_token.clone(),
+                            scope: rw_to_scope(mode),
+                            exchanges: exchanges.clone(),
+                        },
+                    )),
+                );
 
-            for _ in 0..2 {
-                let err = op.read(".sccache_check").await.unwrap_err();
-                assert_eq!(err.kind(), opendal::ErrorKind::NotFound, "{err:?}");
+                for _ in 0..2 {
+                    let err = op.read(".sccache_check").await.unwrap_err();
+                    assert_eq!(err.kind(), opendal::ErrorKind::NotFound, "{err:?}");
+                }
+                // Repeated requests reuse the exchanged access token.
+                assert_eq!(exchanges.load(Ordering::SeqCst), 1);
             }
-            // Repeated requests reuse the exchanged access token.
-            assert_eq!(exchanges.load(Ordering::SeqCst), 1);
         }
     }
 
