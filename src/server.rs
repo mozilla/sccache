@@ -2612,7 +2612,43 @@ fn shutdown_or_inactive_resolves_when_channel_closes() {
 mod tests {
     use super::*;
     use crate::mock_command::{MockChild, MockCommandCreator, exit_status};
+    use crate::test::mock_storage::MockStorage;
     use crate::test::utils::{TestFixture, next_command, next_command_calls};
+
+    struct FailingAcceptor;
+
+    impl crate::net::Acceptor for FailingAcceptor {
+        type Socket = tokio::io::DuplexStream;
+
+        fn accept(
+            &self,
+        ) -> impl std::future::Future<Output = tokio::io::Result<Self::Socket>> + Send {
+            futures::future::ready(Err(io::Error::new(
+                io::ErrorKind::ConnectionAborted,
+                "test accept failure",
+            )))
+        }
+
+        fn local_addr(&self) -> tokio::io::Result<Option<crate::net::SocketAddr>> {
+            Ok(None)
+        }
+    }
+
+    #[test]
+    fn server_propagates_listener_accept_errors() {
+        let runtime = Runtime::new().unwrap();
+        let storage = Arc::new(MockStorage::new(None, false));
+        let server: SccacheServer<FailingAcceptor> = SccacheServer::with_listener(
+            FailingAcceptor,
+            runtime,
+            Client::new(),
+            DistClientContainer::new_disabled(),
+            storage,
+        );
+
+        let error = server.run(future::pending::<()>()).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::ConnectionAborted);
+    }
 
     struct StringWriter {
         buffer: String,
