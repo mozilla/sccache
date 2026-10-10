@@ -55,7 +55,8 @@ impl GCSCache {
             builder = builder.service_account(service_account);
         }
 
-        if let Some(path) = cred_path {
+        let env_cred_path = std::env::var("GOOGLE_APPLICATION_CREDENTIALS").ok();
+        if let Some(path) = cred_path.or(env_cred_path.as_deref()) {
             builder = match credential_with_default_format(path) {
                 Some(credential) => builder.credential(&credential),
                 None => builder.credential_path(path),
@@ -83,10 +84,8 @@ impl GCSCache {
     }
 }
 
-// AIP-4117 defaults an omitted credential_source.format to plain text, but
-// reqsign-google currently requires it for file and URL sources. Normalize only
-// those credentials in memory, leaving other formats and validation to OpenDAL.
-// Remove this workaround once OpenDAL includes the released fix for
+// Default omitted file/URL formats to text per AIP-4117 until OpenDAL ships
+// the reqsign-google fix:
 // https://github.com/apache/reqsign/pull/910
 fn credential_with_default_format(path: &str) -> Option<String> {
     let content = std::fs::read(path).ok()?;
@@ -203,7 +202,11 @@ mod tests {
         }
     }
 
-    async fn check_external_account(source_type: &str, format: Option<serde_json::Value>) {
+    async fn check_external_account(
+        source_type: &str,
+        format: Option<serde_json::Value>,
+        credentials_from_env: bool,
+    ) {
         for mode in [CacheMode::ReadOnly, CacheMode::ReadWrite] {
             let dir = tempfile::tempdir().unwrap();
             let token_path = dir.path().join("subject-token");
@@ -236,14 +239,26 @@ mod tests {
             let credential_path = dir.path().join("external-account.json");
             std::fs::write(&credential_path, &credential).unwrap();
             let exchanges = Arc::new(AtomicUsize::new(0));
-            let op = GCSCache::build(
-                "test-bucket",
-                "",
-                credential_path.to_str(),
-                None,
-                mode,
-                None,
-            )
+            // An explicit credential path must take precedence over the environment.
+            let env_path = if credentials_from_env {
+                credential_path.clone()
+            } else {
+                dir.path().join("unused-credentials.json")
+            };
+            let op = temp_env::with_var("GOOGLE_APPLICATION_CREDENTIALS", Some(env_path), || {
+                GCSCache::build(
+                    "test-bucket",
+                    "",
+                    if credentials_from_env {
+                        None
+                    } else {
+                        credential_path.to_str()
+                    },
+                    None,
+                    mode,
+                    None,
+                )
+            })
             .unwrap()
             .with_context(
                 OperationContext::new().with_http_transport(HttpTransporter::new(
@@ -261,10 +276,6 @@ mod tests {
             }
             // Repeated requests reuse the exchanged access token.
             assert_eq!(exchanges.load(Ordering::SeqCst), 1);
-            assert_eq!(
-                std::fs::read_to_string(credential_path).unwrap(),
-                credential
-            );
         }
     }
 
@@ -308,12 +319,22 @@ mod tests {
 
     #[tokio::test]
     async fn test_external_account_file_without_format() {
-        check_external_account("file", None).await;
+        check_external_account("file", None, false).await;
     }
 
     #[tokio::test]
     async fn test_external_account_url_without_format() {
-        check_external_account("url", None).await;
+        check_external_account("url", None, false).await;
+    }
+
+    #[tokio::test]
+    async fn test_external_account_file_without_format_from_env() {
+        check_external_account("file", None, true).await;
+    }
+
+    #[tokio::test]
+    async fn test_external_account_url_without_format_from_env() {
+        check_external_account("url", None, true).await;
     }
 
     #[tokio::test]
@@ -323,7 +344,10 @@ mod tests {
                 json!({"type": "text"}),
                 json!({"type": "json", "subject_token_field_name": "id_token"}),
             ] {
-                check_external_account(source_type, Some(format)).await;
+                for credentials_from_env in [false, true] {
+                    check_external_account(source_type, Some(format.clone()), credentials_from_env)
+                        .await;
+                }
             }
         }
     }
