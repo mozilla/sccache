@@ -16,10 +16,18 @@ runs:
   using: composite
   steps:
     - shell: bash
+      env:
+        INPUTS_COMPONENTS: ${{ inputs.components }}
+        INPUTS_TARGET: ${{ inputs.target }}
+        INPUTS_TOOLCHAIN: ${{ inputs.toolchain }}
       run: |
         set -x
-        rustup override set ${{ inputs.toolchain || 'stable' }}
-        ${{ inputs.target && format('rustup target add {0}', inputs.target) }}
-        ${{ inputs.components && format('rustup component add {0}', inputs.components) }}
+        rustup override set "${INPUTS_TOOLCHAIN:-stable}"
+        if [[ -n "${INPUTS_TARGET}" ]]; then
+          rustup target add ${INPUTS_TARGET}
+        fi
+        if [[ -n "${INPUTS_COMPONENTS}" ]]; then
+          rustup component add ${INPUTS_COMPONENTS}
+        fi
         cargo --version
         rustc --version

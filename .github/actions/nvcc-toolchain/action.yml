@@ -9,8 +9,12 @@ runs:
   steps:
     - if: runner.os == 'Linux'
       shell: bash
-      run: .github/actions/nvcc-toolchain/install-cuda.sh ${{ inputs.cuda-version }}
+      env:
+        INPUTS_NAME: ${{ inputs.name }}
+      run: .github/actions/nvcc-toolchain/install-cuda.sh ${INPUTS_NAME}
 
     - if: runner.os == 'Windows'
       shell: powershell
-      run: .\.github\actions\nvcc-toolchain\install-cuda.ps1 -cudaVersion ${{ inputs.cuda-version }}
+      env:
+        INPUTS_CUDA_VERSION: ${{ inputs.cuda-version }}
+      run: .\.github\actions\nvcc-toolchain\install-cuda.ps1 -cudaVersion ${INPUTS_CUDA_VERSION}
