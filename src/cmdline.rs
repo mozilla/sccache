@@ -231,7 +231,21 @@ pub fn try_parse() -> Result<Command> {
                             Ok(full_path) => args[0] = full_path.into(),
                             Err(_) => {}
                         }
-                        args.insert(0, env!("CARGO_PKG_NAME").into());
+
+                        // If $name resolves back to sccache itself, masquerading would
+                        // make it wrap itself and recurse forever (`<compiler> -vV`). Warn
+                        // and run as plain sccache instead of prepending the name.
+                        if PathBuf::from(&args[0]).canonicalize().ok()
+                            == env::current_exe().ok().and_then(|p| p.canonicalize().ok())
+                        {
+                            warn!(
+                                "sccache invoked as `{}`, which resolves to sccache itself; running as sccache (put a real `{}` on PATH to wrap it)",
+                                exe.display(),
+                                exe_filename.to_string_lossy()
+                            );
+                        } else {
+                            args.insert(0, env!("CARGO_PKG_NAME").into());
+                        }
                     }
                 }
             }
