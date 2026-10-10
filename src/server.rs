@@ -1930,7 +1930,9 @@ impl ServerStats {
     fn record_not_cacheable(&mut self, why: &str, extra_info: Option<&str>) {
         self.requests_not_cacheable += 1;
         let reason = match (why, extra_info) {
-            ("crate-type", Some(crate_type)) => format!("crate-type ({crate_type})"),
+            ("crate-type", Some(crate_type)) if crate_type != "No crate-type passed" => {
+                format!("crate-type ({crate_type})")
+            }
             _ => why.to_string(),
         };
         *self.not_cached.entry(reason).or_insert(0) += 1;
@@ -2815,11 +2817,13 @@ mod tests {
         let mut stats = ServerStats::default();
         stats.record_not_cacheable("crate-type", Some("bin"));
         stats.record_not_cacheable("crate-type", Some("proc-macro"));
+        stats.record_not_cacheable("crate-type", Some("No crate-type passed"));
         stats.record_not_cacheable("missing input", None);
 
-        assert_eq!(stats.requests_not_cacheable, 3);
+        assert_eq!(stats.requests_not_cacheable, 4);
         assert_eq!(stats.not_cached.get("crate-type (bin)"), Some(&1));
         assert_eq!(stats.not_cached.get("crate-type (proc-macro)"), Some(&1));
+        assert_eq!(stats.not_cached.get("crate-type"), Some(&1));
         assert_eq!(stats.not_cached.get("missing input"), Some(&1));
     }
 
