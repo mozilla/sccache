@@ -520,14 +520,7 @@ where
                 &mut common_args
             }
             Some(ExtraHashFileClangModuleFile(val)) => {
-                // -fmodule-file can be either "path" or "name=path"
-                let val_str = val.to_string_lossy();
-                let path = if let Some(idx) = val_str.find('=') {
-                    PathBuf::from(&val_str[idx + 1..])
-                } else {
-                    PathBuf::from(val)
-                };
-                extra_hash_files.push(cwd.join(path));
+                extra_hash_files.push(cwd.join(module_file_path(val)));
                 &mut common_args
             }
             Some(PreprocessorArgument(_)) => {
@@ -622,14 +615,7 @@ where
                 &mut common_args
             }
             Some(ExtraHashFileClangModuleFile(val)) => {
-                // -fmodule-file can be either "path" or "name=path"
-                let val_str = val.to_string_lossy();
-                let path = if let Some(idx) = val_str.find('=') {
-                    PathBuf::from(&val_str[idx + 1..])
-                } else {
-                    PathBuf::from(val)
-                };
-                extra_hash_files.push(cwd.join(path));
+                extra_hash_files.push(cwd.join(module_file_path(val)));
                 &mut common_args
             }
             Some(PreprocessorArgumentFlag)
@@ -795,6 +781,14 @@ where
         suppress_rewrite_includes_only,
         too_hard_for_preprocessor_cache_mode,
     })
+}
+
+/// The module file a `-fmodule-file=` value names, given as either `path` or `name=path`.
+pub(crate) fn module_file_path(val: &OsStr) -> PathBuf {
+    match val.to_string_lossy().split_once('=') {
+        Some((_, path)) => PathBuf::from(path),
+        None => PathBuf::from(val),
+    }
 }
 
 fn module_artifact_descriptor(
@@ -3315,6 +3309,15 @@ mod test {
         assert_eq!(
             parsed_args.too_hard_for_preprocessor_cache_mode,
             Some("-Wp".into())
+        );
+    }
+
+    #[test]
+    fn test_module_file_path() {
+        assert_eq!(module_file_path(OsStr::new("m.pcm")), Path::new("m.pcm"));
+        assert_eq!(
+            module_file_path(OsStr::new("m=d/m.pcm")),
+            Path::new("d/m.pcm")
         );
     }
 }
