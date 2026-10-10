@@ -64,9 +64,17 @@ impl SccacheTest<'_> {
 
         trace!("sccache --start-server");
 
-        Command::new(SCCACHE_BIN.as_os_str())
+        let mut server_cmd = Command::new(SCCACHE_BIN.as_os_str());
+        server_cmd
             .arg("--start-server")
-            .env("SCCACHE_DIR", &cache_dir)
+            .env("SCCACHE_DIR", &cache_dir);
+        // Forward `additional_envs` to the server too: some config (e.g.
+        // `SCCACHE_BASEDIRS`) is only read at server startup, so passing it
+        // here avoids a `restart_sccache` dance in each test.
+        if let Some(vec) = additional_envs {
+            server_cmd.envs(vec.iter().cloned());
+        }
+        server_cmd
             .assert()
             .try_success()
             .context("Failed to start sccache server")?;
