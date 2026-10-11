@@ -14,7 +14,7 @@
 
 use crate::cache::{Cache, CacheMode, CacheRead, CacheWrite, GetPathResult, Storage};
 use crate::compiler::PreprocessorCacheEntry;
-use crate::lru_disk_cache::{Error as LruError, ReadSeek};
+use crate::lru_disk_cache::{Error as LruError, LruDiskCache, ReadSeek, Result as LruResult};
 use async_trait::async_trait;
 use bytes::Bytes;
 use std::ffi::OsStr;
@@ -70,6 +70,20 @@ impl DiskCache {
     }
 }
 
+/// Open the entry at `key`. A hit normally refreshes the entry's file times to keep the LRU
+/// order on disk. A read-only cache may be on a read-only mount, or hold entries the reader
+/// can read but not write, so that update would fail and turn every hit into a read error.
+fn open_entry<K: AsRef<OsStr>>(
+    cache: &mut LruDiskCache,
+    key: K,
+    rw_mode: CacheMode,
+) -> LruResult<Box<dyn ReadSeek>> {
+    match rw_mode {
+        CacheMode::ReadOnly => cache.get_untouched(key),
+        CacheMode::ReadWrite => cache.get(key),
+    }
+}
+
 /// Make a path to the cache entry with key `key`.
 fn make_key_path(key: &str) -> PathBuf {
     Path::new(&key[0..1]).join(&key[1..2]).join(key)
@@ -82,10 +96,11 @@ impl Storage for DiskCache {
         let path = make_key_path(key);
         let lru = self.lru.clone();
         let key = key.to_owned();
+        let rw_mode = self.rw_mode;
 
         self.pool
             .spawn_blocking(move || {
-                let io = match lru.lock().unwrap().get_or_init()?.get(&path) {
+                let io = match open_entry(lru.lock().unwrap().get_or_init()?, &path, rw_mode) {
                     Ok(f) => f,
                     Err(LruError::FileNotInCache) => {
                         trace!("DiskCache::get({}): FileNotInCache", key);
@@ -118,10 +133,11 @@ impl Storage for DiskCache {
         let path = make_key_path(key);
         let lru = self.lru.clone();
         let key = key.to_owned();
+        let rw_mode = self.rw_mode;
 
         self.pool
-            .spawn_blocking(
-                move || match lru.lock().unwrap().get_or_init()?.get(&path) {
+            .spawn_blocking(move || {
+                match open_entry(lru.lock().unwrap().get_or_init()?, &path, rw_mode) {
                     Ok(mut io) => {
                         let mut data = Vec::new();
                         io.read_to_end(&mut data)?;
@@ -137,8 +153,8 @@ impl Storage for DiskCache {
                         Err(e.into())
                     }
                     Err(_) => unreachable!(),
-                },
-            )
+                }
+            })
             .await?
     }
 
@@ -220,13 +236,12 @@ impl Storage for DiskCache {
     }
     async fn get_preprocessor_cache_entry(&self, key: &str) -> Result<Option<Box<dyn ReadSeek>>> {
         let key = normalize_key(key);
-        Ok(self
-            .preprocessor_cache
-            .lock()
-            .unwrap()
-            .get_or_init()?
-            .get(key)
-            .ok())
+        Ok(open_entry(
+            self.preprocessor_cache.lock().unwrap().get_or_init()?,
+            key,
+            self.rw_mode,
+        )
+        .ok())
     }
     async fn put_preprocessor_cache_entry(
         &self,
@@ -276,5 +291,98 @@ mod tests {
         );
 
         assert_eq!(disk.cache_type_name(), "disk");
+    }
+
+    const KEY: &str = "0123456789abcdef";
+
+    fn read_only_fixture() -> (tempfile::TempDir, tokio::runtime::Runtime) {
+        let tempdir = tempfile::tempdir().unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        (tempdir, runtime)
+    }
+
+    fn disk_cache(root: &Path, runtime: &tokio::runtime::Runtime, rw_mode: CacheMode) -> DiskCache {
+        DiskCache::new(
+            root,
+            1024 * 1024,
+            runtime.handle(),
+            PreprocessorCacheModeConfig::default(),
+            rw_mode,
+            vec![],
+        )
+    }
+
+    /// Backdate `entry`'s times, so that any refresh by a read is visible.
+    fn backdate(entry: &Path) -> filetime::FileTime {
+        let old = filetime::FileTime::from_unix_time(1_000_000_000, 0);
+        filetime::set_file_times(entry, old, old).unwrap();
+        old
+    }
+
+    fn mtime(entry: &Path) -> filetime::FileTime {
+        filetime::FileTime::from_last_modification_time(&std::fs::metadata(entry).unwrap())
+    }
+
+    #[test]
+    fn test_read_only_get_leaves_entry_untouched() {
+        let (tempdir, runtime) = read_only_fixture();
+        runtime
+            .block_on(
+                disk_cache(tempdir.path(), &runtime, CacheMode::ReadWrite)
+                    .put(KEY, CacheWrite::new()),
+            )
+            .unwrap();
+        let entry = tempdir.path().join(make_key_path(KEY));
+        let old = backdate(&entry);
+
+        let hit = runtime
+            .block_on(disk_cache(tempdir.path(), &runtime, CacheMode::ReadOnly).get(KEY))
+            .unwrap();
+        assert!(matches!(hit, Cache::Hit(_)));
+        assert_eq!(mtime(&entry), old);
+    }
+
+    #[test]
+    fn test_read_only_get_raw_leaves_entry_untouched() {
+        let (tempdir, runtime) = read_only_fixture();
+        runtime
+            .block_on(
+                disk_cache(tempdir.path(), &runtime, CacheMode::ReadWrite)
+                    .put(KEY, CacheWrite::new()),
+            )
+            .unwrap();
+        let entry = tempdir.path().join(make_key_path(KEY));
+        let old = backdate(&entry);
+
+        let disk = disk_cache(tempdir.path(), &runtime, CacheMode::ReadOnly);
+        let data = runtime.block_on(disk.get_raw(KEY)).unwrap();
+        assert_eq!(data.as_deref(), Some(&std::fs::read(&entry).unwrap()[..]));
+        let (hit, _) = runtime.block_on(disk.get_with_raw(KEY)).unwrap();
+        assert!(matches!(hit, Cache::Hit(_)));
+        assert_eq!(mtime(&entry), old);
+    }
+
+    #[test]
+    fn test_read_only_preprocessor_entry_leaves_entry_untouched() {
+        let (tempdir, runtime) = read_only_fixture();
+        runtime
+            .block_on(
+                disk_cache(tempdir.path(), &runtime, CacheMode::ReadWrite)
+                    .put_preprocessor_cache_entry(KEY, PreprocessorCacheEntry::new()),
+            )
+            .unwrap();
+        let entry = tempdir.path().join("preprocessor").join(normalize_key(KEY));
+        let old = backdate(&entry);
+
+        let found = runtime
+            .block_on(
+                disk_cache(tempdir.path(), &runtime, CacheMode::ReadOnly)
+                    .get_preprocessor_cache_entry(KEY),
+            )
+            .unwrap();
+        assert!(found.is_some());
+        assert_eq!(mtime(&entry), old);
     }
 }
