@@ -62,6 +62,8 @@ use std::time;
 
 use crate::errors::*;
 
+pub(crate) const NO_CRATE_TYPE_PASSED: &str = "No crate-type passed";
+
 #[cfg(feature = "dist-client")]
 const RLIB_PREFIX: &str = "lib";
 #[cfg(feature = "dist-client")]
@@ -1550,7 +1552,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
         staticlib: false,
     } = crate_types
     {
-        cannot_cache!("crate-type", "No crate-type passed".to_owned())
+        cannot_cache!("crate-type", NO_CRATE_TYPE_PASSED.to_owned())
     }
     // We won't cache invocations that are outputting anything but
     // linker output and dep-info.
