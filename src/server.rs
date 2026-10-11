@@ -17,7 +17,7 @@ use crate::cache::{CacheMode, Storage, storage_from_config};
 use crate::compiler::PreprocessorCacheEntry;
 use crate::compiler::{
     CacheControl, CompileResult, Compiler, CompilerArguments, CompilerHasher, CompilerKind,
-    CompilerProxy, DistType, Language, MissType, get_compiler_info,
+    CompilerProxy, DistType, Language, MissType, NO_CRATE_TYPE_PASSED, get_compiler_info,
 };
 #[cfg(feature = "dist-client")]
 use crate::config;
@@ -1930,7 +1930,7 @@ impl ServerStats {
     fn record_not_cacheable(&mut self, why: &str, extra_info: Option<&str>) {
         self.requests_not_cacheable += 1;
         let reason = match (why, extra_info) {
-            ("crate-type", Some(crate_type)) if crate_type != "No crate-type passed" => {
+            ("crate-type", Some(crate_type)) if crate_type != NO_CRATE_TYPE_PASSED => {
                 format!("crate-type ({crate_type})")
             }
             _ => why.to_string(),
@@ -2817,7 +2817,7 @@ mod tests {
         let mut stats = ServerStats::default();
         stats.record_not_cacheable("crate-type", Some("bin"));
         stats.record_not_cacheable("crate-type", Some("proc-macro"));
-        stats.record_not_cacheable("crate-type", Some("No crate-type passed"));
+        stats.record_not_cacheable("crate-type", Some(NO_CRATE_TYPE_PASSED));
         stats.record_not_cacheable("missing input", None);
 
         assert_eq!(stats.requests_not_cacheable, 4);
