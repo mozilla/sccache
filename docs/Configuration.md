@@ -4,6 +4,7 @@
 
 ```toml
 # If specified, wait this long for the server to start up.
+# The environment variable SCCACHE_SERVER_STARTUP_TIMEOUT_MS takes precedence.
 server_startup_timeout_ms = 10000
 
 # Base directories to strip from source paths during cache key
@@ -192,6 +193,7 @@ Note that some env variables may need sccache server restart to take effect.
 * `SCCACHE_CACHED_CONF`
 * `SCCACHE_IDLE_TIMEOUT` how long the local daemon process waits for more client requests before exiting, in seconds. Set to `0` to run sccache permanently
 * `SCCACHE_STARTUP_NOTIFY` specify a path to a socket which will be used for server completion notification
+* `SCCACHE_SERVER_STARTUP_TIMEOUT_MS` how long the client waits for the server to start up, in milliseconds (default `10000`, must be greater than 0). The server checks its cache storage before it reports ready, so a slow or busy remote backend can need more. Environment variable takes precedence over `server_startup_timeout_ms` in the configuration file.
 * `SCCACHE_MAX_FRAME_LENGTH` how much data can be transferred between client and server
 * `SCCACHE_NO_DAEMON` set to `1` to disable putting the server to the background
 * `SCCACHE_CLIENT_SIDE` set to `1` to run the compile in the client process and use the daemon only as a gateway to the cache storage (see [the architecture doc](Architecture.md#client-side-mode-sccache_client_side)). This is the recommended mode and is expected to become the only supported configuration in the future. Ignored when `SCCACHE_ERROR_LOG` or distributed compilation is in use.
