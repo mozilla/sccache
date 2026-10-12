@@ -327,9 +327,9 @@ mod toolchain_imp {
                     // We need to add /lib64/ld-linux-x86-64.so.2 to deps, else we'll get error "No
                     // such file or directory".
                     //
-                    // Workaround: add libname to deps if it's abusolute and exists.
+                    // Workaround: add libname to deps if it's absolute and exists.
                     let libname_path = PathBuf::from(libname);
-                    if libname_path.is_absolute() && libname_path.exists() {
+                    if libname_path.is_absolute() {
                         libs.push(libname_path);
                     }
 

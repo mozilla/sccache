@@ -173,6 +173,33 @@ impl<'de> Deserialize<'de> for MultiLevelStats {
     }
 }
 
+impl std::ops::AddAssign for LevelStats {
+    fn add_assign(&mut self, rhs: Self) {
+        // name and location identify the level — keep lhs values
+        self.hits += rhs.hits;
+        self.misses += rhs.misses;
+        self.writes += rhs.writes;
+        self.write_failures += rhs.write_failures;
+        self.backfills_from += rhs.backfills_from;
+        self.backfills_to += rhs.backfills_to;
+        self.hit_duration += rhs.hit_duration;
+        self.write_duration += rhs.write_duration;
+    }
+}
+
+impl std::ops::AddAssign for MultiLevelStats {
+    fn add_assign(&mut self, rhs: Self) {
+        let mut rhs_iter = rhs.0.into_iter();
+        for lhs_level in &mut self.0 {
+            if let Some(rhs_level) = rhs_iter.next() {
+                *lhs_level += rhs_level;
+            }
+        }
+        // Append any extra levels present only in rhs
+        self.0.extend(rhs_iter);
+    }
+}
+
 impl LevelStats {
     /// Calculate hit rate as a percentage
     pub fn hit_rate(&self) -> f64 {
@@ -433,36 +460,83 @@ impl MultiLevelStorage {
                     let cache_type = match level_name.to_lowercase().as_str() {
                         #[cfg(feature = "s3")]
                         "s3" => config.cache_configs.s3.clone().map(CacheType::S3),
+                        #[cfg(not(feature = "s3"))]
+                        "s3" => return Err(anyhow!("Cache level 's3' requires the 's3' feature")),
                         #[cfg(feature = "redis")]
                         "redis" => config.cache_configs.redis.clone().map(CacheType::Redis),
+                        #[cfg(not(feature = "redis"))]
+                        "redis" => {
+                            return Err(anyhow!(
+                                "Cache level 'redis' requires the 'redis' feature"
+                            ));
+                        }
                         #[cfg(feature = "memcached")]
                         "memcached" => config
                             .cache_configs
                             .memcached
                             .clone()
                             .map(CacheType::Memcached),
+                        #[cfg(not(feature = "memcached"))]
+                        "memcached" => {
+                            return Err(anyhow!(
+                                "Cache level 'memcached' requires the 'memcached' feature"
+                            ));
+                        }
                         #[cfg(feature = "gcs")]
                         "gcs" => config.cache_configs.gcs.clone().map(CacheType::GCS),
+                        #[cfg(not(feature = "gcs"))]
+                        "gcs" => {
+                            return Err(anyhow!("Cache level 'gcs' requires the 'gcs' feature"));
+                        }
                         #[cfg(feature = "gha")]
                         "gha" => config.cache_configs.gha.clone().map(CacheType::GHA),
+                        #[cfg(not(feature = "gha"))]
+                        "gha" => {
+                            return Err(anyhow!("Cache level 'gha' requires the 'gha' feature"));
+                        }
                         #[cfg(feature = "azure")]
                         "azure" => config.cache_configs.azure.clone().map(CacheType::Azure),
+                        #[cfg(not(feature = "azure"))]
+                        "azure" => {
+                            return Err(anyhow!(
+                                "Cache level 'azure' requires the 'azure' feature"
+                            ));
+                        }
                         #[cfg(feature = "webdav")]
                         "webdav" => config.cache_configs.webdav.clone().map(CacheType::Webdav),
+                        #[cfg(not(feature = "webdav"))]
+                        "webdav" => {
+                            return Err(anyhow!(
+                                "Cache level 'webdav' requires the 'webdav' feature"
+                            ));
+                        }
                         #[cfg(feature = "oss")]
                         "oss" => config.cache_configs.oss.clone().map(CacheType::OSS),
+                        #[cfg(not(feature = "oss"))]
+                        "oss" => {
+                            return Err(anyhow!("Cache level 'oss' requires the 'oss' feature"));
+                        }
                         #[cfg(feature = "cos")]
                         "cos" => config.cache_configs.cos.clone().map(CacheType::COS),
+                        #[cfg(not(feature = "cos"))]
+                        "cos" => {
+                            return Err(anyhow!("Cache level 'cos' requires the 'cos' feature"));
+                        }
                         _ => {
                             return Err(anyhow!("Unknown cache level: '{}'", level_name));
                         }
                     };
 
                     if let Some(cache_type) = cache_type {
-                        let storage = build_single_cache(&cache_type, &config.basedirs, pool)
-                            .with_context(|| {
-                                format!("Failed to build cache for level '{}'", level_name)
-                            })?;
+                        let storage = build_single_cache(
+                            &cache_type,
+                            &config.basedirs,
+                            pool,
+                            config.skip_cache_check,
+                        )
+                        .with_context(|| {
+                            format!("Failed to build cache for level '{}'", level_name)
+                        })?;
                         storages.push(storage);
                         trace!("Added cache level: {}", level_name);
                     } else {
@@ -565,7 +639,20 @@ impl Storage for MultiLevelStorage {
     async fn get(&self, key: &str) -> Result<Cache> {
         for (idx, level) in self.levels.iter().enumerate() {
             let start = Instant::now();
-            match level.get(key).await {
+            let mut raw_bytes_for_backfill = None;
+            let cache_result = if idx > 0 {
+                match level.get_with_raw(key).await {
+                    Ok((cache, raw_bytes)) => {
+                        raw_bytes_for_backfill = raw_bytes;
+                        Ok(cache)
+                    }
+                    Err(error) => Err(error),
+                }
+            } else {
+                level.get(key).await
+            };
+
+            match cache_result {
                 Ok(Cache::Hit(entry)) => {
                     let duration = start.elapsed();
                     debug!("Cache hit at level {} in {:?}", idx, duration);
@@ -587,9 +674,10 @@ impl Storage for MultiLevelStorage {
                         let key_str = key.to_string();
                         let hit_level = idx;
 
-                        // Try to get raw bytes for backfilling
-                        match level.get_raw(key).await {
-                            Ok(Some(raw_bytes)) => {
+                        // Raw bytes obtained above are reused for backfilling;
+                        // no second read is needed for a raw-capable level.
+                        match raw_bytes_for_backfill {
+                            Some(raw_bytes) => {
                                 // Update backfill stats
                                 inc_stat!(
                                     self.atomic_stats.get(hit_level),
@@ -630,16 +718,10 @@ impl Storage for MultiLevelStorage {
                                     });
                                 }
                             }
-                            Ok(None) => {
+                            None => {
                                 debug!(
                                     "Cache backend at level {} does not support get_raw(), skipping backfill",
                                     hit_level
-                                );
-                            }
-                            Err(e) => {
-                                debug!(
-                                    "Failed to get raw bytes from level {} for backfill: {}",
-                                    hit_level, e
                                 );
                             }
                         }
@@ -673,13 +755,25 @@ impl Storage for MultiLevelStorage {
         Ok(Cache::Miss)
     }
 
+    async fn get_raw(&self, key: &str) -> Result<Option<Bytes>> {
+        for level in &self.levels {
+            if let Some(bytes) = level.get_raw(key).await? {
+                return Ok(Some(bytes));
+            }
+        }
+        Ok(None)
+    }
+
     async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration> {
+        let data: Bytes = entry.finish()?.into();
+        self.put_raw(key, data).await
+    }
+
+    async fn put_raw(&self, key: &str, data: Bytes) -> Result<Duration> {
         if self.levels.is_empty() {
             return Err(anyhow!("No cache levels configured"));
         }
 
-        // Serialize cache entry once
-        let data: Bytes = entry.finish()?.into();
         let key_str = key.to_string();
 
         match self.write_error_policy {
@@ -796,22 +890,42 @@ impl Storage for MultiLevelStorage {
     }
 
     async fn check(&self) -> Result<CacheMode> {
-        let mut result = CacheMode::ReadWrite;
+        // The composite is writable when any level is writable: put()
+        // already skips read-only levels on writes, so a read-only level
+        // must not demote the whole chain (e.g. a writable local disk in
+        // front of a read-only shared remote). Only a chain in which
+        // every level is read-only is itself read-only.
+        let mut result = CacheMode::ReadOnly;
+        if self.levels.is_empty() {
+            return Ok(CacheMode::ReadWrite);
+        }
         for (idx, level) in self.levels.iter().enumerate() {
             match level.check().await {
                 Ok(CacheMode::ReadOnly) => {
-                    result = CacheMode::ReadOnly;
                     debug!("Cache level {} is read-only", idx);
                 }
                 Ok(CacheMode::ReadWrite) => {
+                    result = CacheMode::ReadWrite;
                     trace!("Cache level {} is read-write", idx);
                 }
-                Err(e) => {
-                    warn!("Error checking cache level {}: {}", idx, e);
-                    return Err(e);
+                Err(error)
+                    if self.write_error_policy == WriteErrorPolicy::All
+                        || (idx == 0 && self.write_error_policy == WriteErrorPolicy::L0) =>
+                {
+                    warn!("Error checking required cache level {}: {}", idx, error);
+                    return Err(error);
+                }
+                Err(error) => {
+                    // A tolerated check failure must not make the composite
+                    // permanently read-only. The level may recover and be
+                    // writable later; actual write failures are handled by
+                    // write_error_policy.
+                    result = CacheMode::ReadWrite;
+                    warn!("Cache level {} is unavailable: {}; continuing", idx, error);
                 }
             }
         }
+        debug!("Multi-level cache mode: {:?}", result);
         Ok(result)
     }
 

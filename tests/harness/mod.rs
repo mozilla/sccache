@@ -193,6 +193,7 @@ pub fn sccache_client_cfg(
         },
         server_startup_timeout_ms: None,
         basedirs: vec![],
+        client_side_mode: false,
     }
 }
 

@@ -13,8 +13,8 @@ As defined by the [gcc docs](https://gcc.gnu.org/onlinedocs/gcc-4.6.3/gcc/Overal
 5. The response file may itself contain additional @file options; any such options will be processed recursively.
 
 Implementation details:
-- The gcc implementation in sccache supports all of these **except** #3. If a response file contains **any** quotations (`"` or `'`), the @file arg is treated literally and not removed (and its content not processed).
-- Additionally, sccache will not expand concatenated arguments such as `-include@foo` (see [#150](https://github.com/mozilla/sccache/issues/150#issuecomment-318586953) for more on this).
+- The gcc implementation in sccache supports all of these.
+- sccache will not expand concatenated arguments such as `-include@foo` (see [#150](https://github.com/mozilla/sccache/issues/150#issuecomment-318586953) for more on this).
 - Recursive files are processed depth-first; when an @file option is encountered, its contents are read and each option is evaluated in-place before continuing to options following the @file.
 
 ## MSVC
@@ -34,3 +34,16 @@ Per the [MSVC docs](https://learn.microsoft.com/en-us/cpp/build/reference/cl-com
 The msvc implementation in sccache supports all of these **except** #4, because sccache doesn't accept the `/link` directive. 
 
 Additionally, because `msbuild` generates response files using an encoding other than `utf-8`, all text files under the [WHATWG encoding standard](https://encoding.spec.whatwg.org/) are supported. This includes both `utf-8` and `utf-16`.
+
+## Rust
+
+Per the [Rustc docs](https://doc.rust-lang.org/rustc/command-line-arguments.html#path-load-command-line-flags-from-a-path)
+
+If you specify @path on the command-line, then it will open path and read command line options from it.
+
+These options are:
+- One per line
+- A blank line indicates an empty option
+- The file can use Unix or Windows style line endings
+- Must be encoded as UTF-8
+

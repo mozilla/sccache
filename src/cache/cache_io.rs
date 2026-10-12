@@ -13,6 +13,7 @@
 use super::utils::{get_file_mode, set_file_mode};
 use crate::errors::*;
 use fs_err as fs;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::io::{Cursor, Read, Seek, Write};
 use std::path::{Path, PathBuf};
@@ -56,7 +57,7 @@ impl fmt::Debug for Cache {
 }
 
 /// CacheMode is used to represent which mode we are using.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CacheMode {
     /// Only read cache from storage.
     ReadOnly,
@@ -182,13 +183,13 @@ impl CacheRead {
                         let mut f = std::fs::File::create(&path)?;
                         // `optional` is false in this branch, so do not ignore errors
                         let mode = self.get_object(&key, &mut f)?;
-                        if let Some(mode) = mode {
-                            if let Err(e) = set_file_mode(path.as_path(), mode) {
-                                // Here we ignore errors from setting file mode because
-                                // if we could not create a temp file in the same directory,
-                                // we probably can't set the mode either (e.g. /dev/stuff)
-                                warn!("Failed to reset file mode: {e}");
-                            }
+                        if let Some(mode) = mode
+                            && let Err(e) = set_file_mode(path.as_path(), mode)
+                        {
+                            // Here we ignore errors from setting file mode because
+                            // if we could not create a temp file in the same directory,
+                            // we probably can't set the mode either (e.g. /dev/stuff)
+                            warn!("Failed to reset file mode: {e}");
                         }
                     }
                     // skip if no object found and it's optional

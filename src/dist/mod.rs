@@ -157,7 +157,7 @@ mod path_transform {
         pub fn disk_mappings(&self) -> impl Iterator<Item = (PathBuf, String)> {
             let mut normal_mappings = HashMap::new();
             let mut verbatim_mappings = HashMap::new();
-            for (_dist_path, local_path) in self.dist_to_local_path.iter() {
+            for local_path in self.dist_to_local_path.values() {
                 if !local_path.is_absolute() {
                     continue;
                 }
@@ -326,6 +326,8 @@ pub fn try_compile_command_to_dist(
         arguments,
         env_vars,
         cwd,
+        // The jobserver is a local resource; a remote worker has its own.
+        share_jobserver: _,
     } = command;
     Some(CompileCommand {
         executable: executable.into_os_string().into_string().ok()?,

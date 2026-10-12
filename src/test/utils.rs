@@ -91,30 +91,28 @@ pub fn next_command(creator: &Arc<Mutex<MockCommandCreator>>, child: Result<Mock
     creator.lock().unwrap().next_command_spawns(child);
 }
 
+/// Queue the answers to the two probes gcc/clang detection makes to identify the
+/// assembler, in the order they are run: its version, then where it lives.
+pub fn next_assembler(creator: &Arc<Mutex<MockCommandCreator>>, version: &str, path: &str) {
+    for (probe, output) in [("-Wa,--version", version), ("-print-prog-name=as", path)] {
+        let output = output.to_owned();
+        next_command_calls(creator, move |args| {
+            assert!(
+                args.iter().any(|arg| arg == probe),
+                "{} missing from assembler probe: {:?}",
+                probe,
+                args
+            );
+            Ok(MockChild::new(exit_status(0), &output, ""))
+        });
+    }
+}
+
 pub fn next_command_calls<C: Fn(&[OsString]) -> Result<MockChild> + Send + 'static>(
     creator: &Arc<Mutex<MockCommandCreator>>,
     call: C,
 ) {
     creator.lock().unwrap().next_command_calls(call);
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn find_sccache_binary() -> PathBuf {
-    // Older versions of cargo put the test binary next to the sccache binary.
-    // Newer versions put it in the deps/ subdirectory.
-    let exe = env::current_exe().unwrap();
-    let this_dir = exe.parent().unwrap();
-    let dirs = &[&this_dir, &this_dir.parent().unwrap()];
-    dirs.iter()
-        .map(|d| d.join("sccache").with_extension(env::consts::EXE_EXTENSION))
-        .filter_map(|d| fs::metadata(&d).ok().map(|_| d))
-        .next()
-        .unwrap_or_else(|| {
-            panic!(
-            "Error: sccache binary not found, looked in `{:?}`. Do you need to run `cargo build`?",
-            dirs
-        )
-        })
 }
 
 pub struct TestFixture {
