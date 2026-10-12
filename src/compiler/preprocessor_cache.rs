@@ -269,8 +269,7 @@ impl PreprocessorCacheEntry {
                     }
                 }
             } else {
-                let (file_hash, finder): (String, _) = match Digest::reader_sync_time_macros(file)
-                {
+                let (file_hash, finder): (String, _) = match Digest::reader_sync_time_macros(file) {
                     Ok((file_hash, finder)) => (file_hash, finder),
                     Err(e) => {
                         debug!(
