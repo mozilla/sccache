@@ -1339,6 +1339,35 @@ mod test {
     }
 
     #[test]
+    fn test_parse_arguments_sysroot() {
+        let parse = |args| match parse_arguments_(args, false) {
+            CompilerArguments::Ok(ParsedArguments { common_args, .. }) => common_args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(
+            ovec!["--sysroot", "/opt/sysroot"],
+            parse(stringvec![
+                "-c",
+                "foo.c",
+                "-o",
+                "foo.o",
+                "--sysroot",
+                "/opt/sysroot"
+            ])
+        );
+        assert_eq!(
+            ovec!["--sysroot=/opt/sysroot"],
+            parse(stringvec![
+                "-c",
+                "foo.c",
+                "-o",
+                "foo.o",
+                "--sysroot=/opt/sysroot"
+            ])
+        );
+    }
+
+    #[test]
     fn test_parse_arguments_simple() {
         let args = stringvec!["-c", "foo.c", "-o", "foo.o"];
         let ParsedArguments {

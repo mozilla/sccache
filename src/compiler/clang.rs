@@ -392,6 +392,34 @@ mod test {
     }
 
     #[test]
+    fn test_parse_arguments_resource_dir() {
+        let args = stringvec![
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "-resource-dir",
+            "/usr/lib/clang/15"
+        ];
+        assert_eq!(
+            CompilerArguments::CannotCache(
+                "multiple input files",
+                Some("[\"/usr/lib/clang/15\"]".into())
+            ),
+            parse_arguments_(args)
+        );
+
+        let a = parses!(
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "-resource-dir=/usr/lib/clang/15"
+        );
+        assert_eq!(ovec!["-resource-dir=/usr/lib/clang/15"], a.common_args);
+    }
+
+    #[test]
     fn test_parse_arguments_simple() {
         let a = parses!("-c", "foo.c", "-o", "foo.o");
         assert_eq!(Some("foo.c"), a.input.to_str());
