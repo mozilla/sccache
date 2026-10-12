@@ -87,6 +87,13 @@ fn make_key_path(key: &str) -> PathBuf {
     Path::new(&key[0..1]).join(&key[1..2]).join(key)
 }
 
+/// The path of the preprocessor cache entry for `key`: `normalize_key`'s layout, joined with
+/// the platform separator, because a cache loaded from disk indexes entries by their relative
+/// path as the platform spells it.
+fn preprocessor_key_path(key: &str) -> PathBuf {
+    normalize_key(key).split('/').collect()
+}
+
 #[async_trait]
 impl Storage for DiskCache {
     async fn get(&self, key: &str) -> Result<Cache> {
@@ -233,7 +240,7 @@ impl Storage for DiskCache {
         &self.basedirs
     }
     async fn get_preprocessor_cache_entry(&self, key: &str) -> Result<Option<Box<dyn ReadSeek>>> {
-        let key = normalize_key(key);
+        let key = preprocessor_key_path(key);
         Ok(open_entry(
             self.preprocessor_cache.lock().unwrap().get_or_init()?,
             key,
@@ -250,7 +257,7 @@ impl Storage for DiskCache {
             return Err(anyhow!("Cannot write to a read-only cache"));
         }
 
-        let key = normalize_key(key);
+        let key = preprocessor_key_path(key);
         let mut f = self
             .preprocessor_cache
             .lock()
@@ -338,7 +345,9 @@ mod tests {
                         writer.put_preprocessor_cache_entry(KEY, PreprocessorCacheEntry::new()),
                     )
                     .unwrap();
-                dir.path().join("preprocessor").join(normalize_key(KEY))
+                dir.path()
+                    .join("preprocessor")
+                    .join(preprocessor_key_path(KEY))
             }
         };
         let old = filetime::FileTime::from_unix_time(1_000_000_000, 0);
@@ -393,5 +402,18 @@ mod tests {
             .unwrap();
         assert!(found.is_some());
         f.assert_untouched();
+    }
+
+    #[test]
+    fn test_preprocessor_entry_written_by_another_cache_is_found() {
+        // A second cache on the same directory loads its index from disk, as an sccache
+        // server started later does.
+        let f = read_only_fixture(Stored::PreprocessorEntry);
+        let reader = disk_cache(f.dir.path(), &f.runtime, CacheMode::ReadWrite);
+        let found = f
+            .runtime
+            .block_on(reader.get_preprocessor_cache_entry(KEY))
+            .unwrap();
+        assert!(found.is_some());
     }
 }
