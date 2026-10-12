@@ -293,7 +293,11 @@ impl PreprocessorCacheEntry {
                     return false;
                 }
 
-                // __DATE__ or __TIMESTAMP__ found. We now make sure that the digest changes
+                if !finder.found_timestamp() {
+                    continue;
+                }
+
+                // __TIMESTAMP__ found (and possibly __DATE__). Make sure the digest changes
                 // if the (potential) expansion of those macros changes by computing a new
                 // digest comprising the file digest and time information that represents the
                 // macro expansions.
