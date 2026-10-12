@@ -680,7 +680,7 @@ where
             preprocessor_cache_entry.add_result(start_of_compilation, &key, files);
 
             if let Err(e) = storage
-                .put_preprocessor_cache_entry(&preprocessor_key, preprocessor_cache_entry)
+                .put_preprocessor_cache_entry(preprocessor_key, preprocessor_cache_entry)
                 .await
             {
                 debug!("Failed to update preprocessor cache: {}", e);
