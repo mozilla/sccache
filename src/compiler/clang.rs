@@ -287,6 +287,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     // Note: this is ROCm clang specific. Parallelism level shouldn't affect output.
     take_arg!("-parallel-jobs", OsString, Concatenated(b'='), Unhashed),
     take_arg!("-plugin-arg", OsString, Concatenated(b'-'), PassThrough),
+    take_arg!("-resource-dir", PathBuf, CanBeSeparated(b'='), PassThroughPath),
     take_arg!("-save-stats", OsString, Concatenated(b'='), TooHard),
     take_arg!("-target", OsString, Separated, PassThrough),
     flag!("-verify", PreprocessorArgumentFlag),
@@ -393,21 +394,15 @@ mod test {
 
     #[test]
     fn test_parse_arguments_resource_dir() {
-        let args = stringvec![
+        let a = parses!(
             "-c",
             "foo.c",
             "-o",
             "foo.o",
             "-resource-dir",
             "/usr/lib/clang/15"
-        ];
-        assert_eq!(
-            CompilerArguments::CannotCache(
-                "multiple input files",
-                Some("[\"/usr/lib/clang/15\"]".into())
-            ),
-            parse_arguments_(args)
         );
+        assert_eq!(ovec!["-resource-dir", "/usr/lib/clang/15"], a.common_args);
 
         let a = parses!(
             "-c",
@@ -416,7 +411,7 @@ mod test {
             "foo.o",
             "-resource-dir=/usr/lib/clang/15"
         );
-        assert_eq!(ovec!["-resource-dir=/usr/lib/clang/15"], a.common_args);
+        assert_eq!(ovec!["-resource-dir", "/usr/lib/clang/15"], a.common_args);
     }
 
     #[test]
