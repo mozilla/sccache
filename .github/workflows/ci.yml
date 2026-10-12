@@ -168,7 +168,7 @@ jobs:
         if: ${{ ! matrix.no_coverage }}
         shell: bash
         run: |
-          GRCOV_VERSION="0.10.7"
+          GRCOV_VERSION="0.10.8"
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             TARGET="x86_64-pc-windows-msvc"
             EXT="zip"
