@@ -70,9 +70,7 @@ impl DiskCache {
     }
 }
 
-/// Open the entry at `key`. A hit normally refreshes the entry's file times to keep the LRU
-/// order on disk. A read-only cache may be on a read-only mount, or hold entries the reader
-/// can read but not write, so that update would fail and turn every hit into a read error.
+/// Open the entry at `key`, leaving its file times alone in a read-only cache (see `get_untouched`).
 fn open_entry<K: AsRef<OsStr>>(
     cache: &mut LruDiskCache,
     key: K,
