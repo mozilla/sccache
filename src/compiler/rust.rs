@@ -64,6 +64,8 @@ use std::time;
 
 use crate::errors::*;
 
+pub(crate) const NO_CRATE_TYPE_PASSED: &str = "No crate-type passed";
+
 #[cfg(feature = "dist-client")]
 const RLIB_PREFIX: &str = "lib";
 #[cfg(feature = "dist-client")]
@@ -1438,7 +1440,8 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                 // We can't cache non-rlib/staticlib crates, because rustc invokes the
                 // system linker to link them, and we don't know about all the linker inputs.
                 if !others.is_empty() {
-                    let others: Vec<&str> = others.iter().map(String::as_str).collect();
+                    let mut others: Vec<&str> = others.iter().map(String::as_str).collect();
+                    others.sort_unstable();
                     let others_string = others.join(",");
                     cannot_cache!("crate-type", others_string)
                 }
@@ -1551,7 +1554,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
         staticlib: false,
     } = crate_types
     {
-        cannot_cache!("crate-type", "No crate-type passed".to_owned())
+        cannot_cache!("crate-type", NO_CRATE_TYPE_PASSED.to_owned())
     }
     // We won't cache invocations that are outputting anything but
     // linker output and dep-info.
@@ -1628,6 +1631,15 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
         has_json,
         target_json,
     })
+}
+
+fn rust_dist_toolchain_weak_key(base: &Digest, sysroot: &Path) -> String {
+    let mut weak = base.clone();
+    // Distributed Rust toolchain archives preserve the sysroot's absolute layout.
+    // The weak map must therefore distinguish identical toolchain contents installed
+    // at different paths even though ordinary compile cache keys can remain portable.
+    sysroot.hash(&mut HashToDigest { digest: &mut weak });
+    weak.finish()
 }
 
 #[allow(clippy::suspicious_else_formatting)] // False positive
@@ -1771,7 +1783,7 @@ where
         for d in &self.compiler_shlibs_digests {
             m.update(d.as_bytes());
         }
-        let weak_toolchain_key = m.clone().finish();
+        let weak_toolchain_key = rust_dist_toolchain_weak_key(&m, &self.sysroot);
         // 3. The full commandline (self.arguments)
         // TODO: there will be full paths here, it would be nice to
         // normalize them so we can get cross-machine cache hits.
@@ -2963,6 +2975,19 @@ mod test {
     use std::sync::{Arc, Mutex};
     use test_case::test_case;
 
+    #[test]
+    fn rust_dist_toolchain_weak_key_tracks_sysroot_path() {
+        let mut base = Digest::new();
+        base.update(b"same-toolchain-contents");
+
+        let first = rust_dist_toolchain_weak_key(&base, Path::new("toolchains/first"));
+        let repeated = rust_dist_toolchain_weak_key(&base, Path::new("toolchains/first"));
+        let second = rust_dist_toolchain_weak_key(&base, Path::new("toolchains/second"));
+
+        assert_eq!(first, repeated);
+        assert_ne!(first, second);
+    }
+
     fn _parse_arguments(arguments: &[String]) -> CompilerArguments<ParsedArguments> {
         let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
         parse_arguments(&arguments, ".".as_ref())
@@ -3164,6 +3189,25 @@ LLVM version: 15.0.2
                 "/foo/target/debug/deps/liblibc-89a24418d48d484a.rlib",
                 "/foo/target/debug/deps/liblog-2f7366be74992849.rlib"
             ]
+        );
+    }
+
+    #[test]
+    fn test_parse_arguments_non_cacheable_crate_types_are_deterministic() {
+        let result = fails!(
+            "--emit",
+            "link",
+            "foo.rs",
+            "--out-dir",
+            "out",
+            "--crate-name",
+            "foo",
+            "--crate-type",
+            "proc-macro,bin"
+        );
+        assert_eq!(
+            result,
+            CompilerArguments::CannotCache("crate-type", Some("bin,proc-macro".to_string()))
         );
     }
 
