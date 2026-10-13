@@ -20,7 +20,6 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-#[cfg(any_cache_remote)]
 use crate::cache::build_single_cache;
 use crate::cache::disk::DiskCache;
 use crate::cache::{Cache, CacheMode, CacheWrite, Storage};
@@ -431,20 +430,15 @@ impl MultiLevelStorage {
                         level_name
                     )
                 })?;
-                #[cfg(any_cache_remote)]
-                {
-                    let storage = build_single_cache(
-                        &cache_type,
-                        &config.basedirs,
-                        pool,
-                        config.skip_cache_check,
-                    )
-                    .with_context(|| format!("Failed to build cache for level '{}'", level_name))?;
-                    storages.push(storage);
-                    trace!("Added cache level: {}", level_name);
-                }
-                #[cfg(not(any_cache_remote))]
-                unreachable!("{cache_type:?} can't exist without a remote cache feature");
+                let storage = build_single_cache(
+                    &cache_type,
+                    &config.basedirs,
+                    pool,
+                    config.skip_cache_check,
+                )
+                .with_context(|| format!("Failed to build cache for level '{}'", level_name))?;
+                storages.push(storage);
+                trace!("Added cache level: {}", level_name);
             }
         }
 

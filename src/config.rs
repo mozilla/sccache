@@ -620,33 +620,6 @@ impl CacheConfigs {
         }
     }
 
-    /// Get ordered list of cache types based on configured levels.
-    /// If levels are specified, returns them in order with validation.
-    /// If no levels specified and single remote cache, returns that single cache.
-    /// If no levels and multiple caches, returns error.
-    pub fn get_cache_levels(self) -> Result<Vec<CacheType>> {
-        if let Some(ml_config) = &self.multilevel {
-            // Build caches in the order specified by multilevel chain
-            let mut caches = Vec::new();
-            for level_name in &ml_config.chain {
-                let level_name = level_name.trim();
-                if level_name == "disk" {
-                    // Disk cache is handled separately in MultiLevelStorage::from_config
-                    continue;
-                }
-                let cache_type = self.cache_type_by_name(level_name)?.ok_or_else(|| {
-                    anyhow!("Cache level '{level_name}' not configured but specified in levels")
-                })?;
-                caches.push(cache_type);
-            }
-            Ok(caches)
-        } else {
-            // No levels specified - use single cache (backward compatible)
-            let (cache_type, _) = self.clone().into_fallback();
-            Ok(cache_type.map(|ct| vec![ct]).unwrap_or_default())
-        }
-    }
-
     /// Override self with any existing fields from other
     fn merge(&mut self, other: Self) {
         let CacheConfigs {
@@ -3547,65 +3520,16 @@ no_credentials = false
 }
 
 #[test]
-fn test_get_cache_levels_single_cache() {
-    let configs = CacheConfigs {
-        s3: Some(S3CacheConfig {
-            bucket: "test".to_string(),
-            region: None,
-            key_prefix: String::new(),
-            no_credentials: false,
-            endpoint: None,
-            use_ssl: None,
-            server_side_encryption: None,
-            server_side_encryption_aws_kms: None,
-            server_side_encryption_kms_key_id: None,
-            enable_virtual_host_style: None,
-            rw_mode: CacheModeConfig::ReadWrite,
-        }),
-        ..Default::default()
-    };
-
-    let levels = configs.get_cache_levels().expect("Should get single cache");
-    assert_eq!(levels.len(), 1);
-}
-
-#[test]
-fn test_get_cache_levels_invalid_level() {
-    let configs = CacheConfigs {
-        multilevel: Some(MultiLevelConfig {
-            chain: vec!["unknown_cache".to_string()],
-            write_error_policy: WriteErrorPolicy::default(),
-        }),
-        ..Default::default()
-    };
-
-    let err = configs.get_cache_levels().unwrap_err().to_string();
-    assert_eq!(err, "Unknown cache level: 'unknown_cache'");
-}
-
-#[test]
-fn test_get_cache_levels_missing_config() {
-    let configs = CacheConfigs {
-        multilevel: Some(MultiLevelConfig {
-            chain: vec!["s3".to_string()],
-            write_error_policy: WriteErrorPolicy::default(),
-        }),
-        ..Default::default()
-    };
-
-    let err = configs.get_cache_levels().unwrap_err().to_string();
-    #[cfg(feature = "s3")]
-    assert_eq!(
-        err,
-        "Cache level 's3' not configured but specified in levels"
-    );
-    #[cfg(not(feature = "s3"))]
-    assert_eq!(err, "Cache level 's3' requires the 's3' feature");
+fn test_cache_type_by_name_unknown() {
+    let err = CacheConfigs::default()
+        .cache_type_by_name("unknown_cache")
+        .unwrap_err();
+    assert_eq!(err.to_string(), "Unknown cache level: 'unknown_cache'");
 }
 
 #[test]
 #[cfg(feature = "cos")]
-fn test_get_cache_levels_cos() {
+fn test_cache_type_by_name_cos() {
     let cos = COSCacheConfig {
         bucket: "name".to_owned(),
         endpoint: None,
@@ -3614,16 +3538,12 @@ fn test_get_cache_levels_cos() {
     };
     let configs = CacheConfigs {
         cos: Some(cos.clone()),
-        multilevel: Some(MultiLevelConfig {
-            chain: vec!["disk".to_string(), "cos".to_string()],
-            write_error_policy: WriteErrorPolicy::default(),
-        }),
         ..Default::default()
     };
 
     assert_eq!(
-        configs.get_cache_levels().unwrap(),
-        vec![CacheType::COS(cos)]
+        configs.cache_type_by_name("cos").unwrap(),
+        Some(CacheType::COS(cos))
     );
 }
 
