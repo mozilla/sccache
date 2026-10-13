@@ -59,9 +59,21 @@ impl CCompilerImpl for Msvc {
         &self,
         arguments: &[OsString],
         cwd: &Path,
-        _env_vars: &[(OsString, OsString)],
+        env_vars: &[(OsString, OsString)],
     ) -> CompilerArguments<ParsedArguments> {
-        parse_arguments(arguments, cwd, self.is_clang)
+        let Ok(prefix) = cl_env_args(env_vars, "CL") else {
+            return CompilerArguments::CannotCache("CL environment variable value broken", None);
+        };
+        let Ok(suffix) = cl_env_args(env_vars, "_CL_") else {
+            return CompilerArguments::CannotCache("_CL_ environment variable value broken", None);
+        };
+        if prefix.is_empty() && suffix.is_empty() {
+            return parse_arguments(arguments, cwd, self.is_clang);
+        }
+        let mut combined = prefix;
+        combined.extend_from_slice(arguments);
+        combined.extend(suffix);
+        parse_arguments(&combined, cwd, self.is_clang)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -274,6 +286,8 @@ ArgData! {
     XClang(OsString), // -Xclang ...
     Clang(OsString), // -clang:...
     ExternalIncludePath(PathBuf),
+    CInput(PathBuf), // /Tc
+    CxxInput(PathBuf), // /Tp
 }
 
 use self::ArgData::*;
@@ -395,8 +409,10 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("Qvec-report:1", PassThrough),
     msvc_flag!("Qvec-report:2", PassThrough),
     msvc_take_arg!("RTC", OsString, Concatenated, PassThroughWithSuffix),
-    msvc_flag!("TC", PassThrough), // TODO: disable explicit language check, hope for the best for now? Also, handle /Tc & /Tp.
+    msvc_flag!("TC", PassThrough), // TODO: disable explicit language check, hope for the best for now?
     msvc_flag!("TP", PassThrough), // As above.
+    msvc_take_arg!("Tc", PathBuf, CanBeSeparated, CInput),
+    msvc_take_arg!("Tp", PathBuf, CanBeSeparated, CxxInput),
     msvc_take_arg!("U", OsString, Concatenated, PreprocessorArgument),
     msvc_take_arg!("V", OsString, Concatenated, PassThroughWithSuffix),
     msvc_flag!("W0", PassThrough),
@@ -554,6 +570,57 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
 
 // TODO: what to do with precompiled header flags? eg: /Yc, /YI, /Yu
 
+fn cl_env_var_matches(key: &OsStr, name: &str) -> bool {
+    #[cfg(windows)]
+    {
+        key.eq_ignore_ascii_case(name)
+    }
+    #[cfg(not(windows))]
+    {
+        key == name
+    }
+}
+
+/// Options from `CL` are prepended and options from `_CL_` are appended.
+/// The first `#` in each token stands for `=`.
+fn cl_env_args(
+    env_vars: &[(OsString, OsString)],
+    name: &str,
+) -> std::result::Result<Vec<OsString>, &'static str> {
+    let Some((_, value)) = env_vars
+        .iter()
+        .find(|(key, _)| cl_env_var_matches(key, name))
+    else {
+        return Ok(Vec::new());
+    };
+    let Some(value) = value.to_str() else {
+        let error_message = match name {
+            "CL" => "non-utf8 CL environment variable value",
+            "_CL_" => "non-utf8 _CL_ environment variable value",
+            _ => "non-utf8 value of unexpected environment variable",
+        };
+        return Err(error_message);
+    };
+    let value = value.to_owned();
+    Ok(SplitMsvcResponseFileArgs::from(&value)
+        .map(OsString::from)
+        .collect())
+}
+
+fn is_cl_env_var(key: &OsStr) -> bool {
+    cl_env_var_matches(key, "CL") || cl_env_var_matches(key, "_CL_")
+}
+
+/// `cl` applies `CL` and `_CL_` itself, so drop them after they have been
+/// folded into the command line.
+fn without_cl_env_vars(env_vars: &[(OsString, OsString)]) -> Vec<(OsString, OsString)> {
+    env_vars
+        .iter()
+        .filter(|(key, _)| !is_cl_env_var(key))
+        .cloned()
+        .collect()
+}
+
 pub fn parse_arguments(
     arguments: &[OsString],
     cwd: &Path,
@@ -561,6 +628,7 @@ pub fn parse_arguments(
 ) -> CompilerArguments<ParsedArguments> {
     let mut output_arg = None;
     let mut input_arg = None;
+    let mut explicit_language = None;
     let mut double_dash_input = false;
     let mut common_args = vec![];
     let mut unhashed_args = vec![];
@@ -624,6 +692,16 @@ pub fn parse_arguments(
             }
             Some(XClang(s)) => xclangs.push(s.clone()),
             Some(Clang(s)) => clangs.push(s.clone()),
+            Some(CInput(path)) | Some(CxxInput(path)) => {
+                if path.as_os_str().is_empty() {
+                    cannot_cache!("no input file");
+                }
+                if input_arg.is_some() {
+                    multiple_input = true;
+                    multiple_input_files.push(path.clone().into_os_string());
+                }
+                input_arg = Some(path.clone().into_os_string());
+            }
             None => {
                 match arg {
                     Argument::Raw(ref val) if val == "--" => {
@@ -689,6 +767,8 @@ pub fn parse_arguments(
             // race conditions in which we may try to read the PDB before MSPDBSRC is done
             // writing it, so we're better off ignoring the flags.
             Some(Ignore) | Some(IgnoreWithSuffix(_)) => {}
+            Some(CInput(_)) => explicit_language = Some(Language::C),
+            Some(CxxInput(_)) => explicit_language = Some(Language::Cxx),
             _ => {}
         }
     }
@@ -794,7 +874,7 @@ pub fn parse_arguments(
         );
     }
     let (input, language) = match input_arg {
-        Some(i) => match Language::from_file_name(Path::new(&i)) {
+        Some(i) => match explicit_language.or_else(|| Language::from_file_name(Path::new(&i))) {
             Some(l) => (i.clone(), l),
             None => cannot_cache!("unknown source language"),
         },
@@ -929,6 +1009,7 @@ pub fn parse_arguments(
         extra_hash_files,
         uses_external_assembler: false,
         msvc_show_includes: show_includes,
+        msvc_explicit_language: explicit_language.is_some(),
         profile_generate,
         // FIXME: implement color_mode for msvc.
         color_mode: ColorMode::Auto,
@@ -972,8 +1053,23 @@ fn normpath(path: &str) -> String {
     path.to_owned()
 }
 
+// An input given with /Tc or /Tp has to keep the flag attached, otherwise
+// cl.exe falls back to guessing the language from the extension.
+fn msvc_input_arg(parsed_args: &ParsedArguments, input: &OsStr) -> OsString {
+    let mut arg = OsString::new();
+    if parsed_args.msvc_explicit_language {
+        match parsed_args.language {
+            Language::C => arg.push("-Tc"),
+            Language::Cxx => arg.push("-Tp"),
+            _ => {}
+        }
+    }
+    arg.push(input);
+    arg
+}
+
 #[allow(clippy::too_many_arguments)]
-pub fn preprocess_cmd<T>(
+fn preprocess_cmd<T>(
     cmd: &mut T,
     parsed_args: &ParsedArguments,
     cwd: &Path,
@@ -1001,7 +1097,7 @@ pub fn preprocess_cmd<T>(
         .args(&parsed_args.dependency_args)
         .args(&parsed_args.common_args)
         .env_clear()
-        .envs(env_vars.to_vec())
+        .envs(without_cl_env_vars(env_vars))
         .current_dir(cwd);
 
     if is_clang {
@@ -1027,7 +1123,7 @@ pub fn preprocess_cmd<T>(
     if parsed_args.double_dash_input {
         cmd.arg("--");
     }
-    cmd.arg(&parsed_args.input);
+    cmd.arg(msvc_input_arg(parsed_args, parsed_args.input.as_os_str()));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1142,6 +1238,8 @@ fn generate_compile_commands(
     #[cfg(not(feature = "dist-client"))]
     let _ = path_transformer;
 
+    let env_vars = without_cl_env_vars(env_vars);
+
     trace!("compile");
     let out_file = match parsed_args.outputs.get("obj") {
         Some(obj) => &obj.path,
@@ -1173,11 +1271,11 @@ fn generate_compile_commands(
     if parsed_args.double_dash_input {
         arguments.push("--".into());
     }
-    arguments.push(parsed_args.input.clone().into());
+    arguments.push(msvc_input_arg(parsed_args, parsed_args.input.as_os_str()));
     let command = SingleCompileCommand {
         executable: executable.to_owned(),
         arguments,
-        env_vars: env_vars.to_owned(),
+        env_vars: env_vars.clone(),
         cwd: cwd.to_owned(),
         share_jobserver: false,
     };
@@ -1202,12 +1300,17 @@ fn generate_compile_commands(
         if parsed_args.double_dash_input {
             arguments.push("--".into());
         }
-        arguments.push(path_transformer.as_dist(&parsed_args.input)?);
+        let input = path_transformer.as_dist(&parsed_args.input)?;
+        arguments.push(
+            msvc_input_arg(parsed_args, input.as_ref())
+                .into_string()
+                .ok()?,
+        );
 
         Some(dist::CompileCommand {
             executable: path_transformer.as_dist(executable)?,
             arguments,
-            env_vars: dist::osstring_tuples_to_strings(env_vars)?,
+            env_vars: dist::osstring_tuples_to_strings(&env_vars)?,
             cwd: path_transformer.as_dist(cwd)?,
         })
     })();
@@ -1539,6 +1642,110 @@ mod test {
     }
 
     #[test]
+    fn test_parse_arguments_cl_env() {
+        let msvc = Msvc {
+            includes_prefix: String::new(),
+            is_clang: false,
+            version: None,
+        };
+        let cwd = std::env::current_dir().unwrap();
+        let args = ovec!["-c", "foo.c", "-Fofoo.obj"];
+        let env = vec![
+            ("CL".into(), "/Zp2 /Ox /Ipath /DDEBUG#1 /DFOO#A#B".into()),
+            ("_CL_".into(), "/Foother.obj".into()),
+        ];
+        let ParsedArguments {
+            outputs,
+            preprocessor_args,
+            common_args,
+            ..
+        } = match msvc.parse_arguments(&args, &cwd, &env) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(common_args, ovec!["/Zp2", "/Ox"]);
+        assert_eq!(preprocessor_args, ovec!["/Ipath", "/DDEBUG#1", "/DFOO#A#B"]);
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("other.obj"),
+                    optional: false
+                }
+            )
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_parse_arguments_cl_env_lowercase() {
+        let msvc = Msvc {
+            includes_prefix: String::new(),
+            is_clang: false,
+            version: None,
+        };
+        let cwd = std::env::current_dir().unwrap();
+        let args = ovec!["-c", "foo.c", "-Fofoo.obj"];
+        let env = vec![
+            ("cl".into(), "/Zp2 /Ox /Ipath /DDEBUG#1".into()),
+            ("_cl_".into(), "/Foother.obj".into()),
+        ];
+        let ParsedArguments {
+            outputs,
+            preprocessor_args,
+            common_args,
+            ..
+        } = match msvc.parse_arguments(&args, &cwd, &env) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(common_args, ovec!["/Zp2", "/Ox"]);
+        assert_eq!(preprocessor_args, ovec!["/Ipath", "/DDEBUG#1"]);
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("other.obj"),
+                    optional: false
+                }
+            )
+        );
+    }
+
+    fn non_utf8_os_string() -> OsString {
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStringExt;
+            // Unpaired surrogate: not valid Unicode.
+            OsString::from_wide(&[0xD800])
+        }
+        #[cfg(not(windows))]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            OsString::from_vec(vec![0xFF])
+        }
+    }
+
+    #[test]
+    fn test_cl_env_args_non_utf8() {
+        let value = non_utf8_os_string();
+        assert_eq!(
+            cl_env_args(&[("CL".into(), value.clone())], "CL"),
+            Err("non-utf8 CL environment variable value")
+        );
+        assert_eq!(
+            cl_env_args(&[("_CL_".into(), value.clone())], "_CL_"),
+            Err("non-utf8 _CL_ environment variable value")
+        );
+        assert_eq!(
+            cl_env_args(&[("OTHER".into(), value)], "OTHER"),
+            Err("non-utf8 value of unexpected environment variable")
+        );
+    }
+
+    #[test]
     fn test_cpp_parse_arguments_collects_type_library_headers() {
         let args = ovec!["-c", "foo.cpp", "-Fofoo.obj"];
         let ParsedArguments {
@@ -1668,6 +1875,45 @@ mod test {
         assert!(preprocessor_args.is_empty());
         assert!(common_args.is_empty());
         assert!(!msvc_show_includes);
+    }
+
+    #[test]
+    fn test_parse_arguments_explicit_language_input() {
+        for (args, expected_input, expected_language) in [
+            (ovec!["-c", "-Tp", "foo.cc"], "foo.cc", Language::Cxx),
+            (ovec!["/c", "/Tp", "foo.cc"], "foo.cc", Language::Cxx),
+            (ovec!["-c", "-Tpfoo.cc"], "foo.cc", Language::Cxx),
+            (ovec!["/c", "/Tpsrc/foo.cpp"], "src/foo.cpp", Language::Cxx),
+            (ovec!["-c", "-Tp", "foo.c"], "foo.c", Language::Cxx),
+            (ovec!["-c", "-Tc", "foo.cpp"], "foo.cpp", Language::C),
+            (ovec!["/c", "/Tcfoo.cpp"], "foo.cpp", Language::C),
+            (ovec!["-c", "-Tcfoo.inc"], "foo.inc", Language::C),
+        ] {
+            let ParsedArguments {
+                input,
+                language,
+                common_args,
+                ..
+            } = match parse_arguments(args.clone()) {
+                CompilerArguments::Ok(parsed) => parsed,
+                o => panic!("Got unexpected parse result for {:?}: {:?}", args, o),
+            };
+            assert_eq!(Some(expected_input), input.to_str(), "{:?}", args);
+            assert_eq!(expected_language, language, "{:?}", args);
+            assert!(common_args.is_empty(), "{:?}", args);
+        }
+    }
+
+    #[test]
+    fn test_parse_arguments_explicit_language_input_not_cacheable() {
+        assert_eq!(
+            CompilerArguments::CannotCache("multiple input files", Some("[\"bar.c\"]".to_string())),
+            parse_arguments(ovec!["-c", "-Tp", "foo.cc", "bar.c"])
+        );
+        assert_eq!(
+            CompilerArguments::CannotCache("no input file", None),
+            parse_arguments(ovec!["-c", "-Tp"])
+        );
     }
 
     #[test]
@@ -3094,6 +3340,7 @@ mod test {
             extra_hash_files: vec![],
             uses_external_assembler: false,
             msvc_show_includes: false,
+            msvc_explicit_language: false,
             profile_generate: false,
             color_mode: ColorMode::Auto,
             suppress_rewrite_includes_only: false,
@@ -3148,6 +3395,127 @@ mod test {
     }
 
     #[test]
+    fn test_preprocess_explicit_language_input() {
+        for (args, expected_input) in [
+            (ovec!["-c", "-Fofoo.obj", "-Tp", "foo.cc"], "-Tpfoo.cc"),
+            (ovec!["/c", "/Fofoo.obj", "/Tpfoo.cc"], "-Tpfoo.cc"),
+            (ovec!["-c", "-Fofoo.obj", "-Tc", "foo.cpp"], "-Tcfoo.cpp"),
+        ] {
+            let parsed_args = match parse_arguments(args) {
+                CompilerArguments::Ok(args) => args,
+                o => panic!("Got unexpected parse result: {:?}", o),
+            };
+            let mut cmd = MockCommand {
+                child: None,
+                args: vec![],
+            };
+            preprocess_cmd(
+                &mut cmd,
+                &parsed_args,
+                Path::new(""),
+                &[],
+                false,
+                false,
+                false,
+            );
+            let expected_args = ovec!["-EP", "-nologo", "/WX-", expected_input];
+            assert_eq!(cmd.args, expected_args);
+        }
+    }
+
+    #[test]
+    fn test_compile_explicit_language_input() {
+        let args = ovec!["-c", "-Fofoo.obj", "-Tp", "foo.cc"];
+        let parsed_args = match parse_arguments(args) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        let f = TestFixture::new();
+        let compiler = &f.bins[0];
+        let mut path_transformer = dist::PathTransformer::new();
+        let (command, dist_command, _) = generate_compile_commands(
+            &mut path_transformer,
+            compiler,
+            &parsed_args,
+            f.tempdir.path(),
+            &[],
+        )
+        .unwrap();
+        let expected_args = ovec!["-c", "-Fofoo.obj", "-Tpfoo.cc"];
+        assert_eq!(command.arguments, expected_args);
+        #[cfg(feature = "dist-client")]
+        assert_eq!(
+            dist_command.expect("dist command").arguments,
+            stringvec!["-c", "-Fofoo.obj", "-Tpfoo.cc"]
+        );
+        #[cfg(not(feature = "dist-client"))]
+        assert!(dist_command.is_none());
+    }
+
+    #[test]
+    fn test_compile_strips_cl_env() {
+        let msvc = Msvc {
+            includes_prefix: String::new(),
+            is_clang: false,
+            version: None,
+        };
+        let cwd = std::env::current_dir().unwrap();
+        let args = ovec!["-c", "foo.c", "-Fofoo.obj"];
+        let env = vec![
+            ("CL".into(), "/Ox".into()),
+            ("INCLUDE".into(), "C:\\inc".into()),
+            ("_CL_".into(), "/Gy".into()),
+        ];
+        let parsed_args = match msvc.parse_arguments(&args, &cwd, &env) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        let f = TestFixture::new();
+        let compiler = &f.bins[0];
+        let mut path_transformer = dist::PathTransformer::new();
+        let (command, dist_command, _) = generate_compile_commands(
+            &mut path_transformer,
+            compiler,
+            &parsed_args,
+            f.tempdir.path(),
+            &env,
+        )
+        .unwrap();
+        assert!(command.arguments.iter().any(|arg| arg == "/Ox"));
+        assert!(command.arguments.iter().any(|arg| arg == "/Gy"));
+        assert!(
+            command
+                .env_vars
+                .iter()
+                .all(|(key, _)| key != "CL" && key != "_CL_")
+        );
+        assert!(
+            command
+                .env_vars
+                .iter()
+                .any(|(key, value)| key == "INCLUDE" && value == "C:\\inc")
+        );
+        #[cfg(feature = "dist-client")]
+        {
+            let dist_command = dist_command.expect("dist command");
+            assert!(
+                dist_command
+                    .env_vars
+                    .iter()
+                    .all(|(key, _)| key != "CL" && key != "_CL_")
+            );
+            assert!(
+                dist_command
+                    .env_vars
+                    .iter()
+                    .any(|(key, value)| key == "INCLUDE" && value == "C:\\inc")
+            );
+        }
+        #[cfg(not(feature = "dist-client"))]
+        assert!(dist_command.is_none());
+    }
+
+    #[test]
     fn test_compile_not_cacheable_pdb() {
         let creator = new_creator();
         let f = TestFixture::new();
@@ -3185,6 +3553,7 @@ mod test {
             extra_hash_files: vec![],
             uses_external_assembler: false,
             msvc_show_includes: false,
+            msvc_explicit_language: false,
             profile_generate: false,
             color_mode: ColorMode::Auto,
             suppress_rewrite_includes_only: false,

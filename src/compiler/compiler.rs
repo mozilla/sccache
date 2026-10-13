@@ -36,7 +36,8 @@ use crate::lru_disk_cache;
 use crate::mock_command::{CommandChild, CommandCreatorSync, RunCommand, exit_status};
 use crate::server;
 use crate::util::{
-    Digest, fmt_duration_as_secs, resolve_compiler_avoiding_wrapper, run_input_output,
+    Digest, StderrLineObserver, fmt_duration_as_secs, resolve_compiler_avoiding_wrapper,
+    run_input_output, run_input_output_observing,
 };
 use crate::{counted_array, dist};
 use async_trait::async_trait;
@@ -196,7 +197,7 @@ impl CompileCommandImpl for SingleCompileCommand {
 
     async fn execute<T>(
         &self,
-        _: &server::SccacheService<T>,
+        service: &server::SccacheService<T>,
         creator: &T,
     ) -> Result<process::Output>
     where
@@ -219,7 +220,18 @@ impl CompileCommandImpl for SingleCompileCommand {
         if *share_jobserver {
             cmd.share_jobserver();
         }
-        run_input_output(cmd, None).await
+        match service.notification_tx() {
+            Some(tx) => {
+                let tx = tx.clone();
+                let observer: StderrLineObserver = Box::new(move |line| {
+                    if super::rust::is_rmeta_artifact_notification(line) {
+                        let _ = tx.unbounded_send(line.to_vec());
+                    }
+                });
+                run_input_output_observing(cmd, None, Some(observer)).await
+            }
+            None => run_input_output(cmd, None).await,
+        }
     }
 }
 
@@ -2395,11 +2407,20 @@ LLVM version: 6.0",
                 "",
             )),
         );
-        // rustc --print=sysroot
+        // rustc --print=sysroot --print=target-libdir
         let sysroot = f.tempdir.path().to_str().unwrap();
-        next_command(creator, Ok(MockChild::new(exit_status(0), sysroot, "")));
-        next_command(creator, Ok(MockChild::new(exit_status(0), sysroot, "")));
-        next_command(creator, Ok(MockChild::new(exit_status(0), sysroot, "")));
+        let sysroot_and_target_libdir =
+            format!("{sysroot}\n{sysroot}/lib/rustlib/x86_64-unknown-linux-gnu/lib");
+        for _ in 0..3 {
+            next_command(
+                creator,
+                Ok(MockChild::new(
+                    exit_status(0),
+                    &sysroot_and_target_libdir,
+                    "",
+                )),
+            );
+        }
     }
 
     #[test]
@@ -2587,6 +2608,94 @@ LLVM version: 6.0",
             .collect();
         assert_eq!(results.len(), 2);
         assert_ne!(results[0].key, results[1].key);
+    }
+
+    #[test_case(true ; "with preprocessor cache")]
+    #[test_case(false ; "without preprocessor cache")]
+    fn test_multiarch_hash_covers_every_arch(preprocessor_cache_mode: bool) {
+        let f = TestFixture::new();
+        let clang = f.mk_bin("clang").unwrap();
+        let runtime = single_threaded_runtime();
+        let pool = runtime.handle();
+        let cwd = f.tempdir.path();
+        // Write a dummy input file so the preprocessor cache mode can work
+        std::fs::write(f.tempdir.path().join("foo.c"), "whatever").unwrap();
+
+        let key = |arguments: &[OsString], x86_64_output: &str, arm64_output: &str| {
+            let creator = new_creator();
+            next_command(
+                &creator,
+                Ok(MockChild::new(
+                    exit_status(0),
+                    "compiler_id=clang\ncompiler_version=\"16.0.0\"",
+                    "",
+                )),
+            );
+            next_assembler(&creator, "GNU assembler (GNU Binutils) 2.42", "");
+            let c = detect_compiler(
+                creator.clone(),
+                &clang,
+                f.tempdir.path(),
+                &[],
+                &[],
+                pool,
+                None,
+            )
+            .wait()
+            .unwrap()
+            .0;
+            let outputs = [
+                ("x86_64", x86_64_output.to_owned()),
+                ("arm64", arm64_output.to_owned()),
+            ];
+            for _ in 0..outputs.len() {
+                let outputs = outputs.clone();
+                next_command_calls(&creator, move |args| {
+                    let output = outputs
+                        .iter()
+                        .find(|(arch, _)| args.iter().any(|a| a == arch))
+                        .map(|(_, output)| output.clone())
+                        .unwrap_or_default();
+                    Ok(MockChild::new(exit_status(0), output, ""))
+                });
+            }
+            let mut hasher = match c.parse_arguments(arguments, ".".as_ref(), &[]) {
+                CompilerArguments::Ok(h) => h,
+                o => panic!("Bad result from parse_arguments: {:?}", o),
+            };
+            hasher
+                .generate_hash_key(
+                    &creator,
+                    cwd.to_path_buf(),
+                    vec![],
+                    false,
+                    pool,
+                    false,
+                    Arc::new(MockStorage::new(None, preprocessor_cache_mode)),
+                    CacheControl::Default,
+                )
+                .wait()
+                .unwrap()
+                .key
+        };
+
+        temp_env::with_var("SCCACHE_CACHE_MULTIARCH", Some("1"), || {
+            let fat = ovec![
+                "-arch", "x86_64", "-arch", "arm64", "-c", "foo.c", "-o", "foo.o"
+            ];
+            assert_eq!(
+                key(&fat, "x86_64 code\n", "arm64 code\n"),
+                key(&fat, "x86_64 code\n", "arm64 code\n")
+            );
+            assert_ne!(
+                key(&fat, "x86_64 code\n", "arm64 code\n"),
+                key(&fat, "x86_64 code\n", "arm64 code, changed\n")
+            );
+            assert_ne!(
+                key(&fat, "x86_64 code\n", "arm64 code\n"),
+                key(&fat, "x86_64 code, changed\n", "arm64 code\n")
+            );
+        });
     }
 
     #[test_case(true ; "with preprocessor cache")]

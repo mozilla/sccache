@@ -24,12 +24,11 @@ See https://github.com/mozilla/sccache/blob/8567bbe2ba493153e76177c1f9a6f98cc7ba
 ### C/C++ compiler
 
 For C/C++, the hash is generated with a blake3 digest of the preprocessed
-file (-E with gcc/clang). For compilations that specify multiple `-arch` flags,
-these flags are rewritten to their corresponding preprocessor defines to allow
-pre-processing the file (e.g `-arch x86_64` is rewritten to `-D__X86_64__=1`),
-this can be enabled by setting the environment variable
-`SCCACHE_CACHE_MULTIARCH` but is disabled by default as it may not work in all
-cases.
+file (-E with gcc/clang). Compilations that specify several different `-arch`
+flags are only cached when the environment variable `SCCACHE_CACHE_MULTIARCH`
+is set. The file is then preprocessed once per architecture, with only that
+`-arch` flag, and every output goes into the hash, so that code only one of
+the targets sees (e.g. under `__aarch64__`) is taken into account.
 
 We also take into account in the hash:
 * Hash of the compiler binary

@@ -113,6 +113,8 @@ pub struct ParsedArguments {
     pub uses_external_assembler: bool,
     /// Whether or not the `-showIncludes` argument is passed on MSVC
     pub msvc_show_includes: bool,
+    /// Whether the MSVC input was given with `/Tc` or `/Tp`
+    pub msvc_explicit_language: bool,
     /// Whether the compilation is generating profiling or coverage data.
     pub profile_generate: bool,
     /// The color mode.
@@ -130,6 +132,25 @@ impl ParsedArguments {
             .and_then(|o| o.path.file_name())
             .map(|s| s.to_string_lossy())
             .unwrap_or(Cow::Borrowed("Unknown filename"))
+    }
+
+    /// The distinct architectures given with `-arch`, in command line order.
+    pub fn archs(&self) -> Vec<&OsString> {
+        use itertools::Itertools as _;
+        self.arch_values().unique().collect()
+    }
+
+    pub fn is_multiarch(&self) -> bool {
+        let mut archs = self.arch_values();
+        archs
+            .next()
+            .is_some_and(|first| archs.any(|arch| arch != first))
+    }
+
+    fn arch_values(&self) -> impl Iterator<Item = &OsString> {
+        self.arch_args
+            .iter()
+            .filter(|arg| *arg != super::gcc::ARCH_FLAG)
     }
 }
 
@@ -467,6 +488,7 @@ where
                 &env_vars,
                 &absolute_input_path,
                 self.compiler.plusplus(),
+                self.parsed_args.is_multiarch(),
                 preprocessor_cache_mode_config,
                 storage.basedirs(),
             )?

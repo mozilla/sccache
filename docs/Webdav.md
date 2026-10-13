@@ -18,3 +18,12 @@ Sccache is able to load credentials from the following sources:
 
 - Set `SCCACHE_WEBDAV_USERNAME`/`SCCACHE_WEBDAV_PASSWORD` to specify the username/password pair for basic authentication.
 - Set `SCCACHE_WEBDAV_TOKEN` to specify the token value for bearer token authentication.
+
+## Disable Create Dir
+
+Some WebDAV servers don't support the `PROPFIND`/`MKCOL` methods that opendal's WebDAV
+backend otherwise issues before every write to ensure the parent directory exists. Sonatype
+Nexus raw repositories are one example: they only implement `GET`/`HEAD`/`PUT`/`DELETE` and
+reject `MKCOL` with `405 Method Not Allowed`, which makes every cache write fail.
+
+Set `SCCACHE_WEBDAV_DISABLE_CREATE_DIR=true` to skip these calls during writes.

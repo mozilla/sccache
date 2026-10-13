@@ -591,12 +591,11 @@ fn test_config_validation_invalid_level_name() {
     let config = Config::load().unwrap();
     let result = MultiLevelStorage::from_config(&config, runtime.handle());
 
-    // Should error with unknown cache level
-    assert!(result.is_err());
-    if let Err(e) = result {
-        let err_msg = format!("{}", e);
-        assert!(err_msg.contains("Unknown cache level") || err_msg.contains("invalid_backend"));
-    }
+    let err = result
+        .err()
+        .expect("invalid level must be rejected")
+        .to_string();
+    assert_eq!(err, "Unknown cache level: 'invalid_backend'");
 
     unsafe {
         env::remove_var("SCCACHE_MULTILEVEL_CHAIN");
@@ -673,18 +672,17 @@ fn test_config_level_not_configured() {
     let config = Config::load().unwrap();
     let result = MultiLevelStorage::from_config(&config, runtime.handle());
 
-    // Should error with "not configured" or "requires" (when feature disabled)
-    assert!(result.is_err());
-    if let Err(e) = result {
-        let err_msg = format!("{}", e);
-        assert!(
-            err_msg.contains("not configured")
-                || err_msg.contains("missing")
-                || err_msg.contains("requires"),
-            "Expected error about missing config or feature, got: {}",
-            err_msg
-        );
-    }
+    let err = result
+        .err()
+        .expect("unconfigured level must be rejected")
+        .to_string();
+    #[cfg(feature = "redis")]
+    assert_eq!(
+        err,
+        "Cache level 'redis' specified in SCCACHE_MULTILEVEL_CHAIN but not configured (missing environment variables)"
+    );
+    #[cfg(not(feature = "redis"))]
+    assert_eq!(err, "Cache level 'redis' requires the 'redis' feature");
 
     unsafe {
         env::remove_var("SCCACHE_MULTILEVEL_CHAIN");
@@ -1063,6 +1061,129 @@ fn test_mixed_readonly_chain_is_readwrite_in_check() {
             CacheMode::ReadWrite => {} // Expected
             _ => panic!("Read-only L0 + writable L1 should be ReadWrite"),
         }
+    });
+}
+
+struct CheckFailingStorage;
+
+#[async_trait]
+impl Storage for CheckFailingStorage {
+    async fn get(&self, _key: &str) -> Result<Cache> {
+        Err(anyhow!("intentional check failure"))
+    }
+
+    async fn put(&self, _key: &str, _entry: CacheWrite) -> Result<Duration> {
+        Err(anyhow!("intentional check failure"))
+    }
+
+    async fn check(&self) -> Result<CacheMode> {
+        Err(anyhow!("intentional check failure"))
+    }
+
+    fn location(&self) -> String {
+        "CheckFailingStorage".to_owned()
+    }
+
+    async fn current_size(&self) -> Result<Option<u64>> {
+        Ok(None)
+    }
+
+    async fn max_size(&self) -> Result<Option<u64>> {
+        Ok(None)
+    }
+}
+
+#[test]
+fn test_unavailable_l1_does_not_block_healthy_l0() {
+    let runtime = RuntimeBuilder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let l0 = Arc::new(InMemoryStorage::new());
+    let l1 = Arc::new(CheckFailingStorage);
+    let storage = MultiLevelStorage::new(vec![l0 as Arc<dyn Storage>, l1 as Arc<dyn Storage>]);
+
+    runtime.block_on(async {
+        assert!(matches!(
+            storage.check().await.unwrap(),
+            CacheMode::ReadWrite
+        ));
+    });
+}
+
+#[test]
+fn test_unavailable_l1_keeps_readonly_l0_chain_potentially_writable() {
+    let runtime = RuntimeBuilder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let l0 = Arc::new(ReadOnlyStorage(Arc::new(InMemoryStorage::new())));
+    let l1 = Arc::new(CheckFailingStorage);
+    let storage = MultiLevelStorage::new(vec![l0 as Arc<dyn Storage>, l1 as Arc<dyn Storage>]);
+
+    runtime.block_on(async {
+        assert!(matches!(
+            storage.check().await.unwrap(),
+            CacheMode::ReadWrite
+        ));
+    });
+}
+
+#[test]
+fn test_unavailable_l1_remains_fatal_with_all_write_policy() {
+    let runtime = RuntimeBuilder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let l0 = Arc::new(InMemoryStorage::new());
+    let l1 = Arc::new(CheckFailingStorage);
+    let storage = MultiLevelStorage::with_write_error_policy(
+        vec![l0 as Arc<dyn Storage>, l1 as Arc<dyn Storage>],
+        WriteErrorPolicy::All,
+    );
+
+    runtime.block_on(async {
+        assert!(storage.check().await.is_err());
+    });
+}
+
+#[test]
+fn test_unavailable_l0_is_tolerated_with_ignore_write_policy() {
+    let runtime = RuntimeBuilder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let l0 = Arc::new(CheckFailingStorage);
+    let storage = MultiLevelStorage::with_write_error_policy(
+        vec![l0 as Arc<dyn Storage>],
+        WriteErrorPolicy::Ignore,
+    );
+
+    runtime.block_on(async {
+        assert!(matches!(
+            storage.check().await.unwrap(),
+            CacheMode::ReadWrite
+        ));
+    });
+}
+
+#[test]
+fn test_unavailable_l0_remains_fatal() {
+    let runtime = RuntimeBuilder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let l0 = Arc::new(CheckFailingStorage);
+    let l1 = Arc::new(InMemoryStorage::new());
+    let storage = MultiLevelStorage::new(vec![l0 as Arc<dyn Storage>, l1 as Arc<dyn Storage>]);
+
+    runtime.block_on(async {
+        assert!(storage.check().await.is_err());
     });
 }
 
