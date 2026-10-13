@@ -592,9 +592,10 @@ impl CacheConfigs {
     }
 
     /// `Ok(None)` if the cache isn't configured, `Err` if the name is unknown
-    /// or its feature is disabled.
+    /// or its feature is disabled. The name is case-insensitive.
     pub fn cache_type_by_name(&self, name: &str) -> Result<Option<CacheType>> {
-        match name {
+        let lower = name.to_ascii_lowercase();
+        match lower.as_str() {
             #[cfg(feature = "s3")]
             "s3" => Ok(self.s3.clone().map(CacheType::S3)),
             #[cfg(feature = "redis")]
@@ -613,8 +614,8 @@ impl CacheConfigs {
             "oss" => Ok(self.oss.clone().map(CacheType::OSS)),
             #[cfg(feature = "cos")]
             "cos" => Ok(self.cos.clone().map(CacheType::COS)),
-            _ if REMOTE_CACHES.contains(&(name, false)) => {
-                bail!("Cache level '{name}' requires the '{name}' feature")
+            _ if REMOTE_CACHES.contains(&(lower.as_str(), false)) => {
+                bail!("Cache level '{name}' requires the '{lower}' feature")
             }
             _ => bail!("Unknown cache level: '{name}'"),
         }
@@ -3522,9 +3523,9 @@ no_credentials = false
 #[test]
 fn test_cache_type_by_name_unknown() {
     let err = CacheConfigs::default()
-        .cache_type_by_name("unknown_cache")
+        .cache_type_by_name("Unknown_Cache")
         .unwrap_err();
-    assert_eq!(err.to_string(), "Unknown cache level: 'unknown_cache'");
+    assert_eq!(err.to_string(), "Unknown cache level: 'Unknown_Cache'");
 }
 
 #[test]
@@ -3543,6 +3544,10 @@ fn test_cache_type_by_name_cos() {
 
     assert_eq!(
         configs.cache_type_by_name("cos").unwrap(),
+        Some(CacheType::COS(cos.clone()))
+    );
+    assert_eq!(
+        configs.cache_type_by_name("COS").unwrap(),
         Some(CacheType::COS(cos))
     );
 }
@@ -3551,14 +3556,17 @@ fn test_cache_type_by_name_cos() {
 fn test_cache_type_by_name_matches_features() {
     let configs = CacheConfigs::default();
     for &(name, enabled) in REMOTE_CACHES {
-        let result = configs.cache_type_by_name(name);
-        if enabled {
-            assert!(matches!(result, Ok(None)), "'{name}': {result:?}");
-        } else {
-            assert_eq!(
-                result.unwrap_err().to_string(),
-                format!("Cache level '{name}' requires the '{name}' feature")
-            );
+        let upper = name.to_ascii_uppercase();
+        for level in [name, upper.as_str()] {
+            let result = configs.cache_type_by_name(level);
+            if enabled {
+                assert!(matches!(result, Ok(None)), "'{level}': {result:?}");
+            } else {
+                assert_eq!(
+                    result.unwrap_err().to_string(),
+                    format!("Cache level '{level}' requires the '{name}' feature")
+                );
+            }
         }
     }
 }
