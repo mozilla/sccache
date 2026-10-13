@@ -385,7 +385,6 @@ impl Storage for RemoteStorage {
 pub fn build_single_cache(
     cache_type: &CacheType,
     basedirs: &[Vec<u8>],
-    _pool: &tokio::runtime::Handle,
     skip_cache_check: bool,
 ) -> Result<Arc<dyn Storage>> {
     match cache_type {
@@ -616,7 +615,7 @@ pub fn storage_from_config(
     #[cfg(any_cache_remote)]
     if let Some(cache_type) = &config.cache {
         debug!("Configuring single cache from CacheType");
-        return build_single_cache(cache_type, &config.basedirs, pool, config.skip_cache_check);
+        return build_single_cache(cache_type, &config.basedirs, config.skip_cache_check);
     }
 
     // No remote cache configured - use disk cache only
@@ -643,11 +642,8 @@ mod test {
     #[test]
     #[cfg(not(feature = "redis"))]
     fn test_build_single_cache_feature_disabled() {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap();
         let cache_type = CacheType::Redis(Default::default());
-        let err = build_single_cache(&cache_type, &[], runtime.handle(), false)
+        let err = build_single_cache(&cache_type, &[], false)
             .err()
             .expect("disabled backend must be rejected");
         assert_eq!(
