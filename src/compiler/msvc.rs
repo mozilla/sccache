@@ -701,10 +701,6 @@ pub fn parse_arguments(
                     multiple_input_files.push(path.clone().into_os_string());
                 }
                 input_arg = Some(path.clone().into_os_string());
-                explicit_language = Some(match arg.get_data() {
-                    Some(CInput(_)) => Language::C,
-                    _ => Language::Cxx,
-                });
             }
             None => {
                 match arg {
@@ -771,6 +767,8 @@ pub fn parse_arguments(
             // race conditions in which we may try to read the PDB before MSPDBSRC is done
             // writing it, so we're better off ignoring the flags.
             Some(Ignore) | Some(IgnoreWithSuffix(_)) => {}
+            Some(CInput(_)) => explicit_language = Some(Language::C),
+            Some(CxxInput(_)) => explicit_language = Some(Language::Cxx),
             _ => {}
         }
     }
@@ -1057,7 +1055,7 @@ fn normpath(path: &str) -> String {
 
 // An input given with /Tc or /Tp has to keep the flag attached, otherwise
 // cl.exe falls back to guessing the language from the extension.
-fn input_arg(parsed_args: &ParsedArguments, input: &OsStr) -> OsString {
+fn msvc_input_arg(parsed_args: &ParsedArguments, input: &OsStr) -> OsString {
     let mut arg = OsString::new();
     if parsed_args.msvc_explicit_language {
         match parsed_args.language {
@@ -1125,7 +1123,7 @@ fn preprocess_cmd<T>(
     if parsed_args.double_dash_input {
         cmd.arg("--");
     }
-    cmd.arg(input_arg(parsed_args, parsed_args.input.as_os_str()));
+    cmd.arg(msvc_input_arg(parsed_args, parsed_args.input.as_os_str()));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1273,7 +1271,7 @@ fn generate_compile_commands(
     if parsed_args.double_dash_input {
         arguments.push("--".into());
     }
-    arguments.push(input_arg(parsed_args, parsed_args.input.as_os_str()));
+    arguments.push(msvc_input_arg(parsed_args, parsed_args.input.as_os_str()));
     let command = SingleCompileCommand {
         executable: executable.to_owned(),
         arguments,
@@ -1303,7 +1301,11 @@ fn generate_compile_commands(
             arguments.push("--".into());
         }
         let input = path_transformer.as_dist(&parsed_args.input)?;
-        arguments.push(input_arg(parsed_args, input.as_ref()).into_string().ok()?);
+        arguments.push(
+            msvc_input_arg(parsed_args, input.as_ref())
+                .into_string()
+                .ok()?,
+        );
 
         Some(dist::CompileCommand {
             executable: path_transformer.as_dist(executable)?,
