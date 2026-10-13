@@ -430,13 +430,11 @@ impl MultiLevelStorage {
                         level_name
                     )
                 })?;
-                let storage = build_single_cache(
-                    &cache_type,
-                    &config.basedirs,
-                    pool,
-                    config.skip_cache_check,
-                )
-                .with_context(|| format!("Failed to build cache for level '{}'", level_name))?;
+                let storage =
+                    build_single_cache(&cache_type, &config.basedirs, config.skip_cache_check)
+                        .with_context(|| {
+                            format!("Failed to build cache for level '{}'", level_name)
+                        })?;
                 storages.push(storage);
                 trace!("Added cache level: {}", level_name);
             }
