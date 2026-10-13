@@ -382,7 +382,6 @@ impl Storage for RemoteStorage {
 
 /// Build a single cache storage from CacheType
 /// Helper function used by storage_from_config for both single and multi-level caches
-#[cfg(any_cache_remote)]
 pub fn build_single_cache(
     cache_type: &CacheType,
     basedirs: &[Vec<u8>],
@@ -640,6 +639,22 @@ mod test {
     use super::*;
     use crate::config::CacheModeConfig;
     use fs_err as fs;
+
+    #[test]
+    #[cfg(not(feature = "redis"))]
+    fn test_build_single_cache_feature_disabled() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let cache_type = CacheType::Redis(Default::default());
+        let err = build_single_cache(&cache_type, &[], runtime.handle(), false)
+            .err()
+            .expect("disabled backend must be rejected");
+        assert_eq!(
+            err.to_string(),
+            "Cache type not supported with current feature configuration"
+        );
+    }
 
     #[test]
     fn test_read_write_mode_local() {
