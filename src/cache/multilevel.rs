@@ -422,8 +422,7 @@ impl MultiLevelStorage {
                 trace!("Added disk cache level");
             } else {
                 // Build remote cache - get the appropriate CacheType
-                let level_lower = level_name.to_lowercase();
-                let cache_type = config.cache_configs.cache_type_by_name(&level_lower)?;
+                let cache_type = config.cache_configs.cache_type_by_name(level_name)?;
                 let cache_type = cache_type.ok_or_else(|| {
                     anyhow!(
                         "Cache level '{}' specified in SCCACHE_MULTILEVEL_CHAIN but not configured (missing environment variables)",
