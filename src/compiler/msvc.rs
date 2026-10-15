@@ -570,7 +570,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_take_arg!("we", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("winsysroot", PathBuf, CanBeSeparated, PassThroughWithPath),
     msvc_take_arg!("wo", OsString, Concatenated, PassThroughWithSuffix),
-    msvc_take_arg!("x", OsString, Separated, ClangLanguage),
+    msvc_take_arg!("x", OsString, CanBeSeparated, ClangLanguage),
     take_arg!("@", PathBuf, Concatenated, TooHardPath),
 ]);
 
@@ -2174,7 +2174,28 @@ mod test {
         assert_eq!(Language::CxxModule, a.language);
         assert_eq!(Path::new("m.pcm"), a.outputs["module"].path);
         assert!(!a.outputs["module"].optional);
-        assert_eq!(args[1..6], a.common_args);
+        // Two-letter flags are normalized to their joined form.
+        assert_eq!(
+            ovec![
+                "-xc++-module",
+                "-fmodule-output=m.pcm",
+                "-fmodule-file=n=n.pcm",
+                "-fmodule-file=o.pcm"
+            ],
+            a.common_args
+        );
+        let joined = ovec![
+            "-c",
+            "-xc++-module",
+            "-fmodule-output=m.pcm",
+            "-fmodule-file=n=n.pcm",
+            "-fmodule-file=o.pcm",
+            "m.cpp"
+        ];
+        assert_eq!(
+            parse_arguments_clang(args.clone()),
+            parse_arguments_clang(joined)
+        );
         let cwd = std::env::current_dir().unwrap();
         assert_eq!(
             ovec![cwd.join("n.pcm"), cwd.join("o.pcm")],
@@ -2189,6 +2210,7 @@ mod test {
         let paired = "-x c++-module without -fmodule-output= or vice versa";
         for (args, why) in [
             (ovec!["-c", "-x", "c++-module", "m.cpp"], paired),
+            (ovec!["-c", "-xc++-module", "m.cpp"], paired),
             (ovec!["-c", "-fmodule-output=m.pcm", "m.cppm"], paired),
             (
                 ovec![
