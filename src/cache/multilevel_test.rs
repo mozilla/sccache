@@ -366,15 +366,16 @@ fn test_slow_write_storage_trait_methods() {
 }
 
 #[test]
-fn test_background_task_join_error_is_drained() {
+fn test_background_task_panic_is_drained() {
     let runtime = RuntimeBuilder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
     runtime.block_on(async {
-        let tasks = BackgroundTasks::default();
+        let tasks = Arc::new(BackgroundTasks::default());
         tasks.spawn(async { panic!("expected background-task panic") });
         tasks.drain().await;
+        assert_eq!(tasks.pending.load(Ordering::Acquire), 0);
     });
 }
 
