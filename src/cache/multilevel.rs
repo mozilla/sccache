@@ -13,15 +13,16 @@
 // limitations under the License.
 
 use bytes::Bytes;
+use futures::FutureExt;
 use std::future::Future;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::panic::AssertUnwindSafe;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use tokio::sync::Semaphore;
-use tokio::task::JoinHandle;
+use tokio::sync::{Notify, Semaphore};
 
 use crate::cache::build_single_cache;
 use crate::cache::disk::DiskCache;
@@ -316,35 +317,48 @@ const DEFAULT_SLOW_LEVEL_WRITE_CONCURRENCY: usize = 4;
 
 #[derive(Default)]
 struct BackgroundTasks {
-    handles: Mutex<Vec<JoinHandle<()>>>,
+    pending: AtomicUsize,
+    idle: Notify,
+}
+
+struct BackgroundTaskGuard {
+    tasks: Arc<BackgroundTasks>,
+}
+
+impl Drop for BackgroundTaskGuard {
+    fn drop(&mut self) {
+        if self.tasks.pending.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.tasks.idle.notify_one();
+        }
+    }
 }
 
 impl BackgroundTasks {
-    fn spawn<F>(&self, future: F)
+    fn spawn<F>(self: &Arc<Self>, future: F)
     where
         F: Future<Output = ()> + Send + 'static,
     {
-        let handle = tokio::spawn(future);
-        let mut handles = self.handles.lock().unwrap_or_else(|e| e.into_inner());
-        handles.retain(|handle| !handle.is_finished());
-        handles.push(handle);
+        self.pending.fetch_add(1, Ordering::AcqRel);
+        let guard = BackgroundTaskGuard {
+            tasks: Arc::clone(self),
+        };
+
+        tokio::spawn(async move {
+            // Create the guard before spawning so cancellation before the first poll
+            // still decrements the pending count when the task future is dropped.
+            let _guard = guard;
+            if AssertUnwindSafe(future).catch_unwind().await.is_err() {
+                debug!("Background cache task panicked");
+            }
+        });
     }
 
     async fn drain(&self) {
         loop {
-            let handles = {
-                let mut handles = self.handles.lock().unwrap_or_else(|e| e.into_inner());
-                if handles.is_empty() {
-                    return;
-                }
-                std::mem::take(&mut *handles)
-            };
-
-            for handle in handles {
-                if let Err(error) = handle.await {
-                    debug!("Background cache task failed to join: {}", error);
-                }
+            if self.pending.load(Ordering::Acquire) == 0 {
+                return;
             }
+            self.idle.notified().await;
         }
     }
 }
