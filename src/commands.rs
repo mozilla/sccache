@@ -39,7 +39,6 @@ use std::path::Path;
 use std::process;
 use std::sync::Arc;
 use std::time::Duration;
-use strip_ansi_escapes::Writer;
 use tokio::io::AsyncReadExt;
 use tokio::runtime::{Builder, Runtime};
 use walkdir::WalkDir;
@@ -449,6 +448,83 @@ fn status_signal(_status: process::ExitStatus) -> Option<i32> {
     None
 }
 
+/// Strip ANSI escape sequences from `data` while keeping every other byte.
+///
+/// `strip_ansi_escapes` parses through VTE and drops bytes that are not valid
+/// UTF-8 ground-state input (including Latin-1 in compiler diagnostics, C1
+/// controls, and bare `\r`). Compiler diagnostics are raw octets, so we only
+/// remove CSI/OSC/other ESC sequences and copy everything else unchanged.
+fn strip_ansi_bytes(data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(data.len());
+    let mut i = 0;
+    while i < data.len() {
+        if data[i] != 0x1b {
+            out.push(data[i]);
+            i += 1;
+            continue;
+        }
+        // ESC
+        i += 1;
+        if i >= data.len() {
+            break;
+        }
+        match data[i] {
+            b'[' => {
+                // CSI: ESC [ ... final (0x40..=0x7E)
+                i += 1;
+                while i < data.len() && !(0x40..=0x7e).contains(&data[i]) {
+                    i += 1;
+                }
+                if i < data.len() {
+                    i += 1;
+                }
+            }
+            b']' => {
+                // OSC: ESC ] ... BEL or ST (ESC \)
+                i += 1;
+                while i < data.len() {
+                    if data[i] == 0x07 {
+                        i += 1;
+                        break;
+                    }
+                    if data[i] == 0x1b && i + 1 < data.len() && data[i + 1] == b'\\' {
+                        i += 2;
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            b'P' | b'^' | b'_' => {
+                // DCS/PM/APC: terminated by ST
+                i += 1;
+                while i < data.len() {
+                    if data[i] == 0x1b && i + 1 < data.len() && data[i + 1] == b'\\' {
+                        i += 2;
+                        break;
+                    }
+                    if data[i] == 0x07 {
+                        i += 1;
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            b'(' | b')' | b'*' | b'+' | b'-' | b'.' | b'/' | b'#' => {
+                // nF escapes: ESC intermediate final
+                i += 1;
+                if i < data.len() {
+                    i += 1;
+                }
+            }
+            _ => {
+                // Single-character escape (e.g. ESC c). Drop the final byte.
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
 /// Handle `response`, the output from running a compile on the server.
 /// Return the compiler exit status.
 fn handle_compile_finished(
@@ -475,8 +551,7 @@ fn handle_compile_finished(
             writer.write_all(data)?;
         } else {
             // Remove escape codes (and thus colors) while writing.
-            let mut writer = Writer::new(writer);
-            writer.write_all(data)?;
+            writer.write_all(&strip_ansi_bytes(data))?;
         }
         Ok(())
     }
@@ -1093,5 +1168,35 @@ mod test {
         .unwrap();
 
         assert_eq!(code, 1);
+    }
+
+    #[test]
+    fn strip_ansi_bytes_keeps_latin1_and_strips_csi() {
+        // ESC[31m café ESC[0m  — Latin-1 0xe9 must survive when colors are stripped.
+        let input = b"\x1b[31mcaf\xe9\x1b[0m";
+        assert_eq!(strip_ansi_bytes(input), b"caf\xe9");
+    }
+
+    #[test]
+    fn strip_ansi_bytes_keeps_cr_and_high_bytes() {
+        let input = b"warn: caf\xe9\r\n";
+        assert_eq!(strip_ansi_bytes(input), b"warn: caf\xe9\r\n");
+    }
+
+    #[test]
+    fn handle_compile_finished_preserves_non_ascii_when_not_a_tty() {
+        let response = CompileFinished {
+            retcode: Some(0),
+            signal: None,
+            stdout: vec![],
+            // ColorMode::Off forces the strip path regardless of IsTerminal.
+            stderr: b"#warning caf\xe9 naive\n".to_vec(),
+            color_mode: ColorMode::Off,
+        };
+        let mut stdout = vec![];
+        let mut stderr = vec![];
+        let code = handle_compile_finished(response, &mut stdout, &mut stderr).unwrap();
+        assert_eq!(code, 0);
+        assert_eq!(stderr, b"#warning caf\xe9 naive\n");
     }
 }
