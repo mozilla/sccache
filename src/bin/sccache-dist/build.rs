@@ -222,6 +222,16 @@ impl OverlayBuilder {
                 };
 
                 toolchain_dir_map.insert(tc.clone(), entry.clone());
+
+                // Drop entries with nonexistent or empty (these somehow happen) extraction dirs
+                // before deleting anything that might still be usable
+                if toolchain_dir_map.len() > tccache.len() {
+                    toolchain_dir_map.retain(|tc, _| {
+                        let toolchain_dir = self.dir.join("toolchains").join(&tc.archive_id);
+                        toolchain_dir.exists() && !fs::remove_dir(&toolchain_dir).is_ok()
+                    });
+                }
+
                 if toolchain_dir_map.len() > tccache.len() {
                     let dir_map = toolchain_dir_map.clone();
                     let mut entries: Vec<_> = dir_map.iter().collect();
@@ -231,11 +241,16 @@ impl OverlayBuilder {
                     // toolchains to prevent repeated sort/delete cycles.
                     entries.sort_by(|a, b| (a.1).ctime.cmp(&(b.1).ctime));
                     entries.truncate(entries.len() / 2);
-                    for (tc, _) in entries {
-                        warn!("Removing old un-compressed toolchain: {:?}", tc);
-                        assert!(toolchain_dir_map.remove(tc).is_some());
-                        fs::remove_dir_all(self.dir.join("toolchains").join(&tc.archive_id))
+                    for (del_tc, _) in entries {
+                        // In any case, don't delete the current toolchain
+                        if del_tc.archive_id != tc.archive_id {
+                            warn!("Removing old un-compressed toolchain: {:?}", del_tc);
+                            assert!(toolchain_dir_map.remove(tc).is_some());
+                            fs::remove_dir_all(
+                                self.dir.join("toolchains").join(&del_tc.archive_id),
+                            )
                             .context("Failed to remove old toolchain directory")?;
+                        }
                     }
                 }
                 entry
@@ -424,14 +439,10 @@ impl OverlayBuilder {
     fn finish_overlay(&self, _tc: &Toolchain, overlay: OverlaySpec) {
         // TODO: collect toolchain directories
 
-        let OverlaySpec {
-            build_dir,
-            toolchain_dir: _,
-        } = overlay;
-        if let Err(e) = fs::remove_dir_all(&build_dir) {
+        if let Err(e) = fs::remove_dir_all(&overlay.build_dir) {
             error!(
                 "Failed to remove build directory {}: {}",
-                build_dir.display(),
+                overlay.build_dir.display(),
                 e
             );
         }
