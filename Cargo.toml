@@ -83,6 +83,7 @@ object = "0.37"
 opendal = { version = "0.58.1", optional = true, default-features = false }
 opendal-http-transport-reqwest = { version = "0.58.1", optional = true }
 opendal-layer-logging = { version = "0.58.1", optional = true }
+opendal-layer-retry = { version = "0.58.1", optional = true }
 openssl = { version = "0.10.75", optional = true }
 rand = "0.8.4"
 regex = "1.10.3"
@@ -206,6 +207,7 @@ gcs = [
 gha = [
   "opendal/services-ghac",
   "opendal-layer-logging",
+  "opendal-layer-retry",
   "opendal-http-transport-reqwest",
   "reqwest",
 ]
