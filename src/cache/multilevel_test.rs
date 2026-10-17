@@ -1675,6 +1675,19 @@ fn test_multilevel_get_raw_finds_first_hit() {
             "get_raw bytes should be a valid zip archive"
         );
 
+        // Client-side mode reads through get_raw over IPC. A lower-level hit
+        // must therefore trigger the same L0 backfill as the parsed get path.
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if l0.get_raw("key").await.unwrap().is_some() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("L1 hit should backfill L0");
+
         // A key that exists in neither level should return None.
         assert!(storage.get_raw("missing").await.unwrap().is_none());
     });
