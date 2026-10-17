@@ -485,6 +485,49 @@ fn test_gcc_mp_werror(compiler: Compiler, tempdir: &Path) {
         );
 }
 
+fn test_compile_locale_env_differs(compiler: Compiler, tempdir: &Path) {
+    let Compiler {
+        name,
+        exe,
+        env_vars,
+    } = compiler;
+    println!("test_compile_locale_env_differs: {}", name);
+    zero_stats();
+    const SRC: &str = "locale_env.c";
+    write_source(tempdir, SRC, "int f(void){ int x; return 1; }\n");
+
+    let cmdline = compile_cmdline(name, exe, SRC, OUTPUT, Vec::new());
+    trace!("compile");
+    sccache_command()
+        .args(&cmdline)
+        .current_dir(tempdir)
+        .envs(env_vars.clone())
+        .assert()
+        .success();
+    assert!(
+        fs::metadata(tempdir.join(OUTPUT))
+            .map(|m| m.len() > 0)
+            .unwrap()
+    );
+    fs::remove_file(tempdir.join(OUTPUT)).unwrap();
+    trace!("compile with a different locale");
+    sccache_command()
+        .args(&cmdline)
+        .current_dir(tempdir)
+        .envs(env_vars)
+        .env("LC_ALL", "C.UTF-8")
+        .assert()
+        .success();
+    trace!("request stats");
+    get_stats(|info| {
+        assert_eq!(2, info.stats.compile_requests);
+        assert_eq!(2, info.stats.requests_executed);
+        assert_eq!(0, info.stats.cache_hits.all());
+        assert_eq!(2, info.stats.cache_misses.all());
+        assert_eq!(&2, info.stats.cache_misses.get("C/C++").unwrap());
+    });
+}
+
 fn test_gcc_fprofile_generate_source_changes(compiler: Compiler, tempdir: &Path) {
     let Compiler {
         name,
@@ -753,6 +796,7 @@ fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path, preprocessor_ca
     }
     if compiler.name == "clang" || compiler.name == "gcc" {
         test_gcc_clang_no_warnings_from_macro_expansion(compiler.clone(), tempdir);
+        test_compile_locale_env_differs(compiler.clone(), tempdir);
         test_split_dwarf_object_generate_output_dir_changes(compiler.clone(), tempdir);
         test_gcc_clang_depfile(compiler.clone(), tempdir);
     }

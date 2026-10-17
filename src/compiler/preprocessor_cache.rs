@@ -42,7 +42,7 @@ use super::c::hash_arguments;
 
 /// The current format is 1 header byte for the version + bincode encoding
 /// of the [`PreprocessorCacheEntry`] struct.
-const FORMAT_VERSION: u8 = 1;
+const FORMAT_VERSION: u8 = 2;
 const MAX_PREPROCESSOR_CACHE_ENTRIES: usize = 100;
 const MAX_PREPROCESSOR_CACHE_FILE_INFO_ENTRIES: usize = 10000;
 
@@ -369,6 +369,14 @@ static CACHED_ENV_VARS: LazyLock<HashSet<&'static OsStr>> = LazyLock::new(|| {
         "CPLUS_INCLUDE_PATH",
         "OBJC_INCLUDE_PATH",
         "OBJCPLUS_INCLUDE_PATH",
+        // Cached diagnostics are replayed verbatim on a hit, so the settings
+        // that select the diagnostic language have to be part of the key.
+        "LANG",
+        "LANGUAGE",
+        "LC_ALL",
+        "LC_CTYPE",
+        "LC_MESSAGES",
+        "VSLANG",
     ]
     .iter()
     .map(OsStr::new)
@@ -847,6 +855,63 @@ mod test {
             hash1_no_basedirs, hash2_no_basedirs,
             "Hashes should be different without basedirs for files in different directories"
         );
+    }
+
+    #[test]
+    fn test_preprocessor_cache_entry_hash_key_locale_env_differs() {
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("test.c");
+        std::fs::write(&file_path, b"int main() { return 0; }").unwrap();
+
+        let config = PreprocessorCacheModeConfig::activated();
+
+        let hash_without_locale = preprocessor_cache_entry_hash_key(
+            "test_digest",
+            Language::C,
+            &[],
+            &[],
+            None,
+            &[],
+            &file_path,
+            false,
+            false,
+            config,
+            &[],
+        )
+        .unwrap()
+        .unwrap();
+
+        for var in [
+            "LANG",
+            "LANGUAGE",
+            "LC_ALL",
+            "LC_CTYPE",
+            "LC_MESSAGES",
+            "VSLANG",
+        ] {
+            assert!(CACHED_ENV_VARS.contains(OsStr::new(var)));
+            let hash_with_locale = preprocessor_cache_entry_hash_key(
+                "test_digest",
+                Language::C,
+                &[],
+                &[],
+                None,
+                &[(OsString::from(var), OsString::from("de_DE.UTF-8"))],
+                &file_path,
+                false,
+                false,
+                config,
+                &[],
+            )
+            .unwrap()
+            .unwrap();
+            assert_ne!(
+                hash_without_locale, hash_with_locale,
+                "hash key must differ when {var} differs"
+            );
+        }
     }
 
     #[test]
