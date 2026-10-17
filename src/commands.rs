@@ -627,6 +627,10 @@ where
 
     let mut cmd = creator.new_command_sync(exe);
     cmd.args(&cmdline).current_dir(cwd);
+    // Keep the invoking build system's jobserver contract intact for local
+    // fallbacks. Whether the compiler uses it can depend on opaque response
+    // files or object metadata, so the client must not try to infer that here.
+    cmd.preserve_make_jobserver();
     if log_enabled!(Trace) {
         trace!("running command: {:?}", cmd);
     }
@@ -1050,6 +1054,149 @@ mod test {
         fn try_clone(&self) -> io::Result<Box<dyn Connection>> {
             Ok(Box::new(DisconnectedConnection))
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn real_gcc_lto_fallback_receives_parent_make_jobserver() {
+        if std::env::var_os("SCCACHE_GCC_JOBSERVER_CHILD").is_some() {
+            real_gcc_lto_fallback_child();
+            return;
+        }
+
+        let Ok(make) = which::which("make") else {
+            return;
+        };
+        let Ok(_gcc) = which::which("gcc") else {
+            return;
+        };
+        let current_exe = std::env::current_exe().unwrap();
+        let tempdir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tempdir.path().join("a.c"),
+            "volatile int sink; __attribute__((noinline,used)) int f(int x) { for (int i=0;i<10000;i++) x=x*33+i; sink=x; return x; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tempdir.path().join("b.c"),
+            "int f(int); int main(void) { return f(1); }\n",
+        )
+        .unwrap();
+        assert!(
+            std::process::Command::new("gcc")
+                .current_dir(tempdir.path())
+                .args(["-O2", "-flto", "-c", "a.c", "b.c"])
+                .status()
+                .unwrap()
+                .success()
+        );
+        std::fs::write(
+            tempdir.path().join("Makefile"),
+            format!(
+                "all:\n\t+gcc -O2 -flto=jobserver a.o b.o -o baseline -v 2>baseline.err\n\t+SCCACHE_GCC_JOBSERVER_CHILD=1 SCCACHE_GCC_JOBSERVER_BASELINE=$(CURDIR)/baseline.err {:?} --exact commands::test::real_gcc_lto_fallback_receives_parent_make_jobserver --nocapture\n",
+                current_exe.to_string_lossy(),
+            ),
+        )
+        .unwrap();
+        let supports_jobserver_style = std::process::Command::new(&make)
+            .arg("--help")
+            .output()
+            .map(|output| String::from_utf8_lossy(&output.stdout).contains("--jobserver-style"))
+            .unwrap_or(false);
+        let mut make_command = std::process::Command::new(make);
+        make_command.current_dir(tempdir.path());
+        if supports_jobserver_style {
+            make_command.arg("--jobserver-style=pipe");
+        }
+        let status = make_command
+            .args(["-j2", "--no-print-directory"])
+            .status()
+            .unwrap();
+        assert!(
+            status.success(),
+            "real GNU make/GCC jobserver regression failed"
+        );
+    }
+
+    #[cfg(unix)]
+    fn real_gcc_lto_fallback_child() {
+        let baseline =
+            std::fs::read_to_string(std::env::var_os("SCCACHE_GCC_JOBSERVER_BASELINE").unwrap())
+                .unwrap();
+        if !baseline.contains("Using make jobserver") && !baseline.contains("-fwpa=jobserver") {
+            eprintln!(
+                "skipping: this GCC does not use the GNU make jobserver in the direct baseline"
+            );
+            return;
+        }
+
+        let gcc = which::which("gcc").unwrap();
+        let tempdir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tempdir.path().join("a.c"),
+            "volatile int sink; __attribute__((noinline,used)) int f(int x) { for (int i=0;i<10000;i++) x=x*33+i; sink=x; return x; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tempdir.path().join("b.c"),
+            "int f(int); int main(void) { return f(1); }\n",
+        )
+        .unwrap();
+        assert!(
+            std::process::Command::new(&gcc)
+                .current_dir(tempdir.path())
+                .args(["-O2", "-flto", "-c", "a.c", "b.c"])
+                .status()
+                .unwrap()
+                .success()
+        );
+
+        use std::os::unix::fs::PermissionsExt;
+
+        // The normal unhandled fallback inherits stderr instead of buffering it
+        // into handle_compile_result's diagnostic writer. Keep that production
+        // path and capture GCC's own verbose output with a tiny exec wrapper.
+        let trace = tempdir.path().join("fallback-gcc.err");
+        let wrapper = tempdir.path().join("gcc-wrapper");
+        std::fs::write(
+            &wrapper,
+            format!("#!/bin/sh\nexec {:?} \"$@\" 2>{:?}\n", gcc, trace),
+        )
+        .unwrap();
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let client = Client::new_num(2);
+        let creator = <ProcessCommandCreator as CommandCreatorSync>::new(&client);
+        let mut runtime = make_runtime();
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let exit = handle_compile_result(
+            creator,
+            &mut runtime,
+            CompileResponse::UnhandledCompile,
+            None,
+            false,
+            &wrapper,
+            vec![
+                OsString::from("-O2"),
+                OsString::from("-flto=jobserver"),
+                OsString::from("a.o"),
+                OsString::from("b.o"),
+                OsString::from("-o"),
+                OsString::from("linked"),
+                OsString::from("-v"),
+            ],
+            tempdir.path(),
+            &mut stdout,
+            &mut stderr,
+        )
+        .unwrap();
+        assert_eq!(exit, 0);
+        let trace = std::fs::read_to_string(trace).unwrap();
+        assert!(
+            trace.contains("Using make jobserver") || trace.contains("-fwpa=jobserver"),
+            "GCC LTO did not recognize the parent make jobserver:\n{trace}"
+        );
     }
 
     /// A mid-compile server disconnect: the server sends CompileStarted then drops the
