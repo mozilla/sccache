@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cache::{IpcStorage, storage_from_config};
+use crate::cache::{CacheMode, IpcStorage, Storage, storage_from_config};
 use crate::client::{ServerConnection, connect_to_server, connect_with_retry};
 use crate::cmdline::{Command, StatsFormat};
 use crate::compiler::{ColorMode, is_rmeta_artifact_notification};
@@ -364,8 +364,7 @@ pub fn request_zero_stats(mut conn: ServerConnection) -> Result<()> {
     }
 }
 
-/// Send a `GetStats` request to the server, and return the `ServerInfo` request if successful.
-pub fn request_stats(mut conn: ServerConnection) -> Result<ServerInfo> {
+fn request_stats_on(conn: &mut ServerConnection) -> Result<ServerInfo> {
     debug!("request_stats");
     let response = conn.request(Request::GetStats).context(
         "Failed to send data to or receive data from server. Mismatch of client/server versions?",
@@ -375,6 +374,20 @@ pub fn request_stats(mut conn: ServerConnection) -> Result<ServerInfo> {
     } else {
         bail!("Unexpected server response!")
     }
+}
+
+pub(crate) fn request_stats_with_cache_mode(
+    mut conn: ServerConnection,
+) -> Result<(ServerInfo, CacheMode)> {
+    let stats = request_stats_on(&mut conn)?;
+    let response = conn
+        .request(Request::StorageHandshake)
+        .context("failed to get effective cache mode from server")?;
+    let cache_mode = match response {
+        Response::StorageHandshake(info) => info.cache_mode,
+        _ => bail!("Unexpected server response!"),
+    };
+    Ok((stats, cache_mode))
 }
 
 /// Send a `DistStatus` request to the server, and return `DistStatus` if successful.
@@ -728,12 +741,14 @@ where
     trace!("do_compile_client_side");
     let exe_path = which_in(exe, path, cwd)?;
     let storage = IpcStorage::connect(conn)?;
+    let cache_mode = runtime.block_on(storage.check())?;
     let conn_arc = storage.conn();
     let (tx, _rx) = futures::channel::mpsc::channel(1);
     let (_, info) = server::WaitUntilZero::new();
     let service = server::SccacheService::<C>::new(
         server::DistClientContainer::new_disabled(),
         Arc::new(storage),
+        cache_mode,
         jobserver,
         runtime.handle().clone(),
         tx,
@@ -768,6 +783,19 @@ where
     Ok(exit_code)
 }
 
+#[derive(serde::Serialize)]
+struct StatsOutput<'a> {
+    #[serde(flatten)]
+    info: &'a ServerInfo,
+    effective_cache_mode: Option<CacheMode>,
+}
+
+fn empty_server_info(config: &Config) -> Result<ServerInfo> {
+    let runtime = new_client_runtime()?;
+    let storage = storage_from_config(config, runtime.handle()).ok();
+    runtime.block_on(ServerInfo::new(ServerStats::default(), storage.as_deref()))
+}
+
 /// Run `cmd` and return the process exit status.
 pub fn run_command(cmd: Command) -> Result<i32> {
     // Config isn't required for all commands, but if it's broken then we should flag
@@ -778,19 +806,25 @@ pub fn run_command(cmd: Command) -> Result<i32> {
     match cmd {
         Command::ShowStats(fmt, advanced) => {
             trace!("Command::ShowStats({:?})", fmt);
-            let stats = match connect_to_server(&get_addr()) {
-                Ok(srv) => request_stats(srv).context("failed to get stats from server")?,
+            let (stats, effective_cache_mode) = match connect_to_server(&get_addr()) {
+                Ok(srv) => {
+                    let (info, cache_mode) = request_stats_with_cache_mode(srv)
+                        .context("failed to get stats from server")?;
+                    (info, Some(cache_mode))
+                }
                 // If there is no server, spawning a new server would start with zero stats
                 // anyways, so we can just return (mostly) empty stats directly.
-                Err(_) => {
-                    let runtime = new_client_runtime()?;
-                    let storage = storage_from_config(config, runtime.handle()).ok();
-                    runtime.block_on(ServerInfo::new(ServerStats::default(), storage.as_deref()))?
-                }
+                Err(_) => (empty_server_info(config)?, None),
             };
             match fmt {
-                StatsFormat::Text => stats.print(advanced),
-                StatsFormat::Json => serde_json::to_writer(&mut io::stdout(), &stats)?,
+                StatsFormat::Text => stats.print(advanced, effective_cache_mode),
+                StatsFormat::Json => serde_json::to_writer(
+                    &mut io::stdout(),
+                    &StatsOutput {
+                        info: &stats,
+                        effective_cache_mode,
+                    },
+                )?,
             }
         }
         Command::DebugPreprocessorCacheEntries => {
@@ -847,7 +881,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
             println!("Stopping sccache server...");
             let server = connect_to_server(&get_addr()).context("couldn't connect to server")?;
             let stats = request_shutdown(server)?;
-            stats.print(false);
+            stats.print(false, None);
         }
         Command::ZeroStats => {
             trace!("Command::ZeroStats");
@@ -1025,6 +1059,24 @@ mod test {
             .enable_all()
             .build()
             .unwrap()
+    }
+
+    #[test]
+    fn stats_output_serializes_effective_cache_mode() {
+        let runtime = make_runtime();
+        let info = runtime
+            .block_on(ServerInfo::new(ServerStats::default(), None))
+            .unwrap();
+        let output = serde_json::to_value(StatsOutput {
+            info: &info,
+            effective_cache_mode: Some(CacheMode::ReadOnly),
+        })
+        .unwrap();
+
+        assert_eq!(
+            output.get("effective_cache_mode"),
+            Some(&serde_json::Value::String("ReadOnly".to_owned()))
+        );
     }
 
     /// A `Connection` that immediately returns EOF on reads and discards writes.

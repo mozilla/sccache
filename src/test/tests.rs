@@ -15,7 +15,7 @@
 use crate::cache::CacheMode;
 use crate::cache::disk::DiskCache;
 use crate::client::connect_to_server;
-use crate::commands::{do_compile, request_shutdown, request_stats};
+use crate::commands::{do_compile, request_shutdown, request_stats_with_cache_mode};
 use crate::config::PreprocessorCacheModeConfig;
 use crate::jobserver::Client;
 use crate::mock_command::*;
@@ -84,7 +84,15 @@ where
         ));
 
         let client = Client::new();
-        let srv = SccacheServer::new(0, runtime, client, dist_client, storage).unwrap();
+        let srv = SccacheServer::new(
+            0,
+            runtime,
+            client,
+            dist_client,
+            storage,
+            CacheMode::ReadWrite,
+        )
+        .unwrap();
         let mut srv: SccacheServer<_, Arc<Mutex<MockCommandCreator>>> = srv;
         let addr = srv.local_addr().unwrap();
         assert!(matches!(addr, crate::net::SocketAddr::Net(a) if a.port() > 0));
@@ -156,7 +164,7 @@ fn test_server_stats() {
     // Connect to the server.
     let conn = connect_to_server(&addr).unwrap();
     // Ask it for stats.
-    let info = request_stats(conn).unwrap();
+    let (info, _cache_mode) = request_stats_with_cache_mode(conn).unwrap();
     assert_eq!(0, info.stats.compile_requests);
     // Include sccache ver (cli) to validate.
     assert_eq!(env!("CARGO_PKG_VERSION"), info.version);
