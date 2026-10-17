@@ -649,6 +649,142 @@ mod server {
         assert!(ja2.verify_token(job_id2, &token2).is_err());
     }
 
+    fn maybe_update_certs(
+        client: &mut reqwest::blocking::Client,
+        certs: &mut HashMap<ServerId, (Vec<u8>, Vec<u8>)>,
+        server_id: ServerId,
+        cert_digest: Vec<u8>,
+        cert_pem: Vec<u8>,
+    ) -> Result<()> {
+        if let Some((saved_cert_digest, _)) = certs.get(&server_id) {
+            if saved_cert_digest == &cert_digest {
+                return Ok(());
+            }
+        }
+        info!(
+            "Adding new certificate for {} to scheduler",
+            server_id.addr()
+        );
+        let previous = certs.insert(server_id, (cert_digest, cert_pem));
+        let build_client = |certs: &HashMap<ServerId, (Vec<u8>, Vec<u8>)>| {
+            let mut client_builder = reqwest::blocking::ClientBuilder::new();
+            for (_, cert_pem) in certs.values() {
+                client_builder = client_builder.add_root_certificate(
+                    reqwest::Certificate::from_pem(cert_pem)
+                        .context("failed to interpret pem as certificate")?,
+                );
+            }
+            client_builder
+                // Disable connection pool to avoid broken connection
+                // between runtime
+                .pool_max_idle_per_host(0)
+                .build()
+                .context("failed to create a HTTP client")
+        };
+        match build_client(certs) {
+            Ok(new_client) => *client = new_client,
+            Err(e) => {
+                // Restore the map to match the client, otherwise the digest
+                // check above would skip the rebuild on the next heartbeat.
+                match previous {
+                    Some(previous) => certs.insert(server_id, previous),
+                    None => certs.remove(&server_id),
+                };
+                return Err(e);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_scheduler_cert_rotation() {
+        let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let server_id = ServerId::new(addr);
+        let (digest_a, pem_a, privkey_a) = create_https_cert_and_privkey(addr).unwrap();
+        let (digest_b, pem_b, privkey_b) = create_https_cert_and_privkey(addr).unwrap();
+
+        // The certs only carry an IP SAN, so each is valid for any port on
+        // 127.0.0.1. Serve each from its own TLS server to check which one a
+        // client trusts.
+        let serve = |cert_pem: &[u8], privkey_pem: Vec<u8>| {
+            let server = rouille::Server::new_ssl(
+                addr,
+                |_| rouille::Response::text("ok"),
+                cert_pem.to_vec(),
+                privkey_pem,
+            )
+            .unwrap();
+            let url = format!("https://{}/", server.server_addr());
+            let (handle, stop) = server.stoppable();
+            (url, handle, stop)
+        };
+        let (url_a, handle_a, stop_a) = serve(&pem_a, privkey_a);
+        let (url_b, handle_b, stop_b) = serve(&pem_b, privkey_b);
+        let trusts = |client: &reqwest::blocking::Client, url: &str| client.get(url).send().is_ok();
+
+        let mut client = new_reqwest_blocking_client();
+        let mut certs = HashMap::new();
+
+        maybe_update_certs(
+            &mut client,
+            &mut certs,
+            server_id,
+            digest_a.clone(),
+            pem_a.clone(),
+        )
+        .unwrap();
+        assert!(trusts(&client, &url_a));
+        assert!(!trusts(&client, &url_b));
+
+        // Rotating replaces the old cert in both the map and the client.
+        maybe_update_certs(
+            &mut client,
+            &mut certs,
+            server_id,
+            digest_b.clone(),
+            pem_b.clone(),
+        )
+        .unwrap();
+        assert_eq!(certs.len(), 1);
+        assert_eq!(certs[&server_id], (digest_b.clone(), pem_b.clone()));
+        assert!(trusts(&client, &url_b));
+        assert!(!trusts(&client, &url_a));
+
+        // An unchanged digest skips the rebuild, so the PEM isn't parsed.
+        maybe_update_certs(
+            &mut client,
+            &mut certs,
+            server_id,
+            digest_b.clone(),
+            b"not a pem".to_vec(),
+        )
+        .unwrap();
+        assert_eq!(certs[&server_id], (digest_b.clone(), pem_b.clone()));
+
+        // A bad PEM leaves the map and client unchanged, for known and new
+        // servers alike.
+        let other_id = ServerId::new("127.0.0.2:0".parse().unwrap());
+        for id in [server_id, other_id] {
+            maybe_update_certs(
+                &mut client,
+                &mut certs,
+                id,
+                digest_a.clone(),
+                b"not a pem".to_vec(),
+            )
+            .unwrap_err();
+        }
+        assert_eq!(certs.len(), 1);
+        assert_eq!(certs[&server_id], (digest_b, pem_b));
+        assert!(trusts(&client, &url_b));
+        assert!(!trusts(&client, &url_a));
+
+        stop_a.send(()).unwrap();
+        stop_b.send(()).unwrap();
+        handle_a.join().unwrap();
+        handle_b.join().unwrap();
+    }
+
     pub struct Scheduler<S> {
         public_addr: SocketAddr,
         handler: S,
@@ -714,46 +850,6 @@ mod server {
                         None => return make_401("invalid_bearer_token"),
                     }
                 }};
-            }
-
-            fn maybe_update_certs(
-                client: &mut reqwest::blocking::Client,
-                certs: &mut HashMap<ServerId, (Vec<u8>, Vec<u8>)>,
-                server_id: ServerId,
-                cert_digest: Vec<u8>,
-                cert_pem: Vec<u8>,
-            ) -> Result<()> {
-                if let Some((saved_cert_digest, _)) = certs.get(&server_id) {
-                    if saved_cert_digest == &cert_digest {
-                        return Ok(());
-                    }
-                }
-                info!(
-                    "Adding new certificate for {} to scheduler",
-                    server_id.addr()
-                );
-                let mut client_builder = reqwest::blocking::ClientBuilder::new();
-                // Add all the certificates we know about
-                client_builder = client_builder.add_root_certificate(
-                    reqwest::Certificate::from_pem(&cert_pem)
-                        .context("failed to interpret pem as certificate")?,
-                );
-                for (_, cert_pem) in certs.values() {
-                    client_builder = client_builder.add_root_certificate(
-                        reqwest::Certificate::from_pem(cert_pem).expect("previously valid cert"),
-                    );
-                }
-                // Finish the client
-                let new_client = client_builder
-                    // Disable connection pool to avoid broken connection
-                    // between runtime
-                    .pool_max_idle_per_host(0)
-                    .build()
-                    .context("failed to create a HTTP client")?;
-                // Use the updated certificates
-                *client = new_client;
-                certs.insert(server_id, (cert_digest, cert_pem));
-                Ok(())
             }
 
             info!("Scheduler listening for clients on {}", public_addr);
