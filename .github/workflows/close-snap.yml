@@ -4,6 +4,9 @@ on:
   pull_request:
     types: [closed]
 
+permissions:
+  contents: read
+
 jobs:
   close:
     runs-on: ubuntu-latest
@@ -12,7 +15,7 @@ jobs:
 
     steps:
     - name: Close obsolete channels
-      uses: canonical/actions/close-snap@release
+      uses: canonical/actions/close-snap@release # zizmor: ignore[unpinned-uses]
       continue-on-error: true
       with:
         channel: edge/pr${{ github.event.number }}
