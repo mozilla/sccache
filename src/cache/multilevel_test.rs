@@ -24,6 +24,7 @@ use std::env;
 use std::fs;
 use std::io::Cursor;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tempfile::Builder as TempBuilder;
 use tokio::runtime::Builder as RuntimeBuilder;
@@ -198,6 +199,8 @@ struct InMemoryStorage {
     data: Arc<Mutex<HashMap<String, Vec<u8>>>>,
     access_log: Arc<Mutex<Vec<String>>>,
     raw_access_log: Arc<Mutex<Vec<String>>>,
+    checks: AtomicU64,
+    check_result: std::result::Result<CacheMode, &'static str>,
 }
 
 impl InMemoryStorage {
@@ -206,7 +209,20 @@ impl InMemoryStorage {
             data: Arc::new(Mutex::new(HashMap::new())),
             access_log: Arc::new(Mutex::new(Vec::new())),
             raw_access_log: Arc::new(Mutex::new(Vec::new())),
+            checks: AtomicU64::new(0),
+            check_result: Ok(CacheMode::ReadWrite),
         }
+    }
+
+    fn with_failing_check() -> Self {
+        Self {
+            check_result: Err("intentional check failure"),
+            ..Self::new()
+        }
+    }
+
+    fn check_count(&self) -> u64 {
+        self.checks.load(Ordering::Relaxed)
     }
 
     fn get_access_log(&self) -> Arc<Mutex<Vec<String>>> {
@@ -256,7 +272,8 @@ impl Storage for InMemoryStorage {
     }
 
     async fn check(&self) -> Result<CacheMode> {
-        Ok(CacheMode::ReadWrite)
+        self.checks.fetch_add(1, Ordering::Relaxed);
+        self.check_result.map_err(|message| anyhow!(message))
     }
 
     fn location(&self) -> String {
@@ -1064,6 +1081,52 @@ fn test_mixed_readonly_chain_is_readwrite_in_check() {
     });
 }
 
+async fn exercise_cached_mode_with_two_writes(storage: &MultiLevelStorage) {
+    assert_eq!(storage.check().await.unwrap(), CacheMode::ReadWrite);
+    storage
+        .put_raw("first", Bytes::from_static(b"first"))
+        .await
+        .unwrap();
+    storage
+        .put_raw("second", Bytes::from_static(b"second"))
+        .await
+        .unwrap();
+}
+
+#[test]
+fn test_level_mode_is_checked_once_across_writes() {
+    let runtime = RuntimeBuilder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let level = Arc::new(InMemoryStorage::new());
+    let storage = MultiLevelStorage::new(vec![level.clone() as Arc<dyn Storage>]);
+
+    runtime.block_on(exercise_cached_mode_with_two_writes(&storage));
+
+    assert_eq!(level.check_count(), 1);
+}
+
+#[test]
+fn test_tolerated_check_failure_is_not_retried_per_write() {
+    let runtime = RuntimeBuilder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let level = Arc::new(InMemoryStorage::with_failing_check());
+    let storage = MultiLevelStorage::with_write_error_policy(
+        vec![level.clone() as Arc<dyn Storage>],
+        WriteErrorPolicy::Ignore,
+    );
+
+    runtime.block_on(async {
+        exercise_cached_mode_with_two_writes(&storage).await;
+        tokio::task::yield_now().await;
+    });
+
+    assert_eq!(level.check_count(), 1);
+}
+
 struct CheckFailingStorage;
 
 #[async_trait]
@@ -1173,6 +1236,30 @@ fn test_unavailable_l0_is_tolerated_with_ignore_write_policy() {
             CacheMode::ReadWrite
         ));
     });
+}
+
+#[test]
+fn test_l0_write_still_runs_after_failed_capability_check() {
+    let runtime = RuntimeBuilder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let l0 = Arc::new(InMemoryStorage::with_failing_check());
+    let storage = MultiLevelStorage::new(vec![Arc::clone(&l0) as Arc<dyn Storage>]);
+
+    runtime.block_on(async {
+        storage
+            .put_raw("probe-failure", Bytes::from_static(b"payload"))
+            .await
+            .unwrap();
+        storage
+            .put_raw("probe-failure-2", Bytes::from_static(b"payload"))
+            .await
+            .unwrap();
+    });
+
+    assert_eq!(l0.check_count(), 1);
 }
 
 #[test]
