@@ -567,6 +567,282 @@ int main(int argc, char** argv) {
     });
 }
 
+/// The assembler reads the file named by `.incbin` directly, so its contents never
+/// appear in preprocessor output and hashing that output alone does not see them.
+/// Changing the embedded file has to change the cache key, or a stale object gets
+/// served for the new contents.
+fn test_incbin_embedded_file_changes(compiler: Compiler, tempdir: &Path) {
+    let Compiler {
+        name,
+        exe,
+        env_vars,
+    } = compiler;
+    println!("test_incbin_embedded_file_changes: {}", name);
+    zero_stats();
+
+    const SRC: &str = "incbin.c";
+    const BLOB: &str = "blob.bin";
+    write_source(
+        tempdir,
+        SRC,
+        "__asm__(\".incbin \\\"blob.bin\\\"\\n\");
+int main(int argc, char** argv) {
+  return 0;
+}
+",
+    );
+    write_source(tempdir, BLOB, "embedded contents, take one");
+
+    let args = compile_cmdline(name, exe, SRC, OUTPUT, Vec::new());
+    let compile = |env_vars: Vec<(OsString, OsString)>| {
+        sccache_command()
+            .args(&args)
+            .current_dir(tempdir)
+            .envs(env_vars)
+            .assert()
+            .success();
+    };
+
+    trace!("compile with the original blob");
+    compile(env_vars.clone());
+    get_stats(|info| {
+        assert_eq!(0, info.stats.cache_hits.all());
+        assert_eq!(1, info.stats.cache_misses.all());
+    });
+
+    // Nothing changed, so an embedded file must not cost us the cache entirely.
+    trace!("compile again unchanged");
+    compile(env_vars.clone());
+    get_stats(|info| {
+        assert_eq!(1, info.stats.cache_hits.all());
+        assert_eq!(1, info.stats.cache_misses.all());
+    });
+
+    // The source preprocesses identically, so only the blob's contents distinguish
+    // this compilation from the previous one.
+    trace!("compile with a changed blob");
+    write_source(tempdir, BLOB, "embedded contents, take two");
+    compile(env_vars.clone());
+    get_stats(|info| {
+        assert_eq!(1, info.stats.cache_hits.all());
+        assert_eq!(2, info.stats.cache_misses.all());
+    });
+
+    // Keyed on the blob's contents rather than merely noticing that it changed.
+    trace!("compile with the original blob restored");
+    write_source(tempdir, BLOB, "embedded contents, take one");
+    compile(env_vars);
+    get_stats(|info| {
+        assert_eq!(2, info.stats.cache_hits.all());
+        assert_eq!(2, info.stats.cache_misses.all());
+    });
+}
+
+/// The randstruct seed file decides struct field ordering. Nothing about it reaches
+/// the preprocessor, so two builds differing only in the seed preprocess to the same
+/// bytes, and so without hashing its contents they share an object and one of them gets a
+/// struct layout the compiler never chose for it, which Is Bad.
+fn test_randomize_layout_seed_file_changes(compiler: Compiler, tempdir: &Path) {
+    let Compiler {
+        name,
+        exe,
+        env_vars,
+    } = compiler;
+    println!("test_randomize_layout_seed_file_changes: {}", name);
+
+    const SRC: &str = "randlayout.c";
+    const SEED: &str = "randstruct.seed";
+    write_source(
+        tempdir,
+        SRC,
+        "struct __attribute__((randomize_layout)) S { int a; long b; char c; void *d; };
+int off(void) { return __builtin_offsetof(struct S, d); }
+int main(int argc, char** argv) {
+  return 0;
+}
+",
+    );
+    write_source(tempdir, SEED, "seed one aaaaaaaaaaaaaaaaaaaaaaaaaaaa\n");
+
+    // Older compilers do not support randstruct at all. Probe the compiler
+    // directly, so the probe does not populate the cache we are about to measure.
+    let probe = Command::new(&exe)
+        .args(["-fsyntax-only", SRC])
+        .arg(format!("-frandomize-layout-seed-file={}", SEED))
+        .current_dir(tempdir)
+        .envs(env_vars.clone())
+        .output()
+        .expect("Failed to probe for randstruct support");
+    if !probe.status.success() {
+        println!("  compiler does not support randstruct, skipping");
+        return;
+    }
+    zero_stats();
+
+    let mut args = compile_cmdline(name, exe, SRC, OUTPUT, Vec::new());
+    args.push(format!("-frandomize-layout-seed-file={}", SEED).into());
+
+    let compile = |env_vars: Vec<(OsString, OsString)>| {
+        sccache_command()
+            .args(&args)
+            .current_dir(tempdir)
+            .envs(env_vars)
+            .assert()
+            .success();
+    };
+
+    trace!("compile with the first seed");
+    compile(env_vars.clone());
+    get_stats(|info| {
+        assert_eq!(0, info.stats.cache_hits.all());
+        assert_eq!(1, info.stats.cache_misses.all());
+    });
+
+    trace!("compile again unchanged");
+    compile(env_vars.clone());
+    get_stats(|info| {
+        assert_eq!(1, info.stats.cache_hits.all());
+        assert_eq!(1, info.stats.cache_misses.all());
+    });
+
+    // The source is untouched, so only the seed distinguishes this compilation.
+    trace!("compile with a changed seed");
+    write_source(tempdir, SEED, "seed two bbbbbbbbbbbbbbbbbbbbbbbbbbbb\n");
+    compile(env_vars);
+    get_stats(|info| {
+        assert_eq!(1, info.stats.cache_hits.all());
+        assert_eq!(2, info.stats.cache_misses.all());
+    });
+}
+
+/// `.include` pulls in assembly source, which is likewise absent from preprocessor
+/// output, and which can name further files of its own. Every file reachable that
+/// way has to reach the cache key, however deep.
+fn test_include_transitive_dependency_changes(compiler: Compiler, tempdir: &Path) {
+    let Compiler {
+        name,
+        exe,
+        env_vars,
+    } = compiler;
+    println!("test_include_transitive_dependency_changes: {}", name);
+    zero_stats();
+
+    const SRC: &str = "include.c";
+    const OUTER: &str = "outer.s";
+    const INNER: &str = "inner.s";
+    const BLOB: &str = "nested_blob.bin";
+    write_source(
+        tempdir,
+        SRC,
+        "__asm__(\".include \\\"outer.s\\\"\\n\");
+int main(int argc, char** argv) {
+  return 0;
+}
+",
+    );
+    // The source names outer.s, which names inner.s, which embeds the blob. None of
+    // the three appears anywhere in the preprocessed output.
+    write_source(tempdir, OUTER, "\t.include \"inner.s\"\n");
+    write_source(tempdir, INNER, "\t.incbin \"nested_blob.bin\"\n");
+    write_source(tempdir, BLOB, "nested contents, take one");
+
+    let args = compile_cmdline(name, exe, SRC, OUTPUT, Vec::new());
+    let compile = |env_vars: Vec<(OsString, OsString)>| {
+        sccache_command()
+            .args(&args)
+            .current_dir(tempdir)
+            .envs(env_vars)
+            .assert()
+            .success();
+    };
+
+    trace!("compile the include chain");
+    compile(env_vars.clone());
+    get_stats(|info| {
+        assert_eq!(0, info.stats.cache_hits.all());
+        assert_eq!(1, info.stats.cache_misses.all());
+    });
+
+    trace!("compile again unchanged");
+    compile(env_vars.clone());
+    get_stats(|info| {
+        assert_eq!(1, info.stats.cache_hits.all());
+        assert_eq!(1, info.stats.cache_misses.all());
+    });
+
+    // Two levels down from the translation unit, reachable only by following
+    // `.include` into `.incbin`.
+    trace!("compile with the transitively embedded blob changed");
+    write_source(tempdir, BLOB, "nested contents, take two");
+    compile(env_vars.clone());
+    get_stats(|info| {
+        assert_eq!(1, info.stats.cache_hits.all());
+        assert_eq!(2, info.stats.cache_misses.all());
+    });
+
+    // One level down: the included source itself, rather than what it embeds.
+    trace!("compile with the intermediate included source changed");
+    write_source(tempdir, INNER, "\t.incbin \"nested_blob.bin\"\n\tnop\n");
+    compile(env_vars.clone());
+    get_stats(|info| {
+        assert_eq!(1, info.stats.cache_hits.all());
+        assert_eq!(3, info.stats.cache_misses.all());
+    });
+
+    // Restoring the whole chain returns us to a key seen before.
+    trace!("compile with the chain restored");
+    write_source(tempdir, INNER, "\t.incbin \"nested_blob.bin\"\n");
+    write_source(tempdir, BLOB, "nested contents, take one");
+    compile(env_vars);
+    get_stats(|info| {
+        assert_eq!(2, info.stats.cache_hits.all());
+        assert_eq!(3, info.stats.cache_misses.all());
+    });
+}
+
+/// An `.incbin` operand we cannot resolve to a file leaves us unable to tell what
+/// the translation unit depends on, so it must not be cached at all. Caching it
+/// under a key that ignores the embedded file is what produces stale objects.
+fn test_incbin_unresolvable_operand_not_cacheable(compiler: Compiler, tempdir: &Path) {
+    let Compiler {
+        name,
+        exe,
+        env_vars,
+    } = compiler;
+    println!("test_incbin_unresolvable_operand_not_cacheable: {}", name);
+    zero_stats();
+
+    const SRC: &str = "incbin_split.c";
+    const BLOB: &str = "blob.bin";
+    // The compiler concatenates the adjacent string literals and assembles
+    // `.incbin "blob.bin"`; we only see an operand split across two literals.
+    write_source(
+        tempdir,
+        SRC,
+        "__asm__(\".incbin \\\"bl\" \"ob.bin\\\"\\n\");
+int main(int argc, char** argv) {
+  return 0;
+}
+",
+    );
+    write_source(tempdir, BLOB, "embedded contents");
+
+    let args = compile_cmdline(name, exe, SRC, OUTPUT, Vec::new());
+    for _ in 0..2 {
+        sccache_command()
+            .args(&args)
+            .current_dir(tempdir)
+            .envs(env_vars.clone())
+            .assert()
+            .success();
+    }
+    get_stats(|info| {
+        assert_eq!(0, info.stats.cache_hits.all());
+        assert_eq!(0, info.stats.cache_misses.all());
+        assert_eq!(2, info.stats.non_cacheable_compilations);
+    });
+}
+
 /* test case like this:
     echo "int test(){}" > test.cc
     mkdir o1 o2
@@ -755,6 +1031,12 @@ fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path, preprocessor_ca
         test_gcc_clang_no_warnings_from_macro_expansion(compiler.clone(), tempdir);
         test_split_dwarf_object_generate_output_dir_changes(compiler.clone(), tempdir);
         test_gcc_clang_depfile(compiler.clone(), tempdir);
+        test_incbin_embedded_file_changes(compiler.clone(), tempdir);
+        test_include_transitive_dependency_changes(compiler.clone(), tempdir);
+        test_incbin_unresolvable_operand_not_cacheable(compiler.clone(), tempdir);
+    }
+    if compiler.name == "clang" {
+        test_randomize_layout_seed_file_changes(compiler.clone(), tempdir);
     }
     if compiler.name == "clang++" {
         test_clang_multicall(compiler.clone(), tempdir);
