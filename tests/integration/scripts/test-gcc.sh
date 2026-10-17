@@ -65,3 +65,54 @@ echo "Test 6: Test preprocessed C++ file with dependency arguments (cache hit ex
 $CXX -c /sccache/tests/integration/test_preprocessed.ii -o /tmp/test.o -MD -MF $DEPFILE
 test -f /tmp/test.o || { echo "ERROR: No compiler output found"; exit 1; }
 test ! -f $DEPFILE || { echo "ERROR: Dependency file found"; exit 1; }
+
+echo "Test 7: Test ASM with coverage flags (no .gcno is emitted)"
+# Assembly accepts the coverage flags but never emits a .gcno note file, so
+# sccache has to treat that output as optional -- otherwise storing the result
+# fails with "failed to zip up compiler outputs" (see issue #2275).
+cache_hits() {
+    "$SCCACHE" --show-stats --stats-format=json | python3 -c "import sys, json; stats = json.load(sys.stdin).get('stats', {}); print(stats.get('cache_hits', {}).get('counts', {}).get('$1', 0))"
+}
+
+for SRC in test_intel_asm.s test_intel_asm_to_preproc.S; do
+    for COV in --coverage -ftest-coverage; do
+        echo "Compiling $SRC with $COV"
+        HITS_BEFORE=$(cache_hits Assembler)
+
+        rm -f /tmp/test_cov.o /tmp/test_cov.gcno
+        $ASM $COV -c "/sccache/tests/integration/$SRC" -o /tmp/test_cov.o
+        test -f /tmp/test_cov.o || { echo "ERROR: No compiler output found"; exit 1; }
+        test ! -f /tmp/test_cov.gcno || { echo "ERROR: Note file found for assembly"; exit 1; }
+
+        rm -f /tmp/test_cov.o
+        $ASM $COV -c "/sccache/tests/integration/$SRC" -o /tmp/test_cov.o
+        test -f /tmp/test_cov.o || { echo "ERROR: No compiler output found"; exit 1; }
+
+        HITS_AFTER=$(cache_hits Assembler)
+        if [ "$HITS_AFTER" -le "$HITS_BEFORE" ]; then
+            echo "ERROR: $SRC with $COV was not cached ($HITS_BEFORE -> $HITS_AFTER)"
+            "$SCCACHE" --show-stats
+            exit 1
+        fi
+    done
+done
+
+echo "Test 8: Test C++ with coverage flags (the .gcno is required and cached)"
+HITS_BEFORE=$(cache_hits C/C++)
+
+rm -f /tmp/test_cov.o /tmp/test_cov.gcno
+$CXX --coverage -c "$TEST_FILE" -o /tmp/test_cov.o
+test -f /tmp/test_cov.o || { echo "ERROR: No compiler output found"; exit 1; }
+test -f /tmp/test_cov.gcno || { echo "ERROR: No note file found"; exit 1; }
+
+rm -f /tmp/test_cov.o /tmp/test_cov.gcno
+$CXX --coverage -c "$TEST_FILE" -o /tmp/test_cov.o
+test -f /tmp/test_cov.o || { echo "ERROR: No compiler output found"; exit 1; }
+test -f /tmp/test_cov.gcno || { echo "ERROR: Note file not restored from cache"; exit 1; }
+
+HITS_AFTER=$(cache_hits C/C++)
+if [ "$HITS_AFTER" -le "$HITS_BEFORE" ]; then
+    echo "ERROR: $TEST_FILE with --coverage was not cached ($HITS_BEFORE -> $HITS_AFTER)"
+    "$SCCACHE" --show-stats
+    exit 1
+fi
