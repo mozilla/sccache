@@ -19,9 +19,11 @@ use fs::File;
 use fs_err as fs;
 use object::read::archive::ArchiveFile;
 use object::read::macho::{FatArch, MachOFatFile32, MachOFatFile64};
+use object::{Object as _, ObjectSection as _};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::cell::Cell;
+use std::env::consts::DLL_EXTENSION;
 use std::ffi::{OsStr, OsString};
 use std::hash::Hasher;
 use std::io::prelude::*;
@@ -443,6 +445,42 @@ pub async fn hash_all_archives(
         fmt_duration_as_secs(&start.elapsed())
     );
     Ok(hashes.into_iter().map(|res| res.unwrap()).collect())
+}
+
+/// Calculate the digest of each `--extern` input in `files`. A dylib, which is how a proc-macro
+/// is built, is hashed by its `.rustc` metadata alone, since on macOS the rest embeds its path.
+pub async fn hash_all_externs(
+    files: &[PathBuf],
+    pool: &tokio::runtime::Handle,
+) -> Result<Vec<String>> {
+    let start = time::Instant::now();
+    let count = files.len();
+    let iter = files.iter().map(|path| async move {
+        if path.extension() != Some(OsStr::new(DLL_EXTENSION)) {
+            return Digest::file(path, pool).await;
+        }
+        let library = path.clone();
+        pool.spawn_blocking(move || -> Result<String> {
+            let data = fs::read(&library)?;
+            let mut m = Digest::new();
+            m.update(rustc_metadata_section(&data).unwrap_or(&data));
+            Ok(m.finish())
+        })
+        .await?
+    });
+    let hashes = futures::future::try_join_all(iter).await?;
+    trace!(
+        "Hashed {} externs in {}",
+        count,
+        fmt_duration_as_secs(&start.elapsed())
+    );
+    Ok(hashes)
+}
+
+fn rustc_metadata_section(data: &[u8]) -> Option<&[u8]> {
+    let file = object::File::parse(data).ok()?;
+    let section = file.section_by_name(".rustc")?;
+    section.data().ok().filter(|bytes| !bytes.is_empty())
 }
 
 fn hash_regular_archive(m: &mut Digest, data: &[u8]) -> Result<()> {
@@ -1590,9 +1628,66 @@ pub fn resolve_compiler_avoiding_wrapper(
 
 #[cfg(test)]
 mod tests {
-    use super::{Digest, OsStrExt, TimeMacroFinder, resolve_compiler_avoiding_wrapper};
+    use super::{
+        Digest, OsStrExt, TimeMacroFinder, hash_all_externs, resolve_compiler_avoiding_wrapper,
+    };
+    use crate::test::utils::single_threaded_runtime;
+    use object::write::Object as WriteObject;
+    use object::{Architecture, BinaryFormat, Endianness, SectionKind};
+    use std::env::consts::DLL_EXTENSION;
     use std::ffi::{OsStr, OsString};
     use std::path::Path;
+
+    fn object_with(metadata: &[u8], code: &[u8]) -> Vec<u8> {
+        let mut obj = WriteObject::new(BinaryFormat::Elf, Architecture::X86_64, Endianness::Little);
+        let text = obj.add_section(Vec::new(), b".text".to_vec(), SectionKind::Text);
+        obj.append_section_data(text, code, 1);
+        let rustc = obj.add_section(Vec::new(), b".rustc".to_vec(), SectionKind::Data);
+        obj.append_section_data(rustc, metadata, 1);
+        obj.write().unwrap()
+    }
+
+    #[test]
+    fn test_hash_all_externs_hashes_a_dylib_by_its_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let write = |name: &str, bytes: Vec<u8>| {
+            let path = dir.path().join(format!("{name}.{DLL_EXTENSION}"));
+            std::fs::write(&path, bytes).unwrap();
+            path
+        };
+        let files = [
+            write("a", object_with(b"meta", b"code")),
+            write("b", object_with(b"meta", b"other code, longer")),
+            write("c", object_with(b"changed", b"code")),
+        ];
+
+        let runtime = single_threaded_runtime();
+        let hashes = runtime
+            .block_on(hash_all_externs(&files, runtime.handle()))
+            .unwrap();
+        assert_eq!(hashes[0], hashes[1]);
+        assert_ne!(hashes[0], hashes[2]);
+    }
+
+    #[test]
+    fn test_hash_all_externs_hashes_whole_files_without_rustc_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let rlib = dir.path().join("libfoo.rlib");
+        let not_an_object = dir.path().join(format!("libbar.{DLL_EXTENSION}"));
+        let missing = dir.path().join(format!("libmissing.{DLL_EXTENSION}"));
+        std::fs::write(&rlib, b"an rlib").unwrap();
+        std::fs::write(&not_an_object, b"not an object file").unwrap();
+
+        let runtime = single_threaded_runtime();
+        let pool = runtime.handle();
+        let whole = |path| runtime.block_on(Digest::file(path, pool)).unwrap();
+        let files = [rlib.clone(), not_an_object.clone()];
+        let hashes = runtime.block_on(hash_all_externs(&files, pool)).unwrap();
+        assert_eq!(hashes, vec![whole(&rlib), whole(&not_an_object)]);
+
+        let missing_result = runtime.block_on(hash_all_externs(&[missing], pool));
+        assert!(missing_result.is_err());
+    }
 
     #[test]
     fn test_resolve_compiler_avoiding_ccache_filters_path() {
