@@ -185,9 +185,10 @@ fn run(command: Command) -> Result<i32> {
                     token_check::ValidJWTCheck::new(audience, issuer, &jwks_url)
                         .context("Failed to create a checker for valid JWTs")?,
                 ),
-                scheduler_config::ClientAuth::ProxyToken { url, cache_secs } => {
-                    Box::new(token_check::ProxyTokenCheck::new(url, cache_secs))
-                }
+                scheduler_config::ClientAuth::ProxyToken { url, cache_secs } => Box::new(
+                    token_check::ProxyTokenCheck::new(url, cache_secs)
+                        .context("failed to create proxy token checker")?,
+                ),
             };
 
             let check_server_auth: dist::http::ServerAuthCheck = match server_auth {
