@@ -470,6 +470,24 @@ impl MultiLevelStorage {
         Ok(())
     }
 
+    fn record_read_hit(&self, hit_level: usize, duration: Duration) {
+        inc_stat!(self.atomic_stats.get(hit_level), hits, 1);
+        inc_stat!(
+            self.atomic_stats.get(hit_level),
+            hit_duration_nanos,
+            duration.as_nanos() as u64
+        );
+        for miss_idx in 0..hit_level {
+            inc_stat!(self.atomic_stats.get(miss_idx), misses, 1);
+        }
+    }
+
+    fn record_all_read_misses(&self) {
+        for idx in 0..self.levels.len() {
+            inc_stat!(self.atomic_stats.get(idx), misses, 1);
+        }
+    }
+
     /// Write to levels starting from `start_idx` asynchronously
     async fn write_remaining_levels_async(&self, key: &str, data: &Bytes, start_idx: usize) {
         for (idx, level) in self.levels.iter().enumerate().skip(start_idx) {
@@ -530,17 +548,7 @@ impl Storage for MultiLevelStorage {
                     let duration = start.elapsed();
                     debug!("Cache hit at level {} in {:?}", idx, duration);
 
-                    // Update stats
-                    inc_stat!(self.atomic_stats.get(idx), hits, 1);
-                    inc_stat!(
-                        self.atomic_stats.get(idx),
-                        hit_duration_nanos,
-                        duration.as_nanos() as u64
-                    );
-                    // Mark misses for all levels checked before this hit
-                    for miss_idx in 0..idx {
-                        inc_stat!(self.atomic_stats.get(miss_idx), misses, 1);
-                    }
+                    self.record_read_hit(idx, duration);
 
                     // If hit at level > 0, backfill to faster levels (L0 to L(idx-1))
                     if idx > 0 {
@@ -620,20 +628,21 @@ impl Storage for MultiLevelStorage {
         }
         debug!("Cache miss at all levels");
 
-        // Mark final miss for all checked levels
-        for idx in 0..self.levels.len() {
-            inc_stat!(self.atomic_stats.get(idx), misses, 1);
-        }
+        self.record_all_read_misses();
 
         Ok(Cache::Miss)
     }
 
     async fn get_raw(&self, key: &str) -> Result<Option<Bytes>> {
-        for level in &self.levels {
+        for (idx, level) in self.levels.iter().enumerate() {
+            let start = Instant::now();
             if let Some(bytes) = level.get_raw(key).await? {
+                self.record_read_hit(idx, start.elapsed());
                 return Ok(Some(bytes));
             }
         }
+
+        self.record_all_read_misses();
         Ok(None)
     }
 
