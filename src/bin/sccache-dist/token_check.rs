@@ -96,14 +96,15 @@ impl ClientAuthCheck for ProxyTokenCheck {
 }
 
 impl ProxyTokenCheck {
-    pub fn new(url: String, cache_secs: Option<u64>) -> Self {
+    pub(super) fn new(url: String, cache_secs: Option<u64>) -> Result<Self> {
         let maybe_auth_cache: Option<Mutex<(HashMap<String, Instant>, Duration)>> =
             cache_secs.map(|secs| Mutex::new((HashMap::new(), Duration::from_secs(secs))));
-        Self {
-            client: new_reqwest_blocking_client(),
+        Ok(Self {
+            client: new_reqwest_blocking_client()
+                .context("failed to build proxy-token validation HTTP client")?,
             maybe_auth_cache,
             url,
-        }
+        })
     }
 
     fn check_token_with_forwarding(&self, token: &str) -> Result<()> {
@@ -162,7 +163,12 @@ impl ClientAuthCheck for ValidJWTCheck {
 
 impl ValidJWTCheck {
     pub fn new(audience: String, issuer: String, jwks_url: &str) -> Result<Self> {
-        let res = reqwest::blocking::get(jwks_url).context("Failed to make request to JWKs url")?;
+        let client =
+            new_reqwest_blocking_client().context("failed to build JWK retrieval HTTP client")?;
+        let res = client
+            .get(jwks_url)
+            .send()
+            .context("Failed to make request to JWKs url")?;
         if !res.status().is_success() {
             bail!("Could not retrieve JWKs, HTTP error: {}", res.status())
         }

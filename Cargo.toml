@@ -93,7 +93,6 @@ reqwest = { version = "0.13", features = [
   "rustls",
   "hickory-dns",
 ], optional = true }
-rustls-native-certs = { version = "0.8", optional = true }
 semver = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = ">=1.0, <1.0.147" # zmij (used in 1.0.147+) requires Rust 1.84+
@@ -118,6 +117,7 @@ typed-path = "0.13.0"
 url = { version = "2", optional = true }
 uuid = { version = "1.9", features = ["v4"] }
 walkdir = "2"
+webpki-root-certs = { version = "1", optional = true }
 # by default which pulls in an outdated failure version
 which = { version = "6", default-features = false }
 zip = { version = "0.6", default-features = false }
@@ -218,6 +218,7 @@ oss = [
   "reqwest",
 ]
 redis = ["url", "opendal/services-redis", "opendal-layer-logging"]
+reqwest = ["dep:reqwest", "dep:webpki-root-certs"]
 s3 = [
   "opendal/services-s3",
   "opendal-layer-logging",
@@ -245,7 +246,6 @@ dist-client = [
   "reqwest",
   "url",
   "sha2",
-  "rustls-native-certs",
 ]
 # Enables the sccache-dist binary
 dist-server = [
@@ -258,7 +258,6 @@ dist-server = [
   "rouille",
   "syslog",
   "version-compare",
-  "rustls-native-certs",
 ]
 # Enables dist tests with external requirements
 dist-tests = ["dist-client", "dist-server"]
