@@ -416,10 +416,15 @@ fn test_closed_slow_level_semaphore_stops_background_work() {
             1,
         );
         storage.slow_level_semaphore.close();
-        storage
+        let error = storage
             .put_raw("closed-all", Bytes::from_static(b"entry"))
             .await
-            .unwrap();
+            .expect_err("all policy must propagate slow-level setup failures");
+        assert!(
+            error
+                .to_string()
+                .contains("slow-level write semaphore closed")
+        );
         storage.drain_background().await;
 
         // Backfill: a hit in L2 attempts an L1 backfill through the closed semaphore.

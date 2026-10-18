@@ -852,19 +852,15 @@ impl Storage for MultiLevelStorage {
                         // level cannot leave this write detached at shutdown.
                         let background_tasks = Arc::clone(&self.background_tasks);
                         background_tasks.spawn(async move {
-                            match write_task.await {
-                                Ok(result) => {
-                                    let _ = tx.send(result).await;
-                                }
-                                Err(error) => debug!("Slow-level write setup failed: {}", error),
-                            }
+                            let _ = tx.send(write_task.await).await;
                         });
                     }
                 }
                 drop(tx);
 
                 // Check async results
-                while let Some((idx, result, level, duration, stats_arc)) = rx.recv().await {
+                while let Some(write_result) = rx.recv().await {
+                    let (idx, result, level, duration, stats_arc) = write_result?;
                     if let Err(e) = result {
                         // Check if read-only before failing
                         if !matches!(level.check().await, Ok(CacheMode::ReadOnly)) {
