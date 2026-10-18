@@ -328,8 +328,6 @@ fn init_logging() {
     }
 }
 
-// Maximum number of jobs per core - only occurs for one core, usually less, see load_weight()
-const MAX_PER_CORE_LOAD: f64 = 2f64;
 const SERVER_REMEMBER_ERROR_TIMEOUT: Duration = Duration::from_secs(300);
 const UNCLAIMED_PENDING_TIMEOUT: Duration = Duration::from_secs(300);
 const UNCLAIMED_READY_TIMEOUT: Duration = Duration::from_secs(60);
@@ -434,6 +432,14 @@ impl Default for Scheduler {
 }
 
 fn load_weight(job_count: usize, core_count: usize) -> f64 {
+    // Infinity is a true "not eligible" sentinel. A finite synthetic load would couple
+    // scheduler correctness to the current oversubscription policy: if that policy later
+    // permits a higher legitimate jobs-per-core load, an unavailable worker could otherwise
+    // rank ahead of an eligible one.
+    if core_count == 0 {
+        return f64::INFINITY;
+    }
+
     // Oversubscribe cores just a little to make up for network and I/O latency. This formula is
     // not based on hard data but an extrapolation to high core counts of the conventional wisdom
     // that slightly more jobs than cores achieve the shortest compile time. Which is originally
@@ -441,7 +447,7 @@ fn load_weight(job_count: usize, core_count: usize) -> f64 {
     let cores_plus_slack = core_count + 1 + core_count / 8;
     // Note >=, not >, because the question is "can we add another job"?
     if job_count >= cores_plus_slack {
-        MAX_PER_CORE_LOAD + 1f64 // no new jobs for now
+        f64::INFINITY
     } else {
         job_count as f64 / core_count as f64
     }
@@ -460,13 +466,13 @@ impl SchedulerIncoming for Scheduler {
             let res = {
                 let mut best = None;
                 let mut best_err = None;
-                let mut best_load: f64 = MAX_PER_CORE_LOAD;
+                let mut best_load = f64::INFINITY;
                 let now = Instant::now();
                 for (&server_id, details) in servers.iter_mut() {
                     let load = load_weight(details.jobs_assigned.len(), details.num_cpus);
 
                     if let Some(last_error) = details.last_error {
-                        if load < MAX_PER_CORE_LOAD {
+                        if load.is_finite() {
                             if now.duration_since(last_error) > SERVER_REMEMBER_ERROR_TIMEOUT {
                                 details.last_error = None;
                             }
@@ -606,10 +612,6 @@ impl SchedulerIncoming for Scheduler {
         num_cpus: usize,
         job_authorizer: Box<dyn JobAuthorizer>,
     ) -> Result<HeartbeatServerResult> {
-        if num_cpus == 0 {
-            bail!("Invalid number of CPUs (0) specified in heartbeat")
-        }
-
         // LOCKS
         let mut jobs = self.jobs.lock().unwrap();
         let mut servers = self.servers.lock().unwrap();
@@ -620,6 +622,7 @@ impl SchedulerIncoming for Scheduler {
             Some(ref mut details) if details.server_nonce == server_nonce => {
                 let now = Instant::now();
                 details.last_seen = now;
+                details.num_cpus = num_cpus;
 
                 let mut stale_jobs = Vec::new();
                 for (&job_id, &last_seen) in details.jobs_unclaimed.iter() {
@@ -899,6 +902,16 @@ mod scheduler_tests {
         assert_eq!(wrapping.next_job_id(), JobId(0));
     }
 
+    #[test]
+    fn ineligible_load_weights_are_infinite() {
+        assert!(load_weight(0, 0).is_infinite());
+
+        let cores = 8;
+        let cores_plus_slack = cores + 1 + cores / 8;
+        assert!(load_weight(cores_plus_slack - 1, cores).is_finite());
+        assert!(load_weight(cores_plus_slack, cores).is_infinite());
+    }
+
     struct TestJobAuthorizer;
 
     impl JobAuthorizer for TestJobAuthorizer {
@@ -909,6 +922,94 @@ mod scheduler_tests {
         fn verify_token(&self, _job_id: JobId, _token: &str) -> Result<()> {
             Ok(())
         }
+    }
+
+    #[test]
+    fn zero_cpu_heartbeat_removes_server_capacity() {
+        let scheduler = Scheduler::new();
+        let server_id: ServerId = "127.0.0.1:10502".parse().unwrap();
+        let server_nonce = ServerNonce::new();
+
+        let first = scheduler
+            .handle_heartbeat_server(
+                server_id,
+                server_nonce.clone(),
+                4,
+                Box::new(TestJobAuthorizer),
+            )
+            .unwrap();
+        assert!(first.is_new);
+
+        let update = scheduler
+            .handle_heartbeat_server(
+                server_id,
+                server_nonce.clone(),
+                0,
+                Box::new(TestJobAuthorizer),
+            )
+            .unwrap();
+        assert!(!update.is_new);
+
+        let requester = ReapDuringAssign {
+            scheduler: &scheduler,
+            server_id,
+            server_nonce,
+        };
+        let allocation = scheduler
+            .handle_alloc_job(
+                &requester,
+                Toolchain {
+                    archive_id: "test-toolchain".to_owned(),
+                },
+            )
+            .unwrap();
+        assert!(matches!(allocation, AllocJobResult::Fail { .. }));
+
+        // If assignment had been attempted, ReapDuringAssign would heartbeat the
+        // worker back to one CPU. Capacity must remain at zero.
+        let servers = scheduler.servers.lock().unwrap();
+        assert_eq!(servers.get(&server_id).unwrap().num_cpus, 0);
+    }
+
+    #[test]
+    fn errored_zero_capacity_server_is_not_used_as_fallback() {
+        let scheduler = Scheduler::new();
+        let server_id: ServerId = "127.0.0.1:10503".parse().unwrap();
+        let server_nonce = ServerNonce::new();
+
+        scheduler
+            .handle_heartbeat_server(server_id, server_nonce, 0, Box::new(TestJobAuthorizer))
+            .unwrap();
+        scheduler
+            .servers
+            .lock()
+            .unwrap()
+            .get_mut(&server_id)
+            .unwrap()
+            .last_error = Some(Instant::now());
+
+        struct PanicOnAssign;
+        impl SchedulerOutgoing for PanicOnAssign {
+            fn do_assign_job(
+                &self,
+                _server_id: ServerId,
+                _job_id: JobId,
+                _tc: Toolchain,
+                _auth: String,
+            ) -> Result<AssignJobResult> {
+                panic!("ineligible errored server must not be used as allocation fallback")
+            }
+        }
+
+        let allocation = scheduler
+            .handle_alloc_job(
+                &PanicOnAssign,
+                Toolchain {
+                    archive_id: "test-toolchain".to_owned(),
+                },
+            )
+            .unwrap();
+        assert!(matches!(allocation, AllocJobResult::Fail { .. }));
     }
 
     struct ReapDuringAssign<'a> {
