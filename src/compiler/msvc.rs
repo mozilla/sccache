@@ -86,7 +86,7 @@ impl CCompilerImpl for Msvc {
         env_vars: &[(OsString, OsString)],
         may_dist: bool,
         rewrite_includes_only: bool,
-        _preprocessor_cache_mode: bool,
+        preprocessor_cache_mode: bool,
     ) -> Result<process::Output>
     where
         T: CommandCreatorSync,
@@ -101,6 +101,7 @@ impl CCompilerImpl for Msvc {
             &self.includes_prefix,
             rewrite_includes_only,
             self.is_clang,
+            preprocessor_cache_mode,
         )
         .await
     }
@@ -646,6 +647,7 @@ pub fn parse_arguments(
     let mut debug_info = false;
     let mut pdb = None;
     let mut depfile = None;
+    let mut too_hard_for_preprocessor_cache_mode = None;
     let mut show_includes = false;
     let mut xclangs: Vec<OsString> = vec![];
     let mut clangs: Vec<OsString> = vec![];
@@ -686,7 +688,14 @@ pub fn parse_arguments(
                     cannot_cache!("output to nul")
                 }
             }
-            Some(DepFile(p)) => depfile = Some(p.clone()),
+            Some(DepFile(p)) => {
+                depfile = Some(p.clone());
+                // The dependency file is produced by the preprocessor
+                // invocation (`/sourceDependencies` for cl.exe, `-showIncludes`
+                // parsing for clang-cl). A preprocessor cache hit skips that
+                // invocation, so the file would never be written.
+                too_hard_for_preprocessor_cache_mode = Some(arg.to_os_string());
+            }
             Some(ProgramDatabase(p)) => pdb = Some(p.clone()),
             Some(DebugInfo) => debug_info = true,
             Some(PreprocessorArgument(_))
@@ -1051,7 +1060,7 @@ pub fn parse_arguments(
         // FIXME: implement color_mode for msvc.
         color_mode: ColorMode::Auto,
         suppress_rewrite_includes_only: false,
-        too_hard_for_preprocessor_cache_mode: None,
+        too_hard_for_preprocessor_cache_mode,
     })
 }
 
@@ -1114,6 +1123,7 @@ fn preprocess_cmd<T>(
     may_dist: bool,
     rewrite_includes_only: bool,
     is_clang: bool,
+    preprocessor_cache_mode: bool,
 ) where
     T: RunCommand,
 {
@@ -1121,9 +1131,12 @@ fn preprocess_cmd<T>(
     // reporting and to not cause spurious compilation failure (e.g. no exceptions build
     // fails due to exceptions transitively included in the stdlib).
     // With -fprofile-generate line number information is important, so use -E.
+    // Preprocessor cache mode (direct mode) discovers the set of included files
+    // from the `#line` markers in the preprocessor output, so it also needs -E
+    // (this mirrors gcc/clang dropping `-P` in that mode).
     // Otherwise, use -EP to maximize cache hits (because no absolute file paths are
     // emitted) and improve performance.
-    if may_dist || parsed_args.profile_generate {
+    if may_dist || parsed_args.profile_generate || preprocessor_cache_mode {
         cmd.arg("-E");
     } else {
         cmd.arg("-EP");
@@ -1174,6 +1187,7 @@ pub async fn preprocess<T>(
     includes_prefix: &str,
     rewrite_includes_only: bool,
     is_clang: bool,
+    preprocessor_cache_mode: bool,
 ) -> Result<process::Output>
 where
     T: CommandCreatorSync,
@@ -1187,6 +1201,7 @@ where
         may_dist,
         rewrite_includes_only,
         is_clang,
+        preprocessor_cache_mode,
     );
 
     if log_enabled!(Debug) {
@@ -1655,6 +1670,7 @@ mod test {
             preprocessor_args,
             msvc_show_includes,
             common_args,
+            too_hard_for_preprocessor_cache_mode,
             ..
         } = match parse_arguments(args) {
             CompilerArguments::Ok(args) => args,
@@ -1676,6 +1692,7 @@ mod test {
         assert!(preprocessor_args.is_empty());
         assert!(common_args.is_empty());
         assert!(!msvc_show_includes);
+        assert!(too_hard_for_preprocessor_cache_mode.is_none());
     }
 
     #[test]
@@ -2072,6 +2089,7 @@ mod test {
                 msvc_show_includes,
                 common_args,
                 depfile,
+                too_hard_for_preprocessor_cache_mode,
                 ..
             } = match parse_arguments(args) {
                 CompilerArguments::Ok(args) => args,
@@ -2080,6 +2098,9 @@ mod test {
             assert_eq!(Some("foo.c"), input.to_str());
             assert_eq!(Language::C, language);
             assert_eq!(Some(PathBuf::from_str("foo.obj.json").unwrap()), depfile);
+            // The dep file is written by the preprocessor invocation, which a
+            // preprocessor cache hit would skip.
+            assert!(too_hard_for_preprocessor_cache_mode.is_some());
             assert_map_contains!(
                 outputs,
                 (
@@ -3430,9 +3451,57 @@ mod test {
             child: None,
             args: vec![],
         };
-        preprocess_cmd(&mut cmd, &parsed_args, Path::new(""), &[], true, true, true);
+        preprocess_cmd(
+            &mut cmd,
+            &parsed_args,
+            Path::new(""),
+            &[],
+            true,
+            true,
+            true,
+            false,
+        );
         let expected_args = ovec!["-E", "-nologo", "-clang:-frewrite-includes", "--", "foo.c"];
         assert_eq!(cmd.args, expected_args);
+    }
+
+    fn preprocess_cmd_args(may_dist: bool, preprocessor_cache_mode: bool) -> Vec<OsString> {
+        let args = ovec!["-c", "foo.c", "-Fofoo.obj"];
+        let parsed_args = match parse_arguments(args) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        let mut cmd = MockCommand {
+            child: None,
+            args: vec![],
+        };
+        preprocess_cmd(
+            &mut cmd,
+            &parsed_args,
+            Path::new(""),
+            &[],
+            may_dist,
+            false,
+            false,
+            preprocessor_cache_mode,
+        );
+        cmd.args
+    }
+
+    #[test]
+    fn test_preprocess_cmd_uses_ep_without_preprocessor_cache_mode() {
+        let args = preprocess_cmd_args(false, false);
+        assert_eq!(args[0], "-EP");
+        assert!(!args.contains(&"-E".into()));
+    }
+
+    #[test]
+    fn test_preprocess_cmd_uses_e_with_preprocessor_cache_mode() {
+        // Direct mode needs `#line` markers to record the included files,
+        // which `-EP` strips.
+        let args = preprocess_cmd_args(false, true);
+        assert_eq!(args[0], "-E");
+        assert!(!args.contains(&"-EP".into()));
     }
 
     #[test]
@@ -3537,6 +3606,7 @@ mod test {
                 &parsed_args,
                 Path::new(""),
                 &[],
+                false,
                 false,
                 false,
                 false,
