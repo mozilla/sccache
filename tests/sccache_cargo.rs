@@ -420,7 +420,13 @@ fn build_checkout(test_info: &SccacheTest, name: &str) -> Result<PathBuf> {
     for file in ["Cargo.toml", "Cargo.lock", "src/lib.rs", "src/bin.rs"] {
         fs::copy(CRATE_DIR.join(file), checkout.join(file))?;
     }
+    cargo_build(test_info, &checkout)
+}
 
+/// Build the crate in `checkout` with its own target directory.
+///
+/// Returns the checkout's target directory.
+fn cargo_build(test_info: &SccacheTest, checkout: &Path) -> Result<PathBuf> {
     let target_dir = checkout.join("target");
     Command::new(CARGO.as_os_str())
         // `--target-dir` rather than `CARGO_TARGET_DIR`,
@@ -428,25 +434,25 @@ fn build_checkout(test_info: &SccacheTest, name: &str) -> Result<PathBuf> {
         .args(["build", "--color=never", "--target-dir"])
         .arg(&target_dir)
         .envs(test_info.env.iter().cloned())
-        .current_dir(&checkout)
+        .current_dir(checkout)
         .assert()
         .try_success()?;
     Ok(target_dir)
 }
 
-/// Read the dep-info file cargo keeps for the `itoa` dependency under `target_dir`.
-fn read_itoa_dep_info(target_dir: &Path) -> Result<String> {
+/// Read the dep-info file cargo keeps for the crate `name` under `target_dir`.
+fn read_dep_info(target_dir: &Path, name: &str) -> Result<String> {
     /// Search rather than assume `target/debug/deps`,
     /// since cargo changed the build-dir layout in rust-lang/cargo#15010.
-    fn collect(dir: &Path, found: &mut Vec<PathBuf>) -> Result<()> {
+    fn collect(dir: &Path, prefix: &str, found: &mut Vec<PathBuf>) -> Result<()> {
         for entry in fs::read_dir(dir)? {
             let path = entry?.path();
             if path.is_dir() {
-                collect(&path, found)?;
+                collect(&path, prefix, found)?;
             } else if path.extension().is_some_and(|e| e == "d")
                 && path
                     .file_name()
-                    .is_some_and(|n| n.to_string_lossy().starts_with("itoa-"))
+                    .is_some_and(|n| n.to_string_lossy().starts_with(prefix))
             {
                 found.push(path);
             }
@@ -455,15 +461,15 @@ fn read_itoa_dep_info(target_dir: &Path) -> Result<String> {
     }
 
     let mut found = Vec::new();
-    collect(target_dir, &mut found)?;
+    collect(target_dir, &format!("{name}-"), &mut found)?;
     found.sort();
 
-    // One profile and no `--target`, so `itoa` is built exactly once.
+    // One profile and no `--target`, so the crate is built exactly once.
     match found.as_slice() {
         [dep_info] => Ok(fs::read_to_string(dep_info)?),
-        [] => bail!("no itoa dep-info file under {}", target_dir.display()),
+        [] => bail!("no {name} dep-info file under {}", target_dir.display()),
         _ => bail!(
-            "several itoa dep-info files under {}: {found:?}",
+            "several {name} dep-info files under {}: {found:?}",
             target_dir.display()
         ),
     }
@@ -491,13 +497,106 @@ fn test_rust_cargo_dep_info_from_other_checkout() -> Result<()> {
         )?
         .try_success()?;
 
-    let dep_info = read_itoa_dep_info(&target_b)?;
+    let dep_info = read_dep_info(&target_b, "itoa")?;
     assert!(
         !dep_info.contains(target_a.to_str().unwrap()),
         "dep-info names checkout a:\n{dep_info}"
     );
     assert!(
         dep_info.contains(target_b.to_str().unwrap()),
+        "dep-info does not name checkout b:\n{dep_info}"
+    );
+    Ok(())
+}
+
+/// Write a crate to `checkout` whose path dependency includes build script output,
+/// so the checkout's path reaches both crates' keys through the cwd,
+/// `CARGO_MANIFEST_DIR` and the dependency's `OUT_DIR` env-dep.
+fn write_out_dir_crate(checkout: &Path) -> Result<()> {
+    let package = |name: &str| {
+        format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n")
+    };
+    fs::create_dir_all(checkout.join("src"))?;
+    fs::create_dir_all(checkout.join("dep/src"))?;
+    fs::write(
+        checkout.join("Cargo.toml"),
+        package("out-dir-test") + "\n[dependencies]\ndep = { path = \"dep\" }\n",
+    )?;
+    fs::write(
+        checkout.join("src/lib.rs"),
+        "pub fn answer() -> u32 { dep::ANSWER }\n",
+    )?;
+    fs::write(checkout.join("dep/Cargo.toml"), package("dep"))?;
+    fs::write(
+        checkout.join("dep/build.rs"),
+        r#"fn main() {
+    let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+    std::fs::write(out.join("answer.rs"), "pub const ANSWER: u32 = 42;").unwrap();
+}
+"#,
+    )?;
+    fs::write(
+        checkout.join("dep/src/lib.rs"),
+        "include!(concat!(env!(\"OUT_DIR\"), \"/answer.rs\"));\n",
+    )?;
+    Ok(())
+}
+
+/// The test's tempdir by its real path, which is how cargo names it in `CARGO_MANIFEST_DIR`
+/// and `[env]` paths; on macOS the tempdir is under a symlink to /private.
+fn real_tempdir(test_info: &SccacheTest) -> Result<PathBuf> {
+    let path = test_info.tempdir.path();
+    if cfg!(unix) {
+        Ok(fs::canonicalize(path)?)
+    } else {
+        Ok(path.to_owned())
+    }
+}
+
+/// A crate and its path dependency, built from two checkouts listed in `SCCACHE_BASEDIRS`,
+/// hit in the second one, whose dep-info still names its own files.
+#[test]
+#[serial]
+fn test_rust_cargo_basedirs_other_checkout() -> Result<()> {
+    let test_info = SccacheTest::new(None)?;
+    let tempdir = real_tempdir(&test_info)?;
+    let [a, b] = ["a", "b"].map(|name| tempdir.join(name));
+    let basedirs = std::env::join_paths([&a, &b])?.into_string().unwrap();
+    restart_sccache(
+        &test_info,
+        Some(vec![("SCCACHE_BASEDIRS".into(), basedirs)]),
+    )?;
+
+    write_out_dir_crate(&a)?;
+    cargo_build(&test_info, &a)?;
+    Command::new(SCCACHE_BIN.as_os_str())
+        .arg("--zero-stats")
+        .assert()
+        .try_success()?;
+    write_out_dir_crate(&b)?;
+    let target_b = cargo_build(&test_info, &b)?;
+
+    test_info
+        .show_stats()?
+        .try_stdout(
+            predicates::str::contains(
+                r#""cache_hits":{"counts":{"Rust":2},"adv_counts":{"rust":2}}"#,
+            )
+            .from_utf8(),
+        )?
+        .try_stdout(
+            predicates::str::contains(r#""cache_misses":{"counts":{},"adv_counts":{}}"#)
+                .from_utf8(),
+        )?
+        .try_success()?;
+
+    let dep_info = read_dep_info(&target_b, "dep")?;
+    assert!(
+        !dep_info.contains(a.to_str().unwrap()),
+        "dep-info names checkout a:\n{dep_info}"
+    );
+    assert!(
+        dep_info.contains(b.to_str().unwrap()),
         "dep-info does not name checkout b:\n{dep_info}"
     );
     Ok(())

@@ -27,6 +27,9 @@ server_startup_timeout_ms = 10000
 # spell a pathname are considered: the whole argument, the value of
 # an =-separated option, and the value glued to a short option.
 #
+# For Rust, also applies to the working directory, the CARGO_*
+# variables and the variables read with env!, such as OUT_DIR.
+#
 # Example:
 #   basedir = ["/home/user/project"] results in the path prefix rewrite:
 #   "/home/user/project/src/main.c" -> "src/main.c"
