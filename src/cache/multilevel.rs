@@ -636,9 +636,18 @@ impl Storage for MultiLevelStorage {
     async fn get_raw(&self, key: &str) -> Result<Option<Bytes>> {
         for (idx, level) in self.levels.iter().enumerate() {
             let start = Instant::now();
-            if let Some(bytes) = level.get_raw(key).await? {
-                self.record_read_hit(idx, start.elapsed());
-                return Ok(Some(bytes));
+            match level.get_raw(key).await {
+                Ok(Some(bytes)) => {
+                    self.record_read_hit(idx, start.elapsed());
+                    return Ok(Some(bytes));
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    warn!(
+                        "Error checking cache level {}: {}, trying next level",
+                        idx, error
+                    );
+                }
             }
         }
 
