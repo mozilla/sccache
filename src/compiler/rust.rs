@@ -1424,11 +1424,8 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                 }
             }
             Some(Emit(value)) => {
-                if emit.is_some() {
-                    // We don't support passing --emit more than once.
-                    cannot_cache!("more than one --emit");
-                }
-                emit = Some(value.split(',').map(str::to_owned).collect());
+                emit.get_or_insert_with(HashSet::new)
+                    .extend(value.split(',').map(str::to_owned));
             }
             Some(CrateType(ArgCrateTypes {
                 rlib,
@@ -3251,6 +3248,37 @@ LLVM version: 15.0.2
             "/out"
         );
         assert_eq!(h.dep_info, Some("foo.d".into()));
+    }
+
+    #[test]
+    fn test_parse_arguments_multiple_emit() {
+        let h = parses!(
+            "--crate-name",
+            "foo",
+            "--crate-type",
+            "lib",
+            "src/lib.rs",
+            "--emit",
+            "dep-info",
+            "--emit=link",
+            "--out-dir",
+            "/out"
+        );
+        assert_eq!(h.dep_info, Some("foo.d".into()));
+        assert!(h.emit.contains("link"));
+        fails!(
+            "--crate-name",
+            "foo",
+            "--crate-type",
+            "lib",
+            "src/lib.rs",
+            "--emit",
+            "link",
+            "--emit",
+            "asm",
+            "--out-dir",
+            "/out"
+        );
     }
 
     #[test]
