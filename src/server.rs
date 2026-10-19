@@ -95,6 +95,71 @@ pub enum ServerStartup {
     Err { reason: String },
 }
 
+#[cfg(unix)]
+fn bind_unix_listener(path: &std::path::Path) -> io::Result<tokio::net::UnixListener> {
+    use std::fs::OpenOptions;
+    use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+    use std::os::unix::io::AsRawFd;
+    use std::os::unix::net::UnixStream;
+
+    let mut lock_path = path.as_os_str().to_os_string();
+    lock_path.push(".lock");
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .mode(0o600)
+        .open(lock_path)?;
+    let mut permissions = lock.metadata()?.permissions();
+    permissions.set_mode(0o600);
+    lock.set_permissions(permissions)?;
+
+    // Keep the lock inode so that it also serializes startup after a crash.
+    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+
+    match UnixStream::connect(path) {
+        Ok(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::AddrInUse,
+                "unix socket is already in use",
+            ));
+        }
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound
+            ) =>
+        {
+            match std::fs::symlink_metadata(path) {
+                Ok(metadata)
+                    if metadata.file_type().is_socket()
+                        && metadata.uid() == unsafe { libc::geteuid() } =>
+                {
+                    match std::fs::remove_file(path) {
+                        Ok(()) => {}
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                        Err(error) => return Err(error),
+                    }
+                }
+                Ok(_) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::AddrInUse,
+                        "unix socket path is not a stale socket",
+                    ));
+                }
+                Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+                Err(_) => {}
+            }
+        }
+        Err(error) => return Err(error),
+    }
+
+    tokio::net::UnixListener::bind(path)
+}
+
 /// Get the time the server should idle for before shutting down, in seconds.
 fn get_idle_timeout() -> u64 {
     // A value of 0 disables idle shutdown entirely.
@@ -514,11 +579,9 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
             #[cfg(unix)]
             crate::net::SocketAddr::Unix(path) => {
                 trace!("binding unix socket {}", path.display());
-                // Unix socket will report addr in use on any unlink file.
-                let _ = std::fs::remove_file(path);
                 let l = {
                     let _guard = runtime.enter();
-                    tokio::net::UnixListener::bind(path)?
+                    bind_unix_listener(path)?
                 };
                 let srv = SccacheServer::<_>::with_listener(
                     l,
@@ -2583,6 +2646,35 @@ mod tests {
         fn write(&mut self, text: &str) {
             self.buffer.push_str(&format!("{}\n", text));
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_socket_binding_preserves_live_listener() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tempdir = tempfile::tempdir().unwrap();
+        let path = tempdir.path().join("server.sock");
+        let lock_path = tempdir.path().join("server.sock.lock");
+        let runtime = Runtime::new().unwrap();
+        let _guard = runtime.enter();
+        let live = tokio::net::UnixListener::bind(&path).unwrap();
+
+        let error = match bind_unix_listener(&path) {
+            Ok(_) => panic!("a live Unix listener must not be replaced"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), io::ErrorKind::AddrInUse);
+        assert!(std::os::unix::net::UnixStream::connect(&path).is_ok());
+        assert_eq!(
+            std::fs::metadata(lock_path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        drop(live);
+        let replacement = bind_unix_listener(&path).unwrap();
+        assert!(std::os::unix::net::UnixStream::connect(&path).is_ok());
+        drop(replacement);
     }
 
     #[test]
