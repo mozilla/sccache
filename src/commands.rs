@@ -364,22 +364,19 @@ pub fn request_zero_stats(mut conn: ServerConnection) -> Result<()> {
     }
 }
 
-fn request_stats_on(conn: &mut ServerConnection) -> Result<ServerInfo> {
-    debug!("request_stats");
-    let response = conn.request(Request::GetStats).context(
-        "Failed to send data to or receive data from server. Mismatch of client/server versions?",
-    )?;
-    if let Response::Stats(stats) = response {
-        Ok(*stats)
-    } else {
-        bail!("Unexpected server response!")
-    }
-}
-
 pub(crate) fn request_stats_with_cache_mode(
     mut conn: ServerConnection,
 ) -> Result<(ServerInfo, CacheMode)> {
-    let stats = request_stats_on(&mut conn)?;
+    debug!("request_stats_with_cache_mode");
+    let response = conn.request(Request::GetStats).context(
+        "Failed to send data to or receive data from server. Mismatch of client/server versions?",
+    )?;
+    let stats = if let Response::Stats(stats) = response {
+        *stats
+    } else {
+        bail!("Unexpected server response!")
+    };
+
     let response = conn
         .request(Request::StorageHandshake)
         .context("failed to get effective cache mode from server")?;
