@@ -1257,6 +1257,9 @@ fn test_l0_write_still_runs_after_failed_capability_check() {
             .put_raw("probe-failure-2", Bytes::from_static(b"payload"))
             .await
             .unwrap();
+
+        assert!(l0.get_raw("probe-failure").await.unwrap().is_some());
+        assert!(l0.get_raw("probe-failure-2").await.unwrap().is_some());
     });
 
     assert_eq!(l0.check_count(), 1);
