@@ -558,12 +558,34 @@ fn parse_env_dep_info(dep_info: &str) -> Vec<(OsString, OsString)> {
         if let Some(env_dep) = line.strip_prefix("# env-dep:") {
             let mut split = env_dep.splitn(2, '=');
             match (split.next(), split.next()) {
-                (Some(var), Some(val)) => env_deps.push((var.into(), val.into())),
-                _ => env_deps.push((env_dep.into(), "".into())),
+                (Some(var), Some(val)) => {
+                    env_deps.push((unescape_dep_env(var).into(), unescape_dep_env(val).into()));
+                }
+                _ => env_deps.push((unescape_dep_env(env_dep).into(), "".into())),
             }
         }
     }
     env_deps
+}
+
+/// Undo rustc's escaping of `\`, newlines and carriage returns
+/// in env-dep names and values.
+fn unescape_dep_env(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some(c) => out.push(c),
+            None => out.push('\\'),
+        }
+    }
+    out
 }
 
 /// Rewrite the dep-info of a `--emit dep-info -o <file>` invocation
@@ -3500,6 +3522,19 @@ bar.rs:
         assert_eq!(
             pathvec!["abc.rs", "bar.rs", "baz.rs"],
             parse_dep_info(deps, "")
+        );
+    }
+
+    #[test]
+    fn test_parse_env_dep_info_unescapes() {
+        let deps = "# env-dep:OUT_DIR=C:\\\\dir\\\\out\n# env-dep:X=a\\nb\\rc=d\n# env-dep:Y\n";
+        assert_eq!(
+            parse_env_dep_info(deps),
+            [
+                ("OUT_DIR".into(), r"C:\dir\out".into()),
+                ("X".into(), "a\nb\rc=d".into()),
+                ("Y".into(), "".into()),
+            ]
         );
     }
 
