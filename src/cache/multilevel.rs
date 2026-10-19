@@ -524,8 +524,6 @@ impl MultiLevelStorage {
             });
         }
     }
-        }
-    }
 
     /// Write to levels starting from `start_idx` asynchronously
     async fn write_remaining_levels_async(&self, key: &str, data: &Bytes, start_idx: usize) {
@@ -641,7 +639,6 @@ impl Storage for MultiLevelStorage {
                         idx, error
                     );
                 }
-            }
             }
         }
 

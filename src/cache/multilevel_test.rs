@@ -1675,8 +1675,32 @@ fn test_multilevel_get_raw_finds_first_hit() {
             "get_raw bytes should be a valid zip archive"
         );
 
-        // Client-side mode reads through get_raw over IPC. A lower-level hit
-        // must therefore trigger the same L0 backfill as the parsed get path.
+        // A key that exists in neither level should return None.
+        assert!(storage.get_raw("missing").await.unwrap().is_none());
+    });
+}
+
+#[test]
+fn test_multilevel_get_raw_backfills_lower_levels() {
+    let runtime = RuntimeBuilder::new_multi_thread()
+        .enable_all()
+        .worker_threads(1)
+        .build()
+        .unwrap();
+
+    let l0 = Arc::new(InMemoryStorage::new());
+    let l1 = Arc::new(InMemoryStorage::new());
+    let storage = MultiLevelStorage::new(vec![
+        l0.clone() as Arc<dyn Storage>,
+        l1.clone() as Arc<dyn Storage>,
+    ]);
+
+    runtime.block_on(async {
+        l1.put("key", CacheWrite::default()).await.unwrap();
+        assert!(l0.get_raw("key").await.unwrap().is_none());
+
+        assert!(storage.get_raw("key").await.unwrap().is_some());
+
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
                 if l0.get_raw("key").await.unwrap().is_some() {
@@ -1686,10 +1710,7 @@ fn test_multilevel_get_raw_finds_first_hit() {
             }
         })
         .await
-        .expect("L1 hit should backfill L0");
-
-        // A key that exists in neither level should return None.
-        assert!(storage.get_raw("missing").await.unwrap().is_none());
+        .expect("L1 raw hit should backfill L0");
     });
 }
 
