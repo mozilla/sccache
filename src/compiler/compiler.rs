@@ -564,6 +564,7 @@ where
         pool: &tokio::runtime::Handle,
         rewrite_includes_only: bool,
         storage: Arc<dyn Storage>,
+        basedirs: &[Vec<u8>],
         cache_control: CacheControl,
     ) -> Result<HashResult<T>>;
 
@@ -593,6 +594,7 @@ where
             Some(ref client) => client.rewrite_includes_only(),
             _ => false,
         };
+        let basedirs = request_basedirs(&env_vars, storage.basedirs());
         let result = self
             .generate_hash_key(
                 &creator,
@@ -602,6 +604,7 @@ where
                 &pool,
                 rewrite_includes_only,
                 storage.clone(),
+                &basedirs,
                 cache_control,
             )
             .await;
@@ -1362,6 +1365,24 @@ pub enum CacheControl {
     ForceNoCache,
     /// Ignore existing cache entries, force recompilation.
     ForceRecache,
+}
+
+/// The basedirs for one compile: the `SCCACHE_BASEDIRS` in its environment if set,
+/// so each build can name its own checkout, otherwise the configured ones.
+fn request_basedirs<'a>(
+    env_vars: &[(OsString, OsString)],
+    configured: &'a [Vec<u8>],
+) -> Cow<'a, [Vec<u8>]> {
+    let Some((_, value)) = env_vars.iter().find(|(k, _)| k == "SCCACHE_BASEDIRS") else {
+        return Cow::Borrowed(configured);
+    };
+    match crate::config::basedirs_from_env(value) {
+        Ok(basedirs) => Cow::Owned(basedirs),
+        Err(e) => {
+            warn!("Ignoring the compile's SCCACHE_BASEDIRS: {e}");
+            Cow::Borrowed(configured)
+        }
+    }
 }
 
 /// Creates a future that will write `contents` to `path` inside of a temporary
@@ -2127,6 +2148,25 @@ mod test {
     }
 
     #[test]
+    fn test_request_basedirs() {
+        let root = env::temp_dir();
+        let configured = vec![b"/configured/".to_vec()];
+        let env = |value: &OsStr| vec![(OsString::from("SCCACHE_BASEDIRS"), value.to_owned())];
+
+        assert_eq!(*request_basedirs(&[], &configured), configured);
+        assert_eq!(
+            *request_basedirs(&env(root.as_os_str()), &configured),
+            crate::config::basedirs_from_env(root.as_os_str()).unwrap()
+        );
+        assert!(request_basedirs(&env(OsStr::new("")), &configured).is_empty());
+        // A relative path is ignored rather than failing the compile.
+        assert_eq!(
+            *request_basedirs(&env(OsStr::new("relative")), &configured),
+            configured
+        );
+    }
+
+    #[test]
     fn test_c_preprocessing_consistent() {
         // Must contain all possible values from `Language`.
         // Cannot use `enum_iterator` because it adds macro to the real enum,
@@ -2644,6 +2684,7 @@ LLVM version: 6.0",
                         pool,
                         false,
                         Arc::new(MockStorage::new(None, preprocessor_cache_mode)),
+                        &[],
                         CacheControl::Default,
                     )
                     .wait()
@@ -2716,6 +2757,7 @@ LLVM version: 6.0",
                     pool,
                     false,
                     Arc::new(MockStorage::new(None, preprocessor_cache_mode)),
+                    &[],
                     CacheControl::Default,
                 )
                 .wait()
@@ -2793,6 +2835,7 @@ LLVM version: 6.0",
                     pool,
                     false,
                     Arc::new(MockStorage::new(None, preprocessor_cache_mode)),
+                    &[],
                     CacheControl::Default,
                 )
                 .wait()
@@ -2890,6 +2933,7 @@ LLVM version: 6.0",
                         pool,
                         false,
                         Arc::new(MockStorage::new(None, preprocessor_cache_mode)),
+                        &[],
                         CacheControl::Default,
                     )
                     .wait()
@@ -2957,6 +3001,7 @@ LLVM version: 6.0",
                         pool,
                         false,
                         Arc::new(MockStorage::new(None, preprocessor_cache_mode)),
+                        &[],
                         CacheControl::Default,
                     )
                     .wait()
