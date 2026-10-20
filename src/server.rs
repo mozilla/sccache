@@ -563,8 +563,14 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
             crate::net::SocketAddr::Net(addr) => {
                 trace!("binding TCP {addr}");
                 let l = runtime.block_on(tokio::net::TcpListener::bind(addr))?;
-                let srv =
-                    SccacheServer::<_>::with_listener(l, runtime, client, dist_client, storage);
+                let srv = SccacheServer::<_>::with_listener(
+                    l,
+                    runtime,
+                    client,
+                    dist_client,
+                    storage,
+                    cache_mode,
+                );
                 Ok((
                     srv.local_addr().unwrap(),
                     Box::new(move |f| srv.run(f)) as Box<dyn FnOnce(_) -> _>,
@@ -577,8 +583,14 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
                     let _guard = runtime.enter();
                     bind_unix_listener(path)?
                 };
-                let srv =
-                    SccacheServer::<_>::with_listener(l, runtime, client, dist_client, storage);
+                let srv = SccacheServer::<_>::with_listener(
+                    l,
+                    runtime,
+                    client,
+                    dist_client,
+                    storage,
+                    cache_mode,
+                );
                 Ok((
                     srv.local_addr().unwrap(),
                     Box::new(move |f| srv.run(f)) as Box<dyn FnOnce(_) -> _>,
@@ -594,8 +606,14 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
                     let _guard = runtime.enter();
                     tokio::net::UnixListener::from_std(l)?
                 };
-                let srv =
-                    SccacheServer::<_>::with_listener(l, runtime, client, dist_client, storage);
+                let srv = SccacheServer::<_>::with_listener(
+                    l,
+                    runtime,
+                    client,
+                    dist_client,
+                    storage,
+                    cache_mode,
+                );
                 Ok((
                     srv.local_addr()
                         .unwrap_or_else(|| crate::net::SocketAddr::UnixAbstract(p.clone())),
@@ -650,6 +668,7 @@ impl<C: CommandCreatorSync> SccacheServer<tokio::net::TcpListener, C> {
         client: Client,
         dist_client: DistClientContainer,
         storage: Arc<dyn Storage>,
+        cache_mode: CacheMode,
     ) -> Result<Self> {
         let addr = crate::net::SocketAddr::with_port(port);
         let listener = runtime.block_on(tokio::net::TcpListener::bind(addr.as_net().unwrap()))?;
@@ -660,6 +679,7 @@ impl<C: CommandCreatorSync> SccacheServer<tokio::net::TcpListener, C> {
             client,
             dist_client,
             storage,
+            cache_mode,
         ))
     }
 }
@@ -671,13 +691,15 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
         client: Client,
         dist_client: DistClientContainer,
         storage: Arc<dyn Storage>,
+        cache_mode: CacheMode,
     ) -> Self {
         // Prepare the service which we'll use to service all incoming TCP
         // connections.
         let (tx, rx) = mpsc::channel(1);
         let (wait, info) = WaitUntilZero::new();
         let pool = runtime.handle().clone();
-        let service = SccacheService::new(dist_client, storage, &client, pool, tx, info);
+        let service =
+            SccacheService::new(dist_client, storage, cache_mode, &client, pool, tx, info);
 
         SccacheServer {
             runtime,
@@ -858,6 +880,9 @@ where
     /// Cache storage.
     storage: Arc<dyn Storage>,
 
+    /// Access mode selected when this service was constructed.
+    effective_cache_mode: CacheMode,
+
     /// A cache of known compiler info.
     compilers: Arc<RwLock<CompilerMap<C>>>,
 
@@ -979,7 +1004,7 @@ where
                         cache_type_name: me.storage.cache_type_name().to_owned(),
                         basedirs: me.storage.basedirs().to_vec(),
                         preprocessor_cache_mode_config: me.storage.preprocessor_cache_mode_config(),
-                        cache_mode: me.storage.check().await.unwrap_or(CacheMode::ReadWrite),
+                        cache_mode: me.effective_cache_mode,
                         max_size: me.storage.max_size().await.unwrap_or(None),
                     };
                     Ok(Message::WithoutBody(Response::StorageHandshake(info)))
@@ -1068,6 +1093,7 @@ where
     pub fn new(
         dist_client: DistClientContainer,
         storage: Arc<dyn Storage>,
+        effective_cache_mode: CacheMode,
         client: &Client,
         rt: tokio::runtime::Handle,
         tx: mpsc::Sender<ServerMessage>,
@@ -1077,6 +1103,7 @@ where
             stats: Arc::default(),
             dist_client: Arc::new(dist_client),
             storage,
+            effective_cache_mode,
             compilers: Arc::default(),
             compiler_proxies: Arc::default(),
             rt,
@@ -1099,6 +1126,7 @@ where
             stats: Arc::default(),
             dist_client: Arc::new(dist_client),
             storage,
+            effective_cache_mode: CacheMode::ReadWrite,
             compilers: Arc::default(),
             compiler_proxies: Arc::default(),
             rt,
@@ -1135,6 +1163,7 @@ where
                 dist_client,
             ))),
             storage,
+            effective_cache_mode: CacheMode::ReadWrite,
             compilers: Arc::default(),
             compiler_proxies: Arc::default(),
             rt: rt.clone(),
@@ -2289,7 +2318,7 @@ impl ServerInfo {
     }
 
     /// Print info to stdout in a human-readable format.
-    pub fn print(&self, advanced: bool) {
+    pub fn print(&self, advanced: bool, effective_cache_mode: Option<CacheMode>) {
         let (name_width, stat_width) = self.stats.print(&mut StdoutServerStatsWriter, advanced);
         println!(
             "{:<name_width$} {}",
@@ -2306,6 +2335,14 @@ impl ServerInfo {
                     name_width = name_width
                 );
             }
+        }
+        if advanced && let Some(cache_mode) = effective_cache_mode {
+            println!(
+                "{:<name_width$} {:?}",
+                "Effective cache mode",
+                cache_mode,
+                name_width = name_width
+            );
         }
         println!(
             "{:<name_width$} {}",
@@ -2777,6 +2814,45 @@ mod tests {
     const OTHER_STDERR: &[u8] = b"{\"artifact\":\"/t/libdep.rlib\",\"emit\":\"link\"}\n";
 
     type MockCreator = Arc<std::sync::Mutex<MockCommandCreator>>;
+
+    #[test]
+    fn storage_handshake_reports_installed_cache_mode() {
+        use crate::cache::disk::DiskCache;
+        use crate::config::PreprocessorCacheModeConfig;
+
+        let fixture = TestFixture::new();
+        let runtime = Runtime::new().unwrap();
+        let storage = Arc::new(DiskCache::new(
+            fixture.tempdir.path().join("cache-mode"),
+            u64::MAX,
+            runtime.handle(),
+            PreprocessorCacheModeConfig::default(),
+            CacheMode::ReadWrite,
+            vec![],
+        ));
+        let client = Client::new_num(1);
+        let (tx, _rx) = mpsc::channel(1);
+        let (_wait, info) = WaitUntilZero::new();
+        let service = SccacheService::<MockCreator>::new(
+            DistClientContainer::new_disabled(),
+            storage,
+            CacheMode::ReadOnly,
+            &client,
+            runtime.handle().clone(),
+            tx,
+            info,
+        );
+        let request: SccacheRequest = Message::WithoutBody(Request::StorageHandshake);
+        let response = runtime
+            .block_on(Arc::new(service).call(request))
+            .unwrap()
+            .into_inner();
+
+        let Response::StorageHandshake(handshake) = response else {
+            panic!("unexpected response: {response:?}");
+        };
+        assert_eq!(handshake.cache_mode, CacheMode::ReadOnly);
+    }
 
     fn mock_rustc_cache_miss(creator: &MockCreator, f: &TestFixture) {
         // rustc -vV
