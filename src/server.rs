@@ -2698,6 +2698,7 @@ mod tests {
             Client::new(),
             DistClientContainer::new_disabled(),
             storage,
+            CacheMode::ReadWrite,
         );
 
         let error = server.run(future::pending::<()>()).unwrap_err();
