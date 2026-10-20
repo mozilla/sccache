@@ -2343,17 +2343,16 @@ fn test_can_trim_this() {
 /// Extract the crate name and extension from a library file path in a crate
 /// link directory.
 ///
-/// Filenames are normally `lib<crate>-<metadata-hash>.<ext>`, but cdylib and
-/// staticlib outputs can have no metadata hash (e.g. `libcrc_fast.rmeta` from a
-/// crate with `crate-type = ["lib", "cdylib", "staticlib"]`). In that case
-/// `rsplitn(2, '-')` yields a single element, so the whole filename is the
-/// libname.
+/// Filenames are normally `lib<crate>-<metadata-hash>.<ext>`, but some Rust
+/// library artifacts can have no metadata hash (for example, an observed
+/// `libcrc_fast.rlib`). In that case `rsplitn(2, '-')` yields a single element,
+/// so the whole filename is the libname.
 #[cfg(feature = "dist-client")]
 fn crate_name_and_ext_from_lib_path(path: &Path) -> Option<(&str, &str)> {
     let ext = path.extension()?.to_str()?;
     // file_stem strips the extension, giving e.g. `libcrc_fast` from
-    // `libcrc_fast.rmeta`. rsplitn on the stem then correctly handles both
-    // `libfoo-HASH` (normal) and `libcrc_fast` (cdylib, no hash) cases.
+    // `libcrc_fast.rlib`. rsplitn on the stem then correctly handles both
+    // `libfoo-HASH` and hashless `libcrc_fast` cases.
     let stem = path.file_stem()?.to_str()?;
     let mut rev_name_split = stem.rsplitn(2, '-');
     let _extra_filename_and_ext = rev_name_split.next();
@@ -2371,56 +2370,25 @@ fn crate_name_and_ext_from_lib_path(path: &Path) -> Option<(&str, &str)> {
 #[test]
 #[cfg(feature = "dist-client")]
 fn test_crate_name_and_ext_from_lib_path() {
-    use std::path::Path;
+    let dynamic_hashed = format!("{DLL_PREFIX}foo-abc123.{DLL_EXTENSION}");
+    let dynamic_hashless = format!("{DLL_PREFIX}crc_fast.{DLL_EXTENSION}");
+    let cases = [
+        ("libfoo-abc123.rlib", Some(("foo", "rlib"))),
+        ("libfoo-abc123.rmeta", Some(("foo", "rmeta"))),
+        ("libcrc_fast.rmeta", Some(("crc_fast", "rmeta"))),
+        ("libcrc_fast.rlib", Some(("crc_fast", "rlib"))),
+        (dynamic_hashed.as_str(), Some(("foo", DLL_EXTENSION))),
+        (dynamic_hashless.as_str(), Some(("crc_fast", DLL_EXTENSION))),
+        ("foo.txt", None),
+        (
+            "libxai_file_utils-abc123.rmeta",
+            Some(("xai_file_utils", "rmeta")),
+        ),
+    ];
 
-    // Normal rlib with metadata hash suffix
-    let p = Path::new("libfoo-abc123.rlib");
-    assert_eq!(crate_name_and_ext_from_lib_path(p), Some(("foo", "rlib")));
-
-    // Normal rmeta with metadata hash suffix
-    let p = Path::new("libfoo-abc123.rmeta");
-    assert_eq!(crate_name_and_ext_from_lib_path(p), Some(("foo", "rmeta")));
-
-    // cdylib output with no metadata hash suffix (crate-type includes cdylib)
-    let p = Path::new("libcrc_fast.rmeta");
-    assert_eq!(
-        crate_name_and_ext_from_lib_path(p),
-        Some(("crc_fast", "rmeta"))
-    );
-
-    // cdylib output with no metadata hash suffix, rlib variant
-    let p = Path::new("libcrc_fast.rlib");
-    assert_eq!(
-        crate_name_and_ext_from_lib_path(p),
-        Some(("crc_fast", "rlib"))
-    );
-
-    // Dynamic library with metadata hash.
-    let filename = format!("{DLL_PREFIX}foo-abc123.{DLL_EXTENSION}");
-    let p = Path::new(&filename);
-    assert_eq!(
-        crate_name_and_ext_from_lib_path(p),
-        Some(("foo", DLL_EXTENSION))
-    );
-
-    // Dynamic library without metadata hash (cdylib).
-    let filename = format!("{DLL_PREFIX}crc_fast.{DLL_EXTENSION}");
-    let p = Path::new(&filename);
-    assert_eq!(
-        crate_name_and_ext_from_lib_path(p),
-        Some(("crc_fast", DLL_EXTENSION))
-    );
-
-    // Not a library file
-    let p = Path::new("foo.txt");
-    assert_eq!(crate_name_and_ext_from_lib_path(p), None);
-
-    // Path with multiple dashes in crate name
-    let p = Path::new("libxai_file_utils-abc123.rmeta");
-    assert_eq!(
-        crate_name_and_ext_from_lib_path(p),
-        Some(("xai_file_utils", "rmeta"))
-    );
+    for (path, expected) in cases {
+        assert_eq!(crate_name_and_ext_from_lib_path(Path::new(path)), expected);
+    }
 }
 
 #[cfg(feature = "dist-client")]
@@ -3787,8 +3755,7 @@ proc_macro false
     fn test_parse_rustc_z_ls_modern_no_hash_suffix() {
         // Modern rustc (1.75+) prints extended metadata per dep line:
         //   N libname[-hash] hash HASH host_hash ... kind ... public
-        // Crates without a -HASH suffix (e.g. crc_fast, a proc-macro-style
-        // library built with a deterministic hash) appear as:
+        // Crates without a -HASH suffix (as observed for crc_fast) appear as:
         //   N crc_fast hash 05bce6... host_hash None kind Unconditional public
         // The parser must extract just "crc_fast", not the entire trailing
         // metadata, so that RustInputsPackager can match it against rmeta
@@ -3804,9 +3771,7 @@ hash 42fac6f0 stable_crate_id StableCrateId(12206970385906972588)
 5 aws_sdk_s3-c49a342c963fe6e9 hash 119191ef3d4a8059aee3abebc4c4b5bf host_hash None kind Unconditional public
 
 ";
-        let res = parse_rustc_z_ls(output);
-        assert!(res.is_ok());
-        let res = res.unwrap();
+        let res = parse_rustc_z_ls(output).expect("modern rustc -Z ls output should parse");
         assert_eq!(res.len(), 5);
         assert_eq!(res[0], "std");
         assert_eq!(res[1], "core");
