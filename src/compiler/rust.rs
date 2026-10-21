@@ -2348,20 +2348,20 @@ fn test_can_trim_this() {
 /// `libcrc_fast.rlib`). In that case `rsplitn(2, '-')` yields a single element,
 /// so the whole filename is the libname.
 #[cfg(feature = "dist-client")]
-fn crate_name_and_ext_from_lib_path(path: &Path) -> Option<(&str, &str)> {
+fn crate_name_and_ext_from_lib_path(path: &Path) -> Option<(&str, &str, bool)> {
     let ext = path.extension()?.to_str()?;
-    // file_stem strips the extension, giving e.g. `libcrc_fast` from
-    // `libcrc_fast.rlib`. rsplitn on the stem then correctly handles both
-    // `libfoo-HASH` and hashless `libcrc_fast` cases.
     let stem = path.file_stem()?.to_str()?;
     let mut rev_name_split = stem.rsplitn(2, '-');
-    let _extra_filename_and_ext = rev_name_split.next();
-    let libname = rev_name_split.next().unwrap_or(stem);
+    let suffix_or_name = rev_name_split.next()?;
+    let (libname, hashless) = match rev_name_split.next() {
+        Some(name) => (name, false),
+        None => (suffix_or_name, true),
+    };
     if libname.starts_with(DLL_PREFIX) && ext == DLL_EXTENSION {
-        Some((&libname[DLL_PREFIX.len()..], ext))
+        Some((&libname[DLL_PREFIX.len()..], ext, hashless))
     } else if libname.starts_with(RLIB_PREFIX) && (ext == RLIB_EXTENSION || ext == RMETA_EXTENSION)
     {
-        Some((&libname[RLIB_PREFIX.len()..], ext))
+        Some((&libname[RLIB_PREFIX.len()..], ext, hashless))
     } else {
         None
     }
@@ -2373,16 +2373,19 @@ fn test_crate_name_and_ext_from_lib_path() {
     let dynamic_hashed = format!("{DLL_PREFIX}foo-abc123.{DLL_EXTENSION}");
     let dynamic_hashless = format!("{DLL_PREFIX}crc_fast.{DLL_EXTENSION}");
     let cases = [
-        ("libfoo-abc123.rlib", Some(("foo", "rlib"))),
-        ("libfoo-abc123.rmeta", Some(("foo", "rmeta"))),
-        ("libcrc_fast.rmeta", Some(("crc_fast", "rmeta"))),
-        ("libcrc_fast.rlib", Some(("crc_fast", "rlib"))),
-        (dynamic_hashed.as_str(), Some(("foo", DLL_EXTENSION))),
-        (dynamic_hashless.as_str(), Some(("crc_fast", DLL_EXTENSION))),
+        ("libfoo-abc123.rlib", Some(("foo", "rlib", false))),
+        ("libfoo-abc123.rmeta", Some(("foo", "rmeta", false))),
+        ("libcrc_fast.rmeta", Some(("crc_fast", "rmeta", true))),
+        ("libcrc_fast.rlib", Some(("crc_fast", "rlib", true))),
+        (dynamic_hashed.as_str(), Some(("foo", DLL_EXTENSION, false))),
+        (
+            dynamic_hashless.as_str(),
+            Some(("crc_fast", DLL_EXTENSION, true)),
+        ),
         ("foo.txt", None),
         (
             "libxai_file_utils-abc123.rmeta",
-            Some(("xai_file_utils", "rmeta")),
+            Some(("xai_file_utils", "rmeta", false)),
         ),
     ];
 
@@ -2543,11 +2546,16 @@ impl pkg::InputsPackager for RustInputsPackager {
 
                 {
                     // Take a look at the path and see if it's something we care about
-                    let (crate_name, ext): (&str, &str) =
-                        match crate_name_and_ext_from_lib_path(&path) {
-                            Some(c) => c,
-                            None => continue,
-                        };
+                    let (crate_name, ext, hashless) = match crate_name_and_ext_from_lib_path(&path)
+                    {
+                        Some(c) => c,
+                        None => continue,
+                    };
+                    // Without rustc dependency names, a hashless native library such as
+                    // libz.so is indistinguishable from a hashless Rust artifact.
+                    if hashless && rlib_dep_reader_and_names.is_none() {
+                        continue;
+                    }
                     if let Some((_, ref dep_crate_names)) = rlib_dep_reader_and_names {
                         // We have a list of crate names we care about, see if this lib is a candidate
                         if !dep_crate_names.contains(crate_name) {
@@ -2939,11 +2947,7 @@ fn parse_rustc_z_ls(stdout: &str) -> Result<Vec<&str>> {
         let libstring = line_splits
             .next()
             .context("No lib string on line from rustc -Z ls")?;
-        // The libstring may contain additional metadata after the crate name
-        // (e.g., "crc_fast hash 05bce6... host_hash None kind Unconditional public"
-        // when the crate has no -HASH suffix). Take only the first
-        // whitespace-delimited token so rsplitn(-) below operates on just
-        // the crate name, not the entire trailing metadata.
+        // Ignore metadata after the crate name.
         let libstring = libstring
             .split_whitespace()
             .next()
