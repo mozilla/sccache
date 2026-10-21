@@ -6,6 +6,13 @@
 # If specified, wait this long for the server to start up.
 server_startup_timeout_ms = 10000
 
+# If specified, cap the size of the server log file written when
+# `SCCACHE_ERROR_LOG` is set. The file is truncated (emptied) when the
+# server starts if it is already larger than this, and the running server
+# periodically checks the file and truncates it again once it grows past
+# the limit. Accepts a byte count or a string with a K/M/G/T suffix.
+error_log_max_size = "10M"
+
 # Base directories to strip from source paths during cache key
 # computation.
 #
