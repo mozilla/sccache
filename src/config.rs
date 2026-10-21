@@ -886,6 +886,7 @@ pub struct EnvConfig {
     basedirs: Option<Vec<String>>,
     dist_cache_dir: Option<PathBuf>,
     client_side_mode: Option<bool>,
+    error_log_max_size: Option<u64>,
 }
 
 fn string_from_env_var(env_var_name: &str) -> Option<String> {
@@ -933,6 +934,20 @@ fn bool_from_env_var(env_var_name: &str) -> Result<Option<bool>> {
                 "{} must be 'true', 'on', '1', 'false', 'off' or '0'.",
                 env_var_name
             ),
+        })
+        .transpose()
+}
+
+fn size_from_env_var(env_var_name: &str) -> Result<Option<u64>> {
+    string_from_env_var(env_var_name)
+        .map(|value| {
+            parse_size(&value).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "{} must be a byte count or a size with a K/M/G/T suffix (like '20G'), got '{}'.",
+                    env_var_name,
+                    value
+                )
+            })
         })
         .transpose()
 }
@@ -1336,12 +1351,14 @@ fn config_from_env() -> Result<EnvConfig> {
 
     let dist_cache_dir = env::var_os("SCCACHE_DIST_CLIENT_CACHE_DIR").map(PathBuf::from);
     let client_side_mode = bool_from_env_var("SCCACHE_CLIENT_SIDE")?;
+    let error_log_max_size = size_from_env_var("SCCACHE_ERROR_LOG_MAX_SIZE")?;
 
     Ok(EnvConfig {
         cache,
         basedirs,
         dist_cache_dir,
         client_side_mode,
+        error_log_max_size,
     })
 }
 
@@ -1405,7 +1422,7 @@ impl Config {
             cache,
             mut dist,
             server_startup_timeout_ms,
-            error_log_max_size,
+            error_log_max_size: file_error_log_max_size,
             basedirs: file_basedirs,
             client_side_mode: file_client_side_mode,
         } = file_conf;
@@ -1419,8 +1436,11 @@ impl Config {
             basedirs: env_basedirs,
             dist_cache_dir: env_dist_cache_dir,
             client_side_mode: env_client_side_mode,
+            error_log_max_size: env_error_log_max_size,
         } = env_conf;
         conf_caches.merge(cache);
+
+        let error_log_max_size = env_error_log_max_size.or(file_error_log_max_size);
 
         if let Some(cache_dir) = env_dist_cache_dir {
             dist.cache_dir = cache_dir;
@@ -1908,6 +1928,7 @@ fn config_overrides() {
         basedirs: None,
         dist_cache_dir: None,
         client_side_mode: None,
+        error_log_max_size: None,
     };
 
     let file_conf = FileConfig {
@@ -2009,6 +2030,7 @@ fn config_basedirs_overrides() {
         basedirs: vec!["C:/env/basedir".to_string()].into(),
         dist_cache_dir: None,
         client_side_mode: None,
+        error_log_max_size: None,
     };
 
     let file_conf = FileConfig {
@@ -2029,6 +2051,7 @@ fn config_basedirs_overrides() {
         basedirs: None,
         dist_cache_dir: None,
         client_side_mode: None,
+        error_log_max_size: None,
     };
 
     let file_conf = FileConfig {
@@ -2049,6 +2072,7 @@ fn config_basedirs_overrides() {
         basedirs: vec![].into(),
         dist_cache_dir: None,
         client_side_mode: None,
+        error_log_max_size: None,
     };
 
     let file_conf = FileConfig {
@@ -2069,6 +2093,7 @@ fn config_basedirs_overrides() {
         basedirs: vec![].into(),
         dist_cache_dir: None,
         client_side_mode: None,
+        error_log_max_size: None,
     };
 
     let file_conf = FileConfig {
@@ -2093,6 +2118,7 @@ fn config_basedirs_overrides() {
         basedirs: vec!["/env/basedir".to_string()].into(),
         dist_cache_dir: None,
         client_side_mode: None,
+        error_log_max_size: None,
     };
 
     let file_conf = FileConfig {
@@ -2113,6 +2139,7 @@ fn config_basedirs_overrides() {
         basedirs: None,
         dist_cache_dir: None,
         client_side_mode: None,
+        error_log_max_size: None,
     };
 
     let file_conf = FileConfig {
@@ -2133,6 +2160,7 @@ fn config_basedirs_overrides() {
         basedirs: vec![].into(),
         dist_cache_dir: None,
         client_side_mode: None,
+        error_log_max_size: None,
     };
 
     let file_conf = FileConfig {
@@ -2153,6 +2181,7 @@ fn config_basedirs_overrides() {
         basedirs: vec![].into(),
         dist_cache_dir: None,
         client_side_mode: None,
+        error_log_max_size: None,
     };
 
     let file_conf = FileConfig {
@@ -2171,6 +2200,7 @@ fn config_basedirs_overrides() {
         basedirs: None,
         dist_cache_dir: None,
         client_side_mode: None,
+        error_log_max_size: None,
     };
 
     let file_conf = FileConfig {
@@ -2890,6 +2920,62 @@ fn test_gcs_service_account() {
 }
 
 #[test]
+fn test_size_from_env_var() {
+    let var_name = "TEST_SCCACHE_ERROR_LOG_MAX_SIZE";
+    for (value, expected) in [
+        (None, Ok(None)),
+        (Some(""), Ok(None)),
+        (Some("4096"), Ok(Some(4096))),
+        (Some("2K"), Ok(Some(2048))),
+        (Some("10m"), Ok(Some(10 * 1024 * 1024))),
+        (Some("bogus"), Err(())),
+        (Some("-1"), Err(())),
+    ] {
+        match value {
+            None => unsafe {
+                std::env::remove_var(var_name);
+            },
+            Some(value) => unsafe {
+                std::env::set_var(var_name, value);
+            },
+        }
+        assert_eq!(
+            size_from_env_var(var_name).map_err(|_| ()),
+            expected,
+            "value: {value:?}"
+        );
+    }
+    unsafe {
+        std::env::remove_var(var_name);
+    }
+}
+
+#[test]
+fn error_log_max_size_env_overrides_file() {
+    let env_conf = |error_log_max_size| EnvConfig {
+        cache: Default::default(),
+        basedirs: None,
+        dist_cache_dir: None,
+        client_side_mode: None,
+        error_log_max_size,
+    };
+    let file_conf = |error_log_max_size| FileConfig {
+        error_log_max_size,
+        ..Default::default()
+    };
+
+    let merged = |env, file| {
+        Config::from_env_and_file_configs(env_conf(env), file_conf(file))
+            .unwrap()
+            .error_log_max_size
+    };
+    assert_eq!(merged(None, None), None);
+    assert_eq!(merged(None, Some(1)), Some(1));
+    assert_eq!(merged(Some(2), None), Some(2));
+    assert_eq!(merged(Some(2), Some(1)), Some(2));
+}
+
+#[test]
 fn error_log_max_size_parse() {
     let conf: FileConfig = toml::from_str("error_log_max_size = 4096").unwrap();
     assert_eq!(conf.error_log_max_size, Some(4096));
@@ -3258,6 +3344,7 @@ fn test_integration_config_normalizes_and_strips() {
         basedirs: None,
         dist_cache_dir: None,
         client_side_mode: None,
+        error_log_max_size: None,
     };
 
     let file_conf = FileConfig {
@@ -3295,6 +3382,7 @@ fn test_integration_normalized_path_with_double_slashes() {
         basedirs: None,
         dist_cache_dir: None,
         client_side_mode: None,
+        error_log_max_size: None,
     };
 
     let file_conf = FileConfig {
@@ -3328,6 +3416,7 @@ fn test_integration_windows_path_normalization() {
         basedirs: None,
         dist_cache_dir: None,
         client_side_mode: None,
+        error_log_max_size: None,
     };
 
     let file_conf = FileConfig {
@@ -3362,6 +3451,7 @@ fn test_integration_cow_borrowed_when_no_match() {
         basedirs: None,
         dist_cache_dir: None,
         client_side_mode: None,
+        error_log_max_size: None,
     };
 
     let file_conf = FileConfig {
@@ -3396,6 +3486,7 @@ fn test_integration_cow_borrowed_when_empty_basedirs() {
         basedirs: None,
         dist_cache_dir: None,
         client_side_mode: None,
+        error_log_max_size: None,
     };
 
     let file_conf = FileConfig {
@@ -3429,6 +3520,7 @@ fn test_integration_multiple_basedirs_longest_match() {
         basedirs: None,
         dist_cache_dir: None,
         client_side_mode: None,
+        error_log_max_size: None,
     };
 
     let file_conf = FileConfig {
@@ -3467,6 +3559,7 @@ fn test_integration_paths_with_dots_normalized() {
         basedirs: None,
         dist_cache_dir: None,
         client_side_mode: None,
+        error_log_max_size: None,
     };
 
     let file_conf = FileConfig {
@@ -3501,6 +3594,7 @@ fn test_integration_windows_mixed_slashes() {
         basedirs: None,
         dist_cache_dir: None,
         client_side_mode: None,
+        error_log_max_size: None,
     };
 
     let file_conf = FileConfig {
