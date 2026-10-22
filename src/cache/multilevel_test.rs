@@ -1829,3 +1829,86 @@ fn test_multilevel_put_raw_writes_to_all_levels() {
         );
     });
 }
+
+// The backfill span lands on the background track (`pid 2`): the spawned task
+// does not inherit the request's `TRACE_CONTEXT`, and `trace::span` falls back
+// to that track. Other multilevel tests may run concurrently and add their own
+// backfill spans, so assert the span exists rather than counting exactly one.
+#[test]
+fn test_multi_level_backfill_is_traced() {
+    let trace_dir = TempBuilder::new()
+        .prefix("sccache_trace_bf_")
+        .tempdir()
+        .unwrap();
+    let trace_file = trace_dir.path().join("trace.json");
+    assert!(
+        crate::trace::init(&trace_file).is_ok(),
+        "tracing already initialized"
+    );
+
+    let runtime = RuntimeBuilder::new_multi_thread()
+        .enable_all()
+        .worker_threads(1)
+        .build()
+        .unwrap();
+
+    let tempdir = TempBuilder::new()
+        .prefix("sccache_test_bf_trace_")
+        .tempdir()
+        .unwrap();
+    let cache_dir = tempdir.path().join("cache");
+    fs::create_dir(&cache_dir).unwrap();
+
+    let l0_disk = DiskCache::new(
+        &cache_dir,
+        1024 * 1024 * 100,
+        runtime.handle(),
+        PreprocessorCacheModeConfig::default(),
+        CacheMode::ReadWrite,
+        vec![],
+    );
+    let l0: Arc<dyn Storage> = Arc::new(l0_disk);
+    let l1: Arc<dyn Storage> = Arc::new(InMemoryStorage::new());
+
+    let storage = MultiLevelStorage::new(vec![Arc::clone(&l0), Arc::clone(&l1)]);
+
+    runtime.block_on(async {
+        l1.put("traced_backfill_key", CacheWrite::default())
+            .await
+            .unwrap();
+
+        match storage.get("traced_backfill_key").await.unwrap() {
+            Cache::Hit(_) => {}
+            _ => panic!("Expected cache hit at level 2"),
+        }
+
+        // Give the spawned backfill task time to write L0 and emit its span.
+        sleep(Duration::from_millis(200)).await;
+
+        match l0.get("traced_backfill_key").await.unwrap() {
+            Cache::Hit(_) => {}
+            _ => panic!("L0 should have the backfilled entry"),
+        }
+
+        crate::trace::flush();
+    });
+
+    let raw = fs::read(trace_file).unwrap();
+    let mut closed = raw;
+    closed.extend_from_slice(b"]");
+    let events: Vec<crate::trace::TraceEvent> = serde_json::from_slice(&closed).unwrap();
+    let backfills: Vec<_> = events
+        .iter()
+        .filter(|e| e.ph == crate::trace::Phase::Complete && e.name == "backfill: L1 -> L0")
+        .collect();
+    assert!(
+        !backfills.is_empty(),
+        "expected a backfill span in the trace"
+    );
+    assert!(
+        backfills
+            .iter()
+            .all(|e| (e.pid, e.tid) == (crate::trace::PID_BACKGROUND, 0)),
+        "backfill spans must land on the background track",
+    );
+}

@@ -72,11 +72,11 @@ Perfetto natively ingests the **Chrome Trace Event Format (JSON Array Format)** 
 
 **Goal:** Provide granular visibility into individual cache backends and background L1/L2 multi-level backfill tasks.
 
-- [ ] **Base Storage Interface Instrumentation (`src/compiler/compiler.rs`)**
-  - [ ] Wrap `storage.get` / `storage.put` calls with `"storage: {cache_type} get/put"`.
-- [ ] **Multi-Level Storage & Async Backfills (`src/cache/multilevel.rs`)**
-  - [ ] Define dedicated track `pid: 2` (`"sccache Async Background & Backfill"`).
-  - [ ] Instrument spawned tasks with `"backfill: L{from} -> L{to}"`.
+- [x] **Base Storage Interface Instrumentation (`src/compiler/compiler.rs`)**
+  - [x] Wrap `storage.get` / `storage.put` calls with `"storage: {cache_type} get/put"`. (The `put` span is emitted when the deferred write future is awaited in `start_compile_task`, so it stays on the worker track inside the `compile:` slice.)
+- [x] **Multi-Level Storage & Async Backfills (`src/cache/multilevel.rs`)**
+  - [x] Define dedicated track `pid: 2` (`"sccache Async Background & Backfill"`). (Already emitted by commit 1; the backfill tasks use it because `tokio::spawn` does not inherit `TRACE_CONTEXT` and `trace::span` falls back to `pid: 2, tid: 0`.)
+  - [x] Instrument spawned tasks with `"backfill: L{from} -> L{to}"`. (Level indices are 0-based, matching the stats naming: a hit at L1 backfilling L0 emits `backfill: L1 -> L0`.)
 
 ### Commit 6: Metric Counters & Time-Series Graphs
 
@@ -185,7 +185,7 @@ Uncommitted at the time of writing: commit 4 (`tool: detect_compiler`, `tool: pr
 ### 4.4 Open items
 
 - Commit 4 is not committed yet.
-- Commit 5 (storage tiers and backfills) and commit 6 (counters) are not started.
+- Commit 6 (counters) is not started.
 - Commit 7 (client-side forwarding) is not started.
 - The `scan_file` volume question above is unresolved.
 - Rustc detection repeats on every request.

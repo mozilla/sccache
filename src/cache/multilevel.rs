@@ -26,6 +26,7 @@ use crate::cache::{Cache, CacheMode, CacheWrite, Storage};
 use crate::compiler::PreprocessorCacheEntry;
 use crate::config::{Config, PreprocessorCacheModeConfig, WriteErrorPolicy};
 use crate::errors::*;
+use crate::trace;
 
 /// Increment an atomic stats counter, handling the Option check.
 /// Usage: `inc_stat!(optional_stats, field_name, value)`
@@ -576,6 +577,9 @@ impl Storage for MultiLevelStorage {
                                         self.atomic_stats.get(backfill_idx).map(Arc::clone);
 
                                     tokio::spawn(async move {
+                                        let _span = trace::span(format!(
+                                            "backfill: L{hit_level} -> L{backfill_idx}"
+                                        ));
                                         match Self::write_entry_from_bytes(
                                             &level_bf, &key_bf, &bytes_bf,
                                         )

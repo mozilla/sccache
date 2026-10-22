@@ -281,3 +281,52 @@ fn test_server_traces_preprocessor_cache() {
         "{events:?}"
     );
 }
+
+#[test]
+#[serial]
+#[cfg(not(target_os = "macos"))]
+fn test_server_traces_storage() {
+    let tempdir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tempdir.path().join("trace_me.rs"),
+        "pub fn trace_me() -> u32 { 0 }\n",
+    )
+    .unwrap();
+    std::fs::create_dir(tempdir.path().join("out")).unwrap();
+    let events = run_traced_server(tempdir.path(), |sccache| {
+        for _ in 0..2 {
+            let output = sccache(&[
+                "rustc",
+                "--crate-name",
+                "trace_me",
+                "--crate-type",
+                "lib",
+                "--emit=link",
+                "--out-dir=out",
+                "trace_me.rs",
+            ]);
+            assert!(output.status.success(), "{output:?}");
+        }
+    });
+
+    let compiles = compile_spans(&events);
+    assert_eq!(compiles.len(), 2, "{events:?}");
+    assert_eq!(compiles[0]["args"]["result"], "Miss", "{events:?}");
+    assert_eq!(compiles[1]["args"]["result"], "Hit", "{events:?}");
+    for span in &compiles {
+        assert_eq!(
+            spans_within(&events, "storage: disk get", span).len(),
+            1,
+            "{events:?}"
+        );
+    }
+    assert_eq!(
+        spans_within(&events, "storage: disk put", compiles[0]).len(),
+        1,
+        "{events:?}"
+    );
+    assert!(
+        spans_within(&events, "storage: disk put", compiles[1]).is_empty(),
+        "{events:?}"
+    );
+}
