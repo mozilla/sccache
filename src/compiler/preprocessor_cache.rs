@@ -34,6 +34,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     config::PreprocessorCacheModeConfig,
+    trace,
     util::{Digest, HashToDigest, MetadataCtimeExt, Timestamp, encode_path, strip_basedirs},
 };
 
@@ -198,6 +199,7 @@ impl PreprocessorCacheEntry {
         updated: &mut bool,
     ) -> bool {
         for include in includes {
+            let _span = trace::span("scan_file");
             let path = Path::new(include.path.as_os_str());
             let meta = match std::fs::symlink_metadata(path) {
                 Ok(meta) => {

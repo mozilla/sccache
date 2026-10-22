@@ -51,12 +51,12 @@ Perfetto natively ingests the **Chrome Trace Event Format (JSON Array Format)** 
 
 **Goal:** Instrument internal parsing logic as nested child spans within the compilation worker track.
 
-- [ ] **Command-Line & Compiler Option Parsing (`src/server.rs`)**
-  - [ ] Wrap `c.parse_arguments` with span `"parse_arguments"`.
-- [ ] **Direct Preprocessor Cache Parsing (`src/compiler/preprocessor_cache.rs`)**
-  - [ ] Add `"parse_preprocessor_includes"` and `"scan_file"` spans.
-- [ ] **Compiler Dependency Parsing (`src/compiler/gcc.rs`, `src/compiler/msvc.rs`, `src/compiler/rust.rs`)**
-  - [ ] Wrap dependency file parsing with `"parse_dependencies"`.
+- [x] **Command-Line & Compiler Option Parsing (`src/server.rs`)**
+  - [x] Wrap `c.parse_arguments` with span `"parse_arguments"`.
+- [x] **Direct Preprocessor Cache Parsing (`src/compiler/preprocessor_cache.rs`)**
+  - [x] Add `"parse_preprocessor_includes"` and `"scan_file"` spans. (`parse_preprocessor_includes` wraps `process_preprocessed_file` in `src/compiler/c.rs`; `scan_file` is per include in `result_matches`.)
+- [x] **Compiler Dependency Parsing (`src/compiler/gcc.rs`, `src/compiler/msvc.rs`, `src/compiler/rust.rs`)**
+  - [x] Wrap dependency file parsing with `"parse_dependencies"`. (Only `rust.rs` parses a dependency file; gcc.rs reads `@` response files and msvc.rs has no dependency file parsing, so nothing to wrap there.)
 
 ### Commit 4: Tool Execution & Process Spans
 

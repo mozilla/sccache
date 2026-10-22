@@ -26,6 +26,7 @@ use crate::dist::pkg;
 #[cfg(feature = "dist-client")]
 use crate::lru_disk_cache::{LruCache, Meter};
 use crate::mock_command::{CommandCreatorSync, RunCommand};
+use crate::trace;
 use crate::util::{Digest, fmt_duration_as_secs, hash_all, hash_all_archives, run_input_output};
 use crate::util::{HashToDigest, OsStrExt};
 use crate::{counted_array, dist};
@@ -464,8 +465,10 @@ where
     // Parse the dep-info file, then hash the contents of those files.
     let cwd = cwd.to_owned();
     let name2 = crate_name.to_owned();
+    let span = trace::span("parse_dependencies");
     let parsed = pool
         .spawn_blocking(move || {
+            let _span = span;
             parse_dep_file(&dep_file, &cwd)
                 .with_context(|| format!("Failed to parse dep info for {}", name2))
         })

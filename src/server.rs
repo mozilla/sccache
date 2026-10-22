@@ -1454,7 +1454,11 @@ where
                 debug!("check_compiler: Supported compiler");
                 // Now check that we can handle this compiler with
                 // the provided commandline.
-                match c.parse_arguments(&cmd, &cwd, &env_vars) {
+                let parsed = {
+                    let _span = trace::span("parse_arguments");
+                    c.parse_arguments(&cmd, &cwd, &env_vars)
+                };
+                match parsed {
                     CompilerArguments::Ok(hasher) => {
                         debug!("parse_arguments: Ok: {:?}", cmd);
 
