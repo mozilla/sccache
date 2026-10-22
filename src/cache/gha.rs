@@ -12,10 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::time::Duration;
+
 use opendal::OperationContext;
 use opendal::Operator;
 use opendal::services::Ghac;
 use opendal_layer_logging::LoggingLayer;
+use opendal_layer_retry::RetryLayer;
 
 use crate::VERSION;
 use crate::errors::*;
@@ -43,7 +46,15 @@ impl GHACache {
 
         let op = Operator::new(builder)?
             .with_context(OperationContext::new().with_http_transport(set_user_agent()))
-            .layer(LoggingLayer::default());
+            .layer(LoggingLayer::default())
+            .layer(
+                // GitHub 429s can request Retry-After delays around 20s; bound retries to six
+                // attempts and cap each backoff at 8s so a cache write cannot stall indefinitely.
+                RetryLayer::new()
+                    .with_jitter()
+                    .with_max_times(6)
+                    .with_max_delay(Duration::from_secs(8)),
+            );
         Ok(op)
     }
 }
