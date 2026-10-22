@@ -199,11 +199,13 @@ impl PreprocessorCacheEntry {
         updated: &mut bool,
     ) -> bool {
         for include in includes {
-            let _span = trace::span("scan_file");
             let path = Path::new(include.path.as_os_str());
+            let mut span = trace::span("scan_file");
+            span.arg("path", path.display().to_string());
             let meta = match std::fs::symlink_metadata(path) {
                 Ok(meta) => {
                     if meta.len() != include.file_size {
+                        span.arg("miss_reason", "size");
                         return false;
                     }
                     meta
@@ -214,6 +216,7 @@ impl PreprocessorCacheEntry {
                         path.display(),
                         e
                     );
+                    span.arg("miss_reason", "stat");
                     return false;
                 }
             };
@@ -251,6 +254,7 @@ impl PreprocessorCacheEntry {
                         path.display(),
                         e
                     );
+                    span.arg("miss_reason", "open");
                     return false;
                 }
             };
@@ -259,6 +263,7 @@ impl PreprocessorCacheEntry {
                 match Digest::reader_sync(file) {
                     Ok(new_digest) => {
                         if include.digest != new_digest {
+                            span.arg("miss_reason", "digest");
                             return false;
                         }
                     }
@@ -268,6 +273,7 @@ impl PreprocessorCacheEntry {
                             path.display(),
                             e
                         );
+                        span.arg("miss_reason", "read");
                         return false;
                     }
                 }
@@ -281,10 +287,12 @@ impl PreprocessorCacheEntry {
                             path.display(),
                             e
                         );
+                        span.arg("miss_reason", "read");
                         return false;
                     }
                 };
                 if !finder.found_time_macros() && include.digest != new_digest {
+                    span.arg("miss_reason", "digest");
                     return false;
                 }
                 if finder.found_time() {
@@ -294,6 +302,7 @@ impl PreprocessorCacheEntry {
                     // second should be quite slim... So, just signal back to the caller that
                     // __TIME__ has been found so that the preprocessor cache mode can be disabled.
                     debug!("Found __TIME__ in {}", path.display());
+                    span.arg("miss_reason", "time_macro");
                     return false;
                 }
 

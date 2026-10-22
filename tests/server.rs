@@ -210,19 +210,39 @@ fn test_server_traces_preprocessor_cache() {
             let output = sccache(&["cc", "-c", "trace_me.c", "-o", "trace_me.o"]);
             assert!(output.status.success(), "{output:?}");
         }
+        std::fs::write(
+            tempdir.path().join("trace_me.h"),
+            "static inline int trace_me(void) { return 42; }\n",
+        )
+        .unwrap();
+        let output = sccache(&["cc", "-c", "trace_me.c", "-o", "trace_me.o"]);
+        assert!(output.status.success(), "{output:?}");
     });
 
     let compiles = compile_spans(&events);
-    assert_eq!(compiles.len(), 2, "{events:?}");
+    assert_eq!(compiles.len(), 3, "{events:?}");
     assert_eq!(compiles[0]["args"]["result"], "Miss", "{events:?}");
     assert_eq!(compiles[1]["args"]["result"], "Hit", "{events:?}");
+    assert_eq!(compiles[2]["args"]["result"], "Miss", "{events:?}");
     assert_eq!(
         spans_within(&events, "parse_preprocessor_includes", compiles[0]).len(),
         1,
         "{events:?}"
     );
+    let scans = spans_within(&events, "scan_file", compiles[1]);
     assert!(
-        !spans_within(&events, "scan_file", compiles[1]).is_empty(),
+        scans.iter().any(|s| s["args"]["path"]
+            .as_str()
+            .is_some_and(|p| p.ends_with("trace_me.h"))),
+        "{events:?}"
+    );
+    let failed = spans_within(&events, "scan_file", compiles[2]);
+    assert_eq!(failed.len(), 1, "{events:?}");
+    assert_eq!(failed[0]["args"]["miss_reason"], "size", "{events:?}");
+    assert!(
+        failed[0]["args"]["path"]
+            .as_str()
+            .is_some_and(|p| p.ends_with("trace_me.h")),
         "{events:?}"
     );
 }
