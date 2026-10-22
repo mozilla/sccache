@@ -4,6 +4,9 @@ use std::{net::TcpListener, process::Command};
 #[cfg(not(target_os = "macos"))]
 use serial_test::serial;
 
+#[cfg(not(target_os = "macos"))]
+use test_case::test_case;
+
 #[test]
 #[serial]
 // test fails intermittently on macos:
@@ -33,14 +36,19 @@ fn test_server_port_in_use() {
     );
 }
 
-#[test]
+#[test_case(false ; "start and stop")]
+#[test_case(true ; "with compilations")]
 #[serial]
-#[cfg(all(unix, not(target_os = "macos")))]
-fn test_server_writes_trace_file() {
+#[cfg(not(target_os = "macos"))]
+fn test_server_writes_trace_file(compile: bool) {
     let tempdir = tempfile::tempdir().unwrap();
     let trace_file = tempdir.path().join("trace.json");
-    let source = tempdir.path().join("trace_me.c");
-    std::fs::write(&source, "int main(void) { return 0; }\n").unwrap();
+    std::fs::write(
+        tempdir.path().join("trace_me.rs"),
+        "pub fn trace_me() -> u32 { 0 }\n",
+    )
+    .unwrap();
+    std::fs::create_dir(tempdir.path().join("out")).unwrap();
     let port = TcpListener::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()
@@ -61,9 +69,20 @@ fn test_server_writes_trace_file() {
 
     let output = sccache(&["--start-server"]);
     assert!(output.status.success(), "{output:?}");
-    for _ in 0..2 {
-        let output = sccache(&["cc", "-c", "trace_me.c", "-o", "trace_me.o"]);
-        assert!(output.status.success(), "{output:?}");
+    if compile {
+        for _ in 0..2 {
+            let output = sccache(&[
+                "rustc",
+                "--crate-name",
+                "trace_me",
+                "--crate-type",
+                "lib",
+                "--emit=link",
+                "--out-dir=out",
+                "trace_me.rs",
+            ]);
+            assert!(output.status.success(), "{output:?}");
+        }
     }
     let output = sccache(&["--stop-server"]);
     assert!(output.status.success(), "{output:?}");
@@ -100,13 +119,17 @@ fn test_server_writes_trace_file() {
         })
         .collect();
     compiles.sort_by(|a, b| a["ts"].as_f64().partial_cmp(&b["ts"].as_f64()).unwrap());
+    if !compile {
+        assert!(compiles.is_empty(), "{events:?}");
+        return;
+    }
     assert_eq!(compiles.len(), 2, "{events:?}");
     assert_eq!(compiles[0]["args"]["result"], "Miss", "{events:?}");
     assert_eq!(compiles[1]["args"]["result"], "Hit", "{events:?}");
-    for compile in &compiles {
-        assert_eq!(compile["pid"], 1);
-        assert!(compile["tid"].as_u64().unwrap() >= 1);
-        assert!(compile["args"]["compiler"].is_string());
+    for span in &compiles {
+        assert_eq!(span["pid"], 1);
+        assert!(span["tid"].as_u64().unwrap() >= 1);
+        assert_eq!(span["args"]["compiler"], "Rust");
     }
     assert_eq!(compiles[0]["tid"], compiles[1]["tid"]);
 }
