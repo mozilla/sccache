@@ -143,3 +143,90 @@ This helper will parse the JSON array and perform the following semantic checks:
 ### 3.4 Concurrency & Stress Testing
 -   *Test:* Run a highly parallel build (e.g., `cargo build -j 32` on a dummy crate) with `SCCACHE_TRACE` enabled.
 -   *Assertion:* Ensure the daemon does not panic, the trace file flushes correctly on shutdown, and the `Tracer` mutex does not cause a hard deadlock under high contention. Verify that the max allocated `tid` roughly matches the peak concurrency, confirming free-list reuse is functioning under load.
+
+---
+
+## 4. Status Summary
+
+### 4.1 Commits on `main`
+
+| Commit | Scope |
+|---|---|
+| `dd1f74d` | Perfetto-compatible trace writer and `SCCACHE_TRACE` option (commit 1) |
+| `2644c23` | Root span per compilation (commit 2) |
+| `00a9ef1` | Trace file tested on Windows and with compilations |
+| `57ca141` | Compile work kept on the worker track |
+| `e9f70ba` | Spans for argument, include and dep-info parsing (commit 3) |
+| `e20826a` | `scan_file` records `miss_reason` on failure |
+
+Uncommitted at the time of writing: commit 4 (`tool: detect_compiler`, `tool: preprocess`, `tool: compile`) in `src/server.rs`, `src/compiler/c.rs`, `src/compiler/compiler.rs`, with tests in `tests/server.rs`.
+
+### 4.2 Span reference
+
+| Span | Where | Args | Notes |
+|---|---|---|---|
+| `compile: <output>` | `start_compile_task` | `result` (Hit/Miss), `compiler` | Root slice per compilation |
+| `parse_arguments` | `check_compiler` | none | Measured 4–24 µs; not nested inside `compile:` |
+| `parse_preprocessor_includes` | `c.rs` | none | Miss only; 2.4 ms on a 16-include file |
+| `scan_file` | `preprocessor_cache.rs` | `path`, `miss_reason` on failure | One per recorded include. Checks the file's size and stat, then hashes it if stat differs. `miss_reason`: `stat`, `size`, `open`, `read`, `digest`, `time_macro` |
+| `parse_dependencies` | `rust.rs` | none | Rust only; about 0.03 ms |
+| `tool: detect_compiler` | `server.rs` | `executable` | Runs before `compile:` on the same track. Rustc takes about 100 ms and repeats on every rustc request |
+| `tool: preprocess` | `c.rs` | `executable` | Miss only |
+| `tool: compile` | `compiler.rs` | `executable` | Local compile only; not distributed |
+
+### 4.3 Measurements and findings
+
+- On a C hit, `scan_file` takes about 1.3 ms of a 1.5 ms request. Each C hit checks 136 includes for a 16-include source file, so the spans grow with the include graph.
+- A C miss takes about 42 ms. About 40 ms of it was unspanned before commit 4.
+- A rustc hit takes about 10 ms, and only `parse_dependencies` was spanned before commit 4.
+- Rustc detection repeats on every rustc request (about 100 ms each). The C path caches detection and doesn't repeat it. The cause is not investigated.
+- Open question: one aggregate `scan_file` span per compile with a `count` arg would cut trace volume. The change would need an update to `test_server_traces_preprocessor_cache`.
+
+### 4.4 Open items
+
+- Commit 4 is not committed yet.
+- Commit 5 (storage tiers and backfills) and commit 6 (counters) are not started.
+- Commit 7 (client-side forwarding) is not started.
+- The `scan_file` volume question above is unresolved.
+- Rustc detection repeats on every request.
+- `src/lsp_probe.rs` is untracked and not part of this work.
+- Clippy fails with 27 errors on the installed toolchain (`must_use` and `vec!` lints). These errors predate the tracing work.
+
+---
+
+## 5. How to Create a Trace
+
+Tracing is off unless `SCCACHE_TRACE` is set when the server starts. The server writes the file while it runs and finishes it on shutdown, so the file is only valid JSON after `--stop-server`.
+
+```sh
+D=$(mktemp -d)
+export SCCACHE_DIR=$D/cache
+export SCCACHE_TRACE=$D/trace.json
+
+sccache --start-server
+sccache cc -c main.c -o main.o      # miss
+sccache cc -c main.c -o main.o      # hit
+sccache --stop-server
+
+echo "$SCCACHE_TRACE"
+```
+
+Notes:
+
+- `SCCACHE_TRACE` must be set in the environment of the server, not only the client. If the server is already running, stop it and start it again with the variable set.
+- `trace_file` in the configuration file sets the same path. `SCCACHE_TRACE` takes precedence (see `docs/Configuration.md`).
+- Open the file at <https://ui.perfetto.dev> with "Open trace file". The file is a Chrome Trace Event JSON array.
+- Worker tracks (`pid` 1) hold one row per concurrent compilation. Track `tid` values are reused.
+- To check the file is complete, parse it with `python3 -m json.tool trace.json > /dev/null`. An unfinished file fails to parse.
+- To count a span name per compile in a trace, see the Python snippets used in this session. They group child spans by `tid` and by time range.
+- Trace files should live outside the repository (for example in `/tmp`). The repository has no tracked trace files.
+
+Traces used for measurements in this session:
+
+- `/tmp/s3_measure.v1LB/trace.json`: stage 3 measurements (before the `path` arg)
+- `/tmp/scan_path_trace.0Ojb/trace.json`: `scan_file` with `path`
+- `/tmp/scan_miss_trace.EoD1/trace.json`: header change, cache miss, before `miss_reason`
+- `/tmp/scan_reason_trace.MWB5/trace.json`: `miss_reason: digest`
+- `/tmp/phase4.xqJG/trace.json`: commit 4 spans (debug build)
+
+These paths are in `/tmp` and may be removed by the system.
