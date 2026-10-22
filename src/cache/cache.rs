@@ -31,17 +31,7 @@ use crate::cache::oss::OSSCache;
 use crate::cache::redis::RedisCache;
 #[cfg(feature = "s3")]
 use crate::cache::s3::S3Cache;
-#[cfg(any(
-    feature = "azure",
-    feature = "gcs",
-    feature = "gha",
-    feature = "memcached",
-    feature = "redis",
-    feature = "s3",
-    feature = "webdav",
-    feature = "oss",
-    feature = "cos"
-))]
+#[cfg(any_cache_remote)]
 use crate::cache::utils::normalize_key;
 #[cfg(feature = "webdav")]
 use crate::cache::webdav::WebdavCache;
@@ -81,6 +71,28 @@ pub trait Storage: Send + Sync {
     /// If the entry is successfully found in the cache, it should
     /// return a `Cache::Hit`.
     async fn get(&self, key: &str) -> Result<Cache>;
+
+    /// Get a parsed cache entry and, when supported, the same entry's raw bytes.
+    ///
+    /// Multi-level caches use the raw bytes to backfill faster levels. The
+    /// default preserves compatibility with existing backends by retaining
+    /// the historical second `get_raw()` call; raw-capable backends can
+    /// override this to avoid reading a hit twice.
+    async fn get_with_raw(&self, key: &str) -> Result<(Cache, Option<Bytes>)> {
+        let cache = self.get(key).await?;
+        let raw = if matches!(&cache, Cache::Hit(_)) {
+            match self.get_raw(key).await {
+                Ok(raw) => raw,
+                Err(error) => {
+                    debug!("Failed to get raw bytes for cache backfill: {}", error);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        Ok((cache, raw))
+    }
 
     /// Put `entry` in the cache under `key`.
     ///
@@ -175,17 +187,7 @@ pub trait Storage: Send + Sync {
 }
 
 /// Wrapper for opendal::Operator that adds basedirs support
-#[cfg(any(
-    feature = "azure",
-    feature = "gcs",
-    feature = "gha",
-    feature = "memcached",
-    feature = "redis",
-    feature = "s3",
-    feature = "webdav",
-    feature = "oss",
-    feature = "cos"
-))]
+#[cfg(any_cache_remote)]
 pub struct RemoteStorage {
     operator: opendal::Operator,
     basedirs: Vec<Vec<u8>>,
@@ -193,17 +195,7 @@ pub struct RemoteStorage {
     skip_cache_check: bool,
 }
 
-#[cfg(any(
-    feature = "azure",
-    feature = "gcs",
-    feature = "gha",
-    feature = "memcached",
-    feature = "redis",
-    feature = "s3",
-    feature = "webdav",
-    feature = "oss",
-    feature = "cos"
-))]
+#[cfg(any_cache_remote)]
 impl RemoteStorage {
     pub fn new(operator: opendal::Operator, basedirs: Vec<Vec<u8>>, rw_mode: CacheMode) -> Self {
         Self {
@@ -220,43 +212,30 @@ impl RemoteStorage {
     }
 }
 
-#[cfg(any(
-    feature = "azure",
-    feature = "gcs",
-    feature = "gha",
-    feature = "memcached",
-    feature = "redis",
-    feature = "s3",
-    feature = "webdav",
-    feature = "oss",
-    feature = "cos"
-))]
-fn decode_remote_cache_read(result: opendal::Result<opendal::Buffer>) -> Result<Cache> {
+#[cfg(any_cache_remote)]
+fn decode_remote_cache_read(
+    result: opendal::Result<opendal::Buffer>,
+) -> Result<(Cache, Option<Bytes>)> {
     match result {
         Ok(res) => {
-            let hit = CacheRead::from(io::Cursor::new(res.to_bytes()))?;
-            Ok(Cache::Hit(hit))
+            let data = res.to_bytes();
+            let hit = CacheRead::from(io::Cursor::new(data.clone()))?;
+            Ok((Cache::Hit(hit), Some(data)))
         }
-        Err(e) if e.kind() == opendal::ErrorKind::NotFound => Ok(Cache::Miss),
+        Err(e) if e.kind() == opendal::ErrorKind::NotFound => Ok((Cache::Miss, None)),
         Err(e) => Err(e).context("failed to read remote cache entry"),
     }
 }
 
 /// Implement storage for operator.
-#[cfg(any(
-    feature = "azure",
-    feature = "gcs",
-    feature = "gha",
-    feature = "memcached",
-    feature = "redis",
-    feature = "s3",
-    feature = "webdav",
-    feature = "oss",
-    feature = "cos"
-))]
+#[cfg(any_cache_remote)]
 #[async_trait]
 impl Storage for RemoteStorage {
     async fn get(&self, key: &str) -> Result<Cache> {
+        Ok(self.get_with_raw(key).await?.0)
+    }
+
+    async fn get_with_raw(&self, key: &str) -> Result<(Cache, Option<Bytes>)> {
         decode_remote_cache_read(self.operator.read(&normalize_key(key)).await)
     }
 
@@ -407,21 +386,9 @@ impl Storage for RemoteStorage {
 
 /// Build a single cache storage from CacheType
 /// Helper function used by storage_from_config for both single and multi-level caches
-#[cfg(any(
-    feature = "azure",
-    feature = "gcs",
-    feature = "gha",
-    feature = "memcached",
-    feature = "redis",
-    feature = "s3",
-    feature = "webdav",
-    feature = "oss",
-    feature = "cos"
-))]
 pub fn build_single_cache(
     cache_type: &CacheType,
     basedirs: &[Vec<u8>],
-    _pool: &tokio::runtime::Handle,
     skip_cache_check: bool,
 ) -> Result<Arc<dyn Storage>> {
     match cache_type {
@@ -589,6 +556,7 @@ pub fn build_single_cache(
                 c.username.as_deref(),
                 c.password.as_deref(),
                 c.token.as_deref(),
+                c.disable_create_dir,
             )
             .map_err(|err| anyhow!("create webdav cache failed: {err:?}"))?;
 
@@ -648,20 +616,10 @@ pub fn storage_from_config(
     }
 
     // Single cache or fallback to disk (backward compatible path)
-    #[cfg(any(
-        feature = "azure",
-        feature = "gcs",
-        feature = "gha",
-        feature = "memcached",
-        feature = "redis",
-        feature = "s3",
-        feature = "webdav",
-        feature = "oss",
-        feature = "cos"
-    ))]
+    #[cfg(any_cache_remote)]
     if let Some(cache_type) = &config.cache {
         debug!("Configuring single cache from CacheType");
-        return build_single_cache(cache_type, &config.basedirs, pool, config.skip_cache_check);
+        return build_single_cache(cache_type, &config.basedirs, config.skip_cache_check);
     }
 
     // No remote cache configured - use disk cache only
@@ -685,7 +643,7 @@ mod test {
     use crate::config::CacheModeConfig;
     use fs_err as fs;
 
-    #[cfg(feature = "s3")]
+    #[cfg(any_cache_remote)]
     mod remote_storage {
         use super::*;
         use opendal::{Error, ErrorKind};
@@ -703,6 +661,19 @@ mod test {
                 Some(ErrorKind::Unexpected)
             );
         }
+    }
+
+    #[test]
+    #[cfg(not(feature = "redis"))]
+    fn test_build_single_cache_feature_disabled() {
+        let cache_type = CacheType::Redis(Default::default());
+        let err = build_single_cache(&cache_type, &[], false)
+            .err()
+            .expect("disabled backend must be rejected");
+        assert_eq!(
+            err.to_string(),
+            "Cache type not supported with current feature configuration"
+        );
     }
 
     #[test]

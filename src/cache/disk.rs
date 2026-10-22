@@ -103,6 +103,16 @@ impl Storage for DiskCache {
             .await?
     }
 
+    async fn get_with_raw(&self, key: &str) -> Result<(Cache, Option<Bytes>)> {
+        match self.get_raw(key).await? {
+            Some(data) => {
+                let hit = CacheRead::from(std::io::Cursor::new(data.clone()))?;
+                Ok((Cache::Hit(hit), Some(data)))
+            }
+            None => Ok((Cache::Miss, None)),
+        }
+    }
+
     async fn get_raw(&self, key: &str) -> Result<Option<Bytes>> {
         trace!("DiskCache::get_raw({})", key);
         let path = make_key_path(key);

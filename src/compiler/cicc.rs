@@ -243,7 +243,9 @@ where
         unhashed_args,
         extra_dist_files: extra_dist_files.clone(),
         extra_hash_files: extra_dist_files,
+        uses_external_assembler: false,
         msvc_show_includes: false,
+        msvc_explicit_language: false,
         profile_generate: false,
         color_mode: ColorMode::Off,
         suppress_rewrite_includes_only: false,
@@ -319,6 +321,7 @@ pub fn generate_compile_commands(
         arguments,
         env_vars: env_vars.to_owned(),
         cwd: cwd.to_owned(),
+        share_jobserver: false,
     };
 
     #[cfg(not(feature = "dist-client"))]

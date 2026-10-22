@@ -39,6 +39,7 @@ use crate::errors::*;
 pub struct Gcc {
     pub gplusplus: bool,
     pub version: Option<String>,
+    pub assembler_digest: Option<String>,
 }
 
 #[async_trait]
@@ -51,6 +52,9 @@ impl CCompilerImpl for Gcc {
     }
     fn version(&self) -> Option<String> {
         self.version.clone()
+    }
+    fn assembler_digest(&self) -> Option<String> {
+        self.assembler_digest.clone()
     }
     fn parse_arguments(
         &self,
@@ -171,11 +175,15 @@ ArgData! { pub
     PedanticFlag,
     Standard(OsString),
     SerializeDiagnostics(PathBuf),
+    // Only valid for clang, but this needs to be here since clang shares gcc's
+    // arg parsing.
+    IntegratedAs,
+    NoIntegratedAs,
 }
 
 use self::ArgData::*;
 
-const ARCH_FLAG: &str = "-arch";
+pub(crate) const ARCH_FLAG: &str = "-arch";
 
 // Mostly taken from https://github.com/ccache/ccache/blob/master/src/ccache/compopt.cpp#L52-L183
 counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
@@ -318,6 +326,9 @@ where
     }
     let mut need_explicit_dep_argument_path = DepArgumentRequirePath::NotNeeded;
     let mut language = None;
+    // Clang assembles in-process unless told otherwise; the other compilers
+    // parsed here always hand off to a separate assembler.
+    let mut integrated_assembler = kind == CCompilerKind::Clang;
     let mut compilation_flag = OsString::new();
     let mut profile_generate = false;
     let mut outputs_gcno = false;
@@ -382,6 +393,8 @@ where
                 outputs_gcno = true;
                 profile_generate = true;
             }
+            Some(IntegratedAs) => integrated_assembler = true,
+            Some(NoIntegratedAs) => integrated_assembler = false,
             Some(DiagnosticsColorFlag) => color_mode = ColorMode::On,
             Some(NoDiagnosticsColorFlag) => color_mode = ColorMode::Off,
             Some(DiagnosticsColor(value)) => {
@@ -497,6 +510,8 @@ where
             | Some(PassThroughFlag)
             | Some(PassThrough(_))
             | Some(ClangModuleOutput(_))
+            | Some(IntegratedAs)
+            | Some(NoIntegratedAs)
             | Some(PassThroughPath(_)) => &mut common_args,
             Some(UnhashedFlag) | Some(Unhashed(_)) => &mut unhashed_args,
             Some(Arch(_)) => &mut arch_args,
@@ -505,14 +520,7 @@ where
                 &mut common_args
             }
             Some(ExtraHashFileClangModuleFile(val)) => {
-                // -fmodule-file can be either "path" or "name=path"
-                let val_str = val.to_string_lossy();
-                let path = if let Some(idx) = val_str.find('=') {
-                    PathBuf::from(&val_str[idx + 1..])
-                } else {
-                    PathBuf::from(val)
-                };
-                extra_hash_files.push(cwd.join(path));
+                extra_hash_files.push(cwd.join(module_file_path(val)));
                 &mut common_args
             }
             Some(PreprocessorArgument(_)) => {
@@ -573,6 +581,8 @@ where
             | Some(ClangModuleOutput(_))
             | Some(TooHardFlag)
             | Some(XClang(_))
+            | Some(IntegratedAs)
+            | Some(NoIntegratedAs)
             | Some(TooHard(_)) => cannot_cache!(
                 arg.flag_str()
                     .unwrap_or("Can't handle complex arguments through clang",)
@@ -605,14 +615,7 @@ where
                 &mut common_args
             }
             Some(ExtraHashFileClangModuleFile(val)) => {
-                // -fmodule-file can be either "path" or "name=path"
-                let val_str = val.to_string_lossy();
-                let path = if let Some(idx) = val_str.find('=') {
-                    PathBuf::from(&val_str[idx + 1..])
-                } else {
-                    PathBuf::from(val)
-                };
-                extra_hash_files.push(cwd.join(path));
+                extra_hash_files.push(cwd.join(module_file_path(val)));
                 &mut common_args
             }
             Some(PreprocessorArgumentFlag)
@@ -771,12 +774,22 @@ where
         unhashed_args,
         extra_dist_files: vec![],
         extra_hash_files,
+        uses_external_assembler: !integrated_assembler,
         msvc_show_includes: false,
+        msvc_explicit_language: false,
         profile_generate,
         color_mode,
         suppress_rewrite_includes_only,
         too_hard_for_preprocessor_cache_mode,
     })
+}
+
+/// The module file a `-fmodule-file=` value names, given as either `path` or `name=path`.
+pub(crate) fn module_file_path(val: &OsStr) -> PathBuf {
+    match val.to_string_lossy().split_once('=') {
+        Some((_, path)) => PathBuf::from(path),
+        None => PathBuf::from(val),
+    }
 }
 
 fn module_artifact_descriptor(
@@ -814,6 +827,7 @@ pub fn language_to_gcc_arg(lang: Language) -> Option<&'static str> {
 fn preprocess_cmd<F, T>(
     cmd: &mut T,
     parsed_args: &ParsedArguments,
+    arch_args: &[OsString],
     cwd: &Path,
     env_vars: &[(OsString, OsString)],
     may_dist: bool,
@@ -855,35 +869,10 @@ fn preprocess_cmd<F, T>(
         }
     }
 
-    // Explicitly rewrite the -arch args to be preprocessor defines of the form
-    // __arch__ so that they affect the preprocessor output but don't cause
-    // clang to error.
-    let rewritten_arch_args = parsed_args
-        .arch_args
-        .iter()
-        .filter(|&arg| arg.ne(ARCH_FLAG))
-        .filter_map(|arg| {
-            arg.to_str()
-                .map(|arg_string| format!("-D__{}__=1", arg_string).into())
-        })
-        .collect::<Vec<OsString>>();
-
-    let mut arch_args_to_use = &rewritten_arch_args;
-    let mut unique_rewritten = rewritten_arch_args.clone();
-    unique_rewritten.sort();
-    unique_rewritten.dedup();
-    if unique_rewritten.len() <= 1 {
-        // don't use rewritten arch args if there is only one arch
-        arch_args_to_use = &parsed_args.arch_args;
-    } else {
-        debug!("-arch args before rewrite: {:?}", parsed_args.arch_args);
-        debug!("-arch args after rewrite:  {:?}", arch_args_to_use);
-    }
-
     cmd.args(&parsed_args.preprocessor_args)
         .args(&parsed_args.dependency_args)
         .args(&parsed_args.common_args)
-        .args(arch_args_to_use);
+        .args(arch_args);
     if parsed_args.double_dash_input {
         cmd.arg("--");
     }
@@ -911,22 +900,123 @@ where
     T: CommandCreatorSync,
 {
     trace!("preprocess");
-    let mut cmd = creator.clone().new_command_sync(executable);
-    preprocess_cmd(
-        &mut cmd,
-        parsed_args,
-        cwd,
-        env_vars,
-        may_dist,
-        kind,
-        rewrite_includes_only,
-        ignorable_whitespace_flags,
-        language_to_arg,
-    );
-    if log_enabled!(Trace) {
-        trace!("preprocess: {:?}", cmd);
+    let run_pass = |parsed_args: &ParsedArguments, arch_args: &[OsString], may_dist: bool| {
+        let mut cmd = creator.clone().new_command_sync(executable);
+        preprocess_cmd(
+            &mut cmd,
+            parsed_args,
+            arch_args,
+            cwd,
+            env_vars,
+            may_dist,
+            kind.clone(),
+            rewrite_includes_only,
+            ignorable_whitespace_flags.clone(),
+            &language_to_arg,
+        );
+        if log_enabled!(Trace) {
+            trace!("preprocess: {:?}", cmd);
+        }
+        run_input_output(cmd, None)
+    };
+    if !parsed_args.is_multiarch() {
+        return run_pass(parsed_args, &parsed_args.arch_args, may_dist).await;
     }
-    run_input_output(cmd, None).await
+
+    // Like ccache, one pass per architecture so each output sees the macros that
+    // target defines. No dist line markers: multi-arch is never distributed.
+    // The passes run concurrently and would all write the same depfile and
+    // diagnostics, so only the last one does, which is also what clang leaves
+    // behind for a multi-arch compilation.
+    let archs = parsed_args.archs();
+    let (last, others) = archs
+        .split_last()
+        .expect("a multi-arch compilation has several architectures");
+    let writing_no_file = ParsedArguments {
+        dependency_args: vec![],
+        common_args: without_output_files(&parsed_args.common_args),
+        preprocessor_args: without_output_files(&parsed_args.preprocessor_args),
+        ..parsed_args.clone()
+    };
+    let passes = futures::future::join_all(
+        others
+            .iter()
+            .map(|arch| {
+                run_pass(
+                    &writing_no_file,
+                    &[ARCH_FLAG.into(), (*arch).clone()],
+                    false,
+                )
+            })
+            .chain(std::iter::once(run_pass(
+                parsed_args,
+                &[ARCH_FLAG.into(), (*last).clone()],
+                false,
+            ))),
+    )
+    .await;
+    let mut output = process::Output {
+        status: Default::default(),
+        stdout: vec![],
+        stderr: vec![],
+    };
+    let mut failed = None;
+    for (arch, pass) in archs.iter().zip(passes) {
+        let mut pass = match pass {
+            Ok(pass) => pass,
+            Err(e) => match e.downcast::<ProcessError>() {
+                Ok(ProcessError(mut pass)) => {
+                    output.stderr.append(&mut pass.stderr);
+                    failed.get_or_insert(pass);
+                    continue;
+                }
+                Err(e) => return Err(e),
+            },
+        };
+        if pass.stdout.last() != Some(&b'\n') {
+            pass.stdout.push(b'\n');
+        }
+        // Counting lines rather than bytes keeps the boundaries unambiguous
+        // without depending on the basedirs stripped from the paths later.
+        let lines = pass.stdout.iter().filter(|&&b| b == b'\n').count();
+        output.stdout.extend_from_slice(
+            format!("#pragma sccache arch {} {lines}\n", arch.to_string_lossy()).as_bytes(),
+        );
+        output.stdout.append(&mut pass.stdout);
+        output.status = pass.status;
+        output.stderr.append(&mut pass.stderr);
+    }
+    if let Some(mut failed) = failed {
+        failed.stderr = output.stderr;
+        return Err(ProcessError(failed).into());
+    }
+    Ok(output)
+}
+
+/// Drops the arguments that make the preprocessor write a file.
+fn without_output_files(args: &[OsString]) -> Vec<OsString> {
+    let writes_file = |arg: &OsString| arg.to_str().is_some_and(|arg| arg.starts_with("-M"));
+    let mut kept = vec![];
+    let mut args = args.iter().peekable();
+    while let Some(arg) = args.next() {
+        if arg == "--serialize-diagnostics" {
+            args.next();
+        } else if arg == "-Xpreprocessor" && args.peek().is_some_and(|next| writes_file(next)) {
+            let flag = args.next().expect("peeked");
+            if ["-MF", "-MT", "-MQ"].iter().any(|f| flag == f)
+                && args.next_if(|next| *next == "-Xpreprocessor").is_some()
+            {
+                args.next();
+            }
+        } else if !arg
+            .to_str()
+            .and_then(|arg| arg.strip_prefix("-Wp,"))
+            .is_some_and(|wp| wp.split(',').any(|part| part.starts_with("-M")))
+        {
+            kept.push(arg.clone());
+        }
+    }
+    kept
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1001,6 +1091,7 @@ where
         arguments,
         env_vars: env_vars.to_owned(),
         cwd: cwd.to_owned(),
+        share_jobserver: false,
     };
 
     #[cfg(not(feature = "dist-client"))]
@@ -1010,7 +1101,12 @@ where
     //    output is parsed by tools like CMake and must reflect the local toolchain
     // 2. ClangCUDA cannot be dist-compiled because Clang has separate host and
     //    device preprocessor outputs and cannot compile preprocessed CUDA files.
-    let dist_command = if has_verbose_flag || parsed_args.language == Language::Cuda {
+    // 3. The dist command does not carry the -arch flags, so a multi-arch
+    //    compilation would come back with a single-arch object.
+    let dist_command = if has_verbose_flag
+        || parsed_args.language == Language::Cuda
+        || parsed_args.is_multiarch()
+    {
         None
     } else {
         (|| {
@@ -1203,6 +1299,7 @@ mod test {
     use fs::File;
     use itertools::assert_equal;
     use std::io::Write;
+    use std::sync::{Arc, Mutex};
 
     use super::*;
     use crate::compiler::*;
@@ -1267,6 +1364,17 @@ mod test {
         assert!(preprocessor_args.is_empty());
         assert!(common_args.is_empty());
         assert!(!msvc_show_includes);
+    }
+
+    #[test]
+    fn test_parse_arguments_external_assembler() {
+        // GCC has no integrated assembler, so `as` is always part of what
+        // produced the object file.
+        let args = stringvec!["-c", "foo.c", "-o", "foo.o"];
+        match parse_arguments_(args, false) {
+            CompilerArguments::Ok(args) => assert!(args.uses_external_assembler),
+            o => panic!("Got unexpected parse result: {:?}", o),
+        }
     }
 
     #[test]
@@ -1999,76 +2107,272 @@ mod test {
         assert!(!args.common_args.contains(&"-fdiagnostics-color".into()));
     }
 
-    #[test]
-    fn test_preprocess_cmd_rewrites_archs() {
-        with_var("SCCACHE_CACHE_MULTIARCH", Some("1"), || {
-            let args = stringvec!["-arch", "arm64", "-arch", "i386", "-c", "foo.cc"];
-            let parsed_args = match parse_arguments_(args, false) {
-                CompilerArguments::Ok(args) => args,
-                o => panic!("Got unexpected parse result: {:?}", o),
-            };
-            let mut cmd = MockCommand {
-                child: None,
-                args: vec![],
-            };
-            preprocess_cmd(
-                &mut cmd,
-                &parsed_args,
-                Path::new(""),
-                &[],
-                true,
-                CCompilerKind::Gcc,
-                true,
-                vec![],
-                language_to_gcc_arg,
-            );
-            // make sure the architectures were rewritten to prepocessor defines
-            let expected_args = ovec![
-                "-x",
-                "c++",
-                "-E",
-                "-fdirectives-only",
-                "-D__arm64__=1",
-                "-D__i386__=1",
-                "foo.cc"
-            ];
-            assert_eq!(cmd.args, expected_args);
-        });
+    fn preprocess_archs<A>(
+        archs: &[&str],
+        answer: A,
+    ) -> (Result<process::Output>, Vec<Vec<OsString>>)
+    where
+        A: Fn(&[OsString]) -> Result<MockChild> + Clone + Send + 'static,
+    {
+        preprocess_archs_with(archs, &[], answer)
     }
 
-    #[test]
-    fn test_preprocess_cmd_doesnt_rewrite_single_arch() {
-        let args = stringvec!["-arch", "arm64", "-c", "foo.cc"];
-        let parsed_args = match parse_arguments_(args, false) {
-            CompilerArguments::Ok(args) => args,
-            o => panic!("Got unexpected parse result: {:?}", o),
-        };
-        let mut cmd = MockCommand {
-            child: None,
-            args: vec![],
-        };
-        preprocess_cmd(
-            &mut cmd,
+    fn preprocess_archs_with<A>(
+        archs: &[&str],
+        extra_args: &[&str],
+        answer: A,
+    ) -> (Result<process::Output>, Vec<Vec<OsString>>)
+    where
+        A: Fn(&[OsString]) -> Result<MockChild> + Clone + Send + 'static,
+    {
+        let mut args = archs
+            .iter()
+            .flat_map(|arch| ["-arch".to_owned(), arch.to_string()])
+            .collect::<Vec<_>>();
+        args.extend(stringvec!["-c", "foo.c"]);
+        args.extend(extra_args.iter().map(|arg| arg.to_string()));
+        let parsed_args = with_var(
+            "SCCACHE_CACHE_MULTIARCH",
+            Some("1"),
+            || match parse_arguments_(args, false) {
+                CompilerArguments::Ok(args) => args,
+                o => panic!("Got unexpected parse result: {:?}", o),
+            },
+        );
+        let creator = new_creator();
+        let seen = Arc::new(Mutex::new(vec![]));
+        for _ in 0..parsed_args.archs().len().max(1) {
+            let seen = seen.clone();
+            let answer = answer.clone();
+            next_command_calls(&creator, move |args| {
+                seen.lock().unwrap().push(args.to_vec());
+                answer(args)
+            });
+        }
+        let output = single_threaded_runtime().block_on(preprocess(
+            &creator,
+            Path::new("gcc"),
             &parsed_args,
             Path::new(""),
             &[],
             true,
             CCompilerKind::Gcc,
             true,
-            vec![],
+            vec!["-P".to_owned()],
             language_to_gcc_arg,
-        );
-        // make sure the architectures were rewritten to prepocessor defines
-        let expected_args = ovec![
-            "-x",
-            "c++",
-            "-E",
-            "-fdirectives-only",
-            "-arch",
-            "arm64",
-            "foo.cc"
+        ));
+        let seen = seen.lock().unwrap().clone();
+        (output, seen)
+    }
+
+    fn answer_arch(args: &[OsString]) -> Result<MockChild> {
+        let arch = args
+            .iter()
+            .skip_while(|a| *a != "-arch")
+            .nth(1)
+            .map(|a| a.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        Ok(MockChild::new(exit_status(0), format!("out {arch}\n"), ""))
+    }
+
+    #[test]
+    fn test_preprocess_passes_per_arch() {
+        let single = |arch_args: Vec<OsString>| {
+            let mut args = ovec!["-x", "c", "-E", "-fdirectives-only"];
+            args.extend(arch_args);
+            args.push("foo.c".into());
+            args
+        };
+        let multi = |arch: &str| {
+            ovec![
+                "-x",
+                "c",
+                "-E",
+                "-P",
+                "-fdirectives-only",
+                "-arch",
+                arch,
+                "foo.c"
+            ]
+        };
+        let cases: &[(&[&str], Vec<Vec<OsString>>)] = &[
+            (&[], vec![single(vec![])]),
+            (&["arm64"], vec![single(ovec!["-arch", "arm64"])]),
+            (
+                &["arm64", "arm64"],
+                vec![single(ovec!["-arch", "arm64", "-arch", "arm64"])],
+            ),
+            (&["x86_64", "arm64"], vec![multi("x86_64"), multi("arm64")]),
+            (
+                &["x86_64", "arm64", "x86_64"],
+                vec![multi("x86_64"), multi("arm64")],
+            ),
+            (
+                &["x86_64", "arm64", "arm64e"],
+                vec![multi("x86_64"), multi("arm64"), multi("arm64e")],
+            ),
         ];
-        assert_eq!(cmd.args, expected_args);
+        for (archs, expected) in cases {
+            let (output, passes) = preprocess_archs(archs, answer_arch);
+            output.unwrap();
+            assert_eq!(&passes, expected, "-arch {:?}", archs);
+        }
+    }
+
+    #[test]
+    fn test_preprocess_output_per_arch() {
+        let (output, _) = preprocess_archs(&["arm64"], answer_arch);
+        assert_eq!(output.unwrap().stdout, b"out arm64\n");
+
+        let (output, _) = preprocess_archs(&["x86_64", "arm64"], |args: &[OsString]| {
+            let (arch_output, warning) = if args.iter().any(|a| a == "arm64") {
+                ("out arm64, without final newline", "arm64 warning\n")
+            } else {
+                ("out x86_64\n", "x86_64 warning\n")
+            };
+            Ok(MockChild::new(exit_status(0), arch_output, warning))
+        });
+        let output = output.unwrap();
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            "#pragma sccache arch x86_64 1\nout x86_64\n\
+             #pragma sccache arch arm64 1\nout arm64, without final newline\n"
+        );
+        assert_eq!(output.stderr, b"x86_64 warning\narm64 warning\n");
+    }
+
+    #[test]
+    fn test_preprocess_multiarch_output_independent_of_basedir() {
+        let stripped = |basedir: &'static str| {
+            let (output, _) = preprocess_archs(&["x86_64", "arm64"], move |_: &[OsString]| {
+                let marker = format!("# 1 \"{basedir}src/foo.c\"\n");
+                Ok(MockChild::new(exit_status(0), marker, ""))
+            });
+            let output = output.unwrap().stdout;
+            crate::util::strip_basedirs(&output, &[basedir.as_bytes().to_vec()]).into_owned()
+        };
+        assert_eq!(stripped("/a/"), stripped("/b/longer/checkout/"));
+    }
+
+    #[test]
+    fn test_preprocess_multiarch_writes_output_files_once() {
+        let file_args = [
+            "-MD",
+            "-MF",
+            "foo.d",
+            "-MT",
+            "foo.o",
+            "--serialize-diagnostics",
+            "foo.dia",
+            "-Wp,-MMD,bar.d",
+            "-Xpreprocessor",
+            "-MF",
+            "-Xpreprocessor",
+            "baz.d",
+        ];
+        let (output, passes) =
+            preprocess_archs_with(&["x86_64", "arm64", "arm64e"], &file_args, answer_arch);
+        output.unwrap();
+        let (last, others) = passes.split_last().unwrap();
+        for pass in others {
+            for arg in pass {
+                assert!(
+                    !file_args.iter().any(|file_arg| arg == file_arg),
+                    "{arg:?} in {pass:?}"
+                );
+            }
+        }
+        for file_arg in ["-MD", "-MF", "foo.d", "-Wp,-MMD,bar.d", "baz.d"] {
+            assert!(
+                last.iter().any(|arg| arg == file_arg),
+                "{file_arg} in {last:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_without_output_files() {
+        assert_eq!(
+            without_output_files(&ovec![
+                "-DFOO",
+                "--serialize-diagnostics",
+                "foo.dia",
+                "-Wp,-MD,foo.d",
+                "-Wp,-DBAR",
+                "-Xpreprocessor",
+                "-MF",
+                "-Xpreprocessor",
+                "foo.d",
+                "-Xpreprocessor",
+                "-MP",
+                "-Xpreprocessor",
+                "-DBAZ",
+                "-Wall"
+            ]),
+            ovec!["-DFOO", "-Wp,-DBAR", "-Xpreprocessor", "-DBAZ", "-Wall"]
+        );
+    }
+
+    #[test]
+    fn test_preprocess_failing_arch_pass() {
+        let archs = ["x86_64", "arm64", "arm64e"];
+        let (output, passes) = preprocess_archs(&archs, |args: &[OsString]| {
+            if args.iter().any(|a| a == "arm64") {
+                Ok(MockChild::new(exit_status(1), "partial", "arm64 error\n"))
+            } else {
+                let arch = if args.iter().any(|a| a == "arm64e") {
+                    "arm64e"
+                } else {
+                    "x86_64"
+                };
+                Ok(MockChild::new(
+                    exit_status(0),
+                    format!("out {arch}\n"),
+                    format!("{arch} warning\n"),
+                ))
+            }
+        });
+        assert_eq!(passes.len(), 3);
+        let ProcessError(output) = output.unwrap_err().downcast::<ProcessError>().unwrap();
+        assert_eq!(output.status, exit_status(1));
+        assert_eq!(
+            output.stderr,
+            b"x86_64 warning\narm64 error\narm64e warning\n"
+        );
+    }
+
+    #[test]
+    fn test_parsed_archs() {
+        let archs = |archs: &[&str]| {
+            let mut args = archs
+                .iter()
+                .flat_map(|arch| ["-arch".to_owned(), arch.to_string()])
+                .collect::<Vec<_>>();
+            args.extend(stringvec!["-c", "foo.c"]);
+            let parsed_args = match parse_arguments_(args, false) {
+                CompilerArguments::Ok(args) => args,
+                o => panic!("Got unexpected parse result: {:?}", o),
+            };
+            let archs = parsed_args
+                .archs()
+                .into_iter()
+                .map(|arch| arch.to_str().unwrap().to_owned())
+                .collect::<Vec<_>>();
+            (archs, parsed_args.is_multiarch())
+        };
+        with_var("SCCACHE_CACHE_MULTIARCH", Some("1"), || {
+            assert_eq!(archs(&[]), (vec![], false));
+            assert_eq!(archs(&["arm64"]), (stringvec!["arm64"], false));
+            assert_eq!(archs(&["arm64", "arm64"]), (stringvec!["arm64"], false));
+            assert_eq!(
+                archs(&["x86_64", "arm64", "x86_64"]),
+                (stringvec!["x86_64", "arm64"], true)
+            );
+            assert_eq!(
+                archs(&["x86_64", "arm64", "arm64e"]),
+                (stringvec!["x86_64", "arm64", "arm64e"], true)
+            );
+        });
     }
 
     #[test]
@@ -2085,6 +2389,7 @@ mod test {
         preprocess_cmd(
             &mut cmd,
             &parsed_args,
+            &parsed_args.arch_args,
             Path::new(""),
             &[],
             true,
@@ -2111,6 +2416,7 @@ mod test {
         preprocess_cmd(
             &mut cmd,
             &parsed_args,
+            &parsed_args.arch_args,
             Path::new(""),
             &[],
             true,
@@ -2137,6 +2443,7 @@ mod test {
         preprocess_cmd(
             &mut cmd,
             &parsed_args,
+            &parsed_args.arch_args,
             Path::new(""),
             &[],
             true,
@@ -2163,6 +2470,7 @@ mod test {
         preprocess_cmd(
             &mut cmd,
             &parsed_args,
+            &parsed_args.arch_args,
             Path::new(""),
             &[],
             true,
@@ -2631,7 +2939,9 @@ mod test {
             unhashed_args: vec![],
             extra_dist_files: vec![],
             extra_hash_files: vec![],
+            uses_external_assembler: false,
             msvc_show_includes: false,
+            msvc_explicit_language: false,
             profile_generate: false,
             color_mode: ColorMode::Auto,
             suppress_rewrite_includes_only: false,
@@ -2692,7 +3002,9 @@ mod test {
             unhashed_args: vec![],
             extra_dist_files: vec![],
             extra_hash_files: vec![],
+            uses_external_assembler: false,
             msvc_show_includes: false,
+            msvc_explicit_language: false,
             profile_generate: false,
             color_mode: ColorMode::Auto,
             suppress_rewrite_includes_only: false,
@@ -2726,6 +3038,48 @@ mod test {
     }
 
     #[test]
+    #[cfg(feature = "dist-client")]
+    fn test_compile_multiarch_is_not_distributed() {
+        let f = TestFixture::new();
+        let dist_command = |args: Vec<String>| {
+            let parsed_args = match parse_arguments_(args, false) {
+                CompilerArguments::Ok(args) => args,
+                o => panic!("Got unexpected parse result: {:?}", o),
+            };
+            let mut path_transformer = dist::PathTransformer::new();
+            generate_compile_commands(
+                &mut path_transformer,
+                &f.bins[0],
+                &parsed_args,
+                f.tempdir.path(),
+                &[],
+                CCompilerKind::Gcc,
+                false,
+                language_to_gcc_arg,
+            )
+            .unwrap()
+            .1
+        };
+        with_var("SCCACHE_CACHE_MULTIARCH", Some("1"), || {
+            assert!(
+                dist_command(stringvec!["-arch", "arm64", "-c", "foo.c", "-o", "foo.o"]).is_some()
+            );
+            assert!(
+                dist_command(stringvec![
+                    "-arch", "x86_64", "-arch", "x86_64", "-c", "foo.c", "-o", "foo.o"
+                ])
+                .is_some()
+            );
+            assert!(
+                dist_command(stringvec![
+                    "-arch", "x86_64", "-arch", "arm64", "-c", "foo.c", "-o", "foo.o"
+                ])
+                .is_none()
+            );
+        });
+    }
+
+    #[test]
     fn test_compile_simple_verbose_long() {
         let creator = new_creator();
         let f = TestFixture::new();
@@ -2751,7 +3105,9 @@ mod test {
             unhashed_args: vec![],
             extra_dist_files: vec![],
             extra_hash_files: vec![],
+            uses_external_assembler: false,
             msvc_show_includes: false,
+            msvc_explicit_language: false,
             profile_generate: false,
             color_mode: ColorMode::Auto,
             suppress_rewrite_includes_only: false,
@@ -2866,6 +3222,7 @@ mod test {
         preprocess_cmd(
             &mut cmd,
             &parsed_args,
+            &parsed_args.arch_args,
             Path::new(""),
             &[],
             true,
@@ -2891,6 +3248,7 @@ mod test {
         preprocess_cmd(
             &mut cmd,
             &parsed_args,
+            &parsed_args.arch_args,
             Path::new(""),
             &[],
             true,
@@ -2916,6 +3274,7 @@ mod test {
         preprocess_cmd(
             &mut cmd,
             &parsed_args,
+            &parsed_args.arch_args,
             Path::new(""),
             &[],
             true,
@@ -2954,6 +3313,15 @@ mod test {
         assert_eq!(
             parsed_args.too_hard_for_preprocessor_cache_mode,
             Some("-Wp".into())
+        );
+    }
+
+    #[test]
+    fn test_module_file_path() {
+        assert_eq!(module_file_path(OsStr::new("m.pcm")), Path::new("m.pcm"));
+        assert_eq!(
+            module_file_path(OsStr::new("m=d/m.pcm")),
+            Path::new("d/m.pcm")
         );
     }
 }

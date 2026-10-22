@@ -111,6 +111,15 @@ pub trait RunCommand: fmt::Debug + Send {
     fn stdout(&mut self, cfg: Stdio) -> &mut Self;
     /// Set the process' stderr from `cfg`.
     fn stderr(&mut self, cfg: Stdio) -> &mut Self;
+    /// Hand sccache's jobserver down to this child.
+    ///
+    /// Only worth doing for a child that implements the protocol -- in
+    /// practice `rustc`, which reads `CARGO_MAKEFLAGS`. It is not free: see
+    /// [`AsyncCommand::spawn`] for why sharing costs a `fork` instead of a
+    /// `posix_spawn`.
+    fn share_jobserver(&mut self) -> &mut Self {
+        self
+    }
     /// Execute the process and return a process object.
     async fn spawn(&mut self) -> Result<Self::C>;
 }
@@ -180,6 +189,7 @@ impl CommandChild for Child {
 pub struct AsyncCommand {
     inner: Option<Command>,
     jobserver: Client,
+    share_jobserver: bool,
 }
 
 impl AsyncCommand {
@@ -187,6 +197,7 @@ impl AsyncCommand {
         AsyncCommand {
             inner: Some(Command::new(program)),
             jobserver,
+            share_jobserver: false,
         }
     }
 
@@ -246,13 +257,28 @@ impl RunCommand for AsyncCommand {
         self.inner().stderr(cfg);
         self
     }
+    fn share_jobserver(&mut self) -> &mut AsyncCommand {
+        self.share_jobserver = true;
+        self
+    }
     async fn spawn(&mut self) -> Result<Child> {
         let mut inner = self.inner.take().unwrap();
         inner.env_remove("MAKEFLAGS");
         inner.env_remove("MFLAGS");
         inner.env_remove("CARGO_MAKEFLAGS");
-        self.jobserver.configure(&mut inner);
+        // `configure` registers a `pre_exec` closure to clear `CLOEXEC` on the
+        // jobserver's file descriptors, and any `pre_exec` makes `std` fall
+        // back from `posix_spawn` to `fork`+`exec`. Almost nothing sccache
+        // spawns can use a jobserver -- preprocessors, version probes and
+        // C/C++ compilers all ignore it -- so the default is not to share,
+        // and the callers that spawn `rustc` ask for it.
+        if self.share_jobserver {
+            self.jobserver.configure(&mut inner);
+        }
 
+        // The token is acquired either way: it rate-limits how many children
+        // *we* run, which is separate from whether the child can acquire
+        // tokens of its own.
         let token = self.jobserver.acquire().await?;
         let mut inner = tokio::process::Command::from(inner);
         let child = inner
@@ -666,5 +692,41 @@ mod test {
             Ok(MockChild::new(exit_status(0), "hello", "error")),
         );
         assert_eq!(exit_status(0), spawn_on_thread(creator, true));
+    }
+
+    /// The jobserver reaches a child through `CARGO_MAKEFLAGS`, so reading it
+    /// back out of the child is what "did the child get the jobserver?" means.
+    #[cfg(unix)]
+    fn child_sees_cargo_makeflags(share: bool) -> bool {
+        let client = Client::new_num(1);
+        let mut creator = <ProcessCommandCreator as CommandCreator>::new(&client);
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let mut cmd = creator.new_command("/bin/sh");
+        cmd.args(&["-c", "printf %s \"$CARGO_MAKEFLAGS\""]);
+        if share {
+            cmd.share_jobserver();
+        }
+        let output: std::process::Output = runtime
+            .block_on(async { crate::util::run_input_output(cmd, None).await })
+            .unwrap();
+        !output.stdout.is_empty()
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn jobserver_is_withheld_by_default() {
+        assert!(
+            !child_sees_cargo_makeflags(false),
+            "a child should not inherit the jobserver unless it asks"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn share_jobserver_hands_it_over() {
+        assert!(
+            child_sees_cargo_makeflags(true),
+            "share_jobserver() should give the child CARGO_MAKEFLAGS"
+        );
     }
 }

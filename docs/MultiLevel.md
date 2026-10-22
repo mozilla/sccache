@@ -141,6 +141,13 @@ Control how sccache handles write failures across cache levels using `SCCACHE_MU
 
 **Note**: Read-only levels are always skipped during writes and never cause failures.
 
+Startup cache checks follow the same durability intent. With `ignore`, an
+unavailable level is warned about and startup continues with the remaining levels.
+With `l0`, L0 must pass its startup check while unavailable slower levels are
+best-effort. With `all`, every configured level must pass its startup check.
+A tolerated check failure is treated as potentially writable so a temporarily
+unavailable backend is not permanently disabled by the server's startup mode.
+
 #### Write Error Policy Examples
 
 **Example 1: Default Behavior (l0 policy)**

@@ -38,10 +38,11 @@ use crate::{
 };
 
 use super::Language;
+use super::c::hash_arguments;
 
 /// The current format is 1 header byte for the version + bincode encoding
 /// of the [`PreprocessorCacheEntry`] struct.
-const FORMAT_VERSION: u8 = 0;
+const FORMAT_VERSION: u8 = 1;
 const MAX_PREPROCESSOR_CACHE_ENTRIES: usize = 100;
 const MAX_PREPROCESSOR_CACHE_FILE_INFO_ENTRIES: usize = 10000;
 
@@ -254,7 +255,11 @@ impl PreprocessorCacheEntry {
 
             if config.ignore_time_macros {
                 match Digest::reader_sync(file) {
-                    Ok(new_digest) => return include.digest == new_digest,
+                    Ok(new_digest) => {
+                        if include.digest != new_digest {
+                            return false;
+                        }
+                    }
                     Err(e) => {
                         debug!(
                             "{} is in a preprocessor cache entry but can't be read ({})",
@@ -377,9 +382,11 @@ pub fn preprocessor_cache_entry_hash_key(
     language: Language,
     arguments: &[OsString],
     extra_hashes: &[String],
+    assembler_digest: Option<&str>,
     env_vars: &[(OsString, OsString)],
     input_file: &Path,
     plusplus: bool,
+    multiarch: bool,
     config: PreprocessorCacheModeConfig,
     basedirs: &[Vec<u8>],
 ) -> anyhow::Result<Option<String>> {
@@ -391,11 +398,20 @@ pub fn preprocessor_cache_entry_hash_key(
     m.update(&[plusplus as u8]);
     m.update(&[FORMAT_VERSION]);
     m.update(language.as_str().as_bytes());
-    for arg in arguments {
-        arg.hash(&mut HashToDigest { digest: &mut m });
+    // Multi-arch compilations used to be preprocessed in a single pass that
+    // missed the code only one architecture sees: don't reuse those entries.
+    if multiarch {
+        m.update(b"multiarch-per-pass");
     }
+    hash_arguments(&mut m, arguments, basedirs);
     for hash in extra_hashes {
         m.update(hash.as_bytes());
+    }
+    // A hit on a preprocessor cache entry hands back the object cache key that
+    // was stored in it, so everything the object key is made of has to be here
+    // too or the assembler would be forgotten on that path.
+    if let Some(assembler_digest) = assembler_digest {
+        m.update(assembler_digest.as_bytes());
     }
 
     for (var, val) in env_vars.iter() {
@@ -640,6 +656,54 @@ mod test {
     }
 
     #[test]
+    fn test_preprocessor_cache_result_checks_all_includes_when_ignoring_time_macros() {
+        use std::fs;
+
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let first_path = dir.path().join("first.h");
+        let second_path = dir.path().join("second.h");
+        let first_contents = b"first\n";
+        let second_contents = b"old2\n";
+
+        fs::write(&first_path, first_contents).unwrap();
+        fs::write(&second_path, second_contents).unwrap();
+
+        let mut includes = vec![
+            IncludeEntry {
+                path: first_path.into_os_string(),
+                digest: Digest::reader_sync(first_contents.as_slice()).unwrap(),
+                file_size: first_contents.len() as u64,
+                mtime: None,
+                ctime: None,
+            },
+            IncludeEntry {
+                path: second_path.clone().into_os_string(),
+                digest: Digest::reader_sync(second_contents.as_slice()).unwrap(),
+                file_size: second_contents.len() as u64,
+                mtime: None,
+                ctime: None,
+            },
+        ];
+
+        fs::write(second_path, b"new2\n").unwrap();
+
+        let config = PreprocessorCacheModeConfig {
+            ignore_time_macros: true,
+            ..PreprocessorCacheModeConfig::activated()
+        };
+        let mut updated = false;
+
+        assert!(!PreprocessorCacheEntry::result_matches(
+            "result-digest",
+            &mut includes,
+            config,
+            &mut updated
+        ));
+    }
+
+    #[test]
     fn test_preprocessor_cache_entry_hash_key_basedirs() {
         #[cfg(target_os = "windows")]
         use crate::util::normalize_win_path;
@@ -676,8 +740,10 @@ mod test {
             Language::C,
             &[],
             &[],
+            None,
             &[],
             &file1_path,
+            false,
             false,
             config,
             &dirs,
@@ -690,8 +756,10 @@ mod test {
             Language::C,
             &[],
             &[],
+            None,
             &[],
             &file2_path,
+            false,
             false,
             config,
             &dirs,
@@ -710,8 +778,10 @@ mod test {
             Language::C,
             &[],
             &[],
+            None,
             &[],
             &file1_path,
+            false,
             false,
             config,
             &dirs[..1],
@@ -724,8 +794,10 @@ mod test {
             Language::C,
             &[],
             &[],
+            None,
             &[],
             &file2_path,
+            false,
             false,
             config,
             &dirs[1..],
@@ -744,8 +816,10 @@ mod test {
             Language::C,
             &[],
             &[],
+            None,
             &[],
             &file1_path,
+            false,
             false,
             config,
             &[],
@@ -758,8 +832,10 @@ mod test {
             Language::C,
             &[],
             &[],
+            None,
             &[],
             &file2_path,
+            false,
             false,
             config,
             &[],
@@ -771,5 +847,38 @@ mod test {
             hash1_no_basedirs, hash2_no_basedirs,
             "Hashes should be different without basedirs for files in different directories"
         );
+    }
+
+    #[test]
+    fn test_preprocessor_cache_entry_hash_key_multiarch() {
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let file = dir.path().join("test.c");
+        std::fs::write(&file, b"int main() { return 0; }").unwrap();
+        let basedir = dir.path().to_string_lossy().into_owned().into_bytes();
+        #[cfg(target_os = "windows")]
+        let basedir = crate::util::normalize_win_path(&basedir);
+        let key = |arguments: &[&str], multiarch: bool| {
+            let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
+            preprocessor_cache_entry_hash_key(
+                "test_digest",
+                Language::C,
+                &arguments,
+                &[],
+                None,
+                &[],
+                &file,
+                false,
+                multiarch,
+                PreprocessorCacheModeConfig::activated(),
+                std::slice::from_ref(&basedir),
+            )
+            .unwrap()
+            .unwrap()
+        };
+
+        let fat = ["-arch", "x86_64", "-arch", "arm64"];
+        assert_ne!(key(&fat, true), key(&fat, false));
     }
 }

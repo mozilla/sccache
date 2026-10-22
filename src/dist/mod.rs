@@ -15,7 +15,7 @@
 use crate::compiler;
 use async_trait::async_trait;
 use rand::{RngCore, rngs::OsRng};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::ffi::OsString;
 use std::fmt;
 use std::io::{self, Read};
@@ -28,16 +28,16 @@ use std::sync::Mutex;
 
 use crate::errors::*;
 
-#[cfg(any(feature = "dist-client", feature = "dist-server"))]
+#[cfg(any_dist)]
 mod cache;
 #[cfg(feature = "dist-client")]
 pub mod client_auth;
-#[cfg(any(feature = "dist-client", feature = "dist-server"))]
+#[cfg(any_dist)]
 pub mod http;
 #[cfg(test)]
 mod test;
 
-#[cfg(any(feature = "dist-client", feature = "dist-server"))]
+#[cfg(any_dist)]
 pub use crate::dist::cache::TcCache;
 
 // TODO: paths (particularly outputs, which are accessed by an unsandboxed program)
@@ -157,7 +157,7 @@ mod path_transform {
         pub fn disk_mappings(&self) -> impl Iterator<Item = (PathBuf, String)> {
             let mut normal_mappings = HashMap::new();
             let mut verbatim_mappings = HashMap::new();
-            for (_dist_path, local_path) in self.dist_to_local_path.iter() {
+            for local_path in self.dist_to_local_path.values() {
                 if !local_path.is_absolute() {
                     continue;
                 }
@@ -326,6 +326,8 @@ pub fn try_compile_command_to_dist(
         arguments,
         env_vars,
         cwd,
+        // The jobserver is a local resource; a remote worker has its own.
+        share_jobserver: _,
     } = command;
     Some(CompileCommand {
         executable: executable.into_os_string().into_string().ok()?,
@@ -343,11 +345,25 @@ pub fn try_compile_command_to_dist(
 
 // TODO: Clone by assuming immutable/no GC for now
 // TODO: make fields non-public?
-// TODO: make archive_id validate that it's just a bunch of hex chars
 #[derive(Debug, Hash, Eq, PartialEq, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Toolchain {
+    #[serde(deserialize_with = "deserialize_archive_id")]
     pub archive_id: String,
+}
+
+/// The archive id is used by the build server as a file name in the toolchain
+/// cache, as a directory name under the build dir and as part of a container
+/// image name, so only accept a BLAKE3 hex digest, which is what
+/// `Digest::finish` produces for an archive, normalized to lower case.
+fn deserialize_archive_id<'de, D>(deserializer: D) -> ::std::result::Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let archive_id = String::deserialize(deserializer)?;
+    blake3::Hash::from_hex(&archive_id)
+        .map(|hash| hash.to_hex().to_string())
+        .map_err(serde::de::Error::custom)
 }
 
 #[derive(Hash, Eq, PartialEq, Clone, Copy, Debug, Ord, PartialOrd, Serialize, Deserialize)]
