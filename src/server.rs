@@ -1231,10 +1231,12 @@ where
         let env_vars = compile.env_vars;
         let me = self.clone();
 
+        let track = trace::lease_track();
         let info = self
             .compiler_info(exe.into(), cwd.clone(), &cmd, &env_vars)
             .await;
-        Ok(me.check_compiler(info, cmd, cwd, env_vars).await)
+        let ctx = track.as_ref().map(trace::TrackGuard::context);
+        Ok(trace::scope_opt(ctx, me.check_compiler(info, cmd, cwd, env_vars, track)).await)
     }
 
     /// Run a compile entirely in the current process (used in client-side mode).
@@ -1438,6 +1440,7 @@ where
         cmd: Vec<OsString>,
         cwd: PathBuf,
         env_vars: Vec<(OsString, OsString)>,
+        track: Option<trace::TrackGuard>,
     ) -> SccacheResponse {
         match compiler {
             Err(e) => {
@@ -1455,6 +1458,7 @@ where
                     CompilerArguments::Ok(hasher) => {
                         debug!("parse_arguments: Ok: {:?}", cmd);
 
+                        let ctx = track.as_ref().map(trace::TrackGuard::context);
                         let body = if c.kind() == CompilerKind::Rust {
                             // Only rustc emits artifact notifications,
                             // for `.rmeta` pipelining.
@@ -1463,7 +1467,10 @@ where
                             me.notification_tx = Some(tx);
                             let finished = util::spawn_on(
                                 &self.rt,
-                                me.start_compile_task(c, hasher, cmd, cwd, env_vars),
+                                trace::scope_opt(
+                                    ctx,
+                                    me.start_compile_task(c, hasher, cmd, cwd, env_vars, track),
+                                ),
                             );
                             rx.map(|chunk| Ok(Response::ArtifactNotification(chunk)))
                                 .chain(futures::stream::once(async move {
@@ -1472,9 +1479,12 @@ where
                                 .boxed()
                         } else {
                             futures::stream::once(
-                                self.clone()
-                                    .start_compile_task(c, hasher, cmd, cwd, env_vars)
-                                    .map_ok(Response::CompileFinished),
+                                trace::scope_opt(
+                                    ctx,
+                                    self.clone()
+                                        .start_compile_task(c, hasher, cmd, cwd, env_vars, track),
+                                )
+                                .map_ok(Response::CompileFinished),
                             )
                             .boxed()
                         };
@@ -1520,6 +1530,7 @@ where
         arguments: Vec<OsString>,
         cwd: PathBuf,
         env_vars: Vec<(OsString, OsString)>,
+        track: Option<trace::TrackGuard>,
     ) -> Result<CompileFinished> {
         self.stats.lock().await.requests_executed += 1;
 
@@ -1552,9 +1563,13 @@ where
             }
         };
 
+        let mut span = trace::span(format!("compile: {out_pretty}"));
+        span.arg("compiler", format!("{kind:?}"));
+
         let me = self.clone();
 
         util::spawn_on(&self.rt, async move {
+            let _track = track;
             let result = match me.dist_client.get_client().await {
                 Ok(client) => std::panic::AssertUnwindSafe(hasher.get_cached_or_compile(
                     &me,
@@ -1605,16 +1620,20 @@ where
                         CompileResult::Error => {
                             debug!("[{}]: compile result: cache error", out_pretty);
 
+                            span.arg("result", "Error");
                             stats.cache_errors.increment(&kind, &lang);
                         }
                         CompileResult::CacheHit(duration) => {
                             debug!("[{}]: compile result: cache hit", out_pretty);
 
+                            span.arg("result", "Hit");
                             stats.cache_hits.increment(&kind, &lang);
                             stats.cache_read_hit_duration += duration;
                         }
                         CompileResult::CacheMiss(miss_type, dt, duration, future) => {
                             debug!("[{}]: compile result: cache miss", out_pretty);
+
+                            span.arg("result", "Miss");
                             dist_type = dt;
 
                             match miss_type {
@@ -1638,12 +1657,16 @@ where
                         }
                         CompileResult::NotCached(dt, duration) => {
                             debug!("[{}]: compile result: not cached", out_pretty);
+
+                            span.arg("result", "NotCached");
                             dist_type = dt;
                             stats.compilations += 1;
                             stats.compiler_write_duration += duration;
                         }
                         CompileResult::NotCacheable(dt, duration) => {
                             debug!("[{}]: compile result: not cacheable", out_pretty);
+
+                            span.arg("result", "NotCacheable");
                             dist_type = dt;
                             stats.compilations += 1;
                             stats.compiler_write_duration += duration;
@@ -1651,6 +1674,8 @@ where
                         }
                         CompileResult::CompileFailed(dt, duration) => {
                             debug!("[{}]: compile result: compile failed", out_pretty);
+
+                            span.arg("result", "CompileFailed");
                             dist_type = dt;
                             stats.compilations += 1;
                             stats.compiler_write_duration += duration;
@@ -1691,6 +1716,8 @@ where
                     match err.downcast::<ProcessError>() {
                         Ok(ProcessError(output)) => {
                             debug!("Compilation failed: {:?}", output);
+
+                            span.arg("result", "CompileFailed");
                             stats.compile_fails += 1;
                             // Make sure the write guard has been dropped ASAP.
                             drop(stats);
@@ -1710,6 +1737,7 @@ where
                                 let errmsg =
                                     format!("[{:?}] http error status: {}", out_pretty, msg);
                                 error!("{}", errmsg);
+                                span.arg("result", "Error");
                                 res.retcode = Some(1);
                                 res.stderr = errmsg.as_bytes().to_vec();
                             }
@@ -1717,11 +1745,13 @@ where
                                 stats.cache_errors.increment(&kind, &lang);
                                 // Make sure the write guard has been dropped ASAP.
                                 drop(stats);
+                                span.arg("result", "Error");
 
                                 use std::fmt::Write;
 
                                 error!("[{:?}] fatal error: {}", out_pretty, err);
 
+                                span.arg("result", "Error");
                                 let mut error = "sccache: encountered fatal error\n".to_string();
                                 let _ = writeln!(error, "sccache: error: {}", err);
                                 for e in err.chain() {

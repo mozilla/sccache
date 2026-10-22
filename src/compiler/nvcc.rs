@@ -1324,6 +1324,7 @@ where
                                     .chain([("SCCACHE_DIRECT".into(), "false".into())].iter())
                                     .cloned()
                                     .collect::<Vec<_>>(),
+                                None,
                             )
                             .await
                         }

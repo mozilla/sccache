@@ -106,6 +106,14 @@ impl TraceContext {
     }
 }
 
+/// Runs `fut` within `ctx` if there is one.
+pub async fn scope_opt<F: Future>(ctx: Option<TraceContext>, fut: F) -> F::Output {
+    match ctx {
+        Some(ctx) => ctx.scope(fut).await,
+        None => fut.await,
+    }
+}
+
 /// Like `tokio::spawn`, but the new task inherits the current [`TraceContext`].
 /// Task-locals are otherwise not propagated to spawned tasks.
 pub fn spawn<F>(fut: F) -> tokio::task::JoinHandle<F::Output>

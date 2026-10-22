@@ -40,12 +40,12 @@ Perfetto natively ingests the **Chrome Trace Event Format (JSON Array Format)** 
 
 **Goal:** Hook into the request lifecycle to emit root compilation slices with filename and outcome metadata.
 
-- [ ] **Attach Worker Slot to Compilation Requests (`src/server.rs`)**
-  - [ ] In `SccacheService::handle_compile`, lease a `TrackGuard`.
-  - [ ] Scope `check_compiler` within `TRACE_CONTEXT`.
-- [ ] **Root Compilation Event (`src/server.rs`)**
-  - [ ] In `SccacheService::start_compile_task`, wrap the execution in a root `SpanGuard` (`compile: <output_pretty>`).
-  - [ ] Update `args` upon completion with cache hit/miss status and compiler details.
+- [x] **Attach Worker Slot to Compilation Requests (`src/server.rs`)**
+  - [x] In `SccacheService::handle_compile`, lease a `TrackGuard`.
+  - [x] Scope `check_compiler` within `TRACE_CONTEXT`.
+- [x] **Root Compilation Event (`src/server.rs`)**
+  - [x] In `SccacheService::start_compile_task`, wrap the execution in a root `SpanGuard` (`compile: <output_pretty>`).
+  - [x] Update `args` upon completion with cache hit/miss status and compiler details.
 
 ### Commit 3: Parsing Instrumentation (CLI Args, Includes & Dependencies)
 
