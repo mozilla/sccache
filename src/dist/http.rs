@@ -1072,9 +1072,10 @@ mod client {
     use futures::TryFutureExt;
     use reqwest::Body;
     use std::collections::HashMap;
+    use std::env;
     use std::io::Write;
     use std::path::{Path, PathBuf};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, LazyLock, Mutex};
     use std::time::Duration;
 
     use super::common::{
@@ -1084,8 +1085,21 @@ mod client {
     use super::urls;
     use crate::errors::*;
 
-    const REQUEST_TIMEOUT_SECS: u64 = 1200;
-    const CONNECT_TIMEOUT_SECS: u64 = 5;
+    static REQUEST_TIMEOUT_SECS: LazyLock<Duration> = LazyLock::new(|| {
+        let timeout_env: u64 = env::var("SCCACHE_REQUEST_TIMEOUT_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(1200);
+        Duration::new(timeout_env, 0)
+    });
+
+    static CONNECT_TIMEOUT_SECS: LazyLock<Duration> = LazyLock::new(|| {
+        let connect_timeout_env: u64 = env::var("SCCACHE_CONNECT_TIMEOUT_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(5);
+        Duration::new(connect_timeout_env, 0)
+    });
 
     pub struct Client {
         auth_token: String,
@@ -1108,11 +1122,9 @@ mod client {
             auth_token: String,
             rewrite_includes_only: bool,
         ) -> Result<Self> {
-            let timeout = Duration::new(REQUEST_TIMEOUT_SECS, 0);
-            let connect_timeout = Duration::new(CONNECT_TIMEOUT_SECS, 0);
             let client = reqwest::ClientBuilder::new()
-                .timeout(timeout)
-                .connect_timeout(connect_timeout)
+                .timeout(*REQUEST_TIMEOUT_SECS)
+                .connect_timeout(*CONNECT_TIMEOUT_SECS)
                 // Disable connection pool to avoid broken connection
                 // between runtime
                 .pool_max_idle_per_host(0)
@@ -1150,9 +1162,9 @@ mod client {
                 );
             }
             // Finish the client
-            let timeout = Duration::new(REQUEST_TIMEOUT_SECS, 0);
             let new_client_async = client_async_builder
-                .timeout(timeout)
+                .timeout(*REQUEST_TIMEOUT_SECS)
+                .connect_timeout(*CONNECT_TIMEOUT_SECS)
                 // Disable keep-alive
                 .pool_max_idle_per_host(0)
                 .build()
@@ -1324,6 +1336,32 @@ mod client {
                 Some(Ok((_, _, path))) => Some(path),
                 _ => None,
             }
+        }
+    }
+
+    #[test]
+    fn test_request_timeout_secs_from_env() {
+        unsafe {
+            std::env::set_var("SCCACHE_REQUEST_TIMEOUT_SECS", "2400");
+        }
+
+        assert_eq!(*REQUEST_TIMEOUT_SECS, Duration::from_secs(2400));
+
+        unsafe {
+            std::env::remove_var("SCCACHE_REQUEST_TIMEOUT_SECS");
+        }
+    }
+
+    #[test]
+    fn test_connect_timeout_secs_from_env() {
+        unsafe {
+            std::env::set_var("SCCACHE_CONNECT_TIMEOUT_SECS", "10");
+        }
+
+        assert_eq!(*CONNECT_TIMEOUT_SECS, Duration::from_secs(10));
+
+        unsafe {
+            std::env::remove_var("SCCACHE_CONNECT_TIMEOUT_SECS");
         }
     }
 }
