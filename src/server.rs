@@ -1232,10 +1232,12 @@ where
         let me = self.clone();
 
         let track = trace::lease_track();
-        let info = self
-            .compiler_info(exe.into(), cwd.clone(), &cmd, &env_vars)
-            .await;
         let ctx = track.as_ref().map(trace::TrackGuard::context);
+        let info = trace::scope_opt(
+            ctx,
+            self.compiler_info(exe.into(), cwd.clone(), &cmd, &env_vars),
+        )
+        .await;
         Ok(trace::scope_opt(ctx, me.check_compiler(info, cmd, cwd, env_vars, track)).await)
     }
 
@@ -1378,16 +1380,20 @@ where
 
                 // the compiler path might be compiler proxy, so it is important to use
                 // `path` (or its clone `path1`) to resolve using that one, not using `resolved_compiler_path`
-                let info = get_compiler_info::<C>(
-                    me.creator.clone(),
-                    &path1,
-                    &cwd,
-                    args,
-                    env.as_slice(),
-                    &me.rt,
-                    dist_info.clone().map(|(p, _)| p),
-                )
-                .await;
+                let info = {
+                    let mut span = trace::span("tool: detect_compiler");
+                    span.arg("executable", path1.display().to_string());
+                    get_compiler_info::<C>(
+                        me.creator.clone(),
+                        &path1,
+                        &cwd,
+                        args,
+                        env.as_slice(),
+                        &me.rt,
+                        dist_info.clone().map(|(p, _)| p),
+                    )
+                    .await
+                };
 
                 let (c, proxy) = match info {
                     Ok((c, proxy)) => (c.clone(), proxy.clone()),

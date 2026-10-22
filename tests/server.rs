@@ -179,7 +179,19 @@ fn test_server_writes_trace_file(compile: bool) {
         assert!(span["tid"].as_u64().unwrap() >= 1);
         assert_eq!(span["args"]["compiler"], "Rust");
         assert_eq!(spans_within(&events, "parse_dependencies", span).len(), 1);
+        let expected_compile = usize::from(span["args"]["result"] == "Miss");
+        assert_eq!(
+            spans_within(&events, "tool: compile", span).len(),
+            expected_compile,
+            "{events:?}"
+        );
     }
+    assert!(
+        events.iter().any(|e| e["ph"] == "X"
+            && e["name"] == "tool: detect_compiler"
+            && e["tid"] == compiles[0]["tid"]),
+        "{events:?}"
+    );
     assert_eq!(compiles[0]["tid"], compiles[1]["tid"]);
 
     let parse_args: Vec<_> = events
@@ -234,6 +246,29 @@ fn test_server_traces_preprocessor_cache() {
         scans.iter().any(|s| s["args"]["path"]
             .as_str()
             .is_some_and(|p| p.ends_with("trace_me.h"))),
+        "{events:?}"
+    );
+    assert_eq!(
+        spans_within(&events, "tool: preprocess", compiles[0]).len(),
+        1,
+        "{events:?}"
+    );
+    assert_eq!(
+        spans_within(&events, "tool: compile", compiles[0]).len(),
+        1,
+        "{events:?}"
+    );
+    assert!(
+        spans_within(&events, "tool: preprocess", compiles[1]).is_empty(),
+        "{events:?}"
+    );
+    assert!(
+        spans_within(&events, "tool: compile", compiles[1]).is_empty(),
+        "{events:?}"
+    );
+    assert_eq!(
+        spans_within(&events, "tool: preprocess", compiles[2]).len(),
+        1,
         "{events:?}"
     );
     let failed = spans_within(&events, "scan_file", compiles[2]);

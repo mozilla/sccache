@@ -62,11 +62,11 @@ Perfetto natively ingests the **Chrome Trace Event Format (JSON Array Format)** 
 
 **Goal:** Track external sub-process executions (preprocessor calls, compiler invocations).
 
-- [ ] **Compiler Probing Spans (`src/server.rs`)**
-  - [ ] Wrap compiler probing with span `"tool: detect_compiler"`.
-- [ ] **Preprocessor & Compiler Invocations (`src/util.rs`, `src/compiler/*.rs`)**
-  - [ ] Wrap external preprocessor child processes with span `"tool: preprocess"`.
-  - [ ] Emit `"tool: compile"` duration span via `run_input_output`.
+- [x] **Compiler Probing Spans (`src/server.rs`)**
+  - [x] Wrap compiler probing with span `"tool: detect_compiler"`. (Wraps the `get_compiler_info` call in `compiler_info`; the probe runs before the `compile:` slice starts, on the same worker track.)
+- [x] **Preprocessor & Compiler Invocations (`src/util.rs`, `src/compiler/*.rs`)**
+  - [x] Wrap external preprocessor child processes with span `"tool: preprocess"`. (Wraps the `preprocess` call in `CCompiler::compile`, which covers all C-family compilers, so no per-compiler changes.)
+  - [x] Emit `"tool: compile"` duration span via `run_input_output`. (Emitted in `SingleCompileCommand::execute` around the `run_input_output` calls, so it covers local compiles only.)
 
 ### Commit 5: Storage Tier Instrumentation & Async Backfills
 

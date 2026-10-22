@@ -559,19 +559,22 @@ where
                 }
             }
 
-            let result = self
-                .compiler
-                .preprocess(
-                    creator,
-                    &self.executable,
-                    &self.parsed_args,
-                    &cwd,
-                    &env_vars,
-                    may_dist,
-                    rewrite_includes_only,
-                    use_preprocessor_cache_mode,
-                )
-                .await;
+            let result = {
+                let mut span = trace::span("tool: preprocess");
+                span.arg("executable", self.executable.display().to_string());
+                self.compiler
+                    .preprocess(
+                        creator,
+                        &self.executable,
+                        &self.parsed_args,
+                        &cwd,
+                        &env_vars,
+                        may_dist,
+                        rewrite_includes_only,
+                        use_preprocessor_cache_mode,
+                    )
+                    .await
+            };
             let out_pretty = self.parsed_args.output_pretty().into_owned();
             let result = result.map_err(|e| {
                 debug!("[{}]: preprocessor failed: {:?}", out_pretty, e);
