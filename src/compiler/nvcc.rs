@@ -38,8 +38,6 @@ use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::future::{Future, IntoFuture};
 use std::io::{self, BufRead, Read, Write};
-#[cfg(unix)]
-use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process;
 use which::which_in;
@@ -1345,20 +1343,35 @@ where
 
 fn aggregate_output(lhs: process::Output, rhs: process::Output) -> process::Output {
     process::Output {
-        status: exit_status(
-            std::cmp::max(status_to_code(lhs.status), status_to_code(rhs.status))
-                as ExitStatusValue,
-        ),
+        // The first failure is kept as it is, so a signal stays a signal and an exit code stays
+        // an exit code.
+        status: if lhs.status.success() {
+            rhs.status
+        } else {
+            lhs.status
+        },
         stdout: [lhs.stdout, rhs.stdout].concat(),
         stderr: [lhs.stderr, rhs.stderr].concat(),
     }
+}
+
+// `ExitStatus::from_raw` takes a wait status on Unix, not an exit code: passed directly, the
+// server's fatal-error code -2 reads as "killed by signal 126" and an exit code of 1 as signal 1.
+#[cfg(unix)]
+fn exit_code_status(code: i32) -> process::ExitStatus {
+    exit_status((code & 0xff) << 8)
+}
+
+#[cfg(windows)]
+fn exit_code_status(code: i32) -> process::ExitStatus {
+    exit_status(code as ExitStatusValue)
 }
 
 fn error_to_output(err: Error) -> process::Output {
     match err.downcast::<ProcessError>() {
         Ok(ProcessError(out)) => out,
         Err(err) => process::Output {
-            status: exit_status(1 as ExitStatusValue),
+            status: exit_code_status(1),
             stdout: vec![],
             stderr: err.to_string().into_bytes(),
         },
@@ -1383,27 +1396,9 @@ fn compile_result_to_output(exe: &Path, res: protocol::CompileFinished) -> proce
         };
     }
     process::Output {
-        status: exit_status(res.retcode.unwrap_or(0) as ExitStatusValue),
+        status: exit_code_status(res.retcode.unwrap_or(0)),
         stdout: res.stdout,
         stderr: res.stderr,
-    }
-}
-
-#[cfg(unix)]
-fn status_to_code(res: process::ExitStatus) -> ExitStatusValue {
-    if res.success() {
-        0 as ExitStatusValue
-    } else {
-        res.signal().or(res.code()).unwrap_or(1) as ExitStatusValue
-    }
-}
-
-#[cfg(windows)]
-fn status_to_code(res: process::ExitStatus) -> ExitStatusValue {
-    if res.success() {
-        0 as ExitStatusValue
-    } else {
-        res.code().unwrap_or(1) as ExitStatusValue
     }
 }
 
@@ -1501,6 +1496,8 @@ mod test {
     use std::collections::HashMap;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+    #[cfg(unix)]
+    use std::os::unix::process::ExitStatusExt;
     use std::path::PathBuf;
 
     fn parse_arguments_gcc(arguments: Vec<String>) -> CompilerArguments<ParsedArguments> {
@@ -2329,5 +2326,95 @@ mod test {
                 parse_arguments_nvc(stringvec![format!("{arg_with_separator}flamegraph.json")])
             );
         }
+    }
+
+    fn compile_finished(retcode: Option<i32>, signal: Option<i32>) -> protocol::CompileFinished {
+        protocol::CompileFinished {
+            retcode,
+            signal,
+            stdout: b"out".to_vec(),
+            stderr: b"err".to_vec(),
+            ..Default::default()
+        }
+    }
+
+    fn output_with(status: process::ExitStatus, text: &str) -> process::Output {
+        process::Output {
+            status,
+            stdout: text.into(),
+            stderr: text.into(),
+        }
+    }
+
+    #[test]
+    fn test_compile_result_to_output_exit_codes() {
+        let ok = compile_result_to_output(Path::new("ptxas"), compile_finished(Some(0), None));
+        assert!(ok.status.success());
+
+        let failed = compile_result_to_output(Path::new("ptxas"), compile_finished(Some(1), None));
+        assert_eq!(failed.status.code(), Some(1));
+        assert_eq!(failed.stdout, b"out");
+        assert_eq!(failed.stderr, b"err");
+    }
+
+    // The server answers a subcommand that failed inside sccache (e.g. `Missing "cubin" file
+    // output`) with -2, which used to reach the user as "Compiler killed by signal 126".
+    #[cfg(unix)]
+    #[test]
+    fn test_compile_result_to_output_fatal_error_is_not_a_signal() {
+        let output = compile_result_to_output(Path::new("ptxas"), compile_finished(Some(-2), None));
+        assert!(!output.status.success());
+        assert_eq!(output.status.signal(), None);
+        assert_eq!(output.status.code(), Some(254));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_compile_result_to_output_signal() {
+        let output =
+            compile_result_to_output(Path::new("/usr/bin/ptxas"), compile_finished(None, Some(9)));
+        assert_eq!(output.status.signal(), Some(9));
+        assert_eq!(output.status.code(), None);
+        assert!(output.stderr.starts_with(b"ptxas terminated (signal: 9)"));
+    }
+
+    #[test]
+    fn test_error_to_output_exit_code() {
+        let output = error_to_output(anyhow!("no such compiler"));
+        assert_eq!(output.status.code(), Some(1));
+        assert_eq!(output.stderr, b"no such compiler");
+        #[cfg(unix)]
+        assert_eq!(output.status.signal(), None);
+    }
+
+    #[test]
+    fn test_aggregate_output_keeps_first_failure() {
+        let ok = exit_code_status(0);
+
+        let all_ok = aggregate_output(output_with(ok, "a"), output_with(ok, "b"));
+        assert!(all_ok.status.success());
+        assert_eq!(all_ok.stdout, b"ab");
+        assert_eq!(all_ok.stderr, b"ab");
+
+        let failed = aggregate_output(output_with(ok, "a"), output_with(exit_code_status(2), "b"));
+        assert_eq!(failed.status.code(), Some(2));
+
+        let first = aggregate_output(
+            output_with(exit_code_status(3), "a"),
+            output_with(exit_code_status(5), "b"),
+        );
+        assert_eq!(first.status.code(), Some(3));
+        assert_eq!(first.stdout, b"ab");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_aggregate_output_keeps_signal() {
+        let killed = aggregate_output(
+            output_with(exit_code_status(0), "a"),
+            output_with(exit_status(9), "b"),
+        );
+        assert_eq!(killed.status.signal(), Some(9));
+        assert_eq!(killed.status.code(), None);
     }
 }
