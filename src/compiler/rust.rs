@@ -209,8 +209,11 @@ fn test_toolchain_package_through_symlinked_libdir() {
     let sysroot = root.join("sysroot");
 
     // A real ELF, so that `add_executable_and_deps` can run ldd against it.
+    // Looked up on PATH rather than hardcoded as /bin/true, since not every
+    // system (e.g. NixOS) has it there.
     fs::create_dir_all(sysroot.join("bin")).unwrap();
-    fs::copy("/bin/true", sysroot.join("bin/rustc")).unwrap();
+    let true_bin = which::which("true").expect("`true` not found on PATH");
+    fs::copy(true_bin, sysroot.join("bin/rustc")).unwrap();
 
     let rustlib = sysroot.join("lib/rustlib");
     fs::create_dir_all(rustlib.join("fake-target/lib")).unwrap();
