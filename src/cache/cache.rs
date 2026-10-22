@@ -212,6 +212,21 @@ impl RemoteStorage {
     }
 }
 
+#[cfg(any_cache_remote)]
+fn decode_remote_cache_read(
+    result: opendal::Result<opendal::Buffer>,
+) -> Result<(Cache, Option<Bytes>)> {
+    match result {
+        Ok(res) => {
+            let data = res.to_bytes();
+            let hit = CacheRead::from(io::Cursor::new(data.clone()))?;
+            Ok((Cache::Hit(hit), Some(data)))
+        }
+        Err(e) if e.kind() == opendal::ErrorKind::NotFound => Ok((Cache::Miss, None)),
+        Err(e) => Err(e).context("failed to read remote cache entry"),
+    }
+}
+
 /// Implement storage for operator.
 #[cfg(any_cache_remote)]
 #[async_trait]
@@ -221,18 +236,7 @@ impl Storage for RemoteStorage {
     }
 
     async fn get_with_raw(&self, key: &str) -> Result<(Cache, Option<Bytes>)> {
-        match self.operator.read(&normalize_key(key)).await {
-            Ok(res) => {
-                let data = res.to_bytes();
-                let hit = CacheRead::from(io::Cursor::new(data.clone()))?;
-                Ok((Cache::Hit(hit), Some(data)))
-            }
-            Err(e) if e.kind() == opendal::ErrorKind::NotFound => Ok((Cache::Miss, None)),
-            Err(e) => {
-                warn!("Got unexpected error: {:?}", e);
-                Ok((Cache::Miss, None))
-            }
-        }
+        decode_remote_cache_read(self.operator.read(&normalize_key(key)).await)
     }
 
     async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration> {
@@ -638,6 +642,26 @@ mod test {
     use super::*;
     use crate::config::CacheModeConfig;
     use fs_err as fs;
+
+    #[cfg(any_cache_remote)]
+    mod remote_storage {
+        use super::*;
+        use opendal::{Error, ErrorKind};
+
+        #[test]
+        fn get_propagates_unexpected_backend_errors() {
+            let error = decode_remote_cache_read(Err(Error::new(
+                ErrorKind::Unexpected,
+                "injected read failure",
+            )))
+            .unwrap_err();
+
+            assert_eq!(
+                error.downcast_ref::<Error>().map(Error::kind),
+                Some(ErrorKind::Unexpected)
+            );
+        }
+    }
 
     #[test]
     #[cfg(not(feature = "redis"))]
