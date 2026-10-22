@@ -649,6 +649,16 @@ mod test {
         use opendal::{Error, ErrorKind};
 
         #[test]
+        fn get_returns_miss_for_not_found() {
+            let (cache, raw) =
+                decode_remote_cache_read(Err(Error::new(ErrorKind::NotFound, "entry not found")))
+                    .unwrap();
+
+            assert!(matches!(cache, Cache::Miss));
+            assert!(raw.is_none());
+        }
+
+        #[test]
         fn get_propagates_unexpected_backend_errors() {
             let error = decode_remote_cache_read(Err(Error::new(
                 ErrorKind::Unexpected,
