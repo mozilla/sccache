@@ -1706,6 +1706,15 @@ where
                             DistType::Error => stats.dist_errors += 1,
                         }
 
+                        trace::counter(
+                            "Cache Totals",
+                            &[
+                                ("hits", stats.cache_hits.all()),
+                                ("misses", stats.cache_misses.all()),
+                                ("errors", stats.cache_errors.all()),
+                            ],
+                        );
+
                         // Make sure the write guard has been dropped ASAP.
                         drop(stats);
 

@@ -266,6 +266,25 @@ impl Tracer {
         }
     }
 
+    /// Appends a counter sample (`ph: "C"`) on the metrics track. Perfetto
+    /// draws one time-series graph per distinct event name.
+    pub fn counter(&self, name: impl Into<String>, samples: &[(&str, u64)]) {
+        let mut args = Map::new();
+        for sample in samples {
+            let (key, value) = *sample;
+            args.insert(key.to_owned(), value.into());
+        }
+        self.emit(&TraceEvent {
+            name: name.into(),
+            ph: Phase::Counter,
+            ts: self.now_us(),
+            dur: None,
+            pid: PID_METRICS,
+            tid: 0,
+            args: Some(args),
+        });
+    }
+
     /// Terminates the JSON array and flushes. Later events are dropped.
     pub fn finish(&self) {
         let mut out = lock(&self.inner.out);
@@ -394,6 +413,12 @@ pub fn lease_track() -> Option<TrackGuard> {
 pub fn flush() {
     if let Some(tracer) = global() {
         tracer.flush();
+    }
+}
+
+pub fn counter(name: impl Into<String>, samples: &[(&str, u64)]) {
+    if let Some(tracer) = global() {
+        tracer.counter(name, samples);
     }
 }
 
@@ -543,6 +568,23 @@ mod test {
         let events: Vec<TraceEvent> = serde_json::from_slice(&buf.contents()).unwrap();
         let orphan = events.iter().find(|e| e.name == "orphan").unwrap();
         assert_eq!((orphan.pid, orphan.tid), (PID_BACKGROUND, 0));
+    }
+
+    #[test]
+    fn counter_events_land_on_metrics_track() {
+        let (tracer, buf) = test_tracer();
+        tracer.counter("Cache Totals", &[("hits", 1), ("misses", 2)]);
+        tracer.finish();
+        let events: Vec<TraceEvent> = serde_json::from_slice(&buf.contents()).unwrap();
+        let counters: Vec<_> = events.iter().filter(|e| e.ph == Phase::Counter).collect();
+        let [counter] = counters[..] else {
+            panic!("expected one counter event, got {events:?}");
+        };
+        assert_eq!(counter.name, "Cache Totals");
+        assert_eq!((counter.pid, counter.tid), (PID_METRICS, 0));
+        let args = counter.args.as_ref().unwrap();
+        assert_eq!(args["hits"].as_u64(), Some(1));
+        assert_eq!(args["misses"].as_u64(), Some(2));
     }
 
     #[test]

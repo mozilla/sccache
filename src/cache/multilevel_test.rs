@@ -1911,4 +1911,16 @@ fn test_multi_level_backfill_is_traced() {
             .all(|e| (e.pid, e.tid) == (crate::trace::PID_BACKGROUND, 0)),
         "backfill spans must land on the background track",
     );
+
+    // Each level gets a counter sample (`ph: C`) on the metrics track.
+    let tiers: Vec<_> = events
+        .iter()
+        .filter(|e| e.ph == crate::trace::Phase::Counter && e.pid == crate::trace::PID_METRICS)
+        .collect();
+    for name in ["Tier L0 (disk)", "Tier L1 (unknown)"] {
+        assert!(
+            tiers.iter().any(|e| e.name == name),
+            "expected a tier counter {name} in the trace",
+        );
+    }
 }

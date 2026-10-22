@@ -82,9 +82,9 @@ Perfetto natively ingests the **Chrome Trace Event Format (JSON Array Format)** 
 
 **Goal:** Emit Perfetto counter events (`ph: "C"`) to visualize cache hit rates and per-tier storage activity.
 
-- [ ] **Overall Cache Hit Rate & Storage Counters**
-  - [ ] Emit counter events for `"Cache Totals"` (hits, misses, errors).
-  - [ ] Emit counter events for `"Tier L{idx} ({cache_type})"` in `MultiLevelStorage`.
+- [x] **Overall Cache Hit Rate & Storage Counters**
+  - [x] Emit counter events for `"Cache Totals"` (hits, misses, errors). (Emitted once per compile result in `start_compile_task` while the stats guard is held, on `pid: 0`.)
+  - [x] Emit counter events for `"Tier L{idx} ({cache_type})"` in `MultiLevelStorage`. (One sample per level at the end of `get` and `put_raw`; async writes and backfills land in the sample of the next operation.)
 
 ### Commit 7: Client-Side Mode Unification
 
@@ -184,8 +184,6 @@ Uncommitted at the time of writing: commit 4 (`tool: detect_compiler`, `tool: pr
 
 ### 4.4 Open items
 
-- Commit 4 is not committed yet.
-- Commit 6 (counters) is not started.
 - Commit 7 (client-side forwarding) is not started.
 - The `scan_file` volume question above is unresolved.
 - Rustc detection repeats on every request.

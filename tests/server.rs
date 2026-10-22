@@ -330,3 +330,45 @@ fn test_server_traces_storage() {
         "{events:?}"
     );
 }
+
+#[test]
+#[serial]
+#[cfg(not(target_os = "macos"))]
+fn test_server_traces_counters() {
+    let tempdir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tempdir.path().join("trace_me.rs"),
+        "pub fn trace_me() -> u32 { 0 }\n",
+    )
+    .unwrap();
+    std::fs::create_dir(tempdir.path().join("out")).unwrap();
+    let events = run_traced_server(tempdir.path(), |sccache| {
+        for _ in 0..2 {
+            let output = sccache(&[
+                "rustc",
+                "--crate-name",
+                "trace_me",
+                "--crate-type",
+                "lib",
+                "--emit=link",
+                "--out-dir=out",
+                "trace_me.rs",
+            ]);
+            assert!(output.status.success(), "{output:?}");
+        }
+    });
+
+    let totals: Vec<_> = events
+        .iter()
+        .filter(|e| e["ph"] == "C" && e["name"] == "Cache Totals")
+        .collect();
+    assert_eq!(totals.len(), 2, "{events:?}");
+    assert!(totals.iter().all(|e| e["pid"] == 0), "{events:?}");
+    let last = totals
+        .iter()
+        .max_by(|a, b| a["ts"].as_f64().partial_cmp(&b["ts"].as_f64()).unwrap())
+        .unwrap();
+    assert_eq!(last["args"]["hits"].as_u64().unwrap(), 1, "{events:?}");
+    assert_eq!(last["args"]["misses"].as_u64().unwrap(), 1, "{events:?}");
+    assert_eq!(last["args"]["errors"].as_u64().unwrap(), 0, "{events:?}");
+}
