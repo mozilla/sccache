@@ -46,6 +46,7 @@ mod mock_command;
 mod net;
 mod protocol;
 pub mod server;
+pub mod trace;
 #[doc(hidden)]
 pub mod util;
 

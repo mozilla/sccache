@@ -22,19 +22,19 @@ Perfetto natively ingests the **Chrome Trace Event Format (JSON Array Format)** 
 
 **Goal:** Implement the foundational serialization module, trace writer, and configuration interface without touching existing compilation pipelines.
 
-- [ ] **Create `src/trace.rs`**
-  - [ ] Define `TraceEvent` with Chrome Trace Event fields using `serde::Serialize`.
-  - [ ] Implement `Tracer` with `Arc<Mutex<BufWriter<File>>>` initialized with opening `[\n`.
-  - [ ] Expose global singleton access via `std::sync::OnceLock<Tracer>`.
-  - [ ] Define thread-safe track allocation (`TrackAllocator`) using a free-list of `tid`s.
-  - [ ] Define `tokio::task_local!` context `TRACE_CONTEXT`.
-  - [ ] Define RAII `SpanGuard` that captures timestamps and emits duration events (`ph: "X"`) on `Drop`.
-- [ ] **Update Configuration (`src/config.rs`)**
-  - [ ] Add `trace_file: Option<PathBuf>` to `FileConfig` and `Config`.
-  - [ ] Support reading environment variable `SCCACHE_TRACE`.
-- [ ] **Wire Initialization & Teardown (`src/server.rs`, `src/commands.rs`)**
-  - [ ] Initialize `Tracer` during `start_server`.
-  - [ ] Call `Tracer::flush()` during graceful daemon shutdown.
+- [x] **Create `src/trace.rs`**
+  - [x] Define `TraceEvent` with Chrome Trace Event fields using `serde::Serialize`.
+  - [x] Implement `Tracer` with `Arc<Mutex<BufWriter<File>>>` initialized with opening `[\n`.
+  - [x] Expose global singleton access via `std::sync::OnceLock<Tracer>`.
+  - [x] Define thread-safe track allocation (`TrackAllocator`) using a free-list of `tid`s.
+  - [x] Define `tokio::task_local!` context `TRACE_CONTEXT`.
+  - [x] Define RAII `SpanGuard` that captures timestamps and emits duration events (`ph: "X"`) on `Drop`.
+- [x] **Update Configuration (`src/config.rs`)**
+  - [x] Add `trace_file: Option<PathBuf>` to `FileConfig` and `Config`.
+  - [x] Support reading environment variable `SCCACHE_TRACE`.
+- [x] **Wire Initialization & Teardown (`src/server.rs`, `src/commands.rs`)**
+  - [x] Initialize `Tracer` during `start_server`.
+  - [x] Call `Tracer::flush()` during graceful daemon shutdown.
 
 ### Commit 2: Top-Level Compilation Spans & Worker Track Allocation
 

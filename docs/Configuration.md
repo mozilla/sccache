@@ -33,6 +33,10 @@ server_startup_timeout_ms = 10000
 basedirs = ["/home/user/project"]
 # basedirs = ["/home/user/project", "/home/user/workspace"]
 
+# Write a trace of the server's activity to this file, in the Chrome Trace
+# Event format. Open it in https://ui.perfetto.dev. Overridden by SCCACHE_TRACE.
+# trace_file = "/tmp/sccache-trace.json"
+
 [dist]
 # where to find the scheduler
 scheduler_url = "http://1.2.3.4:10600"
@@ -189,6 +193,7 @@ Note that some env variables may need sccache server restart to take effect.
 * `SCCACHE_ALLOW_CORE_DUMPS` to enable core dumps by the server
 * `SCCACHE_CONF` configuration file path
 * `SCCACHE_BASEDIRS` base directory (or directories) to strip from paths for cache key computation. This is similar to ccache's `CCACHE_BASEDIR` and enables cache hits across different absolute paths when compiling the same source code. Multiple directories can be separated by `;` on Windows hosts and by `:` on any other operating system. When multiple directories are specified, the longest matching prefix is used. Path matching is **case-insensitive** on Windows and **case-sensitive** on other operating systems. Environment variable takes precedence over file configuration. Only absolute paths are supported; relative paths will cause an error and prevent the server from start.
+* `SCCACHE_TRACE` path of a file the server writes a Perfetto-compatible trace to (Chrome Trace Event JSON, viewable at <https://ui.perfetto.dev>). Read when the server starts; the file is completed when the server shuts down. Takes precedence over `trace_file` from the configuration file.
 * `SCCACHE_CACHED_CONF`
 * `SCCACHE_DIST_CLIENT_CACHE_DIR` distributed toolchain cache directory; overrides `[dist].cache_dir` from the configuration file.
 * `SCCACHE_IDLE_TIMEOUT` how long the local daemon process waits for more client requests before exiting, in seconds. Set to `0` to run sccache permanently

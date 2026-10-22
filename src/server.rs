@@ -28,6 +28,7 @@ use crate::mock_command::{CommandCreatorSync, ProcessCommandCreator};
 use crate::protocol::{
     Compile, CompileFinished, CompileResponse, Request, Response, StorageHandshakeInfo,
 };
+use crate::trace;
 use crate::util;
 #[cfg(feature = "dist-client")]
 use anyhow::Context as _;
@@ -433,6 +434,12 @@ thread_local! {
 /// requests a shutdown.
 pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()> {
     info!("start_server: {addr}");
+    if let Some(path) = &config.trace_file {
+        match trace::init(path) {
+            Ok(()) => info!("tracing to {}", path.display()),
+            Err(e) => warn!("tracing disabled: {e:#}"),
+        }
+    }
     let panic_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         PANIC_LOCATION.with(|l| {
@@ -568,7 +575,9 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
                     addr: addr.to_string(),
                 },
             )?;
-            run(future::pending::<()>()).map_err(anyhow::Error::from)?;
+            let res = run(future::pending::<()>());
+            trace::finish();
+            res.map_err(anyhow::Error::from)?;
             Ok(())
         }
         Err(e) => {
