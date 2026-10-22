@@ -130,6 +130,16 @@ export SCCACHE_MULTILEVEL_CHAIN="disk,redis,s3"
 **Order**: Left-to-right is fast-to-slow (L0, L1, L2, ...)
 **Valid names**: `disk`, `redis`, `memcached`, `s3`, `gcs`, `azure`, `gha`, `webdav`, `oss`, `cos`
 
+### Slow-level write concurrency
+
+Writes and backfills to slower cache levels run in the background. `SCCACHE_MULTILEVEL_SLOW_WRITE_CONCURRENCY` limits how many slower-level operations may run concurrently (default: `4`):
+
+```bash
+export SCCACHE_MULTILEVEL_SLOW_WRITE_CONCURRENCY=4
+```
+
+A value of `0` is invalid. Graceful server shutdown drains tracked background cache work before the runtime exits, so accepted best-effort writes are not simply cancelled by shutdown.
+
 ### Write Error Policy Configuration
 
 Control how sccache handles write failures across cache levels using `SCCACHE_MULTILEVEL_WRITE_ERROR_POLICY`:
@@ -210,6 +220,7 @@ export SCCACHE_S3_USE_SSL="true"
 [cache.multilevel]
 chain = ["disk", "redis", "s3"]
 write_error_policy = "l0"  # Optional: ignore, l0 (default), or all
+slow_write_concurrency = 4  # Optional: maximum concurrent slower-level operations
 
 [cache.disk]
 dir = "/var/cache/sccache"
