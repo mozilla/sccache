@@ -140,6 +140,74 @@ fn test_dist_basic() {
     });
 }
 
+// A compile error on the build server reached the client as "Compiler killed by signal 1" with exit
+// code 254 instead of the compiler's exit code.
+#[test]
+#[cfg_attr(not(feature = "dist-tests"), ignore)]
+fn test_dist_failed_compile() {
+    let tmpdir = tempfile::Builder::new()
+        .prefix("sccache_dist_test")
+        .tempdir()
+        .unwrap();
+    let tmpdir = tmpdir.path();
+    let sccache_dist = harness::sccache_dist_path();
+
+    let mut system = harness::DistSystem::new(&sccache_dist, tmpdir);
+    system.add_scheduler();
+    system.add_server();
+
+    let sccache_cfg = dist_test_sccache_client_cfg(tmpdir, system.scheduler_url());
+    let sccache_cfg_path = tmpdir.join("sccache-cfg.json");
+    write_json_cfg(tmpdir, "sccache-cfg.json", &sccache_cfg);
+    let sccache_cached_cfg_path = tmpdir.join("sccache-cached-cfg");
+
+    stop_local_daemon();
+    start_local_daemon(&sccache_cfg_path, &sccache_cached_cfg_path);
+
+    // An error the compiler finds, not the preprocessor: preprocessing runs locally, so an
+    // `#error` would fail before anything is sent to the build server.
+    write_source(
+        tmpdir,
+        "fail.c",
+        "int x() { return sccache_dist_test_undeclared; }",
+    );
+    let output = sccache_command()
+        .args([
+            std::env::var("CC")
+                .unwrap_or_else(|_| "gcc".to_string())
+                .as_str(),
+            "-c",
+        ])
+        .arg(tmpdir.join("fail.c"))
+        .arg("-o")
+        .arg(tmpdir.join("fail.o"))
+        .envs(vec![
+            ("RUST_BACKTRACE", OsStr::new("1")),
+            ("SCCACHE_CONF", sccache_cfg_path.as_os_str()),
+            ("SCCACHE_CACHED_CONF", sccache_cached_cfg_path.as_os_str()),
+        ])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(!stdout.contains("killed by signal"), "stdout: {stdout}");
+    assert!(
+        stderr.contains("sccache_dist_test_undeclared"),
+        "stderr: {stderr}"
+    );
+
+    get_stats(|info| {
+        assert_eq!(1, info.stats.dist_compiles.values().sum::<usize>());
+        assert_eq!(0, info.stats.dist_errors);
+        assert_eq!(1, info.stats.compile_fails);
+    });
+}
+
 #[test]
 #[cfg_attr(not(feature = "dist-tests"), ignore)]
 fn test_dist_restartedserver() {
