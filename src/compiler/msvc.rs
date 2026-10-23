@@ -1004,6 +1004,13 @@ pub fn parse_arguments(
     if debug_info && !is_clang {
         match pdb {
             Some(p) => {
+                // A trailing separator makes cl.exe write a shared vc<NNN>.pdb
+                // inside that directory, like the -Fd-less case below, so the
+                // program database cannot be tracked as a per-compilation
+                // artifact.
+                if p.as_os_str().to_string_lossy().ends_with(['\\', '/']) {
+                    cannot_cache!("shared pdb");
+                }
                 // Append the default .pdb prefix if none was given, like how MSVC does.
                 let path = if p.extension().is_none() {
                     let mut path = p;
@@ -3417,6 +3424,36 @@ mod test {
             CompilerArguments::CannotCache("shared pdb", None),
             parse_arguments(ovec!["-c", "foo.c", "-ZI", "-Fofoo.obj"])
         );
+    }
+
+    #[test]
+    fn test_parse_arguments_pdb_directory() {
+        // A trailing separator makes cl.exe write a shared vc<NNN>.pdb in that
+        // directory, which cannot be cached as part of this compilation.
+        for args in [
+            ovec!["-c", "foo.c", "-Zi", "-Fdpdb\\", "-Fofoo.obj"],
+            ovec!["-c", "foo.c", "-Zi", "-Fdpdb/", "-Fofoo.obj"],
+        ] {
+            assert_eq!(
+                CompilerArguments::CannotCache("shared pdb", None),
+                parse_arguments(args)
+            );
+        }
+
+        // Without debug information cl.exe ignores -Fd entirely.
+        let a = match parse_arguments(ovec!["-c", "foo.c", "-Fdpdb\\", "-Fofoo.obj"]) {
+            CompilerArguments::Ok(a) => a,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert!(!a.outputs.contains_key("pdb"));
+
+        // An explicit file name is a per-compilation artifact and can be cached.
+        let a = match parse_arguments(ovec!["-c", "foo.c", "-Zi", "-Fdpdb\\foo.pdb", "-Fofoo.obj"])
+        {
+            CompilerArguments::Ok(a) => a,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(Path::new("pdb\\foo.pdb"), a.outputs["pdb"].path);
     }
 
     #[test]
