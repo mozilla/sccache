@@ -77,32 +77,30 @@ impl Digest {
         let path = path.as_ref();
         // A relative path is resolved against the working directory of the
         // server, not of the compilation, so it cannot be used as a cache key.
-        if !path.is_absolute() {
+        if !path.is_absolute() || path.is_dir() {
             return Self::file(path, pool).await;
         }
-        // `metadata` follows symlinks, like the hashing below does.
-        let metadata = match fs::metadata(path) {
-            Ok(metadata) => metadata,
-            // Let the non-cached path report the error.
-            Err(_) => return Self::file(path, pool).await,
-        };
-        if !metadata.is_file() {
-            // Directories are hashed recursively, which the cache does not model.
-            return Self::file(path, pool).await;
-        }
-
-        let len = metadata.len();
-        let modified = metadata.modified().ok();
-        let mtime = modified.map(Timestamp::from);
-        let ctime = metadata.ctime_or_creation().ok();
-        if let Some(digest) = hash_cache_lookup(path, len, mtime, ctime) {
-            trace!("Reusing cached digest for {}", path.display());
-            return Ok(digest);
-        }
-
-        let digest = Self::file(path, pool).await?;
-        hash_cache_insert(path, len, modified, mtime, ctime, &digest);
-        Ok(digest)
+        let path = path.to_owned();
+        pool.spawn_blocking(move || {
+            let mut file = File::open(&path)?;
+            let stamp = HashCacheStamp::for_file(&file).ok();
+            if let Some(stamp) = stamp
+                && let Some(digest) = hash_cache_lookup(&path, stamp)
+            {
+                trace!("Reusing cached digest for {}", path.display());
+                return Ok(digest);
+            }
+            let digest = Self::reader_sync(&mut file)?;
+            // The stamp taken before and after reading through the same handle
+            // must match before the digest may be reused.
+            if let Some(stamp) = stamp
+                && HashCacheStamp::for_file(&file).ok() == Some(stamp)
+            {
+                hash_cache_insert(&path, stamp, &digest);
+            }
+            Ok(digest)
+        })
+        .await?
     }
 
     /// Calculate the BLAKE3 digest of the contents read from `reader`.
@@ -418,10 +416,61 @@ const HASH_CACHE_MIN_AGE: Duration = Duration::from_secs(2);
 /// Upper bound on the number of cached file digests.
 const HASH_CACHE_MAX_ENTRIES: usize = 4096;
 
-struct HashCacheEntry {
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct HashCacheStamp {
     len: u64,
-    mtime: Option<Timestamp>,
-    ctime: Option<Timestamp>,
+    mtime: Timestamp,
+    ctime: Timestamp,
+}
+
+impl HashCacheStamp {
+    fn for_file(file: &File) -> std::io::Result<Self> {
+        let metadata = file.metadata()?;
+        if !metadata.is_file() {
+            return Err(std::io::Error::other("Not a regular file"));
+        }
+        #[cfg(not(windows))]
+        let ctime = metadata.ctime_or_creation()?;
+        #[cfg(windows)]
+        let ctime = {
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::Storage::FileSystem::{
+                FILE_BASIC_INFO, FileBasicInfo, GetFileInformationByHandleEx,
+            };
+            let mut info = std::mem::MaybeUninit::<FILE_BASIC_INFO>::uninit();
+            // The creation time does not change when a file is rewritten in
+            // place, so the real change time has to be read here.
+            let success = unsafe {
+                GetFileInformationByHandleEx(
+                    file.as_raw_handle() as _,
+                    FileBasicInfo,
+                    info.as_mut_ptr().cast(),
+                    std::mem::size_of::<FILE_BASIC_INFO>() as u32,
+                )
+            };
+            if success == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            // The call above succeeded, so FILE_BASIC_INFO is fully initialized.
+            let changed = unsafe { info.assume_init() }.ChangeTime;
+            if changed <= 0 {
+                return Err(std::io::Error::other("File change time unavailable"));
+            }
+            Timestamp::new(
+                changed / 10_000_000 - 11_644_473_600,
+                ((changed % 10_000_000) * 100) as u32,
+            )
+        };
+        Ok(Self {
+            len: metadata.len(),
+            mtime: metadata.modified()?.into(),
+            ctime,
+        })
+    }
+}
+
+struct HashCacheEntry {
+    stamp: HashCacheStamp,
     digest: String,
 }
 
@@ -431,15 +480,10 @@ static HASH_CACHE: LazyLock<Mutex<HashMap<PathBuf, HashCacheEntry>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// The cached digest of `path`, provided its metadata still matches.
-fn hash_cache_lookup(
-    path: &Path,
-    len: u64,
-    mtime: Option<Timestamp>,
-    ctime: Option<Timestamp>,
-) -> Option<String> {
+fn hash_cache_lookup(path: &Path, stamp: HashCacheStamp) -> Option<String> {
     let cache = HASH_CACHE.lock().ok()?;
     let entry = cache.get(path)?;
-    if entry.len == len && entry.mtime == mtime && entry.ctime == ctime {
+    if entry.stamp == stamp {
         Some(entry.digest.clone())
     } else {
         None
@@ -448,21 +492,12 @@ fn hash_cache_lookup(
 
 /// Remember `digest` for `path`, but only when the file is old enough for its
 /// metadata to be a reliable witness of its contents.
-fn hash_cache_insert(
-    path: &Path,
-    len: u64,
-    modified: Option<SystemTime>,
-    mtime: Option<Timestamp>,
-    ctime: Option<Timestamp>,
-    digest: &str,
-) {
+fn hash_cache_insert(path: &Path, stamp: HashCacheStamp, digest: &str) {
     // A file that was written moments ago may still be modified within the
     // timestamp resolution of the file system, which would make the cached
     // digest silently wrong.
-    let old_enough = modified
-        .and_then(|modified| SystemTime::now().duration_since(modified).ok())
-        .is_some_and(|age| age >= HASH_CACHE_MIN_AGE);
-    if !old_enough {
+    let cutoff = Timestamp::from(SystemTime::now() - HASH_CACHE_MIN_AGE);
+    if stamp.mtime > cutoff || stamp.ctime > cutoff {
         return;
     }
     let Ok(mut cache) = HASH_CACHE.lock() else {
@@ -476,9 +511,7 @@ fn hash_cache_insert(
     cache.insert(
         path.to_path_buf(),
         HashCacheEntry {
-            len,
-            mtime,
-            ctime,
+            stamp,
             digest: digest.to_owned(),
         },
     );
@@ -2463,6 +2496,7 @@ mod tests {
         let path = temp.path().join("module.ifc");
         std::fs::write(&path, b"first").unwrap();
         backdate(&path);
+        tokio::time::sleep(super::HASH_CACHE_MIN_AGE + std::time::Duration::from_millis(100)).await;
 
         let pool = tokio::runtime::Handle::current();
         let first = Digest::file_cached(&path, &pool).await.unwrap();
@@ -2477,14 +2511,25 @@ mod tests {
         let path = temp.path().join("module.ifc");
         std::fs::write(&path, b"first").unwrap();
         backdate(&path);
+        tokio::time::sleep(super::HASH_CACHE_MIN_AGE + std::time::Duration::from_millis(100)).await;
 
         let pool = tokio::runtime::Handle::current();
         let first = Digest::file_cached(&path, &pool).await.unwrap();
 
-        // Same length, different contents, new mtime.
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        assert!(hash_cache_contains(&path));
+        // Same length with the modification time restored still has to
+        // invalidate the old digest through the real change time.
         std::fs::write(&path, b"other").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
         let second = Digest::file_cached(&path, &pool).await.unwrap();
         assert_ne!(first, second);
+        assert_eq!(second, Digest::file(&path, &pool).await.unwrap());
     }
 
     #[tokio::test]
