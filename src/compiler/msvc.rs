@@ -300,6 +300,7 @@ ArgData! {
     ScanDependencies(PathBuf), // /scanDependencies <path>
     ExportHeader,        // /exportHeader
     IfcOnly,
+    IfcMap(PathBuf), // /ifcMap <file>
     HeaderUnit(OsString), // /headerUnit <name>=<path>
     StdIfcDir(PathBuf), // /stdIfcDir <dir>
 }
@@ -526,9 +527,8 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_take_arg!("headerUnit", OsString, CanBeSeparated, HeaderUnit),
     msvc_flag!("homeparams", PassThrough),
     msvc_flag!("hotpatch", PassThrough),
-    // C++20 modules. /ifcOnly (IFC without an object file) and /ifcMap
-    // (diagnostics) are not supported yet.
-    msvc_take_arg!("ifcMap", PathBuf, Separated, TooHardPath),
+    // C++20 modules. See the /ifcMap handling below for its input file.
+    msvc_take_arg!("ifcMap", PathBuf, Separated, IfcMap),
     msvc_flag!("ifcOnly", IfcOnly),
     msvc_take_arg!("ifcOutput", PathBuf, Separated, IfcOutput),
     msvc_take_arg!("ifcSearchDir", PathBuf, Separated, IfcSearchDir),
@@ -801,9 +801,19 @@ pub fn parse_arguments(
                     extra_hash_files.push(file);
                 }
             }
+            // /ifcMap names a file mapping module names to IFC paths. cl.exe
+            // reads it and silently ignores it when it is missing, so only an
+            // existing file has to be part of the hash.
+            Some(IfcMap(p)) if !is_clang => {
+                let path = cwd.join(p);
+                if path.exists() {
+                    extra_hash_files.push(path);
+                }
+            }
             Some(ModuleInterface)
             | Some(ExportHeader)
             | Some(IfcOnly)
+            | Some(IfcMap(_))
             | Some(IfcOutput(_))
             | Some(IfcReference(_))
             | Some(IfcSearchDir(_))
@@ -859,6 +869,7 @@ pub fn parse_arguments(
             }
             // These are passed to cl.exe as a separate argument.
             Some(ExternalIncludePath(_))
+            | Some(IfcMap(_))
             | Some(IfcOutput(_))
             | Some(IfcReference(_))
             | Some(IfcSearchDir(_))
@@ -3445,18 +3456,41 @@ mod test {
     }
 
     #[test]
+    fn test_parse_arguments_ifc_map() {
+        // /ifcMap names a file cl.exe reads; it is ignored when missing.
+        let a = match parse_arguments(ovec![
+            "-c",
+            "foo.cpp",
+            "-Fofoo.obj",
+            "-ifcMap",
+            "module.map"
+        ]) {
+            CompilerArguments::Ok(a) => a,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert!(a.extra_hash_files.is_empty());
+        assert_eq!(ovec!["-ifcMap", "module.map"], a.common_args);
+
+        let f = TestFixture::new();
+        f.touch("module.map").unwrap();
+        let a = match parse_arguments_in(
+            ovec!["-c", "foo.cpp", "-Fofoo.obj", "-ifcMap", "module.map"],
+            f.tempdir.path(),
+        ) {
+            CompilerArguments::Ok(a) => a,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        // TempDir paths need not be canonical, so compare by file name.
+        let hashed: Vec<_> = a
+            .extra_hash_files
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(vec!["module.map"], hashed);
+    }
+
+    #[test]
     fn test_parse_arguments_cxx20_modules_unsupported() {
-        // /ifcMap writes diagnostics, which is not supported yet.
-        assert_eq!(
-            CompilerArguments::CannotCache("-ifcMap", None),
-            parse_arguments(ovec![
-                "-c",
-                "foo.cpp",
-                "-Fofoo.obj",
-                "-ifcMap",
-                "module.map"
-            ])
-        );
         // /ifcOnly needs the IFC to be named explicitly, since cl.exe otherwise
         // derives the file name from the module.
         assert_eq!(
