@@ -692,6 +692,13 @@ where
         None => cannot_cache!("unknown source language"),
     };
     let mut outputs = HashMap::new();
+    if output_arg.is_none()
+        && common_args.iter().any(|arg| {
+            arg == "-fmodule-header" || arg.to_string_lossy().starts_with("-fmodule-header=")
+        })
+    {
+        cannot_cache!("-fmodule-header without -o");
+    }
     let output = match output_arg {
         // We can't cache compilation that doesn't go to a file
         None => PathBuf::from(Path::new(&input).with_extension("o").file_name().unwrap()),
@@ -821,10 +828,10 @@ pub(crate) fn find_module_files(dir: &Path, extension: &str) -> Result<Vec<PathB
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
-        if entry.file_type()?.is_file()
-            && path
-                .extension()
-                .is_some_and(|ext| ext.eq_ignore_ascii_case(extension))
+        if path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case(extension))
+            && fs::metadata(&path)?.is_file()
         {
             files.push(path);
         }
