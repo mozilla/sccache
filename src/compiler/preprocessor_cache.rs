@@ -245,7 +245,7 @@ impl PreprocessorCacheEntry {
                 }
             }
 
-            let (new_digest, finder) = match file_digest(path) {
+            let (new_digest, finder) = match file_digest(path, Some(&meta)) {
                 Ok(digest) => digest,
                 Err(e) => {
                     debug!(
@@ -415,7 +415,7 @@ pub fn preprocessor_cache_entry_hash_key(
     // Strip basedirs from the input file path if configured
     let buf_to_hash = strip_basedirs(&buf, basedirs);
     m.update(&buf_to_hash);
-    let (digest, finder) = file_digest(input_file)
+    let (digest, finder) = file_digest(input_file, None)
         .with_context(|| format!("while hashing the input file '{}'", input_file.display()))?;
     if !config.ignore_time_macros && finder.found_time() {
         // Disable preprocessor cache mode
@@ -494,18 +494,31 @@ struct CachedFileDigest {
 }
 
 /// Digest of the contents of `path`, and the time macros found in it.
-fn file_digest(path: &Path) -> anyhow::Result<(String, TimeMacroFinder)> {
-    file_digest_at(path, SystemTime::now())
+/// `lstat` is the caller's `symlink_metadata` of `path`, if it has one: unless
+/// `path` is a symlink, it saves stat-ing the file again.
+fn file_digest(path: &Path, lstat: Option<&Metadata>) -> anyhow::Result<(String, TimeMacroFinder)> {
+    file_digest_at(path, lstat, SystemTime::now())
 }
 
 /// The digest remembered for `path`, if the file has not changed since.
-fn remembered_file_digest(path: &Path) -> Option<(String, TimeMacroFinder)> {
+fn remembered_file_digest(
+    path: &Path,
+    lstat: Option<&Metadata>,
+) -> Option<(String, TimeMacroFinder)> {
     if !cfg!(unix) {
         return None;
     }
     // A stat of the path is enough to reuse a digest: it describes the file as
     // it is now, which is what the digest has to match.
-    let stat = FileStat::new(&std::fs::metadata(path).ok()?);
+    let target_meta;
+    let meta = match lstat {
+        Some(meta) if !meta.file_type().is_symlink() => meta,
+        _ => {
+            target_meta = std::fs::metadata(path).ok()?;
+            &target_meta
+        }
+    };
+    let stat = FileStat::new(meta);
     let digests = FILE_DIGESTS.lock().unwrap_or_else(|e| e.into_inner());
     let cached = digests.get(path).filter(|cached| cached.stat == stat)?;
     let finder =
@@ -515,8 +528,12 @@ fn remembered_file_digest(path: &Path) -> Option<(String, TimeMacroFinder)> {
 
 /// [`file_digest`], with `now` deciding whether the file is old enough to be
 /// remembered.
-fn file_digest_at(path: &Path, now: SystemTime) -> anyhow::Result<(String, TimeMacroFinder)> {
-    if let Some(cached) = remembered_file_digest(path) {
+fn file_digest_at(
+    path: &Path,
+    lstat: Option<&Metadata>,
+    now: SystemTime,
+) -> anyhow::Result<(String, TimeMacroFinder)> {
+    if let Some(cached) = remembered_file_digest(path, lstat) {
         return Ok(cached);
     }
 
@@ -986,11 +1003,11 @@ mod test {
         // Far enough ahead for the file to count as settled.
         let later = SystemTime::now() + Duration::from_secs(60);
 
-        let (digest, finder) = file_digest_at(&path, later).unwrap();
+        let (digest, finder) = file_digest_at(&path, None, later).unwrap();
         assert!(is_digest_cached(&path));
         assert!(finder.found_date() && !finder.found_time());
 
-        let (cached_digest, cached_finder) = file_digest_at(&path, later).unwrap();
+        let (cached_digest, cached_finder) = file_digest_at(&path, None, later).unwrap();
         assert_eq!(digest, cached_digest);
         assert!(cached_finder.found_date() && !cached_finder.found_time());
 
@@ -1001,7 +1018,7 @@ mod test {
         std::fs::write(&path, b"#define B __TIME__\n").unwrap();
         filetime::set_file_mtime(&path, filetime::FileTime::from_system_time(mtime)).unwrap();
 
-        let (new_digest, new_finder) = file_digest_at(&path, later).unwrap();
+        let (new_digest, new_finder) = file_digest_at(&path, None, later).unwrap();
         assert_ne!(digest, new_digest);
         assert_eq!(
             new_digest,
@@ -1016,8 +1033,32 @@ mod test {
         let path = dir.path().join("header.h");
         std::fs::write(&path, b"int x;\n").unwrap();
 
-        let (digest, _) = file_digest(&path).unwrap();
+        let (digest, _) = file_digest(&path, None).unwrap();
         assert_eq!(digest, Digest::reader_sync(&b"int x;\n"[..]).unwrap());
         assert!(!is_digest_cached(&path));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_file_digest_cache_through_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("real.h");
+        let link = dir.path().join("link.h");
+        std::fs::write(&target, b"int a;\n").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let later = SystemTime::now() + Duration::from_secs(60);
+
+        let lstat = std::fs::symlink_metadata(&link).unwrap();
+        let (digest, _) = file_digest_at(&link, Some(&lstat), later).unwrap();
+        assert!(is_digest_cached(&link));
+
+        // The link itself is untouched, so its lstat is the same: only the
+        // target's stat can tell that the contents changed.
+        std::thread::sleep(Duration::from_millis(100));
+        std::fs::write(&target, b"int b;\n").unwrap();
+        let lstat = std::fs::symlink_metadata(&link).unwrap();
+        let (new_digest, _) = file_digest_at(&link, Some(&lstat), later).unwrap();
+        assert_ne!(digest, new_digest);
+        assert_eq!(new_digest, Digest::reader_sync(&b"int b;\n"[..]).unwrap());
     }
 }
