@@ -22,12 +22,14 @@ use object::read::macho::{FatArch, MachOFatFile32, MachOFatFile64};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::hash::Hasher;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
 use std::process::{self, Stdio};
 use std::str;
+use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 use std::time::{self, SystemTime};
 
@@ -58,6 +60,49 @@ impl Digest {
         T: AsRef<Path>,
     {
         Self::reader(path.as_ref().to_owned(), pool).await
+    }
+
+    /// Like [`Digest::file`], but reuses a digest computed earlier for the same
+    /// file when its metadata is unchanged.
+    ///
+    /// Large inputs, such as a standard library BMI or IFC, are hashed for every
+    /// compilation that imports them, and reading them back from disk dominates
+    /// that work. A digest is only reused for files that had already been left
+    /// untouched for [`HASH_CACHE_MIN_AGE`] when they were hashed, so a file
+    /// that is still being written is always read again.
+    pub async fn file_cached<T>(path: T, pool: &tokio::runtime::Handle) -> Result<String>
+    where
+        T: AsRef<Path>,
+    {
+        let path = path.as_ref();
+        // A relative path is resolved against the working directory of the
+        // server, not of the compilation, so it cannot be used as a cache key.
+        if !path.is_absolute() {
+            return Self::file(path, pool).await;
+        }
+        // `metadata` follows symlinks, like the hashing below does.
+        let metadata = match fs::metadata(path) {
+            Ok(metadata) => metadata,
+            // Let the non-cached path report the error.
+            Err(_) => return Self::file(path, pool).await,
+        };
+        if !metadata.is_file() {
+            // Directories are hashed recursively, which the cache does not model.
+            return Self::file(path, pool).await;
+        }
+
+        let len = metadata.len();
+        let modified = metadata.modified().ok();
+        let mtime = modified.map(Timestamp::from);
+        let ctime = metadata.ctime_or_creation().ok();
+        if let Some(digest) = hash_cache_lookup(path, len, mtime, ctime) {
+            trace!("Reusing cached digest for {}", path.display());
+            return Ok(digest);
+        }
+
+        let digest = Self::file(path, pool).await?;
+        hash_cache_insert(path, len, modified, mtime, ctime, &digest);
+        Ok(digest)
     }
 
     /// Calculate the BLAKE3 digest of the contents read from `reader`.
@@ -366,12 +411,85 @@ pub fn hex(bytes: &[u8]) -> String {
     }
 }
 
+/// A file that has been left untouched for at least this long is assumed to
+/// keep its contents for as long as its metadata stays the same.
+const HASH_CACHE_MIN_AGE: Duration = Duration::from_secs(2);
+
+/// Upper bound on the number of cached file digests.
+const HASH_CACHE_MAX_ENTRIES: usize = 4096;
+
+struct HashCacheEntry {
+    len: u64,
+    mtime: Option<Timestamp>,
+    ctime: Option<Timestamp>,
+    digest: String,
+}
+
+/// Digests of files that are hashed over and over, such as a standard library
+/// BMI or IFC that every compilation importing it reads.
+static HASH_CACHE: LazyLock<Mutex<HashMap<PathBuf, HashCacheEntry>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// The cached digest of `path`, provided its metadata still matches.
+fn hash_cache_lookup(
+    path: &Path,
+    len: u64,
+    mtime: Option<Timestamp>,
+    ctime: Option<Timestamp>,
+) -> Option<String> {
+    let cache = HASH_CACHE.lock().ok()?;
+    let entry = cache.get(path)?;
+    if entry.len == len && entry.mtime == mtime && entry.ctime == ctime {
+        Some(entry.digest.clone())
+    } else {
+        None
+    }
+}
+
+/// Remember `digest` for `path`, but only when the file is old enough for its
+/// metadata to be a reliable witness of its contents.
+fn hash_cache_insert(
+    path: &Path,
+    len: u64,
+    modified: Option<SystemTime>,
+    mtime: Option<Timestamp>,
+    ctime: Option<Timestamp>,
+    digest: &str,
+) {
+    // A file that was written moments ago may still be modified within the
+    // timestamp resolution of the file system, which would make the cached
+    // digest silently wrong.
+    let old_enough = modified
+        .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+        .is_some_and(|age| age >= HASH_CACHE_MIN_AGE);
+    if !old_enough {
+        return;
+    }
+    let Ok(mut cache) = HASH_CACHE.lock() else {
+        return;
+    };
+    if cache.len() >= HASH_CACHE_MAX_ENTRIES {
+        // The cache only saves work, so starting over is an acceptable eviction
+        // strategy.
+        cache.clear();
+    }
+    cache.insert(
+        path.to_path_buf(),
+        HashCacheEntry {
+            len,
+            mtime,
+            ctime,
+            digest: digest.to_owned(),
+        },
+    );
+}
+
 /// Calculate the digest of each file in `files` on background threads in
 /// `pool`.
 pub async fn hash_all(files: &[PathBuf], pool: &tokio::runtime::Handle) -> Result<Vec<String>> {
     let start = time::Instant::now();
     let count = files.len();
-    let iter = files.iter().map(move |f| Digest::file(f, pool));
+    let iter = files.iter().map(move |f| Digest::file_cached(f, pool));
     let hashes = futures::future::try_join_all(iter).await?;
     trace!(
         "Hashed {} files in {}",
@@ -2322,6 +2440,66 @@ mod tests {
         let pool = tokio::runtime::Handle::current();
         let hash = Digest::reader(path, &pool).await.unwrap();
         assert_eq!(hash.len(), 64, "blake3 hex digest is 64 chars");
+    }
+
+    #[cfg(test)]
+    fn hash_cache_contains(path: &Path) -> bool {
+        super::HASH_CACHE
+            .lock()
+            .map(|cache| cache.contains_key(path))
+            .unwrap_or(false)
+    }
+
+    /// Give `path` an mtime old enough for its digest to become cacheable.
+    fn backdate(path: &Path) {
+        let file = std::fs::File::options().write(true).open(path).unwrap();
+        file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(60))
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_digest_cache_reuses_digest_of_unchanged_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("module.ifc");
+        std::fs::write(&path, b"first").unwrap();
+        backdate(&path);
+
+        let pool = tokio::runtime::Handle::current();
+        let first = Digest::file_cached(&path, &pool).await.unwrap();
+        assert!(hash_cache_contains(&path), "old file should be cached");
+        let second = Digest::file_cached(&path, &pool).await.unwrap();
+        assert_eq!(first, second);
+    }
+
+    #[tokio::test]
+    async fn test_digest_cache_detects_changed_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("module.ifc");
+        std::fs::write(&path, b"first").unwrap();
+        backdate(&path);
+
+        let pool = tokio::runtime::Handle::current();
+        let first = Digest::file_cached(&path, &pool).await.unwrap();
+
+        // Same length, different contents, new mtime.
+        std::fs::write(&path, b"other").unwrap();
+        let second = Digest::file_cached(&path, &pool).await.unwrap();
+        assert_ne!(first, second);
+    }
+
+    #[tokio::test]
+    async fn test_digest_cache_skips_recently_written_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("fresh.ifc");
+        std::fs::write(&path, b"fresh").unwrap();
+
+        let pool = tokio::runtime::Handle::current();
+        let first = Digest::file_cached(&path, &pool).await.unwrap();
+        // The file was just written, so it may still change within the timestamp
+        // resolution of the file system: its digest must not be reused.
+        assert!(!hash_cache_contains(&path));
+        let second = Digest::file_cached(&path, &pool).await.unwrap();
+        assert_eq!(first, second);
     }
 
     // Regression for https://github.com/mozilla/sccache/issues/2653: rustc's
