@@ -24,11 +24,8 @@
 //! server being watched won't shut down on its own. Press `p` to pause polling
 //! if that matters.
 
-mod tail;
-
 use std::collections::{HashMap, VecDeque};
 use std::io;
-use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -46,35 +43,27 @@ use ratatui::widgets::{
 use ratatui::{DefaultTerminal, Frame};
 
 use crate::client::{ServerConnection, connect_to_server};
+use crate::cmdline::{MAX_MONITOR_INTERVAL, MIN_MONITOR_INTERVAL};
 use crate::errors::*;
 use crate::protocol::{Request, Response};
 use crate::server::{DistInfo, PerLanguageCount, ServerInfo, ServerStats};
 use crate::util::fmt_duration_as_secs;
-use tail::LogEvent;
 
 /// How many samples of history to keep for the sparklines.
 const HISTORY: usize = 512;
-/// Bounds on the poll interval, adjustable with `+`/`-`.
-const MIN_INTERVAL: Duration = Duration::from_millis(200);
-const MAX_INTERVAL: Duration = Duration::from_secs(60);
 /// How long a transient status message stays on screen.
 const MESSAGE_TTL: Duration = Duration::from_secs(4);
 /// Longest the UI goes without a repaint when nothing has changed, so that the
 /// elapsed times in the status bar keep moving.
 const REDRAW_INTERVAL: Duration = Duration::from_millis(500);
 
-const TABS: [&str; 6] = ["Overview", "Languages", "Reasons", "Cache", "Dist", "Logs"];
-
-/// How many log lines to keep. Enough to scroll back through a build's worth of
-/// output without letting a chatty `SCCACHE_LOG=trace` grow without bound.
-const LOG_LINES: usize = 10_000;
+const TABS: [&str; 5] = ["Overview", "Languages", "Reasons", "Cache", "Dist"];
 
 /// Run the monitor until the user quits.
-pub fn run(addr: crate::net::SocketAddr, interval: Duration, log: Option<PathBuf>) -> Result<()> {
-    let interval = interval.clamp(MIN_INTERVAL, MAX_INTERVAL);
+pub fn run(addr: crate::net::SocketAddr, interval: Duration) -> Result<()> {
+    let interval = interval.clamp(MIN_MONITOR_INTERVAL, MAX_MONITOR_INTERVAL);
     let (cmd_tx, cmd_rx) = mpsc::channel();
     let (sample_tx, sample_rx) = mpsc::channel();
-    let (log_tx, log_rx) = mpsc::channel();
 
     let addr_display = addr.to_string();
     // The handle is dropped on purpose: the poller can be blocked in a request
@@ -86,23 +75,16 @@ pub fn run(addr: crate::net::SocketAddr, interval: Duration, log: Option<PathBuf
         .name("sccache-monitor-poll".into())
         .spawn(move || poll_loop(addr, interval, cmd_rx, sample_tx))?;
 
-    if let Some(path) = log.clone() {
-        // Same reasoning as the poller: nothing to join, let the process reap
-        // it when the UI is done.
-        tail::spawn(path, log_tx)?;
-    }
-
-    let mut app = App::new(addr_display, interval, log);
+    let mut app = App::new(addr_display, interval);
     install_panic_hook();
     // This process logs to its own stderr, which is the terminal the dashboard
     // is drawing on, so anything logged lands on top of the display and stays
     // there. `SCCACHE_LOG` is usually exported for a whole shell rather than a
-    // single command, so silence our own logging while the UI owns the screen;
-    // the server's log is a separate file, and the Logs pane shows it.
+    // single command, so silence our own logging while the UI owns the screen.
     let log_level = log::max_level();
     log::set_max_level(log::LevelFilter::Off);
     let terminal = ratatui::init();
-    let result = app.main_loop(terminal, &cmd_tx, &sample_rx, &log_rx);
+    let result = app.main_loop(terminal, &cmd_tx, &sample_rx);
     ratatui::restore();
     log::set_max_level(log_level);
 
@@ -226,6 +208,10 @@ fn poll_loop(
                     if tx.send(sample).is_err() {
                         return;
                     }
+                    // The UI drops its snapshot on `Zeroed`, so poll again
+                    // straight away, even while paused, rather than leave the
+                    // counters blank until polling resumes.
+                    force = true;
                     break;
                 }
             }
@@ -260,6 +246,27 @@ struct Rates {
     errors: f64,
 }
 
+/// Everything derived from successive snapshots, which starts over when the
+/// statistics are zeroed or the server restarts.
+#[derive(Default)]
+struct History {
+    /// The previous snapshot, used for rate computation.
+    prev: Option<(Instant, ServerStats)>,
+    rates: Rates,
+    requests: VecDeque<u64>,
+    hits: VecDeque<u64>,
+    misses: VecDeque<u64>,
+    /// Timestamped cache size in bytes, one entry per sample, used to work out
+    /// how fast the cache is filling and when it will be full.
+    size: VecDeque<(Instant, u64)>,
+    /// Bytes per second added to the cache, one entry per sample.
+    growth: VecDeque<u64>,
+    /// How often the cache was seen to shrink, and by how much in total. The
+    /// LRU trims the cache at its ceiling, so this is what "full" looks like.
+    trims: u64,
+    trimmed: u64,
+}
+
 struct App {
     addr: String,
     interval: Duration,
@@ -272,54 +279,18 @@ struct App {
     confirm_zero: bool,
     /// Repaint every cell on the next frame, rather than just what changed.
     repaint: bool,
-    /// Latest snapshot, and the previous one used for rate computation.
+    /// Latest snapshot.
     info: Option<ServerInfo>,
-    prev: Option<(Instant, ServerStats)>,
     dist: Option<DistInfo>,
-    rates: Rates,
-    hist_requests: VecDeque<u64>,
-    hist_hits: VecDeque<u64>,
-    hist_misses: VecDeque<u64>,
-    /// Timestamped cache size in bytes, one entry per sample, used to work out
-    /// how fast the cache is filling and when it will be full.
-    hist_size: VecDeque<(Instant, u64)>,
-    /// Bytes per second added to the cache, one entry per sample.
-    hist_growth: VecDeque<u64>,
-    /// How often the cache was seen to shrink, and by how much in total. The
-    /// LRU trims the cache at its ceiling, so this is what "full" looks like.
-    trims: u64,
-    trimmed: u64,
+    history: History,
     updates: u64,
     last_update: Option<Instant>,
     error: Option<String>,
     message: Option<(String, Instant)>,
-    logs: LogView,
-}
-
-/// The Logs pane: what has been read from the server's log file, and where the
-/// reader is looking.
-struct LogView {
-    /// The file being followed, if one was configured.
-    path: Option<PathBuf>,
-    lines: VecDeque<LogLine>,
-    /// Lines scrolled back from the end. Zero means sitting on the tail.
-    scroll: usize,
-    /// Whether new lines pull the view along with them.
-    follow: bool,
-    /// Hide anything less severe than this.
-    min_level: Option<log::Level>,
-    /// Why there is nothing to show, when there is nothing to show.
-    status: Option<String>,
-}
-
-/// A log line and the level it was written at.
-struct LogLine {
-    text: String,
-    level: log::Level,
 }
 
 impl App {
-    fn new(addr: String, interval: Duration, log: Option<PathBuf>) -> Self {
+    fn new(addr: String, interval: Duration) -> Self {
         App {
             addr,
             interval,
@@ -331,21 +302,12 @@ impl App {
             confirm_zero: false,
             repaint: false,
             info: None,
-            prev: None,
             dist: None,
-            rates: Rates::default(),
-            hist_requests: VecDeque::with_capacity(HISTORY),
-            hist_hits: VecDeque::with_capacity(HISTORY),
-            hist_misses: VecDeque::with_capacity(HISTORY),
-            hist_size: VecDeque::with_capacity(HISTORY),
-            hist_growth: VecDeque::with_capacity(HISTORY),
-            trims: 0,
-            trimmed: 0,
+            history: History::default(),
             updates: 0,
             last_update: None,
             error: None,
             message: None,
-            logs: LogView::new(log),
         }
     }
 
@@ -354,7 +316,6 @@ impl App {
         mut terminal: DefaultTerminal,
         cmds: &Sender<Cmd>,
         samples: &Receiver<Sample>,
-        logs: &Receiver<LogEvent>,
     ) -> Result<()> {
         let mut dirty = true;
         let mut drawn = Instant::now();
@@ -394,10 +355,6 @@ impl App {
                 self.ingest(sample);
                 dirty = true;
             }
-            while let Ok(event) = logs.try_recv() {
-                self.logs.ingest(event);
-                dirty = true;
-            }
             if let Some((_, at)) = self.message
                 && at.elapsed() > MESSAGE_TTL
             {
@@ -413,11 +370,6 @@ impl App {
         // Zeroing is irreversible, so it takes two presses of `z` in a row;
         // any other key cancels the pending confirmation.
         let confirming = std::mem::take(&mut self.confirm_zero);
-        // The Logs pane takes the keys that only mean something there before
-        // they reach the global bindings.
-        if TABS[self.tab] == "Logs" && self.on_log_key(key) {
-            return Ok(true);
-        }
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => return Ok(false),
             KeyCode::Char('c' | 'd') if ctrl => return Ok(false),
@@ -453,46 +405,13 @@ impl App {
             KeyCode::BackTab | KeyCode::Left | KeyCode::Char('h') => {
                 self.select_tab((self.tab + TABS.len() - 1) % TABS.len(), cmds);
             }
-            KeyCode::Char(c @ '1'..='6') => {
+            KeyCode::Char(c @ '1'..='5') => {
                 let idx = c as usize - '1' as usize;
                 self.select_tab(idx, cmds);
             }
             _ => {}
         }
         Ok(true)
-    }
-
-    /// Handle the keys that belong to the Logs pane. Returns whether the key
-    /// was one of them.
-    fn on_log_key(&mut self, key: KeyEvent) -> bool {
-        // A screenful, near enough: the pane is most of the window.
-        const PAGE: usize = 20;
-        match key.code {
-            KeyCode::Up | KeyCode::Char('k') => self.logs.scroll_back(1),
-            KeyCode::Down | KeyCode::Char('j') => self.logs.scroll_forward(1),
-            KeyCode::PageUp => self.logs.scroll_back(PAGE),
-            KeyCode::PageDown => self.logs.scroll_forward(PAGE),
-            KeyCode::Home => self.logs.jump_to_start(),
-            KeyCode::End => self.logs.jump_to_tail(),
-            KeyCode::Char('f') => {
-                self.logs.follow = !self.logs.follow;
-                if self.logs.follow {
-                    self.logs.scroll = 0;
-                }
-                let following = self.logs.follow;
-                self.note(if following {
-                    "following the log"
-                } else {
-                    "stopped following"
-                });
-            }
-            KeyCode::Char('e') => {
-                let note = self.logs.cycle_level();
-                self.note(note);
-            }
-            _ => return false,
-        }
-        true
     }
 
     fn select_tab(&mut self, tab: usize, cmds: &Sender<Cmd>) {
@@ -507,7 +426,7 @@ impl App {
     }
 
     fn set_interval(&mut self, interval: Duration, cmds: &Sender<Cmd>) {
-        self.interval = interval.clamp(MIN_INTERVAL, MAX_INTERVAL);
+        self.interval = interval.clamp(MIN_MONITOR_INTERVAL, MAX_MONITOR_INTERVAL);
         let _ = cmds.send(Cmd::SetInterval(self.interval));
         self.note(format!("interval {}", fmt_interval(self.interval)));
     }
@@ -521,7 +440,7 @@ impl App {
             Sample::Info(info) => {
                 let now = Instant::now();
                 let stats = &info.stats;
-                match self.prev.take() {
+                match self.history.prev.take() {
                     // A counter going backwards means the stats were zeroed or
                     // the server restarted: start the history over.
                     Some((_, prev)) if stats.compile_requests < prev.compile_requests => {
@@ -531,7 +450,7 @@ impl App {
                         let dt = now.duration_since(at).as_secs_f64();
                         if dt > 0.0 {
                             let rate = |new: u64, old: u64| (new.saturating_sub(old)) as f64 / dt;
-                            self.rates = Rates {
+                            self.history.rates = Rates {
                                 requests: rate(stats.compile_requests, prev.compile_requests),
                                 hits: rate(stats.cache_hits.all(), prev.cache_hits.all()),
                                 misses: rate(stats.cache_misses.all(), prev.cache_misses.all()),
@@ -546,34 +465,34 @@ impl App {
                                         + prev.cache_write_errors,
                                 ),
                             };
-                            push(&mut self.hist_requests, self.rates.requests);
-                            push(&mut self.hist_hits, self.rates.hits);
-                            push(&mut self.hist_misses, self.rates.misses);
+                            push(&mut self.history.requests, self.history.rates.requests);
+                            push(&mut self.history.hits, self.history.rates.hits);
+                            push(&mut self.history.misses, self.history.rates.misses);
                         }
                     }
                     None => {}
                 }
-                self.prev = Some((now, stats.clone()));
+                self.history.prev = Some((now, stats.clone()));
                 if let Some(size) = info.cache_size {
-                    if let Some(&(at, previous)) = self.hist_size.back() {
+                    if let Some(&(at, previous)) = self.history.size.back() {
                         let dt = now.duration_since(at).as_secs_f64();
                         if size < previous {
                             // The LRU trimmed the cache: it was at its ceiling.
-                            self.trims += 1;
-                            self.trimmed += previous - size;
+                            self.history.trims += 1;
+                            self.history.trimmed += previous - size;
                         }
                         if dt > 0.0 {
                             let growth = (size.saturating_sub(previous)) as f64 / dt;
-                            if self.hist_growth.len() == HISTORY {
-                                self.hist_growth.pop_front();
+                            if self.history.growth.len() == HISTORY {
+                                self.history.growth.pop_front();
                             }
-                            self.hist_growth.push_back(growth.round() as u64);
+                            self.history.growth.push_back(growth.round() as u64);
                         }
                     }
-                    if self.hist_size.len() == HISTORY {
-                        self.hist_size.pop_front();
+                    if self.history.size.len() == HISTORY {
+                        self.history.size.pop_front();
                     }
-                    self.hist_size.push_back((now, size));
+                    self.history.size.push_back((now, size));
                 }
                 self.info = Some(*info);
                 self.updates += 1;
@@ -585,151 +504,22 @@ impl App {
                 self.reset_history();
                 // Drop the pre-zero snapshot too, otherwise the counters keep
                 // showing the old totals until the next poll lands. The poller
-                // re-polls immediately after zeroing, so this is one frame.
+                // re-polls immediately after zeroing, even while paused, so
+                // this is one frame.
                 self.info = None;
                 self.note("statistics zeroed");
             }
             Sample::Error(e) => {
-                self.prev = None;
-                self.rates = Rates::default();
+                self.history.prev = None;
+                self.history.rates = Rates::default();
                 self.error = Some(e);
             }
         }
     }
 
     fn reset_history(&mut self) {
-        self.prev = None;
-        self.rates = Rates::default();
-        self.hist_requests.clear();
-        self.hist_hits.clear();
-        self.hist_misses.clear();
+        self.history = History::default();
     }
-}
-
-impl LogView {
-    fn new(path: Option<PathBuf>) -> Self {
-        LogView {
-            path,
-            lines: VecDeque::new(),
-            scroll: 0,
-            follow: true,
-            min_level: None,
-            status: None,
-        }
-    }
-
-    fn ingest(&mut self, event: LogEvent) {
-        match event {
-            LogEvent::Lines(lines) => {
-                self.status = None;
-                for text in lines {
-                    // A line with no level of its own continues the one before
-                    // it: panics and backtraces run over several lines and
-                    // should not lose their colour halfway down.
-                    let level = level_of(&text)
-                        .or_else(|| self.lines.back().map(|l| l.level))
-                        .unwrap_or(log::Level::Info);
-                    if self.lines.len() == LOG_LINES {
-                        self.lines.pop_front();
-                        // Keep the viewport over the same lines as they slide.
-                        self.scroll = self.scroll.saturating_sub(1);
-                    }
-                    self.lines.push_back(LogLine { text, level });
-                }
-                if self.follow {
-                    self.scroll = 0;
-                }
-            }
-            LogEvent::Rotated => {
-                self.lines.clear();
-                self.scroll = 0;
-                self.status = Some("the log file was truncated or replaced".to_string());
-            }
-            LogEvent::Waiting(reason) => {
-                if self.lines.is_empty() {
-                    self.status = Some(reason);
-                }
-            }
-        }
-    }
-
-    /// The lines that pass the level filter, oldest first.
-    fn visible(&self) -> Vec<&LogLine> {
-        self.lines
-            .iter()
-            .filter(|line| match self.min_level {
-                Some(min) => line.level <= min,
-                None => true,
-            })
-            .collect()
-    }
-
-    /// Scroll back by `lines`, which stops following the tail.
-    fn scroll_back(&mut self, lines: usize) {
-        self.scroll = (self.scroll + lines).min(self.visible().len());
-        self.follow = false;
-    }
-
-    /// Scroll forward by `lines`, resuming the tail on arrival.
-    fn scroll_forward(&mut self, lines: usize) {
-        self.scroll = self.scroll.saturating_sub(lines);
-        if self.scroll == 0 {
-            self.follow = true;
-        }
-    }
-
-    fn jump_to_tail(&mut self) {
-        self.scroll = 0;
-        self.follow = true;
-    }
-
-    fn jump_to_start(&mut self) {
-        self.scroll = self.visible().len();
-        self.follow = false;
-    }
-
-    /// Cycle the level filter: everything, then progressively less.
-    fn cycle_level(&mut self) -> String {
-        self.min_level = match self.min_level {
-            None => Some(log::Level::Debug),
-            Some(log::Level::Debug) => Some(log::Level::Info),
-            Some(log::Level::Info) => Some(log::Level::Warn),
-            Some(log::Level::Warn) => Some(log::Level::Error),
-            Some(_) => None,
-        };
-        // The filter changes what "scrolled back N lines" points at; the tail
-        // is the one position that always makes sense.
-        self.jump_to_tail();
-        format!("showing {}", self.level_label())
-    }
-
-    fn level_label(&self) -> String {
-        match self.min_level {
-            None => "all levels".to_string(),
-            Some(level) => format!("{level} and worse"),
-        }
-    }
-}
-
-/// The level env_logger wrote a line at, if it wrote one.
-///
-/// The format is `[timestamp LEVEL module] message`, so only the start of the
-/// line is worth searching: a message that happens to mention `ERROR` should
-/// not turn the line red.
-fn level_of(line: &str) -> Option<log::Level> {
-    let head = line.get(..line.len().min(64)).unwrap_or(line);
-    for (name, level) in [
-        ("ERROR", log::Level::Error),
-        ("WARN", log::Level::Warn),
-        ("INFO", log::Level::Info),
-        ("DEBUG", log::Level::Debug),
-        ("TRACE", log::Level::Trace),
-    ] {
-        if head.contains(name) {
-            return Some(level);
-        }
-    }
-    None
 }
 
 fn push(hist: &mut VecDeque<u64>, value: f64) {
@@ -761,7 +551,6 @@ impl App {
             "Reasons" => self.draw_reasons(frame, body),
             "Cache" => self.draw_cache(frame, body),
             "Dist" => self.draw_dist(frame, body),
-            "Logs" => self.draw_logs(frame, body),
             _ => self.draw_overview(frame, body),
         }
         self.draw_footer(frame, footer);
@@ -866,24 +655,24 @@ impl App {
             frame,
             req_area,
             "compile requests/s",
-            &self.hist_requests,
-            self.rates.requests,
+            &self.history.requests,
+            self.history.rates.requests,
             Color::Cyan,
         );
         self.draw_sparkline(
             frame,
             hit_area,
             "cache hits/s",
-            &self.hist_hits,
-            self.rates.hits,
+            &self.history.hits,
+            self.history.rates.hits,
             Color::Green,
         );
         self.draw_sparkline(
             frame,
             miss_area,
             "cache misses/s",
-            &self.hist_misses,
-            self.rates.misses,
+            &self.history.misses,
+            self.history.rates.misses,
             Color::Magenta,
         );
         self.draw_timings(frame, timing_area);
@@ -928,7 +717,7 @@ impl App {
             .unwrap_or((None, None));
         frame.render_widget(cache_gauge(size, max), size_area);
 
-        let r = &self.rates;
+        let r = &self.history.rates;
         let lines = vec![
             Line::from(vec![
                 kv("requests/s", format!("{:.2}", r.requests)),
@@ -1166,8 +955,8 @@ impl App {
     /// Average bytes per second the cache has grown over the samples still in
     /// the window, and how long that window covers. Negative after a trim.
     fn cache_growth(&self) -> Option<(f64, Duration)> {
-        let &(first_at, first) = self.hist_size.front()?;
-        let &(last_at, last) = self.hist_size.back()?;
+        let &(first_at, first) = self.history.size.front()?;
+        let &(last_at, last) = self.history.size.back()?;
         let window = last_at.duration_since(first_at);
         if window.is_zero() {
             return None;
@@ -1181,7 +970,8 @@ impl App {
     fn draw_cache_trend(&self, frame: &mut Frame<'_>, area: Rect) {
         let width = area.width.saturating_sub(2) as usize;
         let data: Vec<u64> = self
-            .hist_growth
+            .history
+            .growth
             .iter()
             .rev()
             .take(width)
@@ -1271,21 +1061,21 @@ impl App {
                 )]));
                 // Once the LRU has started trimming, the cache is full and
                 // stays there; the projection would only ever read "~0 s".
-                if rate > 0.0 && self.trims == 0 && max > size {
+                if rate > 0.0 && self.history.trims == 0 && max > size {
                     lines.push(Line::from(vec![kv(
                         "full in",
                         format!("~{}", fmt_eta((max - size) as f64 / rate)),
                     )]));
                 }
             }
-            if self.trims > 0 {
+            if self.history.trims > 0 {
                 lines.push(Line::from(vec![
                     kv(
                         "trimmed",
                         format!(
                             "{} times, {} freed",
-                            self.trims,
-                            fmt_bytes(Some(self.trimmed))
+                            self.history.trims,
+                            fmt_bytes(Some(self.history.trimmed))
                         ),
                     ),
                     Span::styled(" (at its ceiling)", Style::default().fg(Color::DarkGray)),
@@ -1408,66 +1198,6 @@ impl App {
         }
     }
 
-    fn draw_logs(&self, frame: &mut Frame<'_>, area: Rect) {
-        let Some(path) = self.logs.path.as_ref() else {
-            frame.render_widget(
-                Paragraph::new(LOG_HELP.lines().map(Line::from).collect::<Vec<_>>())
-                    .block(titled("Logs"))
-                    .wrap(Wrap { trim: false }),
-                area,
-            );
-            return;
-        };
-
-        let lines = self.logs.visible();
-        let heading = format!(
-            "Logs — {} · {} lines · {} · {}",
-            path.display(),
-            lines.len(),
-            self.logs.level_label(),
-            if self.logs.follow {
-                "following"
-            } else {
-                "paused, End to catch up"
-            },
-        );
-        let block = titled(&heading);
-        if lines.is_empty() {
-            let empty = if !self.logs.lines.is_empty() {
-                // There is a log; the filter is simply hiding all of it.
-                format!(
-                    "no lines at {} — press e to widen the filter",
-                    self.logs.level_label()
-                )
-            } else if let Some(reason) = self.logs.status.as_deref() {
-                format!("waiting for {}: {reason}", path.display())
-            } else {
-                format!(
-                    "nothing to show yet — is the server running with SCCACHE_LOG set?\n\n{LOG_HELP}"
-                )
-            };
-            frame.render_widget(
-                placeholder(&empty).block(block).wrap(Wrap { trim: false }),
-                area,
-            );
-            return;
-        }
-
-        // A screenful of lines, shifted back from the newest by `scroll`.
-        // Clamping the start rather than the end keeps the pane full when the
-        // reader scrolls past the oldest line we still hold.
-        let height = block.inner(area).height as usize;
-        let start = lines.len().saturating_sub(height + self.logs.scroll);
-        let end = (start + height).min(lines.len());
-        let text: Vec<Line<'_>> = lines[start..end]
-            .iter()
-            .map(|line| {
-                Line::from(line.text.as_str()).style(Style::default().fg(level_colour(line.level)))
-            })
-            .collect();
-        frame.render_widget(Paragraph::new(text).block(block), area);
-    }
-
     fn draw_dist(&self, frame: &mut Frame<'_>, area: Rect) {
         let block = titled("Distributed compilation");
         let text = match &self.dist {
@@ -1513,7 +1243,7 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect) {
     let lines = vec![
         Line::from("Keys".to_string()).style(Style::default().fg(Color::Cyan).bold()),
         Line::from("  q, Esc, Ctrl-C/D      quit"),
-        Line::from("  1-6, Tab, ←/→, h/l    switch pane"),
+        Line::from("  1-5, Tab, ←/→, h/l    switch pane"),
         Line::from("  a                     per-compiler instead of per-language counts"),
         Line::from("  r                     poll now, even while paused"),
         Line::from("  p, Space              pause/resume polling"),
@@ -1522,12 +1252,6 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect) {
         Line::from("  Ctrl-L                redraw, if something else wrote over the screen"),
         Line::from("  ?, F1                 close this help"),
         Line::from(""),
-        Line::from("In the Logs pane".to_string()).style(Style::default().fg(Color::Cyan).bold()),
-        Line::from("  ↑/↓, k/j, PgUp/PgDn   scroll, which stops following"),
-        Line::from("  Home / End            oldest line / back to following the tail"),
-        Line::from("  f                     follow the tail or stop"),
-        Line::from("  e                     cycle the level filter"),
-        Line::from(""),
         Line::from("The monitor is an ordinary client of the running server. Each poll"),
         Line::from("resets the server's idle-shutdown timer, so a watched server will not"),
         Line::from("time out on its own — pause polling if you need it to."),
@@ -1535,7 +1259,9 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect) {
     let [area] = Layout::horizontal([Constraint::Length(74)])
         .flex(Flex::Center)
         .areas(area);
-    let [area] = Layout::vertical([Constraint::Length(23)])
+    // The lines, plus the border above and below.
+    let height = lines.len() as u16 + 2;
+    let [area] = Layout::vertical([Constraint::Length(height)])
         .flex(Flex::Center)
         .areas(area);
     frame.render_widget(Clear, area);
@@ -1665,28 +1391,6 @@ fn sep() -> Span<'static> {
 
 fn kv<S: Into<String>>(name: &str, value: S) -> Span<'static> {
     Span::raw(format!("{name} {}", value.into()))
-}
-
-/// What to tell someone who opened the Logs pane with no log to show.
-const LOG_HELP: &str = "\
-The server logs by having its stderr redirected to a file, so start it with one
-and point the monitor at it:
-
-    SCCACHE_ERROR_LOG=/tmp/sccache.log SCCACHE_LOG=debug sccache --start-server
-    sccache --monitor --monitor-log /tmp/sccache.log
-
-`--monitor-log` defaults to $SCCACHE_ERROR_LOG, so exporting that in the shell
-you run the monitor from is enough. The file is followed as it grows, and
-picked up whenever it appears, so the monitor can be started first.";
-
-fn level_colour(level: log::Level) -> Color {
-    match level {
-        log::Level::Error => Color::Red,
-        log::Level::Warn => Color::Yellow,
-        log::Level::Info => Color::Reset,
-        log::Level::Debug => Color::Gray,
-        log::Level::Trace => Color::DarkGray,
-    }
 }
 
 /// Scale a window of samples onto bar heights, in eighths of a cell, and

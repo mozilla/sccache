@@ -183,6 +183,7 @@ all = [
   "webdav",
   "oss",
   "cos",
+  "monitor",
 ]
 azure = [
   "opendal/services-azblob",
@@ -196,7 +197,20 @@ cos = [
   "opendal-http-transport-reqwest",
   "reqwest",
 ]
-default = ["all"]
+# Everything in `all` but the `monitor` dashboard, which pulls in a TUI stack
+# that most builds have no use for.
+default = [
+  "dist-client",
+  "redis",
+  "s3",
+  "memcached",
+  "gcs",
+  "azure",
+  "gha",
+  "webdav",
+  "oss",
+  "cos",
+]
 gcs = [
   "opendal/services-gcs",
   "opendal-layer-logging",

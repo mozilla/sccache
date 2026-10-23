@@ -824,17 +824,17 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                 )?,
             }
         }
-        Command::Monitor { interval, log } => {
-            trace!("Command::Monitor({:?}, {:?})", interval, log);
+        Command::Monitor { interval } => {
+            trace!("Command::Monitor({:?})", interval);
             #[cfg(feature = "monitor")]
             {
                 // Attach to whatever server is running; the monitor keeps
                 // retrying if there is none yet, so don't start one here.
-                crate::monitor::run(get_addr(), interval, log)?;
+                crate::monitor::run(get_addr(), interval)?;
             }
             #[cfg(not(feature = "monitor"))]
             {
-                let _ = (interval, log);
+                let _ = interval;
                 bail!(
                     "The monitor UI was not compiled in, please rebuild with the `monitor` feature"
                 );
