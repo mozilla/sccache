@@ -655,15 +655,44 @@ fn find_ifc_files(dir: &Path) -> Result<Vec<PathBuf>> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
-        if entry.file_type()?.is_file()
-            && path
-                .extension()
-                .is_some_and(|e| e.eq_ignore_ascii_case("ifc"))
+        if path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("ifc"))
+            && fs::metadata(&path)?.is_file()
         {
             files.push(path);
         }
     }
     files.sort();
+    Ok(files)
+}
+
+fn ifc_map_files(path: &Path, cwd: &Path) -> Result<Vec<PathBuf>> {
+    let contents = match fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(err) => return Err(err.into()),
+    };
+    let map: toml::Value = toml::from_str(&contents)?;
+    let mut files = vec![path.to_owned()];
+    for kind in ["module", "header-unit"] {
+        if let Some(entries) = map.get(kind) {
+            for entry in entries.as_array().context("Expected IFC map array")? {
+                let ifc = entry
+                    .get("ifc")
+                    .and_then(toml::Value::as_str)
+                    .filter(|path| !path.is_empty())
+                    .context("Missing IFC path")?;
+                let file = cwd.join(ifc);
+                // An unused invalid mapping must not make an otherwise valid
+                // compilation fail while its inputs are being hashed.
+                if !fs::metadata(&file)?.is_file() {
+                    bail!("IFC map target is not a file");
+                }
+                files.push(file);
+            }
+        }
+    }
     Ok(files)
 }
 
@@ -801,14 +830,11 @@ pub fn parse_arguments(
                     extra_hash_files.push(file);
                 }
             }
-            // /ifcMap names a file mapping module names to IFC paths. cl.exe
-            // reads it and silently ignores it when it is missing, so only an
-            // existing file has to be part of the hash.
             Some(IfcMap(p)) if !is_clang => {
-                let path = cwd.join(p);
-                if path.exists() {
-                    extra_hash_files.push(path);
-                }
+                extra_hash_files.extend(try_or_cannot_cache!(
+                    ifc_map_files(&cwd.join(p), cwd),
+                    "-ifcMap"
+                ));
             }
             Some(ModuleInterface)
             | Some(ExportHeader)
@@ -1003,6 +1029,28 @@ pub fn parse_arguments(
             format!("{:?}", multiple_input_files)
         );
     }
+    if ifc_only && module_output.is_none() {
+        cannot_cache!("/ifcOnly without /ifcOutput");
+    }
+    // /TP does not take the implicit module interface identity away from an
+    // .ixx input.
+    if !is_clang
+        && explicit_language != Some(Language::C)
+        && input_arg.as_ref().is_some_and(|input| {
+            Path::new(input)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("ixx"))
+        })
+    {
+        cxx_module = true;
+    }
+    if export_header
+        && common_args
+            .iter()
+            .any(|arg| arg == "-Zc:preprocessor-" || arg == "/Zc:preprocessor-")
+    {
+        cannot_cache!("/exportHeader with /Zc:preprocessor-");
+    }
     // A directory as /ifcOutput makes cl.exe name the IFC after the module,
     // /interface, /internalPartition and /exportHeader all make cl.exe write an
     // IFC, which only makes sense together with a file name for it.
@@ -1017,11 +1065,6 @@ pub fn parse_arguments(
         } else {
             cannot_cache!("/interface or /exportHeader without /ifcOutput or vice versa");
         }
-    }
-    // /ifcOnly without a named IFC would leave cl.exe picking the file name from
-    // the module, which is only known after compiling.
-    if ifc_only && module_output.is_none() {
-        cannot_cache!("/ifcOnly without /ifcOutput");
     }
     // clang-cl drops -x c++-module and -fmodule-output= for a /Tc or /Tp input.
     if is_clang && cxx_module && explicit_language.is_some() {
@@ -1262,6 +1305,16 @@ fn preprocess_cmd<T>(
         cmd.arg("-EP");
     }
 
+    if !is_clang
+        && parsed_args
+            .common_args
+            .iter()
+            .any(|arg| arg == "-exportHeader" || arg == "/exportHeader")
+    {
+        // /EP alone does not enable the header unit preprocessor, and the
+        // exported macros have to take part in the cache key.
+        cmd.args(&["-Zc:preprocessor", "-PD"]);
+    }
     cmd.arg("-nologo")
         .args(&parsed_args.preprocessor_args)
         .args(&parsed_args.dependency_args)
@@ -3487,6 +3540,100 @@ mod test {
             .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
             .collect();
         assert_eq!(vec!["module.map"], hashed);
+    }
+
+    #[test]
+    fn test_ifc_map_tracks_module_and_header_unit_targets() {
+        let f = TestFixture::new();
+        f.touch("maps/modules.toml").unwrap();
+        f.touch("m.ifc").unwrap();
+        f.touch("h.ifc").unwrap();
+        let cwd = f.tempdir.path();
+        let map = cwd.join("maps/modules.toml");
+        fs::write(&map, "[[module]]\nname='m'\nifc='m.ifc'\n[[header-unit]]\nname=['quote','h.h']\nifc='h.ifc'\n").unwrap();
+        let a =
+            match parse_arguments_in(ovec!["-c", "use.cpp", "-ifcMap", "maps/modules.toml"], cwd) {
+                CompilerArguments::Ok(a) => a,
+                other => panic!("Unexpected {other:?}"),
+            };
+        assert_eq!(
+            a.extra_hash_files,
+            vec![map.clone(), cwd.join("m.ifc"), cwd.join("h.ifc")]
+        );
+        for invalid in [
+            "[[module]]\nifc='missing.ifc'",
+            "[[module]]\nifc=123",
+            "not toml",
+        ] {
+            fs::write(&map, invalid).unwrap();
+            assert!(matches!(
+                parse_arguments_in(ovec!["-c", "use.cpp", "-ifcMap", "maps/modules.toml"], cwd),
+                CompilerArguments::CannotCache("-ifcMap", _)
+            ));
+        }
+    }
+
+    #[test]
+    fn test_implicit_msvc_module_interface_outputs() {
+        for input in ["m.ixx", "m.IXx"] {
+            for language in [vec![], ovec!["-TP"]] {
+                let mut args = ovec!["-c", input, "-ifcOutput", "out.ifc"];
+                args.extend(language);
+                let parsed = match parse_arguments(args.clone()) {
+                    CompilerArguments::Ok(a) => a,
+                    other => panic!("Unexpected {other:?}"),
+                };
+                assert_eq!(parsed.outputs["module"].path, Path::new("out.ifc"));
+                args[3] = "ifcs/".into();
+                assert_eq!(
+                    parse_arguments(args),
+                    CompilerArguments::CannotCache("-ifcOutput with a directory", None)
+                );
+            }
+        }
+    }
+
+    #[test_case::test_case("-"; "dash")]
+    #[test_case::test_case("/"; "slash")]
+    fn test_header_unit_preprocessing_preserves_macros(prefix: &str) {
+        let args = ovec![
+            "-c",
+            "-TP",
+            "h.h",
+            format!("{prefix}exportHeader"),
+            "-ifcOutput",
+            "h.ifc"
+        ];
+        let parsed = match parse_arguments(args.clone()) {
+            CompilerArguments::Ok(a) => a,
+            other => panic!("Unexpected {other:?}"),
+        };
+        let mut cmd = MockCommand {
+            child: None,
+            args: vec![],
+        };
+        preprocess_cmd(&mut cmd, &parsed, Path::new(""), &[], false, false, false);
+        assert!(cmd.args.contains(&OsString::from("-PD")));
+        assert!(cmd.args.contains(&OsString::from("-Zc:preprocessor")));
+        let mut legacy = args;
+        legacy.push(format!("{prefix}Zc:preprocessor-").into());
+        assert!(matches!(
+            parse_arguments(legacy),
+            CompilerArguments::CannotCache(_, _)
+        ));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_ifc_directory_follows_symlinks() {
+        let f = TestFixture::new();
+        f.touch("actual.bin").unwrap();
+        let dir = f.tempdir.path();
+        let link = dir.join("m.ifc");
+        std::os::unix::fs::symlink(dir.join("actual.bin"), &link).unwrap();
+        assert_eq!(find_ifc_files(dir).unwrap(), vec![link]);
+        std::os::unix::fs::symlink(dir.join("missing"), dir.join("bad.ifc")).unwrap();
+        assert!(find_ifc_files(dir).is_err());
     }
 
     #[test]

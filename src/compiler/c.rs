@@ -387,6 +387,27 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compiler<T> for CCompiler<I> {
     }
 }
 
+/// Hash extra input files, keeping their file names in the key.
+///
+/// Module files are looked up by name (`<dir>/<module-name>.ifc`,
+/// `<dir>/<module>.pcm`), so renaming one has to invalidate the compilation even
+/// when the contents stay the same. Only the file name is hashed, never the
+/// directory: some extra inputs are intermediates the compiler wrote into a
+/// per-compilation temporary directory (CUDA device code), and hashing their
+/// paths would keep those keys from ever matching.
+async fn hash_extra_files(files: &[PathBuf], pool: &tokio::runtime::Handle) -> Result<Vec<String>> {
+    let mut hashes = hash_all(files, pool).await?;
+    for (path, hash) in files.iter().zip(&mut hashes) {
+        let mut digest = Digest::new();
+        if let Some(name) = path.file_name() {
+            digest.update(name.as_encoded_bytes());
+        }
+        digest.update(hash.as_bytes());
+        *hash = digest.finish();
+    }
+    Ok(hashes)
+}
+
 #[async_trait]
 impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
 where
@@ -406,7 +427,7 @@ where
     ) -> Result<HashResult<T>> {
         let start_of_compilation = std::time::SystemTime::now();
 
-        let extra_hashes = hash_all(&self.parsed_args.extra_hash_files, &pool.clone()).await?;
+        let extra_hashes = hash_extra_files(&self.parsed_args.extra_hash_files, pool).await?;
         // The assembler that turns the compiler's output into the object file is
         // as much a part of the result as the compiler itself.
         let assembler_digest = if self.parsed_args.uses_external_assembler {
@@ -1479,7 +1500,7 @@ impl pkg::ToolchainPackager for CToolchainPackager {
 }
 
 /// The cache is versioned by the inputs to `HashKeyParams::compute`.
-pub const CACHE_VERSION: &[u8] = b"13";
+pub const CACHE_VERSION: &[u8] = b"14";
 
 /// Environment variables that are factored into the cache key.
 static CACHED_ENV_VARS: LazyLock<HashSet<&'static OsStr>> = LazyLock::new(|| {
@@ -1649,6 +1670,31 @@ mod test {
     use std::{collections::VecDeque, sync::Mutex};
 
     use super::*;
+
+    #[tokio::test]
+    async fn test_extra_hash_files_include_names_but_not_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a");
+        let b = dir.path().join("b");
+        fs::create_dir(&a).unwrap();
+        fs::create_dir(&b).unwrap();
+        let first = a.join("m.pcm");
+        let other = a.join("n.pcm");
+        let relocated = b.join("m.pcm");
+        for file in [&first, &other, &relocated] {
+            fs::write(file, b"same module").unwrap();
+        }
+        let pool = tokio::runtime::Handle::current();
+        let first_hash = hash_extra_files(&[first], &pool).await.unwrap();
+        // Renaming a module file changes the key even though the contents match.
+        assert_ne!(first_hash, hash_extra_files(&[other], &pool).await.unwrap());
+        // The directory is not part of the key, so intermediates in a
+        // per-compilation temporary directory keep their key.
+        assert_eq!(
+            first_hash,
+            hash_extra_files(&[relocated], &pool).await.unwrap()
+        );
+    }
 
     #[test]
     fn test_same_content() {
