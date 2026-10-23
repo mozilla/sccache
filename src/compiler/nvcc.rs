@@ -25,7 +25,9 @@ use crate::compiler::{
 use crate::mock_command::{
     CommandChild, CommandCreator, CommandCreatorSync, ExitStatusValue, RunCommand, exit_status,
 };
-use crate::util::{OsStrExt, resolve_compiler_avoiding_wrapper, run_input_output};
+use crate::util::{
+    OsStrExt, exit_status_from_code, resolve_compiler_avoiding_wrapper, run_input_output,
+};
 use crate::{counted_array, dist, protocol, server};
 use async_trait::async_trait;
 use fs::File;
@@ -1355,23 +1357,11 @@ fn aggregate_output(lhs: process::Output, rhs: process::Output) -> process::Outp
     }
 }
 
-// `ExitStatus::from_raw` takes a wait status on Unix, not an exit code: passed directly, the
-// server's fatal-error code -2 reads as "killed by signal 126" and an exit code of 1 as signal 1.
-#[cfg(unix)]
-fn exit_code_status(code: i32) -> process::ExitStatus {
-    exit_status((code & 0xff) << 8)
-}
-
-#[cfg(windows)]
-fn exit_code_status(code: i32) -> process::ExitStatus {
-    exit_status(code as ExitStatusValue)
-}
-
 fn error_to_output(err: Error) -> process::Output {
     match err.downcast::<ProcessError>() {
         Ok(ProcessError(out)) => out,
         Err(err) => process::Output {
-            status: exit_code_status(1),
+            status: exit_status_from_code(1),
             stdout: vec![],
             stderr: err.to_string().into_bytes(),
         },
@@ -1396,7 +1386,7 @@ fn compile_result_to_output(exe: &Path, res: protocol::CompileFinished) -> proce
         };
     }
     process::Output {
-        status: exit_code_status(res.retcode.unwrap_or(0)),
+        status: exit_status_from_code(res.retcode.unwrap_or(0)),
         stdout: res.stdout,
         stderr: res.stderr,
     }
@@ -2389,19 +2379,22 @@ mod test {
 
     #[test]
     fn test_aggregate_output_keeps_first_failure() {
-        let ok = exit_code_status(0);
+        let ok = exit_status_from_code(0);
 
         let all_ok = aggregate_output(output_with(ok, "a"), output_with(ok, "b"));
         assert!(all_ok.status.success());
         assert_eq!(all_ok.stdout, b"ab");
         assert_eq!(all_ok.stderr, b"ab");
 
-        let failed = aggregate_output(output_with(ok, "a"), output_with(exit_code_status(2), "b"));
+        let failed = aggregate_output(
+            output_with(ok, "a"),
+            output_with(exit_status_from_code(2), "b"),
+        );
         assert_eq!(failed.status.code(), Some(2));
 
         let first = aggregate_output(
-            output_with(exit_code_status(3), "a"),
-            output_with(exit_code_status(5), "b"),
+            output_with(exit_status_from_code(3), "a"),
+            output_with(exit_status_from_code(5), "b"),
         );
         assert_eq!(first.status.code(), Some(3));
         assert_eq!(first.stdout, b"ab");
@@ -2411,7 +2404,7 @@ mod test {
     #[test]
     fn test_aggregate_output_keeps_signal() {
         let killed = aggregate_output(
-            output_with(exit_code_status(0), "a"),
+            output_with(exit_status_from_code(0), "a"),
             output_with(exit_status(9), "b"),
         );
         assert_eq!(killed.status.signal(), Some(9));

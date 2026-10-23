@@ -594,6 +594,23 @@ where
         })
 }
 
+/// The `ExitStatus` of a process that exited with `code`.
+///
+/// On Unix `ExitStatus::from_raw` takes a wait status, not an exit code: given an exit code
+/// directly, -2 reads as "killed by signal 126" and 1 as signal 1.
+#[cfg(unix)]
+pub fn exit_status_from_code(code: i32) -> process::ExitStatus {
+    use std::os::unix::process::ExitStatusExt;
+    process::ExitStatus::from_raw((code & 0xff) << 8)
+}
+
+/// The `ExitStatus` of a process that exited with `code`.
+#[cfg(windows)]
+pub fn exit_status_from_code(code: i32) -> process::ExitStatus {
+    use std::os::windows::process::ExitStatusExt;
+    process::ExitStatus::from_raw(code as u32)
+}
+
 /// Write `data` to `writer` with bincode serialization, prefixed by a `u32` length.
 pub fn write_length_prefixed_bincode<W, S>(mut writer: W, data: S) -> Result<()>
 where
@@ -1614,9 +1631,35 @@ pub fn resolve_compiler_avoiding_wrapper(
 
 #[cfg(test)]
 mod tests {
-    use super::{Digest, OsStrExt, TimeMacroFinder, resolve_compiler_avoiding_wrapper};
+    use super::{
+        Digest, OsStrExt, TimeMacroFinder, exit_status_from_code, resolve_compiler_avoiding_wrapper,
+    };
     use std::ffi::{OsStr, OsString};
     use std::path::Path;
+
+    #[test]
+    fn test_exit_status_from_code() {
+        assert!(exit_status_from_code(0).success());
+        assert_eq!(exit_status_from_code(1).code(), Some(1));
+        assert_eq!(exit_status_from_code(255).code(), Some(255));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_exit_status_from_code_is_not_a_signal() {
+        use std::os::unix::process::ExitStatusExt;
+        for code in [1, 2, 126, 127, 255, -2] {
+            let status = exit_status_from_code(code);
+            assert_eq!(status.signal(), None, "exit code {code}");
+            assert_eq!(status.code(), Some(code & 0xff), "exit code {code}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_exit_status_from_code_keeps_the_code() {
+        assert_eq!(exit_status_from_code(-2).code(), Some(-2));
+    }
 
     #[cfg(all(any_dist, target_os = "linux"))]
     #[test]

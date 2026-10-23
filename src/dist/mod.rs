@@ -471,23 +471,13 @@ impl ProcessOutput {
 }
 #[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
-#[cfg(windows)]
-use std::os::windows::process::ExitStatusExt;
-#[cfg(unix)]
-fn exit_status(code: i32) -> process::ExitStatus {
-    process::ExitStatus::from_raw(code)
-}
-#[cfg(windows)]
-fn exit_status(code: i32) -> process::ExitStatus {
-    // TODO: this is probably a subideal conversion - it's not clear how Unix exit codes map to
-    // Windows exit codes (other than 0 being a success)
-    process::ExitStatus::from_raw(code as u32)
-}
 impl From<ProcessOutput> for process::Output {
     fn from(o: ProcessOutput) -> Self {
         // TODO: handle signals, i.e. None code
+        // TODO: on Windows a Unix exit code is taken as is; it is not clear how Unix exit codes
+        // map to Windows exit codes (other than 0 being a success)
         process::Output {
-            status: exit_status(o.code),
+            status: crate::util::exit_status_from_code(o.code),
             stdout: o.stdout,
             stderr: o.stderr,
         }
