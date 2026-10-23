@@ -170,6 +170,8 @@ ArgData! { pub
     ExtraHashFileClangModuleFile(OsString),
     // For -fmodule-output
     ClangModuleOutput(OsString),
+    // For -fprebuilt-module-path=<dir>, a directory of prebuilt module files.
+    PrebuiltModulePathDir(PathBuf),
     XClang(OsString),
     Arch(OsString),
     PedanticFlag,
@@ -442,6 +444,7 @@ where
             | Some(PreprocessorArgumentPath(_))
             | Some(PassThrough(_))
             | Some(PassThroughPath(_))
+            | Some(PrebuiltModulePathDir(_))
             | Some(UnhashedFlag)
             | Some(Unhashed(_)) => {}
             Some(Language(lang)) => {
@@ -523,6 +526,20 @@ where
                 extra_hash_files.push(cwd.join(module_file_path(val)));
                 &mut common_args
             }
+            Some(PrebuiltModulePathDir(dir)) => {
+                // clang resolves an import by looking for <dir>/<module-name>.pcm
+                // without descending into subdirectories, and the command line
+                // does not say which of those files the compilation reads, so all
+                // of them are hashed. This costs a hit when an unrelated module
+                // file in the same directory changes.
+                for file in try_or_cannot_cache!(
+                    find_module_files(&cwd.join(dir), "pcm"),
+                    "-fprebuilt-module-path"
+                ) {
+                    extra_hash_files.push(file);
+                }
+                &mut common_args
+            }
             Some(PreprocessorArgument(_)) => {
                 too_hard_for_preprocessor_cache_mode = match arg.flag_str() {
                     Some(s) if s == "-Xpreprocessor" || s == "-Wp" => Some(arg.to_os_string()),
@@ -579,6 +596,7 @@ where
             | Some(Language(_))
             | Some(Output(_))
             | Some(ClangModuleOutput(_))
+            | Some(PrebuiltModulePathDir(_))
             | Some(TooHardFlag)
             | Some(XClang(_))
             | Some(IntegratedAs)
@@ -790,6 +808,29 @@ pub(crate) fn module_file_path(val: &OsStr) -> PathBuf {
         Some((_, path)) => PathBuf::from(path),
         None => PathBuf::from(val),
     }
+}
+
+/// Every regular file in `dir` whose extension matches `extension`
+/// (case-insensitively), sorted.
+///
+/// Both clang and cl.exe look prebuilt module files up by name inside a
+/// directory given on the command line, without saying which of them the
+/// compilation reads, so a cache key has to cover all of them.
+pub(crate) fn find_module_files(dir: &Path, extension: &str) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if entry.file_type()?.is_file()
+            && path
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case(extension))
+        {
+            files.push(path);
+        }
+    }
+    files.sort();
+    Ok(files)
 }
 
 fn module_artifact_descriptor(

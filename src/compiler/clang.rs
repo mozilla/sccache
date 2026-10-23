@@ -270,7 +270,13 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("-fpass-plugin", PathBuf, Concatenated(b'='), ExtraHashFile),
     take_arg!("-fplugin", PathBuf, CanBeConcatenated(b'='), ExtraHashFile),
     flag!("-fprebuilt-implicit-modules", TooHardFlag),
-    take_arg!("-fprebuilt-module-path", OsString, Concatenated, TooHard),
+    // A directory of prebuilt module files, looked up by module name.
+    take_arg!(
+        "-fprebuilt-module-path",
+        PathBuf,
+        Concatenated(b'='),
+        PrebuiltModulePathDir
+    ),
     flag!("-fprofile-instr-generate", ProfileGenerate),
     // Note: the PathBuf argument is optional
     take_arg!("-fprofile-instr-use", PathBuf, Concatenated(b'='), ClangProfileUse),
@@ -356,6 +362,20 @@ mod test {
             assembler_digest: None,
         }
         .parse_arguments(&arguments, &std::env::current_dir().unwrap(), &[])
+    }
+
+    fn parse_arguments_in(
+        arguments: Vec<String>,
+        cwd: &Path,
+    ) -> CompilerArguments<ParsedArguments> {
+        let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
+        Clang {
+            clangplusplus: false,
+            is_appleclang: false,
+            version: None,
+            assembler_digest: None,
+        }
+        .parse_arguments(&arguments, cwd, &[])
     }
 
     macro_rules! parses {
@@ -1272,17 +1292,55 @@ mod test {
             ])
         );
 
-        // -fprebuilt-module-path is not supported (implicit module path discovery)
-        assert_eq!(
-            CompilerArguments::CannotCache("-fprebuilt-module-path", None),
-            parse_arguments_(stringvec![
-                "-c",
-                "foo.c",
-                "-fprebuilt-module-path=/path/to/modules",
-                "-o",
-                "foo.o"
-            ])
-        );
+        // -fprebuilt-module-path is supported: the module files it makes visible
+        // are hashed, which the test below covers.
+    }
+
+    #[test]
+    fn test_parse_arguments_prebuilt_module_path() {
+        let f = crate::test::utils::TestFixture::new();
+        for name in ["modules/m.pcm", "modules/n.pcm"] {
+            f.touch(name).unwrap();
+        }
+        // Not a module file, so it must not be hashed.
+        f.touch("modules/notes.txt").unwrap();
+
+        let a = match parse_arguments_in(
+            vec![
+                "-c".to_string(),
+                "foo.cpp".to_string(),
+                "-fprebuilt-module-path=modules".to_string(),
+                "-o".to_string(),
+                "foo.o".to_string(),
+            ],
+            f.tempdir.path(),
+        ) {
+            CompilerArguments::Ok(a) => a,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        let mut names: Vec<_> = a
+            .extra_hash_files
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(vec!["m.pcm", "n.pcm"], names);
+        assert_eq!(ovec!["-fprebuilt-module-path=modules"], a.common_args);
+
+        // A missing directory means the compilation cannot find its modules.
+        match parse_arguments_in(
+            vec![
+                "-c".to_string(),
+                "foo.cpp".to_string(),
+                "-fprebuilt-module-path=missing".to_string(),
+                "-o".to_string(),
+                "foo.o".to_string(),
+            ],
+            f.tempdir.path(),
+        ) {
+            CompilerArguments::CannotCache(why, _) => assert_eq!("-fprebuilt-module-path", why),
+            o => panic!("Got unexpected parse result: {:?}", o),
+        }
     }
 
     #[test]
