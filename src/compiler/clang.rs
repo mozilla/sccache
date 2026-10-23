@@ -1344,6 +1344,19 @@ mod test {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn test_prebuilt_directory_follows_symlinks() {
+        let f = crate::test::utils::TestFixture::new();
+        f.touch("actual.bin").unwrap();
+        let dir = f.tempdir.path();
+        let link = dir.join("m.pcm");
+        std::os::unix::fs::symlink(dir.join("actual.bin"), &link).unwrap();
+        assert_eq!(gcc::find_module_files(dir, "pcm").unwrap(), vec![link]);
+        std::os::unix::fs::symlink(dir.join("missing"), dir.join("bad.pcm")).unwrap();
+        assert!(gcc::find_module_files(dir, "pcm").is_err());
+    }
+
+    #[test]
     fn test_parse_arguments_too_hard() {
         for (extra, reason) in [
             (&["--analyze"][..], "--analyze"),
@@ -1557,6 +1570,10 @@ mod test {
 
     #[test]
     fn test_parse_arguments_header_unit_producer() {
+        assert_eq!(
+            CompilerArguments::CannotCache("-fmodule-header without -o", None),
+            parse_arguments_(stringvec!["-c", "-fmodule-header", "foo.hpp"])
+        );
         // Building a header unit writes only the BMI named by -o, so it is cached
         // like any other compilation whose single artifact is that file.
         let a = parses!(
