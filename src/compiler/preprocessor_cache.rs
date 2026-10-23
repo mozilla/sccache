@@ -565,6 +565,7 @@ fn file_digest_at(
 #[derive(Clone, Deserialize, Serialize, Debug, PartialEq, Eq)]
 pub struct IncludeEntry {
     /// Its absolute path
+    #[serde(deserialize_with = "deserialize_os_string")]
     path: OsString,
     /// The hash of its contents
     digest: String,
@@ -574,6 +575,74 @@ pub struct IncludeEntry {
     mtime: Option<Timestamp>,
     /// Its status change time, `None` if not recorded.
     ctime: Option<Timestamp>,
+}
+
+/// Reads an `OsString` in serde's own encoding of it, an enum with a `Unix`
+/// variant holding bytes and a `Windows` one holding UTF-16 code units. serde
+/// decodes those bytes one at a time, which made up a noticeable part of
+/// reading an entry with hundreds of includes on each direct-mode lookup;
+/// bincode encodes a byte buffer exactly like a sequence of bytes, so read
+/// them as one buffer instead.
+fn deserialize_os_string<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<OsString, D::Error> {
+    // The other platform's variant is only read to be rejected.
+    #[allow(dead_code)]
+    #[derive(Deserialize)]
+    enum OsStringRepr {
+        Unix(Bytes),
+        Windows(Vec<u16>),
+    }
+
+    match OsStringRepr::deserialize(deserializer)? {
+        #[cfg(unix)]
+        OsStringRepr::Unix(Bytes(bytes)) => Ok(std::os::unix::ffi::OsStringExt::from_vec(bytes)),
+        #[cfg(windows)]
+        OsStringRepr::Windows(wide) => Ok(std::os::windows::ffi::OsStringExt::from_wide(&wide)),
+        _ => Err(serde::de::Error::custom(
+            "cannot deserialize an OsString from another platform",
+        )),
+    }
+}
+
+/// A `Vec<u8>` read as a byte buffer rather than as a sequence of bytes.
+// Only `Unix` paths are made of bytes; elsewhere they are only read to be rejected.
+#[cfg_attr(not(unix), allow(dead_code))]
+struct Bytes(Vec<u8>);
+
+impl<'de> Deserialize<'de> for Bytes {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct BytesVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for BytesVisitor {
+            type Value = Bytes;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("bytes")
+            }
+
+            fn visit_bytes<E>(self, v: &[u8]) -> Result<Bytes, E> {
+                Ok(Bytes(v.to_vec()))
+            }
+
+            fn visit_byte_buf<E>(self, v: Vec<u8>) -> Result<Bytes, E> {
+                Ok(Bytes(v))
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Bytes, A::Error> {
+                let mut bytes = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+                while let Some(byte) = seq.next_element()? {
+                    bytes.push(byte);
+                }
+                Ok(Bytes(bytes))
+            }
+        }
+
+        deserializer.deserialize_byte_buf(BytesVisitor)
+    }
 }
 
 #[derive(Debug)]
@@ -1060,5 +1129,47 @@ mod test {
         let (new_digest, _) = file_digest_at(&link, Some(&lstat), later).unwrap();
         assert_ne!(digest, new_digest);
         assert_eq!(new_digest, Digest::reader_sync(&b"int b;\n"[..]).unwrap());
+    }
+
+    #[test]
+    fn test_deserialize_os_string_matches_serde_encoding() {
+        #[derive(Deserialize)]
+        struct Path(#[serde(deserialize_with = "deserialize_os_string")] OsString);
+
+        #[cfg_attr(not(unix), allow(unused_mut))]
+        let mut paths = vec![
+            OsString::new(),
+            OsString::from("/usr/include/stdio.h"),
+            OsString::from("/home/\u{e9}t\u{e9}/header with spaces.h"),
+        ];
+        #[cfg(unix)]
+        paths.push(std::os::unix::ffi::OsStringExt::from_vec(vec![
+            b'/', 0xff, 0xfe, b'x',
+        ]));
+        for path in paths {
+            let encoded = bincode::serialize(&path).unwrap();
+            let decoded: Path = bincode::deserialize(&encoded).unwrap();
+            assert_eq!(decoded.0, path);
+        }
+    }
+
+    #[test]
+    fn test_preprocessor_cache_entry_roundtrip() {
+        let mut entry = PreprocessorCacheEntry::new();
+        let includes = (0..300)
+            .map(|i| IncludeEntry {
+                path: OsString::from(format!("/usr/include/c++/14/header{i}.h")),
+                digest: format!("digest{i}"),
+                file_size: i,
+                mtime: Some(Timestamp::from(SystemTime::UNIX_EPOCH)),
+                ctime: None,
+            })
+            .collect();
+        entry.number_of_entries = 300;
+        entry.results.insert("result".to_owned(), includes);
+
+        let mut buf = vec![];
+        entry.serialize_to(&mut buf).unwrap();
+        assert_eq!(PreprocessorCacheEntry::read(&buf).unwrap(), entry);
     }
 }
