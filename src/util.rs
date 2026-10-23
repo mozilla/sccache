@@ -39,6 +39,23 @@ pub const BASE64_URL_SAFE_ENGINE: base64::engine::GeneralPurpose =
 
 pub const HASH_BUFFER_SIZE: usize = 128 * 1024;
 
+thread_local! {
+    /// Read buffer for hashing, reused across calls. A fresh one costs a 128KB
+    /// memset each time, which is more than hashing the typical header: on
+    /// direct-mode cache hits, that zeroing alone took ~15% of the server's CPU.
+    static HASH_BUFFER: std::cell::RefCell<Box<[u8]>> =
+        std::cell::RefCell::new(vec![0; HASH_BUFFER_SIZE].into_boxed_slice());
+}
+
+/// Runs `f` with this thread's hash read buffer.
+fn with_hash_buffer<T>(f: impl FnOnce(&mut [u8]) -> T) -> T {
+    HASH_BUFFER.with(|cell| match cell.try_borrow_mut() {
+        Ok(mut buf) => f(&mut buf),
+        // Already in use further up the stack, e.g. a callback hashing another file.
+        Err(_) => f(&mut vec![0; HASH_BUFFER_SIZE]),
+    })
+}
+
 #[derive(Clone)]
 pub struct Digest {
     inner: blake3_Hasher,
@@ -71,16 +88,17 @@ impl Digest {
         let mut m = Digest::default();
         // A buffer of 128KB should give us the best performance.
         // See https://eklitzke.org/efficient-file-copying-on-linux.
-        let mut buffer = [0; HASH_BUFFER_SIZE];
-        loop {
-            let count = reader.read(&mut buffer[..])?;
-            if count == 0 {
-                break;
+        with_hash_buffer(|buffer| {
+            loop {
+                let count = reader.read(buffer)?;
+                if count == 0 {
+                    break;
+                }
+                each(&buffer[..count]);
+                m.update(&buffer[..count]);
             }
-            each(&buffer[..count]);
-            m.update(&buffer[..count]);
-        }
-        Ok(m)
+            Ok(m)
+        })
     }
 
     /// Calculate the BLAKE3 digest of the contents read from `reader`, while
@@ -124,15 +142,16 @@ impl Digest {
     fn update_from_file(&mut self, path: &Path) -> Result<()> {
         let mut file = File::open(path)
             .with_context(|| format!("Failed to open file for hashing: {path:?}"))?;
-        let mut buf = [0u8; HASH_BUFFER_SIZE];
-        loop {
-            let n = file.read(&mut buf)?;
-            if n == 0 {
-                break;
+        with_hash_buffer(|buf| {
+            loop {
+                let n = file.read(buf)?;
+                if n == 0 {
+                    break;
+                }
+                self.update(&buf[..n]);
             }
-            self.update(&buf[..n]);
-        }
-        Ok(())
+            Ok(())
+        })
     }
 
     /// Recursively collect all file paths within a directory.
