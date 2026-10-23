@@ -19,14 +19,14 @@
 //! different.
 
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashSet},
     ffi::{OsStr, OsString},
     fs::Metadata,
     hash::Hash,
     io::Write,
     path::{Path, PathBuf},
-    sync::{LazyLock, Mutex},
-    time::{Duration, SystemTime},
+    sync::LazyLock,
+    time::SystemTime,
 };
 
 use anyhow::Context;
@@ -245,7 +245,7 @@ impl PreprocessorCacheEntry {
                 }
             }
 
-            let (new_digest, finder) = match file_digest(path) {
+            let (new_digest, finder) = match file_digest(path, Some(&meta)) {
                 Ok(digest) => digest,
                 Err(e) => {
                     debug!(
@@ -415,7 +415,7 @@ pub fn preprocessor_cache_entry_hash_key(
     // Strip basedirs from the input file path if configured
     let buf_to_hash = strip_basedirs(&buf, basedirs);
     m.update(&buf_to_hash);
-    let (digest, finder) = file_digest(input_file)
+    let (digest, finder) = file_digest(input_file, None)
         .with_context(|| format!("while hashing the input file '{}'", input_file.display()))?;
     if !config.ignore_time_macros && finder.found_time() {
         // Disable preprocessor cache mode
@@ -426,122 +426,145 @@ pub fn preprocessor_cache_entry_hash_key(
     Ok(Some(m.finish()))
 }
 
-/// Digests of the files hashed for the preprocessor cache, kept for the life of
-/// the process. The server is long-lived, and without this every direct-mode
-/// cache hit re-reads and re-hashes the source file and every header it
-/// includes, which is most of the server's work on such a hit.
-///
-/// Unix only: on Windows there is no inode number, and the creation time that
-/// stands in for the ctime does not change when a file is rewritten.
-static FILE_DIGESTS: LazyLock<Mutex<HashMap<PathBuf, CachedFileDigest>>> =
-    LazyLock::new(Default::default);
-
-/// Bound on the files remembered in [`FILE_DIGESTS`]; it is cleared when reached.
-const MAX_CACHED_FILE_DIGESTS: usize = 100_000;
-
-/// How old a file's mtime and ctime must be for its digest to be remembered.
-/// File timestamps come from a coarse clock, so a file rewritten right after
-/// being hashed can keep the timestamps it was hashed with.
-const MIN_CACHED_FILE_AGE: Duration = Duration::from_secs(2);
-
-/// What has to be unchanged for a remembered digest to be reused.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct FileStat {
-    len: u64,
-    mtime: Option<Timestamp>,
-    ctime: Option<Timestamp>,
-    #[cfg(unix)]
-    dev: u64,
-    #[cfg(unix)]
-    ino: u64,
-}
-
-impl FileStat {
-    fn new(meta: &Metadata) -> Self {
-        #[cfg(unix)]
-        use std::os::unix::fs::MetadataExt;
-        FileStat {
-            len: meta.len(),
-            mtime: meta.modified().ok().map(Into::into),
-            ctime: meta.ctime_or_creation().ok(),
-            #[cfg(unix)]
-            dev: meta.dev(),
-            #[cfg(unix)]
-            ino: meta.ino(),
-        }
-    }
-
-    /// Whether the file was last changed long enough before `now` for its
-    /// timestamps to tell any later change apart.
-    fn is_settled(&self, now: SystemTime) -> bool {
-        if !cfg!(unix) {
-            return false;
-        }
-        let Some(limit) = now.checked_sub(MIN_CACHED_FILE_AGE) else {
-            return false;
-        };
-        matches!((self.mtime, self.ctime), (Some(mtime), Some(ctime)) if mtime.max(ctime) < limit.into())
-    }
-}
-
-#[derive(Debug)]
-struct CachedFileDigest {
-    stat: FileStat,
-    digest: String,
-    found_date: bool,
-    found_time: bool,
-    found_timestamp: bool,
-}
-
 /// Digest of the contents of `path`, and the time macros found in it.
-fn file_digest(path: &Path) -> anyhow::Result<(String, TimeMacroFinder)> {
-    file_digest_at(path, SystemTime::now())
+/// `lstat` is the caller's `symlink_metadata` of `path`, if it has one: unless
+/// `path` is a symlink, it saves stat-ing the file again.
+#[cfg(unix)]
+fn file_digest(path: &Path, lstat: Option<&Metadata>) -> anyhow::Result<(String, TimeMacroFinder)> {
+    digest_cache::file_digest_at(path, lstat, SystemTime::now())
 }
 
-/// The digest remembered for `path`, if the file has not changed since.
-fn remembered_file_digest(path: &Path) -> Option<(String, TimeMacroFinder)> {
-    if !cfg!(unix) {
-        return None;
-    }
-    // A stat of the path is enough to reuse a digest: it describes the file as
-    // it is now, which is what the digest has to match.
-    let stat = FileStat::new(&std::fs::metadata(path).ok()?);
-    let digests = FILE_DIGESTS.lock().unwrap_or_else(|e| e.into_inner());
-    let cached = digests.get(path).filter(|cached| cached.stat == stat)?;
-    let finder =
-        TimeMacroFinder::with_found(cached.found_date, cached.found_time, cached.found_timestamp);
-    Some((cached.digest.clone(), finder))
+// Not remembered on Windows: there is no inode number, and the creation time
+// that stands in for the ctime does not change when a file is rewritten.
+#[cfg(not(unix))]
+fn file_digest(
+    path: &Path,
+    _lstat: Option<&Metadata>,
+) -> anyhow::Result<(String, TimeMacroFinder)> {
+    Digest::reader_sync_time_macros(std::fs::File::open(path)?)
 }
 
-/// [`file_digest`], with `now` deciding whether the file is old enough to be
-/// remembered.
-fn file_digest_at(path: &Path, now: SystemTime) -> anyhow::Result<(String, TimeMacroFinder)> {
-    if let Some(cached) = remembered_file_digest(path) {
-        return Ok(cached);
+#[cfg(unix)]
+mod digest_cache {
+    use super::*;
+    use std::collections::HashMap;
+    use std::os::unix::fs::MetadataExt;
+    use std::sync::Mutex;
+    use std::time::Duration;
+
+    /// Digests of the files hashed for the preprocessor cache, so that a
+    /// direct-mode hit does not re-read and re-hash every header.
+    pub(super) static FILE_DIGESTS: LazyLock<Mutex<HashMap<PathBuf, CachedFileDigest>>> =
+        LazyLock::new(Default::default);
+
+    /// Bound on the files remembered in [`FILE_DIGESTS`]; it is cleared when reached.
+    const MAX_CACHED_FILE_DIGESTS: usize = 100_000;
+
+    /// How old a file's mtime and ctime must be for its digest to be remembered.
+    /// File timestamps come from a coarse clock, so a file rewritten right after
+    /// being hashed can keep the timestamps it was hashed with.
+    const MIN_CACHED_FILE_AGE: Duration = Duration::from_secs(2);
+
+    /// What has to be unchanged for a remembered digest to be reused.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct FileStat {
+        len: u64,
+        mtime: Option<Timestamp>,
+        ctime: Option<Timestamp>,
+        dev: u64,
+        ino: u64,
     }
 
-    let file = std::fs::File::open(path)?;
-    // From the open file rather than the path, so that it describes what is read.
-    let stat = FileStat::new(&file.metadata()?);
-    let (digest, finder) = Digest::reader_sync_time_macros(&file)?;
-    // Not remembered if it changed while being read.
-    if stat.is_settled(now) && FileStat::new(&file.metadata()?) == stat {
-        let mut digests = FILE_DIGESTS.lock().unwrap_or_else(|e| e.into_inner());
-        if digests.len() >= MAX_CACHED_FILE_DIGESTS {
-            digests.clear();
+    impl FileStat {
+        fn new(meta: &Metadata) -> Self {
+            FileStat {
+                len: meta.len(),
+                mtime: meta.modified().ok().map(Into::into),
+                ctime: meta.ctime_or_creation().ok(),
+                dev: meta.dev(),
+                ino: meta.ino(),
+            }
         }
-        digests.insert(
-            path.to_owned(),
-            CachedFileDigest {
-                stat,
-                digest: digest.clone(),
-                found_date: finder.found_date(),
-                found_time: finder.found_time(),
-                found_timestamp: finder.found_timestamp(),
-            },
-        );
+
+        /// Whether the file was last changed long enough before `now` for its
+        /// timestamps to tell any later change apart.
+        fn is_settled(&self, now: SystemTime) -> bool {
+            let Some(limit) = now.checked_sub(MIN_CACHED_FILE_AGE) else {
+                return false;
+            };
+            matches!((self.mtime, self.ctime), (Some(mtime), Some(ctime)) if mtime.max(ctime) < limit.into())
+        }
     }
-    Ok((digest, finder))
+
+    #[derive(Debug)]
+    pub(super) struct CachedFileDigest {
+        stat: FileStat,
+        digest: String,
+        found_date: bool,
+        found_time: bool,
+        found_timestamp: bool,
+    }
+
+    /// The digest remembered for `path`, if the file has not changed since.
+    fn remembered_file_digest(
+        path: &Path,
+        lstat: Option<&Metadata>,
+    ) -> Option<(String, TimeMacroFinder)> {
+        // A stat of the path is enough to reuse a digest: it describes the file as
+        // it is now, which is what the digest has to match.
+        let target_meta;
+        let meta = match lstat {
+            Some(meta) if !meta.file_type().is_symlink() => meta,
+            _ => {
+                target_meta = std::fs::metadata(path).ok()?;
+                &target_meta
+            }
+        };
+        let stat = FileStat::new(meta);
+        let digests = FILE_DIGESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let cached = digests.get(path).filter(|cached| cached.stat == stat)?;
+        let finder = TimeMacroFinder::with_found(
+            cached.found_date,
+            cached.found_time,
+            cached.found_timestamp,
+        );
+        Some((cached.digest.clone(), finder))
+    }
+
+    /// [`file_digest`], with `now` deciding whether the file is old enough to be
+    /// remembered.
+    pub(super) fn file_digest_at(
+        path: &Path,
+        lstat: Option<&Metadata>,
+        now: SystemTime,
+    ) -> anyhow::Result<(String, TimeMacroFinder)> {
+        if let Some(cached) = remembered_file_digest(path, lstat) {
+            return Ok(cached);
+        }
+
+        let file = std::fs::File::open(path)?;
+        // From the open file rather than the path, so that it describes what is read.
+        let stat = FileStat::new(&file.metadata()?);
+        let (digest, finder) = Digest::reader_sync_time_macros(&file)?;
+        // Not remembered if it changed while being read.
+        if stat.is_settled(now) && FileStat::new(&file.metadata()?) == stat {
+            let mut digests = FILE_DIGESTS.lock().unwrap_or_else(|e| e.into_inner());
+            if digests.len() >= MAX_CACHED_FILE_DIGESTS {
+                digests.clear();
+            }
+            digests.insert(
+                path.to_owned(),
+                CachedFileDigest {
+                    stat,
+                    digest: digest.clone(),
+                    found_date: finder.found_date(),
+                    found_time: finder.found_time(),
+                    found_timestamp: finder.found_timestamp(),
+                },
+            );
+        }
+        Ok((digest, finder))
+    }
 }
 
 /// Corresponds to a cached include file used in the pre-processor stage
@@ -597,7 +620,11 @@ impl std::error::Error for Error {}
 mod test {
     use crate::util::{HASH_BUFFER_SIZE, MAX_TIME_MACRO_HAYSTACK_LEN};
 
+    #[cfg(unix)]
+    use super::digest_cache::{FILE_DIGESTS, file_digest_at};
     use super::*;
+    #[cfg(unix)]
+    use std::time::Duration;
 
     #[test]
     fn test_find_time_macros_empty_file() {
@@ -973,8 +1000,30 @@ mod test {
         assert_ne!(key(&fat, true), key(&fat, false));
     }
 
+    #[cfg(unix)]
     fn is_digest_cached(path: &Path) -> bool {
         FILE_DIGESTS.lock().unwrap().contains_key(path)
+    }
+
+    /// Writes `contents` to `path` until its ctime changes: file timestamps come
+    /// from a coarse clock, which ticks once a second on some filesystems.
+    #[cfg(unix)]
+    fn rewrite_with_new_ctime(path: &Path, contents: &[u8]) {
+        let ctime = || {
+            std::fs::metadata(path)
+                .unwrap()
+                .ctime_or_creation()
+                .unwrap()
+        };
+        let before = ctime();
+        for _ in 0..300 {
+            std::thread::sleep(Duration::from_millis(10));
+            std::fs::write(path, contents).unwrap();
+            if ctime() != before {
+                return;
+            }
+        }
+        panic!("the ctime of {} did not change", path.display());
     }
 
     #[test]
@@ -986,22 +1035,20 @@ mod test {
         // Far enough ahead for the file to count as settled.
         let later = SystemTime::now() + Duration::from_secs(60);
 
-        let (digest, finder) = file_digest_at(&path, later).unwrap();
+        let (digest, finder) = file_digest_at(&path, None, later).unwrap();
         assert!(is_digest_cached(&path));
         assert!(finder.found_date() && !finder.found_time());
 
-        let (cached_digest, cached_finder) = file_digest_at(&path, later).unwrap();
+        let (cached_digest, cached_finder) = file_digest_at(&path, None, later).unwrap();
         assert_eq!(digest, cached_digest);
         assert!(cached_finder.found_date() && !cached_finder.found_time());
 
-        // Same size, different contents, mtime put back: the ctime still
-        // changes. Wait for the coarse clock file timestamps come from to tick.
+        // Same size, different contents, mtime put back: the ctime still changes.
         let mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
-        std::thread::sleep(Duration::from_millis(100));
-        std::fs::write(&path, b"#define B __TIME__\n").unwrap();
+        rewrite_with_new_ctime(&path, b"#define B __TIME__\n");
         filetime::set_file_mtime(&path, filetime::FileTime::from_system_time(mtime)).unwrap();
 
-        let (new_digest, new_finder) = file_digest_at(&path, later).unwrap();
+        let (new_digest, new_finder) = file_digest_at(&path, None, later).unwrap();
         assert_ne!(digest, new_digest);
         assert_eq!(
             new_digest,
@@ -1011,13 +1058,37 @@ mod test {
     }
 
     #[test]
+    #[cfg(unix)]
     fn test_file_digest_recent_file_not_cached() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("header.h");
         std::fs::write(&path, b"int x;\n").unwrap();
 
-        let (digest, _) = file_digest(&path).unwrap();
+        let (digest, _) = file_digest(&path, None).unwrap();
         assert_eq!(digest, Digest::reader_sync(&b"int x;\n"[..]).unwrap());
         assert!(!is_digest_cached(&path));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_file_digest_cache_through_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("real.h");
+        let link = dir.path().join("link.h");
+        std::fs::write(&target, b"int a;\n").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let later = SystemTime::now() + Duration::from_secs(60);
+
+        let lstat = std::fs::symlink_metadata(&link).unwrap();
+        let (digest, _) = file_digest_at(&link, Some(&lstat), later).unwrap();
+        assert!(is_digest_cached(&link));
+
+        // The link itself is untouched, so its lstat is the same: only the
+        // target's stat can tell that the contents changed.
+        rewrite_with_new_ctime(&target, b"int b;\n");
+        let lstat = std::fs::symlink_metadata(&link).unwrap();
+        let (new_digest, _) = file_digest_at(&link, Some(&lstat), later).unwrap();
+        assert_ne!(digest, new_digest);
+        assert_eq!(new_digest, Digest::reader_sync(&b"int b;\n"[..]).unwrap());
     }
 }
