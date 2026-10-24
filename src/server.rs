@@ -1709,19 +1709,13 @@ where
                                 // Make sure the write guard has been dropped ASAP.
                                 drop(stats);
 
-                                use std::fmt::Write;
-
                                 error!("[{:?}] fatal error: {}", out_pretty, err);
-
-                                let mut error = "sccache: encountered fatal error\n".to_string();
-                                let _ = writeln!(error, "sccache: error: {}", err);
-                                for e in err.chain() {
+                                for e in err.chain().skip(1) {
                                     error!("[{:?}] \t{}", out_pretty, e);
-                                    let _ = writeln!(error, "sccache: caused by: {}", e);
                                 }
                                 //TODO: figure out a better way to communicate this?
                                 res.retcode = Some(-2);
-                                res.stderr = error.into_bytes();
+                                res.stderr = fatal_error_message(&err).into_bytes();
                             }
                         },
                     }
@@ -2557,6 +2551,17 @@ fn waits_until_zero() {
     assert_eq!(wait.now_or_never(), Some(()));
 }
 
+fn fatal_error_message(err: &anyhow::Error) -> String {
+    use std::fmt::Write;
+
+    let mut message = "sccache: encountered fatal error\n".to_string();
+    let _ = writeln!(message, "sccache: error: {}", err);
+    for e in err.chain().skip(1) {
+        let _ = writeln!(message, "sccache: caused by: {}", e);
+    }
+    message
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2952,5 +2957,16 @@ mod tests {
             "stderr delivered with CompileFinished"
         );
         assert_eq!(0, service.creator.lock().unwrap().children.len());
+    }
+
+    #[test]
+    fn test_fatal_error_message_does_not_repeat_the_error() {
+        let err = anyhow::anyhow!("inner").context("outer");
+        assert_eq!(
+            fatal_error_message(&err),
+            "sccache: encountered fatal error\n\
+             sccache: error: outer\n\
+             sccache: caused by: inner\n"
+        );
     }
 }
