@@ -39,21 +39,56 @@ pub const BASE64_URL_SAFE_ENGINE: base64::engine::GeneralPurpose =
 
 pub const HASH_BUFFER_SIZE: usize = 128 * 1024;
 
-thread_local! {
-    /// Read buffer for hashing, reused across calls. A fresh one costs a 128KB
-    /// memset each time, which is more than hashing the typical header: on
-    /// direct-mode cache hits, that zeroing alone took ~15% of the server's CPU.
-    static HASH_BUFFER: std::cell::RefCell<Box<[u8]>> =
-        std::cell::RefCell::new(vec![0; HASH_BUFFER_SIZE].into_boxed_slice());
+/// Size of the buffer used for the first reads when hashing. Zeroing a full
+/// `HASH_BUFFER_SIZE` buffer costs more than hashing a typical header, which
+/// is what direct mode hashes the most.
+const SMALL_HASH_BUFFER_SIZE: usize = 16 * 1024;
+
+/// Amount of data read with the small buffer before switching to a
+/// `HASH_BUFFER_SIZE` one.
+const SMALL_HASH_BUFFER_LIMIT: usize = 64 * 1024;
+
+/// Reads `reader` to the end, passing each chunk read to `f`.
+///
+/// The first `SMALL_HASH_BUFFER_LIMIT` bytes are read with a small buffer,
+/// and only larger inputs switch to a `HASH_BUFFER_SIZE` one. Both buffers
+/// live on the stack, so nothing stays allocated between calls.
+fn read_chunks<R: Read + ?Sized>(reader: &mut R, mut f: impl FnMut(&[u8])) -> Result<()> {
+    if read_chunks_small(reader, &mut f)? {
+        read_chunks_large(reader, &mut f)?;
+    }
+    Ok(())
 }
 
-/// Runs `f` with this thread's hash read buffer.
-fn with_hash_buffer<T>(f: impl FnOnce(&mut [u8]) -> T) -> T {
-    HASH_BUFFER.with(|cell| match cell.try_borrow_mut() {
-        Ok(mut buf) => f(&mut buf),
-        // Already in use further up the stack, e.g. a callback hashing another file.
-        Err(_) => f(&mut vec![0; HASH_BUFFER_SIZE]),
-    })
+/// Returns whether there may be more to read.
+// Not inlined, so that both buffers are not on the stack at the same time.
+#[inline(never)]
+fn read_chunks_small<R: Read + ?Sized>(reader: &mut R, f: &mut impl FnMut(&[u8])) -> Result<bool> {
+    let mut buffer = [0u8; SMALL_HASH_BUFFER_SIZE];
+    let mut total = 0;
+    while total < SMALL_HASH_BUFFER_LIMIT {
+        let count = reader.read(&mut buffer)?;
+        if count == 0 {
+            return Ok(false);
+        }
+        f(&buffer[..count]);
+        total += count;
+    }
+    Ok(true)
+}
+
+#[inline(never)]
+fn read_chunks_large<R: Read + ?Sized>(reader: &mut R, f: &mut impl FnMut(&[u8])) -> Result<()> {
+    // A buffer of 128KB should give us the best performance.
+    // See https://eklitzke.org/efficient-file-copying-on-linux.
+    let mut buffer = [0u8; HASH_BUFFER_SIZE];
+    loop {
+        let count = reader.read(&mut buffer)?;
+        if count == 0 {
+            return Ok(());
+        }
+        f(&buffer[..count]);
+    }
 }
 
 #[derive(Clone)]
@@ -86,19 +121,11 @@ impl Digest {
     /// `each` before each time the digest is updated.
     pub fn reader_sync_with<R: Read, F: FnMut(&[u8])>(mut reader: R, mut each: F) -> Result<Self> {
         let mut m = Digest::default();
-        // A buffer of 128KB should give us the best performance.
-        // See https://eklitzke.org/efficient-file-copying-on-linux.
-        with_hash_buffer(|buffer| {
-            loop {
-                let count = reader.read(buffer)?;
-                if count == 0 {
-                    break;
-                }
-                each(&buffer[..count]);
-                m.update(&buffer[..count]);
-            }
-            Ok(m)
-        })
+        read_chunks(&mut reader, |chunk| {
+            each(chunk);
+            m.update(chunk);
+        })?;
+        Ok(m)
     }
 
     /// Calculate the BLAKE3 digest of the contents read from `reader`, while
@@ -142,16 +169,7 @@ impl Digest {
     fn update_from_file(&mut self, path: &Path) -> Result<()> {
         let mut file = File::open(path)
             .with_context(|| format!("Failed to open file for hashing: {path:?}"))?;
-        with_hash_buffer(|buf| {
-            loop {
-                let n = file.read(buf)?;
-                if n == 0 {
-                    break;
-                }
-                self.update(&buf[..n]);
-            }
-            Ok(())
-        })
+        read_chunks(&mut file, |chunk| self.update(chunk))
     }
 
     /// Recursively collect all file paths within a directory.
@@ -1655,6 +1673,33 @@ mod tests {
     };
     use std::ffi::{OsStr, OsString};
     use std::path::Path;
+
+    #[test]
+    fn test_reader_sync_across_buffer_sizes() {
+        use super::{HASH_BUFFER_SIZE, SMALL_HASH_BUFFER_LIMIT, SMALL_HASH_BUFFER_SIZE};
+        // Sizes around the end of the first small chunk, the switch from the
+        // small buffer to the large one, and the end of the first large chunk.
+        let boundaries = [
+            SMALL_HASH_BUFFER_SIZE,
+            SMALL_HASH_BUFFER_LIMIT,
+            SMALL_HASH_BUFFER_LIMIT + HASH_BUFFER_SIZE,
+        ];
+        for boundary in boundaries {
+            for len in [boundary - 1, boundary, boundary + 1] {
+                let data: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
+                let mut expected = Digest::new();
+                expected.update(&data);
+                let expected = expected.finish();
+                assert_eq!(Digest::reader_sync(data.as_slice()).unwrap(), expected);
+            }
+            // A time macro split by the chunk boundary is still found.
+            let mut data = vec![0u8; boundary + HASH_BUFFER_SIZE];
+            let start = boundary - b"__TIME__".len() / 2;
+            data[start..][..b"__TIME__".len()].copy_from_slice(b"__TIME__");
+            let finder = Digest::reader_sync_time_macros(data.as_slice()).unwrap().1;
+            assert!(finder.found_time());
+        }
+    }
 
     #[test]
     fn test_exit_status_from_code() {
