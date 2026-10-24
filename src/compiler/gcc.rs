@@ -1113,6 +1113,8 @@ where
             // https://gcc.gnu.org/onlinedocs/gcc-4.9.0/gcc/Overall-Options.html
             let mut language: Option<String> =
                 language_to_arg(parsed_args.language).map(|lang| lang.into());
+            let rewrite_includes_only =
+                rewrite_includes_only && parsed_args.language != Language::AssemblerToPreprocess;
             if rewrite_includes_only || parsed_args.language.is_c_like_header() {
             } else if let Some(processed_lang) = parsed_args.language.to_c_preprocessed_language() {
                 language = Some(language_to_arg(processed_lang)?.into());
@@ -3077,6 +3079,44 @@ mod test {
                 .is_none()
             );
         });
+    }
+
+    #[test]
+    #[cfg(feature = "dist-client")]
+    fn test_compile_rewrite_includes_only_dist_assembler() {
+        let f = TestFixture::new();
+        let dist_args = |input: &str| {
+            let parsed_args = match parse_arguments_(stringvec!["-c", input, "-o", "foo.o"], false)
+            {
+                CompilerArguments::Ok(args) => args,
+                o => panic!("Got unexpected parse result: {:?}", o),
+            };
+            let mut path_transformer = dist::PathTransformer::new();
+            generate_compile_commands(
+                &mut path_transformer,
+                &f.bins[0],
+                &parsed_args,
+                f.tempdir.path(),
+                &[],
+                CCompilerKind::Gcc,
+                true,
+                language_to_gcc_arg,
+            )
+            .unwrap()
+            .1
+            .unwrap()
+            .arguments
+        };
+
+        // The local -E has already expanded everything in assembly, a second
+        // cpp pass on the server mangles the linemarkers.
+        let args = dist_args("foo.S");
+        assert_eq!(&args[..2], &["-x", "assembler"]);
+        assert!(!args.contains(&"-fdirectives-only".to_string()));
+
+        let args = dist_args("foo.c");
+        assert_eq!(&args[..2], &["-x", "c"]);
+        assert!(args.contains(&"-fdirectives-only".to_string()));
     }
 
     #[test]
