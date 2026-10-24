@@ -406,27 +406,29 @@ mod test {
 
     #[test]
     fn test_parse_ptxas_input_by_ptx_extension() {
-        let args = os_strings(&[
-            "-arch=sm_80",
-            "kernel.ptx",
-            "--some-new-flag",
-            "-o",
-            "kernel.cubin",
-        ]);
+        for output_args in [
+            vec!["-o", "kernel.cubin"],
+            vec!["-o=kernel.cubin"],
+            vec!["--output-file", "kernel.cubin"],
+            vec!["--output-file=kernel.cubin"],
+        ] {
+            let mut args = os_strings(&["-arch=sm_80", "kernel.ptx", "--some-new-flag"]);
+            args.extend(os_strings(&output_args));
 
-        let parsed =
-            match parse_arguments(&args, ".".as_ref(), Language::Cubin, &ptxas::ARGS[..], 3) {
-                CompilerArguments::Ok(parsed) => parsed,
-                other => panic!("Got unexpected parse result: {:?}", other),
-            };
+            let parsed =
+                match parse_arguments(&args, ".".as_ref(), Language::Cubin, &ptxas::ARGS[..], 3) {
+                    CompilerArguments::Ok(parsed) => parsed,
+                    other => panic!("Got unexpected parse result: {:?}", other),
+                };
 
-        assert_eq!(PathBuf::from("kernel.ptx"), parsed.input);
-        assert_eq!(
-            Some(&ArtifactDescriptor {
-                path: PathBuf::from(".").join("kernel.cubin"),
-                optional: false
-            }),
-            parsed.outputs.get("obj")
-        );
+            assert_eq!(PathBuf::from("kernel.ptx"), parsed.input);
+            assert_eq!(
+                Some(&ArtifactDescriptor {
+                    path: PathBuf::from(".").join("kernel.cubin"),
+                    optional: false
+                }),
+                parsed.outputs.get("obj")
+            );
+        }
     }
 }
