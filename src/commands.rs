@@ -824,6 +824,22 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                 )?,
             }
         }
+        Command::Monitor { interval } => {
+            trace!("Command::Monitor({:?})", interval);
+            #[cfg(feature = "monitor")]
+            {
+                // Attach to whatever server is running; the monitor keeps
+                // retrying if there is none yet, so don't start one here.
+                crate::monitor::run(get_addr(), interval)?;
+            }
+            #[cfg(not(feature = "monitor"))]
+            {
+                let _ = interval;
+                bail!(
+                    "The monitor UI was not compiled in, please rebuild with the `monitor` feature"
+                );
+            }
+        }
         Command::DebugPreprocessorCacheEntries => {
             trace!("Command::DebugPreprocessorCacheEntries");
             let entries_dir = config.fallback_cache.dir.join("preprocessor");

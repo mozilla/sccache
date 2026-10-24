@@ -180,6 +180,10 @@ You can run `sccache --stop-server` to terminate the server. It will also termin
 
 Running `sccache --show-stats` will print a summary of cache statistics.
 
+For a live view of the running server, `sccache --monitor` opens a terminal
+dashboard. It is not built by default: it requires the `monitor` feature (see
+[Build](#build) below). See [Monitoring](docs/Monitoring.md).
+
 Some notes about using `sccache` with [Jenkins](https://jenkins.io) are [here](docs/Jenkins.md).
 
 To use sccache with cmake, provide the following command line arguments to cmake 3.4 or newer:
@@ -250,6 +254,13 @@ cargo build --release [--no-default-features --features=s3|redis|gcs|memcached|a
 The list of features can be found in the `Cargo.toml` file, `[features]` section.
 
 By default, `sccache` builds with support for all storage backends, but individual backends may be disabled by resetting the list of features and enabling all the other backends. Refer the [Cargo Documentation](http://doc.crates.io/manifest.html#the-features-section) for details on how to select features with Cargo.
+
+The `monitor` feature, for the [`sccache --monitor`](docs/Monitoring.md)
+terminal dashboard, is part of `all` but not of the default build:
+
+```bash
+cargo build --release --features monitor
+```
 
 ### Building portable binaries
 

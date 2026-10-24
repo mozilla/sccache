@@ -13,14 +13,20 @@
 // limitations under the License.
 
 use crate::errors::*;
-use clap::{Arg, ArgAction, ArgGroup, ValueEnum, error::ErrorKind};
+use clap::{Arg, ArgAction, ArgGroup, ValueEnum, error::ErrorKind, parser::ValueSource};
 use std::env;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::time::Duration;
 use which::which_in;
 
 const ENV_VAR_INTERNAL_START_SERVER: &str = "SCCACHE_START_SERVER";
+
+/// Accepted range of `--monitor-interval`, also the bounds the monitor keeps
+/// to when the interval is changed with `+`/`-`.
+pub const MIN_MONITOR_INTERVAL: Duration = Duration::from_millis(200);
+pub const MAX_MONITOR_INTERVAL: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, ValueEnum, Default)]
 pub enum StatsFormat {
@@ -54,6 +60,11 @@ impl FromStr for StatsFormat {
 pub enum Command {
     /// Show cache statistics and exit.
     ShowStats(StatsFormat, bool),
+    /// Watch cache statistics in a terminal dashboard, polling every
+    /// `interval`.
+    Monitor {
+        interval: Duration,
+    },
     /// Run background server.
     InternalStartServer,
     /// Start background server as a subprocess.
@@ -123,6 +134,9 @@ fn get_clap_command() -> clap::Command {
             "\n",
             "    COS:       ",
             cfg!(feature = "cos"),
+            "\n",
+            "    Monitor:   ",
+            cfg!(feature = "monitor"),
             "\n"
         ))
         .args(&[
@@ -132,6 +146,18 @@ fn get_clap_command() -> clap::Command {
             flag_infer_long("show-adv-stats")
                 .help("show advanced cache statistics")
                 .action(ArgAction::SetTrue),
+            flag_infer_long("monitor")
+                .help("watch cache statistics live in a terminal dashboard")
+                .action(ArgAction::SetTrue),
+            flag_infer_long("monitor-interval")
+                .help(format!(
+                    "polling interval of `--monitor`, in seconds ({} to {})",
+                    MIN_MONITOR_INTERVAL.as_secs_f64(),
+                    MAX_MONITOR_INTERVAL.as_secs_f64()
+                ))
+                .value_name("SECS")
+                .value_parser(clap::value_parser!(f64))
+                .default_value("1"),
             flag_infer_long("start-server")
                 .help("start background server")
                 .action(ArgAction::SetTrue),
@@ -173,6 +199,7 @@ fn get_clap_command() -> clap::Command {
                     "dist-status",
                     "show-stats",
                     "show-adv-stats",
+                    "monitor",
                     "start-server",
                     "stop-server",
                     "zero-stats",
@@ -259,6 +286,13 @@ pub fn try_parse() -> Result<Command> {
             bail!("`{ENV_VAR_INTERNAL_START_SERVER}=1` can't be used with other commands");
         }
         (false, Ok(matches)) => {
+            // Not `Arg::requires`: `--monitor` is a `SetTrue` flag, whose implicit
+            // `false` default counts as present, so clap would never complain.
+            if matches.value_source("monitor-interval") == Some(ValueSource::CommandLine)
+                && !matches.get_flag("monitor")
+            {
+                bail!("`--monitor-interval` can only be used with `--monitor`");
+            }
             if matches.get_flag("show-stats") {
                 let fmt = matches
                     .get_one("stats-format")
@@ -271,6 +305,23 @@ pub fn try_parse() -> Result<Command> {
                     .cloned()
                     .expect("There is a default value");
                 Ok(Command::ShowStats(fmt, true))
+            } else if matches.get_flag("monitor") {
+                let secs: f64 = matches
+                    .get_one("monitor-interval")
+                    .copied()
+                    .expect("There is a default value");
+                match Duration::try_from_secs_f64(secs) {
+                    Ok(interval)
+                        if (MIN_MONITOR_INTERVAL..=MAX_MONITOR_INTERVAL).contains(&interval) =>
+                    {
+                        Ok(Command::Monitor { interval })
+                    }
+                    _ => bail!(
+                        "`--monitor-interval` must be between {} and {} seconds",
+                        MIN_MONITOR_INTERVAL.as_secs_f64(),
+                        MAX_MONITOR_INTERVAL.as_secs_f64()
+                    ),
+                }
             } else if matches.get_flag("start-server") {
                 Ok(Command::StartServer)
             } else if matches.get_flag("debug-preprocessor-cache") {
