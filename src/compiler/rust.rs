@@ -589,18 +589,31 @@ fn dep_info_with_targets<'a>(
         bail!("dep-info written by rustc is empty");
     }
     let (rule, rest) = dep_info.split_once('\n').unwrap_or((dep_info, ""));
-    let (_, prerequisites) = rule.split_once(": ").with_context(|| {
-        // Show what rustc wrote, so a format change can be diagnosed from the error alone.
-        const MAX_LEN: usize = 200;
-        let first_line = match rule.char_indices().nth(MAX_LEN) {
-            Some((i, _)) => format!("{}...", &rule[..i]),
-            None => rule.to_owned(),
-        };
-        format!(
-            "dep-info does not start with a `<target>: <prerequisites>` rule; \
-             its first line is {first_line:?}"
-        )
-    })?;
+    let (prerequisites, rest) = match rule.split_once(": ") {
+        Some((_, prerequisites)) => (prerequisites.to_owned(), rest),
+        // With -Zdep-info-omit-d-target, the dep-info-only invocation has no
+        // output to name, so rustc writes only the phony rules of the prerequisites.
+        None if rule.ends_with(':') => {
+            let prerequisites = dep_info
+                .lines()
+                .map_while(|line| line.strip_suffix(':'))
+                .collect::<Vec<_>>()
+                .join(" ");
+            (prerequisites, dep_info)
+        }
+        None => {
+            // Show what rustc wrote, so a format change can be diagnosed from the error alone.
+            const MAX_LEN: usize = 200;
+            let first_line = match rule.char_indices().nth(MAX_LEN) {
+                Some((i, _)) => format!("{}...", &rule[..i]),
+                None => rule.to_owned(),
+            };
+            bail!(
+                "dep-info does not start with a `<target>: <prerequisites>` rule; \
+                 its first line is {first_line:?}"
+            )
+        }
+    };
     let extra_prerequisites = extra_prerequisites
         .into_iter()
         .map(|p| p.to_string_lossy().replace(' ', "\\ "))
@@ -608,7 +621,7 @@ fn dep_info_with_targets<'a>(
     let prerequisites = extra_prerequisites
         .iter()
         .map(String::as_str)
-        .chain((!prerequisites.is_empty()).then_some(prerequisites))
+        .chain((!prerequisites.is_empty()).then_some(prerequisites.as_str()))
         .collect::<Vec<_>>()
         .join(" ");
     let mut out = String::new();
@@ -3640,6 +3653,26 @@ src/lib.rs:
         assert!(
             err.to_string()
                 .ends_with(&format!("\"{}...\"", "x".repeat(200)))
+        );
+    }
+
+    // mozilla/sccache#2945
+    #[test]
+    fn test_dep_info_with_targets_omit_d_target() {
+        // What `rustc -Zdep-info-omit-d-target --emit dep-info -o deps.d` writes.
+        let deps = "src/lib.rs:\nsrc/a\\ b.rs:\n\n# env-dep:FOO=bar\n";
+        assert_eq!(
+            dep_info_with_targets(deps, [Path::new("foo.d"), Path::new("libfoo.rlib")], [])
+                .unwrap(),
+            "foo.d: src/lib.rs src/a\\ b.rs
+
+libfoo.rlib: src/lib.rs src/a\\ b.rs
+
+src/lib.rs:
+src/a\\ b.rs:
+
+# env-dep:FOO=bar
+"
         );
     }
 
