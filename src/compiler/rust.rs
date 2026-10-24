@@ -488,6 +488,123 @@ where
     })
 }
 
+/// What the `rustc --emit=dep-info` and `rustc --print file-names` runs found,
+/// kept so that a later compile with the same inputs can skip them: the first
+/// parses and expands the whole crate, and was most of the work of a cache hit.
+#[derive(Clone, Debug)]
+struct RememberedDepInfo {
+    source_files: Vec<PathBuf>,
+    source_hashes: Vec<String>,
+    env_deps: Vec<(OsString, OsString)>,
+    /// The value each env-dep had in the environment of that run. The key
+    /// covers the environment already, except [`DEP_INFO_KEY_IGNORED_ENV`].
+    env_dep_values: Vec<Option<OsString>>,
+    dep_info: String,
+    outputs: Vec<String>,
+}
+
+/// [`RememberedDepInfo`] by [`dep_info_key`].
+static REMEMBERED_DEP_INFO: LazyLock<std::sync::Mutex<HashMap<String, RememberedDepInfo>>> =
+    LazyLock::new(Default::default);
+
+/// Bound on [`REMEMBERED_DEP_INFO`]; it is cleared when reached.
+const MAX_REMEMBERED_DEP_INFO: usize = 10_000;
+
+/// Environment variables left out of [`dep_info_key`]: they hold jobserver
+/// file descriptors, which change on every build.
+const DEP_INFO_KEY_IGNORED_ENV: &[&str] = &["CARGO_MAKEFLAGS", "MAKEFLAGS", "MFLAGS"];
+
+/// Everything the dep-info and file-names runs get besides the files they
+/// read: the compiler, its arguments, working directory and environment, and
+/// the externs, static libraries and target spec the crate is built against.
+/// The whole environment is included, not just what the cache key uses, since
+/// a proc macro could pick the files it reads from any variable.
+#[allow(clippy::too_many_arguments)]
+fn dep_info_key(
+    compiler_shlibs_digests: &[String],
+    version: &str,
+    arguments: &[OsString],
+    cwd: &Path,
+    env_vars: &[(OsString, OsString)],
+    extern_hashes: &[String],
+    staticlib_hashes: &[String],
+    target_json_hash: &[String],
+) -> String {
+    let mut m = Digest::new();
+    m.update(b"rust-dep-info-1");
+    for d in compiler_shlibs_digests {
+        m.update(d.as_bytes());
+    }
+    m.delimiter(b"version");
+    m.update(version.as_bytes());
+    m.delimiter(b"arguments");
+    for arg in arguments {
+        arg.hash(&mut HashToDigest { digest: &mut m });
+    }
+    m.delimiter(b"cwd");
+    cwd.hash(&mut HashToDigest { digest: &mut m });
+    m.delimiter(b"env");
+    let mut env_vars: Vec<_> = env_vars
+        .iter()
+        .filter(|(var, _)| !DEP_INFO_KEY_IGNORED_ENV.iter().any(|v| var == v))
+        .collect();
+    env_vars.sort();
+    for (var, val) in env_vars {
+        var.hash(&mut HashToDigest { digest: &mut m });
+        val.hash(&mut HashToDigest { digest: &mut m });
+    }
+    m.delimiter(b"inputs");
+    for h in extern_hashes
+        .iter()
+        .chain(staticlib_hashes)
+        .chain(target_json_hash)
+    {
+        m.update(h.as_bytes());
+    }
+    m.finish()
+}
+
+fn env_value(env_vars: &[(OsString, OsString)], var: &OsString) -> Option<OsString> {
+    env_vars
+        .iter()
+        .find(|(k, _)| k == var)
+        .map(|(_, v)| v.clone())
+}
+
+/// The dep-info remembered for `key`, if the env-deps still have the same
+/// values and the source files the same contents.
+async fn remembered_dep_info(
+    key: &str,
+    env_vars: &[(OsString, OsString)],
+    pool: &tokio::runtime::Handle,
+) -> Option<RememberedDepInfo> {
+    let remembered = REMEMBERED_DEP_INFO
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(key)
+        .cloned()?;
+    let env_unchanged = remembered
+        .env_deps
+        .iter()
+        .zip(&remembered.env_dep_values)
+        .all(|((var, _), value)| env_value(env_vars, var) == *value);
+    if !env_unchanged {
+        return None;
+    }
+    let source_hashes = hash_all(&remembered.source_files, pool).await.ok()?;
+    (source_hashes == remembered.source_hashes).then_some(remembered)
+}
+
+fn remember_dep_info(key: String, dep_info: RememberedDepInfo) {
+    let mut remembered = REMEMBERED_DEP_INFO
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if remembered.len() >= MAX_REMEMBERED_DEP_INFO {
+        remembered.clear();
+    }
+    remembered.insert(key, dep_info);
+}
+
 /// Parse dependency info from `file` and return a Vec of files mentioned, the env-deps,
 /// and the raw text. Treat paths as relative to `cwd`.
 fn parse_dep_file<T, U>(
@@ -1688,22 +1805,6 @@ where
             .flat_map(|(arg, val)| Some(arg).into_iter().chain(val))
             .cloned()
             .collect::<Vec<_>>();
-        // Find all the source files and hash them
-        let source_hashes_pool = pool.clone();
-        let source_files_and_hashes_and_env_deps = async {
-            let (source_files, env_deps, dep_info) = get_source_files_and_env_deps(
-                creator,
-                &self.parsed_args.crate_name,
-                &self.executable,
-                &filtered_arguments,
-                &cwd,
-                &env_vars,
-                pool,
-            )
-            .await?;
-            let source_hashes = hash_all(&source_files, &source_hashes_pool).await?;
-            Ok((source_files, source_hashes, env_deps, dep_info))
-        };
 
         // Turn arguments into a simple Vec<OsString> to calculate outputs.
         let flat_os_string_arguments: Vec<OsString> = os_string_arguments
@@ -1711,6 +1812,7 @@ where
             .cloned()
             .flat_map(|(arg, val)| iter::once(arg).chain(val))
             .collect();
+        let dep_info_key_arguments = flat_os_string_arguments.clone();
         let outputs = get_compiler_outputs(
             creator,
             &self.executable,
@@ -1759,21 +1861,78 @@ where
         }
 
         let target_json_hash = hash_all(&target_json_files, pool);
+        let (extern_hashes, staticlib_hashes, target_json_hash) =
+            futures::try_join!(extern_hashes, staticlib_hashes, target_json_hash)?;
 
-        // Invoke the compiler and perform all hashing operations on the files.
-        let (
-            (source_files, source_hashes, mut env_deps, dep_info_text),
-            extern_hashes,
-            staticlib_hashes,
-            target_json_hash,
-            mut outputs,
-        ) = futures::try_join!(
-            source_files_and_hashes_and_env_deps,
-            extern_hashes,
-            staticlib_hashes,
-            target_json_hash,
-            outputs,
-        )?;
+        // Find all the source files and hash them, and the outputs, reusing what
+        // earlier runs with the same inputs found if those files are unchanged.
+        let dep_info_key = dep_info_key(
+            &self.compiler_shlibs_digests,
+            &self.version,
+            &dep_info_key_arguments,
+            &cwd,
+            &env_vars,
+            &extern_hashes,
+            &staticlib_hashes,
+            &target_json_hash,
+        );
+        let source_files_and_hashes_and_env_deps = async {
+            let (source_files, env_deps, dep_info) = get_source_files_and_env_deps(
+                creator,
+                &self.parsed_args.crate_name,
+                &self.executable,
+                &filtered_arguments,
+                &cwd,
+                &env_vars,
+                pool,
+            )
+            .await?;
+            let source_hashes = hash_all(&source_files, pool).await?;
+            Ok::<_, Error>((source_files, source_hashes, env_deps, dep_info))
+        };
+
+        let ((source_files, source_hashes, mut env_deps, dep_info_text), mut outputs) =
+            match remembered_dep_info(&dep_info_key, &env_vars, pool).await {
+                Some(remembered) => {
+                    // Never polled, so neither rustc run happens.
+                    drop(source_files_and_hashes_and_env_deps);
+                    drop(outputs);
+                    trace!(
+                        "[{}]: reusing the dep-info and outputs of earlier runs",
+                        self.parsed_args.crate_name
+                    );
+                    (
+                        (
+                            remembered.source_files,
+                            remembered.source_hashes,
+                            remembered.env_deps,
+                            remembered.dep_info,
+                        ),
+                        remembered.outputs,
+                    )
+                }
+                None => {
+                    // Invoke the compiler and perform all hashing operations on the files.
+                    let (sources, outputs) =
+                        futures::try_join!(source_files_and_hashes_and_env_deps, outputs)?;
+                    let (source_files, source_hashes, env_deps, dep_info) = &sources;
+                    remember_dep_info(
+                        dep_info_key,
+                        RememberedDepInfo {
+                            source_files: source_files.clone(),
+                            source_hashes: source_hashes.clone(),
+                            env_deps: env_deps.clone(),
+                            env_dep_values: env_deps
+                                .iter()
+                                .map(|(var, _)| env_value(&env_vars, var))
+                                .collect(),
+                            dep_info: dep_info.clone(),
+                            outputs: outputs.clone(),
+                        },
+                    );
+                    (sources, outputs)
+                }
+            };
 
         // If you change any of the inputs to the hash, you should change `CACHE_VERSION`.
         let mut m = Digest::new();
@@ -4036,6 +4195,88 @@ hash 42fac6f0 stable_crate_id StableCrateId(12206970385906972588)
         let mut out = res.compilation.outputs().map(|k| k.key).collect::<Vec<_>>();
         out.sort();
         assert_eq!(out, vec!["foo.a", "foo.rlib", "foo.rmeta"]);
+    }
+
+    #[test]
+    fn test_generate_hash_key_reuses_dep_info() {
+        drop(env_logger::try_init());
+        let f = TestFixture::new();
+        for s in ["foo.rs", "bar.rs", "bar.rlib"] {
+            f.touch(s).unwrap();
+        }
+        let hasher = || {
+            Box::new(RustHasher {
+                executable: "rustc".into(),
+                host: "x86-64-unknown-unknown-unknown".to_owned(),
+                version: TEST_RUSTC_VERSION.to_string(),
+                sysroot: f.tempdir.path().join("sysroot"),
+                #[cfg(feature = "dist-client")]
+                target_libdir: f.tempdir.path().join("sysroot/lib/rustlib/fake-target/lib"),
+                compiler_shlibs_digests: vec!["abcd1234".to_owned()],
+                dist_archive: None,
+                #[cfg(feature = "dist-client")]
+                rlib_dep_reader: None,
+                parsed_args: ParsedArguments {
+                    arguments: vec![Argument::Raw("a".into())],
+                    output_dir: "foo/".into(),
+                    externs: vec!["bar.rlib".into()],
+                    crate_link_paths: vec![],
+                    staticlibs: vec![],
+                    crate_name: "foo".into(),
+                    crate_types: CrateTypes {
+                        rlib: true,
+                        staticlib: false,
+                    },
+                    dep_info: None,
+                    emit: ["link".to_string()].into_iter().collect(),
+                    color_mode: ColorMode::Auto,
+                    has_json: false,
+                    profile: None,
+                    gcno: None,
+                    target_json: None,
+                },
+            })
+        };
+        let runtime = single_threaded_runtime();
+        let pool = runtime.handle().clone();
+        let creator = new_creator();
+        let key = |env: &str| {
+            hasher()
+                .generate_hash_key(
+                    &creator,
+                    f.tempdir.path().to_owned(),
+                    vec![(OsString::from("FOO"), OsString::from(env))],
+                    false,
+                    &pool,
+                    false,
+                    Arc::new(MockStorage::new(None, false)),
+                    CacheControl::Default,
+                )
+                .wait()
+                .unwrap()
+                .key
+        };
+
+        mock_dep_info(&creator, &["foo.rs", "bar.rs"]);
+        mock_file_names(&creator, &["foo.rlib"]);
+        let first = key("1");
+        // Nothing queued: running rustc again would panic.
+        assert_eq!(key("1"), first);
+
+        // A source file changed: rustc runs again, and the key changes.
+        f.touch("foo.rs").unwrap();
+        fs::write(f.tempdir.path().join("foo.rs"), b"fn main() {}").unwrap();
+        mock_dep_info(&creator, &["foo.rs", "bar.rs"]);
+        mock_file_names(&creator, &["foo.rlib"]);
+        let edited = key("1");
+        assert_ne!(edited, first);
+        assert_eq!(key("1"), edited);
+
+        // So does a change to the environment.
+        mock_dep_info(&creator, &["foo.rs", "bar.rs"]);
+        mock_file_names(&creator, &["foo.rlib"]);
+        key("2");
+        assert_eq!(key("2"), key("2"));
     }
 
     #[test]
