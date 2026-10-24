@@ -2011,6 +2011,7 @@ where
 
         Ok(HashResult {
             key: m.finish(),
+            cacheable: Cacheable::Yes,
             compilation: Box::new(RustCompilation {
                 executable: self.executable.clone(),
                 host: self.host.clone(),
