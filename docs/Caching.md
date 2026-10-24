@@ -41,7 +41,9 @@ We also take into account in the hash:
 * Commandline arguments for dependency generation
 * Commandline arguments for the preprocessor
 * Commandline arguments specifying the architecture to compile for
-* Extra files that need to have their contents hashed
+* File names and contents of extra input files, including referenced module
+  files. The directory is not part of the key, because some of those files are
+  intermediates the compiler writes into a per-compilation temporary directory.
 * Whether the compilation is generating profiling or coverage data
 * Color mode
 * Environment variables

@@ -143,6 +143,55 @@ pub fn sccache_command() -> Command {
     prune_command(Command::new(env!("CARGO_BIN_EXE_sccache")))
 }
 
+#[allow(dead_code)]
+pub struct ModuleCache {
+    pub dir: tempfile::TempDir,
+    port: u16,
+}
+
+#[allow(dead_code)]
+impl ModuleCache {
+    pub fn new(direct: bool) -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let listener = net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let cfg = sccache_client_cfg(dir.path(), direct);
+        write_json_cfg(dir.path(), "config.json", &cfg);
+        Self { dir, port }
+    }
+
+    pub fn command(&self) -> Command {
+        let mut cmd = sccache_command();
+        cmd.current_dir(self.dir.path())
+            .env("SCCACHE_SERVER_PORT", self.port.to_string())
+            .env("SCCACHE_CONF", self.dir.path().join("config.json"))
+            .env("SCCACHE_CACHED_CONF", self.dir.path().join("cached-config"))
+            .env("SCCACHE_IDLE_TIMEOUT", "60");
+        cmd
+    }
+
+    pub fn stats(&self) -> ServerInfo {
+        let output = self
+            .command()
+            .args(["--show-stats", "--stats-format=json"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        serde_json::from_slice(&output.stdout).unwrap()
+    }
+}
+
+impl Drop for ModuleCache {
+    fn drop(&mut self) {
+        let _ = self
+            .command()
+            .arg("--stop-server")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+}
+
 pub fn cargo_command() -> Command {
     prune_command(Command::new("cargo"))
 }

@@ -291,6 +291,18 @@ ArgData! {
     ClangModuleFile(OsString),
     ClangModuleOutput(OsString),
     ClangLanguage(OsString),
+    // C++20 modules as implemented by cl.exe, see
+    // https://learn.microsoft.com/en-us/cpp/build/reference/module-reference
+    ModuleInterface, // /interface, /internalPartition
+    IfcOutput(PathBuf), // /ifcOutput <file>
+    IfcReference(OsString), // /reference <name>=<path>
+    IfcSearchDir(PathBuf), // /ifcSearchDir <dir>
+    ScanDependencies(PathBuf), // /scanDependencies <path>
+    ExportHeader,        // /exportHeader
+    IfcOnly,
+    IfcMap(PathBuf), // /ifcMap <file>
+    HeaderUnit(OsString), // /headerUnit <name>=<path>
+    StdIfcDir(PathBuf), // /stdIfcDir <dir>
 }
 
 use self::ArgData::*;
@@ -480,9 +492,10 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("experimental:deterministic", PassThrough),
     msvc_flag!("experimental:external", PassThrough),
     msvc_take_arg!("experimental:log", PathBuf, Concatenated, TooHardPath), // SARIF logging is not supported.
-    msvc_flag!("experimental:module", TooHardFlag),
+    msvc_flag!("experimental:module", PassThrough), // C++20 modules; tracked via /interface, /ifcOutput, /reference, /ifcSearchDir.
     msvc_flag!("experimental:module-", PassThrough), // Explicitly disabled modules.
     msvc_take_arg!("experimental:preprocessor", OsString, Concatenated, PassThroughWithSuffix),
+    msvc_flag!("exportHeader", ExportHeader), // Header unit producer.
     msvc_take_arg!("external:I", PathBuf, CanBeSeparated, ExternalIncludePath),
     msvc_flag!("external:W0", PassThrough),
     msvc_flag!("external:W1", PassThrough),
@@ -511,18 +524,18 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("fsyntax-only", SuppressCompilation),
     msvc_take_arg!("guard:cf", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("guard:ehcont", OsString, Concatenated, PassThroughWithSuffix),
+    msvc_take_arg!("headerUnit", OsString, CanBeSeparated, HeaderUnit),
     msvc_flag!("homeparams", PassThrough),
     msvc_flag!("hotpatch", PassThrough),
-    // New: C++20 msvc modules flags.
-    // TODO: Add support for msvc modules
-    // See https://github.com/mozilla/sccache/issues/2629
-    msvc_take_arg!("ifcMap", PathBuf, Separated, TooHardPath),
-    msvc_flag!("ifcOnly", TooHardFlag),
-    msvc_take_arg!("ifcOutput", PathBuf, Separated, TooHardPath),
-    msvc_take_arg!("ifcSearchDir", PathBuf, Separated, TooHardPath),
+    // C++20 modules. See the /ifcMap handling below for its input file.
+    msvc_take_arg!("ifcMap", PathBuf, Separated, IfcMap),
+    msvc_flag!("ifcOnly", IfcOnly),
+    msvc_take_arg!("ifcOutput", PathBuf, Separated, IfcOutput),
+    msvc_take_arg!("ifcSearchDir", PathBuf, Separated, IfcSearchDir),
     msvc_take_arg!("imsvc", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
-    msvc_flag!("interface", TooHardFlag),
-    msvc_flag!("internalPartition", TooHardFlag),
+    msvc_flag!("interface", ModuleInterface),
+    msvc_flag!("internalPartition", ModuleInterface),
+
     msvc_flag!("jumptablerdata", PassThrough),
     msvc_flag!("kernel", PassThrough),
     msvc_flag!("kernel-", PassThrough),
@@ -535,14 +548,16 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("permissive", PassThrough),
     msvc_flag!("permissive-", PassThrough),
     msvc_flag!("presetPadding", PassThrough),
-    msvc_take_arg!("reference", OsString, Separated, TooHard),
+    msvc_take_arg!("reference", OsString, Separated, IfcReference),
+    msvc_take_arg!("scanDependencies", PathBuf, Separated, ScanDependencies),
     msvc_flag!("sdl", PassThrough),
     msvc_flag!("sdl-", PassThrough),
     msvc_flag!("showIncludes", ShowIncludes),
     msvc_take_arg!("source-charset:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("sourceDependencies", PathBuf, CanBeSeparated, DepFile),
     msvc_take_arg!("std:", OsString, Concatenated, PassThroughWithSuffix),
-    msvc_take_arg!("stdIfcDir", PathBuf, Separated, TooHardPath),
+    msvc_take_arg!("stdIfcDir", PathBuf, Separated, StdIfcDir),
+    msvc_flag!("translateInclude", PassThrough), // Header unit consumer.
     msvc_flag!("u", PassThrough),
     msvc_flag!("utf-8", PassThrough),
     msvc_flag!("validate-charset", PassThrough),
@@ -627,6 +642,60 @@ fn without_cl_env_vars(env_vars: &[(OsString, OsString)]) -> Vec<(OsString, OsSt
         .collect()
 }
 
+/// Every `.ifc` file in `dir`, sorted.
+///
+/// cl.exe resolves `import m;` to `<dir>/<module-name>.ifc` for the directories
+/// given by `/ifcSearchDir` and `/stdIfcDir` without the command line saying
+/// which of those files the compilation reads, so all of them have to be hashed.
+/// This may cost a cache hit when an unrelated module file in the same directory
+/// changes, but it keeps consumers correct. A missing directory is an error: the
+/// compilation would not find its modules there either.
+fn find_ifc_files(dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("ifc"))
+            && fs::metadata(&path)?.is_file()
+        {
+            files.push(path);
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
+fn ifc_map_files(path: &Path, cwd: &Path) -> Result<Vec<PathBuf>> {
+    let contents = match fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(err) => return Err(err.into()),
+    };
+    let map: toml::Value = toml::from_str(&contents)?;
+    let mut files = vec![path.to_owned()];
+    for kind in ["module", "header-unit"] {
+        if let Some(entries) = map.get(kind) {
+            for entry in entries.as_array().context("Expected IFC map array")? {
+                let ifc = entry
+                    .get("ifc")
+                    .and_then(toml::Value::as_str)
+                    .filter(|path| !path.is_empty())
+                    .context("Missing IFC path")?;
+                let file = cwd.join(ifc);
+                // An unused invalid mapping must not make an otherwise valid
+                // compilation fail while its inputs are being hashed.
+                if !fs::metadata(&file)?.is_file() {
+                    bail!("IFC map target is not a file");
+                }
+                files.push(file);
+            }
+        }
+    }
+    Ok(files)
+}
+
 pub fn parse_arguments(
     arguments: &[OsString],
     cwd: &Path,
@@ -652,6 +721,9 @@ pub fn parse_arguments(
     let mut profile_generate = false;
     let mut module_output = None;
     let mut cxx_module = false;
+    let mut module_output_dir = None;
+    let mut export_header = false;
+    let mut ifc_only = false;
     let mut multiple_input = false;
     let mut multiple_input_files = Vec::new();
 
@@ -718,6 +790,62 @@ pub fn parse_arguments(
             Some(ClangModuleFile(_)) | Some(ClangModuleOutput(_)) | Some(ClangLanguage(_)) => {
                 cannot_cache!(arg.flag_str().expect("Can't be Argument::Raw/UnknownFlag"))
             }
+            // /scanDependencies only writes a JSON description of the modules a
+            // translation unit provides and uses; cl.exe produces no object file,
+            // so there is nothing to cache and the object file must not be assumed
+            // to exist. This is checked before the module options because build
+            // systems combine it with them.
+            Some(ScanDependencies(_)) => cannot_cache!("/scanDependencies"),
+            Some(ExportHeader) if !is_clang => export_header = true,
+            Some(IfcOnly) if !is_clang => ifc_only = true,
+            // cl.exe 19.51 does not resolve the IFC named by /headerUnit, so a
+            // compilation using it cannot be reproduced from the cache.
+            Some(HeaderUnit(_)) => cannot_cache!("/headerUnit"),
+            Some(ModuleInterface) if !is_clang => cxx_module = true,
+            Some(IfcOutput(p)) if !is_clang => {
+                // cl.exe only writes an IFC for module interface units, and build
+                // systems pass a directory for other translation units, which is
+                // harmless. For an interface unit a directory would make the file
+                // name depend on the module name, which is only known after
+                // compiling, so that combination is rejected further down.
+                if p.as_os_str().to_string_lossy().ends_with(['\\', '/']) {
+                    module_output_dir = Some(p.clone());
+                } else {
+                    module_output = Some(p.clone());
+                }
+            }
+            // /scanDependencies only writes a JSON description of the modules a
+            // translation unit provides and uses; cl.exe produces no object file,
+            // so there is nothing to cache.
+
+            // /reference <name>=<path> names the IFC to read explicitly.
+            Some(IfcReference(val)) if !is_clang && !val.is_empty() => {
+                extra_hash_files.push(cwd.join(gcc::module_file_path(val)));
+            }
+            // cl.exe resolves `import m;` to <dir>/<module-name>.ifc, so the
+            // command line doesn't say which file the compilation reads. Hash
+            // every IFC in the directory, like Clang's -fprebuilt-module-path.
+            Some(IfcSearchDir(dir)) | Some(StdIfcDir(dir)) if !is_clang => {
+                for file in try_or_cannot_cache!(find_ifc_files(&cwd.join(dir)), "-ifcSearchDir") {
+                    extra_hash_files.push(file);
+                }
+            }
+            Some(IfcMap(p)) if !is_clang => {
+                extra_hash_files.extend(try_or_cannot_cache!(
+                    ifc_map_files(&cwd.join(p), cwd),
+                    "-ifcMap"
+                ));
+            }
+            Some(ModuleInterface)
+            | Some(ExportHeader)
+            | Some(IfcOnly)
+            | Some(IfcMap(_))
+            | Some(IfcOutput(_))
+            | Some(IfcReference(_))
+            | Some(IfcSearchDir(_))
+            | Some(StdIfcDir(_)) => {
+                cannot_cache!(arg.flag_str().expect("Can't be Argument::Raw/UnknownFlag"))
+            }
             None => {
                 match arg {
                     Argument::Raw(ref val) if val == "--" => {
@@ -748,6 +876,9 @@ pub fn parse_arguments(
             | Some(ClangModuleFile(_))
             | Some(ClangModuleOutput(_))
             | Some(ClangLanguage(_))
+            | Some(ModuleInterface)
+            | Some(ExportHeader)
+            | Some(IfcOnly)
             | Some(DebugInfo)
             | Some(PassThrough)
             | Some(PassThroughWithPath(_))
@@ -762,7 +893,13 @@ pub fn parse_arguments(
                         .iter_os_strings(),
                 );
             }
-            Some(ExternalIncludePath(_)) => common_args.extend(
+            // These are passed to cl.exe as a separate argument.
+            Some(ExternalIncludePath(_))
+            | Some(IfcMap(_))
+            | Some(IfcOutput(_))
+            | Some(IfcReference(_))
+            | Some(IfcSearchDir(_))
+            | Some(StdIfcDir(_)) => common_args.extend(
                 arg.normalize(NormalizedDisposition::Separated)
                     .iter_os_strings(),
             ),
@@ -892,12 +1029,45 @@ pub fn parse_arguments(
             format!("{:?}", multiple_input_files)
         );
     }
-    // Either flag alone leaves clang-cl's BMI unwritten or untracked.
-    if cxx_module != module_output.is_some() {
-        cannot_cache!("-x c++-module without -fmodule-output= or vice versa");
+    if ifc_only && module_output.is_none() {
+        cannot_cache!("/ifcOnly without /ifcOutput");
+    }
+    // /TP does not take the implicit module interface identity away from an
+    // .ixx input.
+    if !is_clang
+        && explicit_language != Some(Language::C)
+        && input_arg.as_ref().is_some_and(|input| {
+            Path::new(input)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("ixx"))
+        })
+    {
+        cxx_module = true;
+    }
+    if export_header
+        && common_args
+            .iter()
+            .any(|arg| arg == "-Zc:preprocessor-" || arg == "/Zc:preprocessor-")
+    {
+        cannot_cache!("/exportHeader with /Zc:preprocessor-");
+    }
+    // A directory as /ifcOutput makes cl.exe name the IFC after the module,
+    // /interface, /internalPartition and /exportHeader all make cl.exe write an
+    // IFC, which only makes sense together with a file name for it.
+    let produces_ifc = cxx_module || export_header;
+    if produces_ifc && module_output_dir.is_some() {
+        cannot_cache!("-ifcOutput with a directory");
+    }
+    // Either flag alone leaves the IFC unwritten or untracked.
+    if produces_ifc != module_output.is_some() {
+        if is_clang {
+            cannot_cache!("-x c++-module without -fmodule-output= or vice versa");
+        } else {
+            cannot_cache!("/interface or /exportHeader without /ifcOutput or vice versa");
+        }
     }
     // clang-cl drops -x c++-module and -fmodule-output= for a /Tc or /Tp input.
-    if cxx_module && explicit_language.is_some() {
+    if is_clang && cxx_module && explicit_language.is_some() {
         cannot_cache!("-x c++-module with /Tc or /Tp");
     }
     let (input, language) = match input_arg {
@@ -956,6 +1126,12 @@ pub fn parse_arguments(
                 );
             }
         }
+    }
+    // /ifcOnly asks cl.exe to write the interface but no object file, so the
+    // object must not be tracked as an artifact: a missing required artifact
+    // aborts the compilation when the cache entry is written.
+    if ifc_only {
+        outputs.remove("obj");
     }
     if let Some(path) = module_output {
         outputs.insert(
@@ -1026,7 +1202,7 @@ pub fn parse_arguments(
                         path,
                         optional: false,
                     },
-                )
+                );
             }
             None => {
                 // -Zi and -ZI without -Fd defaults to vcxxx.pdb (where xxx depends on the
@@ -1034,7 +1210,7 @@ pub fn parse_arguments(
                 // working directory. We can't cache such a pdb.
                 cannot_cache!("shared pdb");
             }
-        };
+        }
     }
 
     CompilerArguments::Ok(ParsedArguments {
@@ -1136,6 +1312,16 @@ fn preprocess_cmd<T>(
         cmd.arg("-EP");
     }
 
+    if !is_clang
+        && parsed_args
+            .common_args
+            .iter()
+            .any(|arg| arg == "-exportHeader" || arg == "/exportHeader")
+    {
+        // /EP alone does not enable the header unit preprocessor, and the
+        // exported macros have to take part in the cache key.
+        cmd.args(&["-Zc:preprocessor", "-PD"]);
+    }
     cmd.arg("-nologo")
         .args(&parsed_args.preprocessor_args)
         .args(&parsed_args.dependency_args)
@@ -1285,10 +1471,9 @@ fn generate_compile_commands(
     let env_vars = without_cl_env_vars(env_vars);
 
     trace!("compile");
-    let out_file = match parsed_args.outputs.get("obj") {
-        Some(obj) => &obj.path,
-        None => bail!("Missing object file output"),
-    };
+    // /ifcOnly compilations produce only the IFC, so there is no object file to
+    // pass to -Fo.
+    let out_file = parsed_args.outputs.get("obj").map(|obj| &obj.path);
 
     // See if this compilation will produce a PDB.
     let cacheable = parsed_args
@@ -1304,10 +1489,12 @@ fn generate_compile_commands(
             }
         });
 
-    let mut fo = OsString::from("-Fo");
-    fo.push(out_file);
-
-    let mut arguments: Vec<OsString> = vec![parsed_args.compilation_flag.clone(), fo];
+    let mut arguments: Vec<OsString> = vec![parsed_args.compilation_flag.clone()];
+    if let Some(out_file) = out_file {
+        let mut fo = OsString::from("-Fo");
+        fo.push(out_file);
+        arguments.push(fo);
+    }
     arguments.extend_from_slice(&parsed_args.preprocessor_args);
     arguments.extend_from_slice(&parsed_args.dependency_args);
     arguments.extend_from_slice(&parsed_args.unhashed_args);
@@ -1330,6 +1517,8 @@ fn generate_compile_commands(
     let dist_command = (|| {
         // http://releases.llvm.org/6.0.0/tools/clang/docs/UsersManual.html#clang-cl
         // TODO: Use /T... for language?
+        // /ifcOnly compilations have no object file to rewrite.
+        let out_file = out_file?;
         let mut fo = String::from("-Fo");
         fo.push_str(&path_transformer.as_dist(out_file)?);
 
@@ -1626,6 +1815,13 @@ mod test {
 
     fn parse_arguments_clang(arguments: Vec<OsString>) -> CompilerArguments<ParsedArguments> {
         super::parse_arguments(&arguments, &std::env::current_dir().unwrap(), true)
+    }
+
+    fn parse_arguments_in(
+        arguments: Vec<OsString>,
+        cwd: &Path,
+    ) -> CompilerArguments<ParsedArguments> {
+        super::parse_arguments(&arguments, cwd, false)
     }
 
     #[test]
@@ -3007,86 +3203,475 @@ mod test {
     }
 
     #[test]
-    fn test_parse_arguments_cxx20_modules_unsupported() {
-        // C++20 modules are not yet supported in MSVC mode
-
-        // /interface - indicates the input is a module interface
+    fn test_parse_arguments_cxx20_modules() {
+        // /interface marks a module interface unit, /ifcOutput names the IFC it
+        // produces and /reference names the IFCs the translation unit imports.
+        let args = ovec![
+            "-c",
+            "m.ixx",
+            "-Fom.obj",
+            "-experimental:module",
+            "-interface",
+            "-ifcOutput",
+            "m.ifc",
+            "-reference",
+            "dep=dep.ifc",
+            "-reference",
+            "plain.ifc"
+        ];
+        let ParsedArguments {
+            language,
+            outputs,
+            common_args,
+            extra_hash_files,
+            ..
+        } = match parse_arguments(args) {
+            CompilerArguments::Ok(a) => a,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(Language::CxxModule, language);
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("m.obj"),
+                    optional: false
+                }
+            ),
+            (
+                "module",
+                ArtifactDescriptor {
+                    path: PathBuf::from("m.ifc"),
+                    optional: false
+                }
+            )
+        );
         assert_eq!(
-            CompilerArguments::CannotCache("-interface", None),
-            parse_arguments(ovec!["-c", "foo.ixx", "-Fofoo.obj", "-interface"])
+            ovec![
+                "-experimental:module",
+                "-interface",
+                "-ifcOutput",
+                "m.ifc",
+                "-reference",
+                "dep=dep.ifc",
+                "-reference",
+                "plain.ifc"
+            ],
+            common_args
+        );
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(
+            ovec![cwd.join("dep.ifc"), cwd.join("plain.ifc")],
+            extra_hash_files
         );
 
-        // /internalPartition - indicates the input is an internal partition
+        // A directory makes cl.exe derive the IFC file name from the module name,
+        // which is only known after compiling.
         assert_eq!(
-            CompilerArguments::CannotCache("-internalPartition", None),
-            parse_arguments(ovec!["-c", "foo.ixx", "-Fofoo.obj", "-internalPartition"])
-        );
-
-        // /ifcOutput - specifies output path for IFC (module interface)
-        assert_eq!(
-            CompilerArguments::CannotCache("-ifcOutput", None),
+            CompilerArguments::CannotCache("-ifcOutput with a directory", None),
             parse_arguments(ovec![
                 "-c",
-                "foo.ixx",
-                "-Fofoo.obj",
+                "m.ixx",
+                "-Fom.obj",
+                "-interface",
                 "-ifcOutput",
-                "foo.ifc"
+                "ifcs\\"
             ])
         );
 
-        // /ifcOnly - only produce IFC, no object file
+        // Either flag alone leaves the module's IFC untracked.
+        for args in [
+            ovec!["-c", "m.ixx", "-Fom.obj", "-interface"],
+            ovec!["-c", "m.cpp", "-Fom.obj", "-ifcOutput", "m.ifc"],
+            ovec!["-c", "h.h", "-Foh.obj", "-exportHeader"],
+        ] {
+            assert_eq!(
+                CompilerArguments::CannotCache(
+                    "/interface or /exportHeader without /ifcOutput or vice versa",
+                    None
+                ),
+                parse_arguments(args)
+            );
+        }
+
+        // A directory as /ifcOutput without /interface is what MSBuild passes for
+        // ordinary translation units: cl.exe writes no IFC for them, so it must
+        // not block caching and must not add a module artifact either.
+        let a = match parse_arguments(ovec![
+            "-c",
+            "main.cpp",
+            "-Foobjs\\main.obj",
+            "-ifcOutput",
+            "objs\\",
+            "-reference",
+            "m=objs\\m.ifc"
+        ]) {
+            CompilerArguments::Ok(a) => a,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(Language::Cxx, a.language);
+        assert!(!a.outputs.contains_key("module"));
+        assert_eq!(ovec![cwd.join("objs\\m.ifc")], a.extra_hash_files);
+    }
+
+    #[test]
+    fn test_parse_arguments_ifc_only() {
+        // /ifcOnly makes cl.exe write the IFC but no object file, so the object
+        // must not be tracked as an artifact.
+        let a = match parse_arguments(ovec![
+            "-c",
+            "m.ixx",
+            "-Fom.obj",
+            "-experimental:module",
+            "-interface",
+            "-ifcOnly",
+            "-ifcOutput",
+            "m.ifc"
+        ]) {
+            CompilerArguments::Ok(a) => a,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(Path::new("m.ifc"), a.outputs["module"].path);
+        assert!(!a.outputs.contains_key("obj"));
         assert_eq!(
-            CompilerArguments::CannotCache("-ifcOnly", None),
+            ovec![
+                "-experimental:module",
+                "-interface",
+                "-ifcOnly",
+                "-ifcOutput",
+                "m.ifc"
+            ],
+            a.common_args
+        );
+    }
+
+    #[test]
+    fn test_parse_arguments_header_units() {
+        // /exportHeader makes cl.exe write an IFC for a header, exactly like
+        // /interface does for a module interface unit.
+        let a = match parse_arguments(ovec![
+            "-c",
+            "h.h",
+            "-Foh.obj",
+            "-experimental:module",
+            "-exportHeader",
+            "-ifcOutput",
+            "ifs\\h.ifc"
+        ]) {
+            CompilerArguments::Ok(a) => a,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(Path::new("ifs\\h.ifc"), a.outputs["module"].path);
+        assert!(!a.outputs["module"].optional);
+        assert_eq!(
+            ovec![
+                "-experimental:module",
+                "-exportHeader",
+                "-ifcOutput",
+                "ifs\\h.ifc"
+            ],
+            a.common_args
+        );
+
+        // Consumers translate #include into header unit imports and find the IFCs
+        // through /ifcSearchDir, whose contents are hashed.
+        let f = TestFixture::new();
+        f.touch("ifs/h.ifc").unwrap();
+        let a = match parse_arguments_in(
+            ovec![
+                "-c",
+                "u.cpp",
+                "-Fou.obj",
+                "-experimental:module",
+                "-translateInclude",
+                "-ifcSearchDir",
+                "ifs"
+            ],
+            f.tempdir.path(),
+        ) {
+            CompilerArguments::Ok(a) => a,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(1, a.extra_hash_files.len());
+        assert_eq!(
+            ovec![
+                "-experimental:module",
+                "-translateInclude",
+                "-ifcSearchDir",
+                "ifs"
+            ],
+            a.common_args
+        );
+
+        // /headerUnit does not resolve the IFC it names with cl.exe 19.51, so such
+        // a compilation stays uncacheable.
+        assert_eq!(
+            CompilerArguments::CannotCache("/headerUnit", None),
+            parse_arguments(ovec![
+                "-c",
+                "u.cpp",
+                "-Fou.obj",
+                "-headerUnit",
+                "h.h=ifs\\h.ifc"
+            ])
+        );
+    }
+
+    #[test]
+    fn test_parse_arguments_scan_dependencies_is_not_cacheable() {
+        // Both CMake generators run `cl /c /scanDependencies <path>` to discover
+        // modules before compiling. That invocation writes only a JSON file and no
+        // object file, so it must never be cached: a missing required artifact is a
+        // fatal error for the whole compilation.
+        const REASON: &str = "/scanDependencies";
+
+        // Ninja style: only /scanDependencies, no module options.
+        let ninja_scan = ovec![
+            "-c",
+            "m.cpp",
+            "-scanDependencies",
+            "CMakeFiles\\m.obj.ddi",
+            "-FoCMakeFiles\\m.obj"
+        ];
+        assert_eq!(
+            CompilerArguments::CannotCache(REASON, None),
+            parse_arguments(ninja_scan.clone())
+        );
+        assert_eq!(
+            CompilerArguments::CannotCache(REASON, None),
+            parse_arguments_clang(ninja_scan)
+        );
+
+        // MSBuild style: a directory as both /ifcOutput and /scanDependencies.
+        assert_eq!(
+            CompilerArguments::CannotCache(REASON, None),
+            parse_arguments(ovec![
+                "-c",
+                "m.ixx",
+                "-ifcOutput",
+                "debug\\",
+                "-scanDependencies",
+                "debug\\",
+                "-Fodebug\\"
+            ])
+        );
+    }
+
+    #[test]
+    fn test_parse_arguments_cxx20_modules_ifc_search_dir() {
+        // cl.exe resolves `import m;` to <dir>/<module-name>.ifc inside each
+        // /ifcSearchDir and /stdIfcDir, so every IFC there has to be hashed.
+        let f = TestFixture::new();
+        for name in ["ifcs/m.ifc", "ifcs/other.ifc", "stdifcs/std.ifc"] {
+            f.touch(name).unwrap();
+        }
+        // Not an IFC, so it must not be hashed.
+        f.touch("ifcs/notes.txt").unwrap();
+        let cwd = f.tempdir.path();
+
+        let a = match parse_arguments_in(
+            ovec![
+                "-c",
+                "m.cpp",
+                "-Fom.obj",
+                "-experimental:module",
+                "-ifcSearchDir",
+                "ifcs",
+                "-stdIfcDir",
+                "stdifcs"
+            ],
+            cwd,
+        ) {
+            CompilerArguments::Ok(a) => a,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        // Paths are compared by file name: TempDir paths need not be canonical.
+        let mut names: Vec<_> = a
+            .extra_hash_files
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(vec!["m.ifc", "other.ifc", "std.ifc"], names);
+        assert_eq!(
+            ovec![
+                "-experimental:module",
+                "-ifcSearchDir",
+                "ifcs",
+                "-stdIfcDir",
+                "stdifcs"
+            ],
+            a.common_args
+        );
+
+        // A missing directory means the compilation cannot find its modules.
+        match parse_arguments_in(
+            ovec!["-c", "m.cpp", "-Fom.obj", "-ifcSearchDir", "missing"],
+            cwd,
+        ) {
+            CompilerArguments::CannotCache(why, _) => assert_eq!("-ifcSearchDir", why),
+            o => panic!("Got unexpected parse result: {:?}", o),
+        }
+    }
+
+    #[test]
+    fn test_parse_arguments_ifc_map() {
+        // /ifcMap names a file cl.exe reads; it is ignored when missing.
+        let a = match parse_arguments(ovec![
+            "-c",
+            "foo.cpp",
+            "-Fofoo.obj",
+            "-ifcMap",
+            "module.map"
+        ]) {
+            CompilerArguments::Ok(a) => a,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert!(a.extra_hash_files.is_empty());
+        assert_eq!(ovec!["-ifcMap", "module.map"], a.common_args);
+
+        let f = TestFixture::new();
+        f.touch("module.map").unwrap();
+        let a = match parse_arguments_in(
+            ovec!["-c", "foo.cpp", "-Fofoo.obj", "-ifcMap", "module.map"],
+            f.tempdir.path(),
+        ) {
+            CompilerArguments::Ok(a) => a,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        // TempDir paths need not be canonical, so compare by file name.
+        let hashed: Vec<_> = a
+            .extra_hash_files
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(vec!["module.map"], hashed);
+    }
+
+    #[test]
+    fn test_ifc_map_tracks_module_and_header_unit_targets() {
+        let f = TestFixture::new();
+        f.touch("maps/modules.toml").unwrap();
+        f.touch("m.ifc").unwrap();
+        f.touch("h.ifc").unwrap();
+        let cwd = f.tempdir.path();
+        let map = cwd.join("maps/modules.toml");
+        fs::write(&map, "[[module]]\nname='m'\nifc='m.ifc'\n[[header-unit]]\nname=['quote','h.h']\nifc='h.ifc'\n").unwrap();
+        let a =
+            match parse_arguments_in(ovec!["-c", "use.cpp", "-ifcMap", "maps/modules.toml"], cwd) {
+                CompilerArguments::Ok(a) => a,
+                other => panic!("Unexpected {other:?}"),
+            };
+        assert_eq!(
+            a.extra_hash_files,
+            vec![map.clone(), cwd.join("m.ifc"), cwd.join("h.ifc")]
+        );
+        for invalid in [
+            "[[module]]\nifc='missing.ifc'",
+            "[[module]]\nifc=123",
+            "not toml",
+        ] {
+            fs::write(&map, invalid).unwrap();
+            assert!(matches!(
+                parse_arguments_in(ovec!["-c", "use.cpp", "-ifcMap", "maps/modules.toml"], cwd),
+                CompilerArguments::CannotCache("-ifcMap", _)
+            ));
+        }
+    }
+
+    #[test]
+    fn test_implicit_msvc_module_interface_outputs() {
+        for input in ["m.ixx", "m.IXx"] {
+            for language in [vec![], ovec!["-TP"]] {
+                let mut args = ovec!["-c", input, "-ifcOutput", "out.ifc"];
+                args.extend(language);
+                let parsed = match parse_arguments(args.clone()) {
+                    CompilerArguments::Ok(a) => a,
+                    other => panic!("Unexpected {other:?}"),
+                };
+                assert_eq!(parsed.outputs["module"].path, Path::new("out.ifc"));
+                args[3] = "ifcs/".into();
+                assert_eq!(
+                    parse_arguments(args),
+                    CompilerArguments::CannotCache("-ifcOutput with a directory", None)
+                );
+            }
+        }
+    }
+
+    #[test_case::test_case("-"; "dash")]
+    #[test_case::test_case("/"; "slash")]
+    fn test_header_unit_preprocessing_preserves_macros(prefix: &str) {
+        let args = ovec![
+            "-c",
+            "-TP",
+            "h.h",
+            format!("{prefix}exportHeader"),
+            "-ifcOutput",
+            "h.ifc"
+        ];
+        let parsed = match parse_arguments(args.clone()) {
+            CompilerArguments::Ok(a) => a,
+            other => panic!("Unexpected {other:?}"),
+        };
+        let mut cmd = MockCommand {
+            child: None,
+            args: vec![],
+        };
+        preprocess_cmd(&mut cmd, &parsed, Path::new(""), &[], false, false, false);
+        assert!(cmd.args.contains(&OsString::from("-PD")));
+        assert!(cmd.args.contains(&OsString::from("-Zc:preprocessor")));
+        let mut legacy = args;
+        legacy.push(format!("{prefix}Zc:preprocessor-").into());
+        assert!(matches!(
+            parse_arguments(legacy),
+            CompilerArguments::CannotCache(_, _)
+        ));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_ifc_directory_follows_symlinks() {
+        let f = TestFixture::new();
+        f.touch("actual.bin").unwrap();
+        let dir = f.tempdir.path();
+        let link = dir.join("m.ifc");
+        std::os::unix::fs::symlink(dir.join("actual.bin"), &link).unwrap();
+        assert_eq!(find_ifc_files(dir).unwrap(), vec![link]);
+        std::os::unix::fs::symlink(dir.join("missing"), dir.join("bad.ifc")).unwrap();
+        assert!(find_ifc_files(dir).is_err());
+    }
+
+    #[test]
+    fn test_parse_arguments_cxx20_modules_unsupported() {
+        // /ifcOnly needs the IFC to be named explicitly, since cl.exe otherwise
+        // derives the file name from the module.
+        assert_eq!(
+            CompilerArguments::CannotCache("/ifcOnly without /ifcOutput", None),
             parse_arguments(ovec!["-c", "foo.ixx", "-ifcOnly"])
         );
-
-        // /ifcSearchDir - directory to search for IFC files
         assert_eq!(
-            CompilerArguments::CannotCache("-ifcSearchDir", None),
-            parse_arguments(ovec![
-                "-c",
-                "foo.cpp",
-                "-Fofoo.obj",
-                "-ifcSearchDir",
-                "/path/to/ifcs"
-            ])
+            CompilerArguments::CannotCache("-ifcOnly", None),
+            parse_arguments_clang(ovec!["-c", "foo.ixx", "-ifcOnly"])
         );
-
-        // /reference - reference a named module IFC
-        assert_eq!(
-            CompilerArguments::CannotCache("-reference", None),
-            parse_arguments(ovec![
-                "-c",
-                "foo.cpp",
-                "-Fofoo.obj",
+        // clang-cl has its own spelling for modules.
+        for (args, why) in [
+            (ovec!["-c", "foo.ixx", "-interface"], "-interface"),
+            (
+                ovec!["-c", "foo.cpp", "-Fofoo.obj", "-ifcOutput", "m.ifc"],
+                "-ifcOutput",
+            ),
+            (
+                ovec!["-c", "foo.cpp", "-Fofoo.obj", "-reference", "m=m.ifc"],
                 "-reference",
-                "mymodule=mymodule.ifc"
-            ])
-        );
-
-        // /stdIfcDir - directory for standard library IFCs
-        assert_eq!(
-            CompilerArguments::CannotCache("-stdIfcDir", None),
-            parse_arguments(ovec![
-                "-c",
-                "foo.cpp",
-                "-Fofoo.obj",
-                "-stdIfcDir",
-                "/path/to/std/ifcs"
-            ])
-        );
-
-        // /ifcMap - specifies a module map file
-        assert_eq!(
-            CompilerArguments::CannotCache("-ifcMap", None),
-            parse_arguments(ovec![
-                "-c",
-                "foo.cpp",
-                "-Fofoo.obj",
-                "-ifcMap",
-                "module.map"
-            ])
-        );
+            ),
+        ] {
+            assert_eq!(
+                CompilerArguments::CannotCache(why, None),
+                parse_arguments_clang(args)
+            );
+        }
     }
 
     #[test]
