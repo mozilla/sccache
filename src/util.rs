@@ -39,56 +39,29 @@ pub const BASE64_URL_SAFE_ENGINE: base64::engine::GeneralPurpose =
 
 pub const HASH_BUFFER_SIZE: usize = 128 * 1024;
 
-/// Size of the buffer used for the first reads when hashing. Zeroing a full
-/// `HASH_BUFFER_SIZE` buffer costs more than hashing a typical header, which
-/// is what direct mode hashes the most.
-const SMALL_HASH_BUFFER_SIZE: usize = 16 * 1024;
-
-/// Amount of data read with the small buffer before switching to a
-/// `HASH_BUFFER_SIZE` one.
-const SMALL_HASH_BUFFER_LIMIT: usize = 64 * 1024;
-
 /// Reads `reader` to the end, passing each chunk read to `f`.
 ///
-/// The first `SMALL_HASH_BUFFER_LIMIT` bytes are read with a small buffer,
-/// and only larger inputs switch to a `HASH_BUFFER_SIZE` one. Both buffers
-/// live on the stack, so nothing stays allocated between calls.
-fn read_chunks<R: Read + ?Sized>(reader: &mut R, mut f: impl FnMut(&[u8])) -> Result<()> {
-    if read_chunks_small(reader, &mut f)? {
-        read_chunks_large(reader, &mut f)?;
+/// Goes through `std::io::copy`, whose buffer lives on the stack and is not
+/// zeroed for readers that can fill uninitialized memory, such as files and
+/// byte slices. Zeroing a buffer for each input costs more than hashing a
+/// typical header, which is what direct mode hashes the most, and keeping one
+/// around between calls keeps that memory allocated.
+fn read_chunks<R: Read + ?Sized>(reader: &mut R, f: impl FnMut(&[u8])) -> Result<()> {
+    struct Chunks<F>(F);
+
+    impl<F: FnMut(&[u8])> Write for Chunks<F> {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            (self.0)(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
+
+    std::io::copy(reader, &mut Chunks(f))?;
     Ok(())
-}
-
-/// Returns whether there may be more to read.
-// Not inlined, so that both buffers are not on the stack at the same time.
-#[inline(never)]
-fn read_chunks_small<R: Read + ?Sized>(reader: &mut R, f: &mut impl FnMut(&[u8])) -> Result<bool> {
-    let mut buffer = [0u8; SMALL_HASH_BUFFER_SIZE];
-    let mut total = 0;
-    while total < SMALL_HASH_BUFFER_LIMIT {
-        let count = reader.read(&mut buffer)?;
-        if count == 0 {
-            return Ok(false);
-        }
-        f(&buffer[..count]);
-        total += count;
-    }
-    Ok(true)
-}
-
-#[inline(never)]
-fn read_chunks_large<R: Read + ?Sized>(reader: &mut R, f: &mut impl FnMut(&[u8])) -> Result<()> {
-    // A buffer of 128KB should give us the best performance.
-    // See https://eklitzke.org/efficient-file-copying-on-linux.
-    let mut buffer = [0u8; HASH_BUFFER_SIZE];
-    loop {
-        let count = reader.read(&mut buffer)?;
-        if count == 0 {
-            return Ok(());
-        }
-        f(&buffer[..count]);
-    }
 }
 
 #[derive(Clone)]
@@ -1676,14 +1649,12 @@ mod tests {
 
     #[test]
     fn test_reader_sync_across_buffer_sizes() {
-        use super::{HASH_BUFFER_SIZE, SMALL_HASH_BUFFER_LIMIT, SMALL_HASH_BUFFER_SIZE};
-        // Sizes around the end of the first small chunk, the switch from the
-        // small buffer to the large one, and the end of the first large chunk.
-        let boundaries = [
-            SMALL_HASH_BUFFER_SIZE,
-            SMALL_HASH_BUFFER_LIMIT,
-            SMALL_HASH_BUFFER_LIMIT + HASH_BUFFER_SIZE,
-        ];
+        use super::HASH_BUFFER_SIZE;
+        // `std::io::copy` reads 8KB at a time (std's `DEFAULT_BUF_SIZE`):
+        // sizes around the end of the first and second chunks, and around
+        // `HASH_BUFFER_SIZE`, the chunk size used before.
+        const COPY_CHUNK: usize = 8 * 1024;
+        let boundaries = [COPY_CHUNK, 2 * COPY_CHUNK, HASH_BUFFER_SIZE];
         for boundary in boundaries {
             for len in [boundary - 1, boundary, boundary + 1] {
                 let data: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
