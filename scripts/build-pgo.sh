@@ -123,33 +123,26 @@ begin_step "Step 1: instrumented build"
 INSTR_DIR="${TARGET_DIR}/instrumented"
 rm -rf "$PROFILE_DIR"
 mkdir -p "$PROFILE_DIR"
-# The instrumented build must use the same LTO and codegen-unit settings as the
-# final one. Inlining happens before instrumentation, so building it with LTO
-# off yields counters for functions that no longer exist once the final build
-# runs whole-program codegen, and the profile is then largely wasted on it.
-#
-# `--cfg pgo_training` makes the binary flush its own counters before exiting:
-# it always leaves through `std::process::exit`, which on Windows is
-# `ExitProcess` and skips the `atexit` handler the profiling runtime would
-# otherwise write the profile from.
+# Same LTO and codegen units as the final build: inlining happens before
+# instrumentation, so other settings record counters for different functions.
+# `--cfg pgo_training` flushes the counters before `std::process::exit`, which
+# on Windows skips the `atexit` handler the profiling runtime writes them from.
 INSTR_FLAGS="-Cprofile-generate=${PROFILE_DIR} --cfg pgo_training"
 
-# The integration tests run `CARGO_BIN_EXE_sccache`, i.e. the sccache built by
-# `cargo test` into this target dir. That one must not be trained on, though:
-# under `cargo test`, dev-dependencies unify extra features into libc, serde,
-# rustls, ... which changes their `-C metadata`, and with it the symbol names of
-# those crates and of sccache itself, so its profile would barely match the
-# final `cargo build`. Hence the test executables are built first, then
-# `cargo build` overwrites the binary at the path they use with the exact one
-# the final build will match, and the tests are run directly (`cargo test`
-# would rebuild it).
+# The tests run the sccache at `CARGO_BIN_EXE_sccache`, but the one `cargo test`
+# builds has dev-dependency features unified in, which renames its symbols. So
+# build the test executables (without LTO: they are not trained on), overwrite
+# that sccache with `cargo build`, and run the tests directly.
 test_args=()
 for t in "${TRAINING_TESTS[@]}"; do test_args+=(--test "$t"); done
 TEST_EXES=()
 while IFS= read -r exe; do
     TEST_EXES+=("$(norm_path "$exe")")
-done < <(cargo_run "$INSTR_DIR" "$INSTR_FLAGS" test --no-run --message-format=json "${test_args[@]}" \
-    | sed -n 's/.*"kind":\["test"\].*"executable":"\([^"]*\)".*/\1/p' | sed 's/\\\\/\\/g')
+done < <(
+    export CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
+    cargo_run "$INSTR_DIR" "$INSTR_FLAGS" test --no-run --message-format=json "${test_args[@]}" \
+        | sed -n 's/.*"kind":\["test"\].*"executable":"\([^"]*\)".*/\1/p' | sed 's/\\\\/\\/g'
+)
 if [ ${#TEST_EXES[@]} -ne ${#TRAINING_TESTS[@]} ]; then
     echo "expected ${#TRAINING_TESTS[@]} test executables, found ${#TEST_EXES[@]}" >&2
     exit 1
