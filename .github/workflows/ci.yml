@@ -251,7 +251,14 @@ jobs:
     name: build ${{ matrix.binary || 'sccache' }} ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     container: ${{ fromJson(matrix.container || '{"image":null}') }}
-    timeout-minutes: 30
+    # PGO builds sccache twice and runs the integration tests in between.
+    timeout-minutes: ${{ matrix.pgo && 90 || 30 }}
+    env:
+      # Profile-guided optimization, for the binaries that are released (tags)
+      # and on main, so that a broken setup shows up before a release. Only on
+      # targets the runner can execute, since the profile comes from running
+      # sccache. Pull requests keep the plain build.
+      PGO: ${{ matrix.pgo && (startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main') }}
     strategy:
       fail-fast: false
       matrix:
@@ -259,6 +266,7 @@ jobs:
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-musl
             container: '{"image": "messense/rust-musl-cross:x86_64-musl"}'
+            pgo: true
           - os: ubuntu-22.04
             target: s390x-unknown-linux-musl
             container: '{"image": "messense/rust-musl-cross:s390x-musl"}'
@@ -295,12 +303,15 @@ jobs:
           - os: macos-14
             target: aarch64-apple-darwin
             macosx_deployment_target: 11.0
+            pgo: true
           - os: macos-15-intel
             target: x86_64-apple-darwin
             macosx_deployment_target: 11.0
+            pgo: true
           - os: windows-2022
             target: x86_64-pc-windows-msvc
             rustflags: -Ctarget-feature=+crt-static
+            pgo: true
           - os: windows-2022
             target: aarch64-pc-windows-msvc
             rustflags: -Ctarget-feature=+crt-static
@@ -354,6 +365,42 @@ jobs:
           SDKROOT: ${{ matrix.sdkroot }}
           RUSTFLAGS: ${{ env.RUSTFLAGS || matrix.rustflags }}
           CARGO_PROFILE_RELEASE_LTO: ${{ matrix.lto || 'true' }}
+
+      - name: Install llvm-tools (PGO)
+        if: ${{ env.PGO == 'true' }}
+        shell: bash
+        run: rustup component add llvm-tools
+
+      - name: Install C/C++ compilers (PGO)
+        # So that the training covers C/C++ compiles as well; the image only
+        # has the musl cross compilers.
+        if: ${{ env.PGO == 'true' && matrix.container }}
+        run: apt-get update && apt-get install -y --no-install-recommends gcc g++
+
+      - name: Train PGO profile
+        if: ${{ env.PGO == 'true' }}
+        shell: bash
+        run: |
+          ./scripts/build-pgo.sh --target ${{ matrix.target }} --features openssl/vendored --train-only
+          # The script writes the profile's absolute path, natively spelled on Windows.
+          echo "RUSTFLAGS=${RUSTFLAGS:+${RUSTFLAGS} }-Cprofile-use=$(cat target/sccache-pgo/profdata-path.txt)" >> "$GITHUB_ENV"
+        env:
+          MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macosx_deployment_target }}
+          RUSTFLAGS: ${{ matrix.rustflags }}
+          CARGO_PROFILE_RELEASE_LTO: ${{ matrix.lto || 'true' }}
+
+      - name: Verify PGO is applied to the build
+        if: ${{ env.PGO == 'true' }}
+        shell: bash
+        run: |
+          # If RUSTFLAGS did not make it through GITHUB_ENV, the release would
+          # silently ship an unoptimized binary.
+          echo "RUSTFLAGS=${RUSTFLAGS}"
+          case "${RUSTFLAGS}" in
+            *-Cprofile-use=*) ;;
+            *) echo "::error::-Cprofile-use missing from RUSTFLAGS"; exit 1 ;;
+          esac
+          test -s "$(cat target/sccache-pgo/profdata-path.txt)"
 
       - name: Build
         if: ${{ matrix.target != 's390x-unknown-linux-musl' }}

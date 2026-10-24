@@ -143,13 +143,19 @@ INSTR_FLAGS="-Cprofile-generate=${PROFILE_DIR} --cfg pgo_training"
 # `cargo build` overwrites the binary at the path they use with the exact one
 # the final build will match, and the tests are run directly (`cargo test`
 # would rebuild it).
+#
+# The test executables themselves are not trained on, so they are built
+# without LTO, which would otherwise take most of the time of this step.
 test_args=()
 for t in "${TRAINING_TESTS[@]}"; do test_args+=(--test "$t"); done
 TEST_EXES=()
 while IFS= read -r exe; do
     TEST_EXES+=("$(norm_path "$exe")")
-done < <(cargo_run "$INSTR_DIR" "$INSTR_FLAGS" test --no-run --message-format=json "${test_args[@]}" \
-    | sed -n 's/.*"kind":\["test"\].*"executable":"\([^"]*\)".*/\1/p' | sed 's/\\\\/\\/g')
+done < <(
+    export CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
+    cargo_run "$INSTR_DIR" "$INSTR_FLAGS" test --no-run --message-format=json "${test_args[@]}" \
+        | sed -n 's/.*"kind":\["test"\].*"executable":"\([^"]*\)".*/\1/p' | sed 's/\\\\/\\/g'
+)
 if [ ${#TEST_EXES[@]} -ne ${#TRAINING_TESTS[@]} ]; then
     echo "expected ${#TRAINING_TESTS[@]} test executables, found ${#TEST_EXES[@]}" >&2
     exit 1
