@@ -182,7 +182,7 @@ impl PreprocessorCacheEntry {
     ) -> Option<String> {
         // Check newest result first since it's more likely to match.
         for (digest, includes) in self.results.iter_mut().rev() {
-            let result_matches = Self::result_matches(digest, includes, config, updated);
+            let result_matches = Self::result_matches(includes, config, updated);
             if result_matches {
                 return Some(digest.clone());
             }
@@ -192,7 +192,6 @@ impl PreprocessorCacheEntry {
 
     /// A result matches if all of its include files exist on disk and have not changed.
     fn result_matches(
-        digest: &str,
         includes: &mut [IncludeEntry],
         config: PreprocessorCacheModeConfig,
         updated: &mut bool,
@@ -270,9 +269,8 @@ impl PreprocessorCacheEntry {
                     }
                 }
             } else {
-                let (new_digest, finder): (String, _) = match Digest::reader_sync_time_macros(file)
-                {
-                    Ok((new_digest, finder)) => (new_digest, finder),
+                let (file_hash, finder): (String, _) = match Digest::reader_sync_time_macros(file) {
+                    Ok((file_hash, finder)) => (file_hash, finder),
                     Err(e) => {
                         debug!(
                             "{} is in a preprocessor cache entry but can't be read ({})",
@@ -282,7 +280,7 @@ impl PreprocessorCacheEntry {
                         return false;
                     }
                 };
-                if !finder.found_time_macros() && include.digest != new_digest {
+                if !finder.found_time_macros() && include.digest != file_hash {
                     return false;
                 }
                 if finder.found_time() {
@@ -295,12 +293,16 @@ impl PreprocessorCacheEntry {
                     return false;
                 }
 
-                // __DATE__ or __TIMESTAMP__ found. We now make sure that the digest changes
+                if !finder.found_timestamp() {
+                    continue;
+                }
+
+                // __TIMESTAMP__ found (and possibly __DATE__). Make sure the digest changes
                 // if the (potential) expansion of those macros changes by computing a new
                 // digest comprising the file digest and time information that represents the
                 // macro expansions.
                 let mut new_digest = Digest::new();
-                new_digest.update(digest.as_bytes());
+                new_digest.update(file_hash.as_bytes());
 
                 if finder.found_date() {
                     debug!("found __DATE__ in {}", path.display());
@@ -696,11 +698,54 @@ mod test {
         let mut updated = false;
 
         assert!(!PreprocessorCacheEntry::result_matches(
-            "result-digest",
             &mut includes,
             config,
             &mut updated
         ));
+    }
+
+    #[test]
+    fn test_preprocessor_cache_timestamp_digest_uses_include_file_digest() {
+        use std::fs;
+
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let header_path = dir.path().join("timestamp.h");
+        let header_contents = b"const char timestamp[] = __TIMESTAMP__;\n";
+
+        fs::write(&header_path, header_contents).unwrap();
+
+        let include_file_digest = Digest::reader_sync(header_contents.as_slice()).unwrap();
+        let mtime = fs::symlink_metadata(&header_path)
+            .unwrap()
+            .modified()
+            .unwrap();
+        let mtime: chrono::DateTime<chrono::Local> = chrono::DateTime::from(mtime);
+        let mut expected_digest = Digest::new();
+        expected_digest.update(include_file_digest.as_bytes());
+        expected_digest.delimiter(b"timestamp");
+        expected_digest.update(&mtime.naive_local().and_utc().timestamp().to_le_bytes());
+        let expected_digest = expected_digest.finish();
+
+        let mut includes = vec![IncludeEntry {
+            path: header_path.into_os_string(),
+            digest: include_file_digest,
+            file_size: header_contents.len() as u64,
+            mtime: None,
+            ctime: None,
+        }];
+        let config = PreprocessorCacheModeConfig::activated();
+        let mut updated = false;
+
+        assert!(PreprocessorCacheEntry::result_matches(
+            &mut includes,
+            config,
+            &mut updated
+        ));
+
+        assert!(updated);
+        assert_eq!(includes[0].digest, expected_digest);
     }
 
     #[test]
