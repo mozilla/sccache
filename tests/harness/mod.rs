@@ -192,6 +192,7 @@ pub fn sccache_client_cfg(
             rewrite_includes_only: false, // TODO
         },
         server_startup_timeout_ms: None,
+        error_log_max_size: None,
         basedirs: vec![],
         client_side_mode: false,
     }
