@@ -585,10 +585,22 @@ fn dep_info_with_targets<'a>(
     targets: impl IntoIterator<Item = &'a Path>,
     extra_prerequisites: impl IntoIterator<Item = &'a Path>,
 ) -> Result<String> {
+    if dep_info.trim().is_empty() {
+        bail!("dep-info written by rustc is empty");
+    }
     let (rule, rest) = dep_info.split_once('\n').unwrap_or((dep_info, ""));
-    let (_, prerequisites) = rule
-        .split_once(": ")
-        .context("dep-info does not start with a rule")?;
+    let (_, prerequisites) = rule.split_once(": ").with_context(|| {
+        // Show what rustc wrote, so a format change can be diagnosed from the error alone.
+        const MAX_LEN: usize = 200;
+        let first_line = match rule.char_indices().nth(MAX_LEN) {
+            Some((i, _)) => format!("{}...", &rule[..i]),
+            None => rule.to_owned(),
+        };
+        format!(
+            "dep-info does not start with a `<target>: <prerequisites>` rule; \
+             its first line is {first_line:?}"
+        )
+    })?;
     let extra_prerequisites = extra_prerequisites
         .into_iter()
         .map(|p| p.to_string_lossy().replace(' ', "\\ "))
@@ -3615,8 +3627,20 @@ src/lib.rs:
 
     #[test]
     fn test_dep_info_with_targets_requires_a_rule() {
-        assert!(dep_info_with_targets("", [Path::new("foo.d")], []).is_err());
-        assert!(dep_info_with_targets("# env-dep:FOO\n", [Path::new("foo.d")], []).is_err());
+        let err = dep_info_with_targets("", [Path::new("foo.d")], []).unwrap_err();
+        assert_eq!(err.to_string(), "dep-info written by rustc is empty");
+        let err = dep_info_with_targets("# env-dep:FOO\n", [Path::new("foo.d")], []).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "dep-info does not start with a `<target>: <prerequisites>` rule; \
+             its first line is \"# env-dep:FOO\""
+        );
+        let long = format!("{}\n", "x".repeat(300));
+        let err = dep_info_with_targets(&long, [Path::new("foo.d")], []).unwrap_err();
+        assert!(
+            err.to_string()
+                .ends_with(&format!("\"{}...\"", "x".repeat(200)))
+        );
     }
 
     #[test]
