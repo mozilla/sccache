@@ -44,7 +44,7 @@ use std::collections::{HashMap, HashSet};
 use std::env::consts::DLL_EXTENSION;
 #[cfg(feature = "dist-client")]
 use std::env::consts::{DLL_PREFIX, EXE_EXTENSION};
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::future::Future;
 use std::hash::Hash;
@@ -351,6 +351,8 @@ pub struct ParsedArguments {
     crate_name: String,
     /// The crate types that will be generated
     crate_types: CrateTypes,
+    /// The hash passed to -Cextra-filename
+    extra_filename: Option<String>,
     /// If dependency info is being emitted, the name of the dep info file.
     dep_info: Option<PathBuf>,
     /// If profile info is being emitted, the path of the profile.
@@ -429,7 +431,7 @@ static ALLOWED_EMIT: LazyLock<HashSet<&'static str>> =
     LazyLock::new(|| ["link", "metadata", "dep-info"].iter().copied().collect());
 
 /// Version number for cache key.
-const CACHE_VERSION: &[u8] = b"7";
+const CACHE_VERSION: &[u8] = b"8";
 
 /// Run `rustc --emit=dep-info` to get the list of source files and env-deps.
 ///
@@ -1566,7 +1568,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
     // Figure out the dep-info filename, if emitting dep-info.
     let dep_info = if emit.contains("dep-info") {
         let mut dep_info = crate_name.clone();
-        if let Some(extra_filename) = extra_filename.clone() {
+        if let Some(extra_filename) = extra_filename.as_ref() {
             dep_info.push_str(&extra_filename[..]);
         }
         dep_info.push_str(".d");
@@ -1581,7 +1583,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
     // Figure out the gcno filename, if producing gcno files with `-Zprofile`.
     let gcno = if gcno && emit.contains("link") {
         let mut gcno = crate_name.clone();
-        if let Some(extra_filename) = extra_filename {
+        if let Some(extra_filename) = extra_filename.as_ref() {
             gcno.push_str(&extra_filename[..]);
         }
         gcno.push_str(".gcno");
@@ -1624,6 +1626,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
         crate_link_paths,
         staticlibs,
         crate_name,
+        extra_filename,
         dep_info: dep_info.map(|s| s.into()),
         profile: profile.map(|s| s.into()),
         gcno: gcno.map(|s| s.into()),
@@ -1795,7 +1798,7 @@ where
             let (mut sortables, rest): (Vec<_>, Vec<_>) = os_string_arguments
                 .iter()
                 // We exclude a few arguments from the hash:
-                //   -L, --extern, --out-dir, --diagnostic-width
+                //   -L, --extern, --check-cfg, --out-dir, --diagnostic-width
                 // These contain paths which aren't relevant to the output, and the compiler inputs
                 // in those paths (rlibs and static libs used in the compilation) are used as hash
                 // inputs below.
@@ -1805,6 +1808,21 @@ where
                         || arg == "--check-cfg"
                         || arg == "--out-dir"
                         || arg == "--diagnostic-width")
+                })
+                // We also exclude a few codegen options:
+                //   -Cprefer-dynamic: never affects staticlibs or rlibs, which are the only crate
+                //     types we cache (whatever its value, including `=yes` / `=no`), see
+                //     https://github.com/rust-lang/rust/blob/master/compiler/rustc_metadata/src/dependency_format.rs
+                //     Note that the unstable `-Zstaticlib-prefer-dynamic` does affect staticlibs,
+                //     but it is an independent flag which is still hashed.
+                //   -Cextra-filename: only affects the names of the outputs, and we remove the
+                //     extra component from the output cache keys below (`remove_extra_filename`).
+                .filter(|&(arg, value)| {
+                    !((arg == "-C" || arg == "--codegen")
+                        && value.as_deref().and_then(OsStr::to_str).is_some_and(|opt| {
+                            let name = opt.split_once('=').map_or(opt, |(name, _)| name);
+                            name == "prefer-dynamic" || name == "extra-filename"
+                        }))
                 })
                 // We also exclude `--target` if it specifies a path to a .json file. The file content
                 // is used as hash input below.
@@ -1957,6 +1975,26 @@ where
                 .with_context(|| format!("Failed to write dep-info to {}", path.display()))?;
         }
 
+        // The cache key of an output is its file name without the `-Cextra-filename`
+        // component (`libfoo-abc123.rlib` -> `libfoo.rlib`), so that cache entries can be
+        // shared between invocations which only differ in it (e.g. because cargo's
+        // fingerprint changed due to different `RUSTFLAGS`).
+        let remove_extra_filename = |p: String| {
+            let Some(extra) = &self.parsed_args.extra_filename else {
+                return p;
+            };
+            match p.rsplit_once('.') {
+                Some((stem, ext)) => match stem.strip_suffix(extra.as_str()) {
+                    Some(stem) => format!("{stem}.{ext}"),
+                    None => p,
+                },
+                None => match p.strip_suffix(extra.as_str()) {
+                    Some(stem) => stem.to_owned(),
+                    None => p,
+                },
+            }
+        };
+
         // Convert output files into a map of basename -> full
         // path, and remove some unneeded / non-existing ones,
         // see https://github.com/rust-lang/rust/pull/68799.
@@ -1965,7 +2003,7 @@ where
             .map(|o| {
                 let p = self.parsed_args.output_dir.join(&o);
                 (
-                    o,
+                    remove_extra_filename(o),
                     ArtifactDescriptor {
                         path: p,
                         optional: false,
@@ -1986,7 +2024,7 @@ where
         if let Some(gcno) = &self.parsed_args.gcno {
             let p = self.parsed_args.output_dir.join(gcno);
             outputs.insert(
-                gcno.to_string_lossy().into_owned(),
+                remove_extra_filename(gcno.to_string_lossy().into_owned()),
                 ArtifactDescriptor {
                     path: p,
                     optional: true,
@@ -3223,6 +3261,7 @@ LLVM version: 15.0.2
         );
         assert_eq!(h.output_dir.to_str(), Some("/foo/target/debug/deps"));
         assert_eq!(h.crate_name, "foo");
+        assert_eq!(h.extra_filename, Some("-d6ae26f5bcfb7733".to_string()));
         assert_eq!(
             h.dep_info.unwrap().to_str().unwrap(),
             "foo-d6ae26f5bcfb7733.d"
@@ -3963,6 +4002,7 @@ hash 42fac6f0 stable_crate_id StableCrateId(12206970385906972588)
                     rlib: true,
                     staticlib: false,
                 },
+                extra_filename: None,
                 dep_info: None,
                 emit,
                 color_mode: ColorMode::Auto,
@@ -4069,6 +4109,7 @@ hash 42fac6f0 stable_crate_id StableCrateId(12206970385906972588)
                     rlib: true,
                     staticlib: false,
                 },
+                extra_filename: Some("-abc".into()),
                 dep_info: Some("foo-abc.d".into()),
                 emit,
                 color_mode: ColorMode::Auto,
@@ -4097,10 +4138,24 @@ hash 42fac6f0 stable_crate_id StableCrateId(12206970385906972588)
             .wait()
             .unwrap();
 
-        let mut out = res.compilation.outputs().map(|k| k.key).collect::<Vec<_>>();
+        // The cache keys of the outputs don't include the extra-filename, so that cache
+        // entries are shared between invocations which only differ in it, but the paths do.
+        let mut out = res
+            .compilation
+            .outputs()
+            .map(|k| (k.key, k.path))
+            .collect::<Vec<_>>();
         out.sort();
-        assert_eq!(out, ["libfoo-abc.rlib", "libfoo-abc.rmeta"]);
         let out_dir = Path::new("out");
+        assert_eq!(
+            out,
+            [
+                ("libfoo.rlib".to_owned(), out_dir.join("libfoo-abc.rlib")),
+                ("libfoo.rmeta".to_owned(), out_dir.join("libfoo-abc.rmeta")),
+            ]
+        );
+        // The dep-info is written from this invocation (not restored from the cache),
+        // so it names the real outputs, including the extra-filename.
         assert_eq!(
             fs::read_to_string(f.tempdir.path().join("out/foo-abc.d")).unwrap(),
             format!(
@@ -4117,6 +4172,90 @@ foo.rs:
                 rlib = out_dir.join("libfoo-abc.rlib").display(),
                 rmeta = out_dir.join("libfoo-abc.rmeta").display(),
             )
+        );
+    }
+
+    #[test]
+    fn test_generate_hash_key_extra_filename_outputs() {
+        let f = TestFixture::new();
+        f.touch("foo.rs").unwrap();
+        let emit = ["link"].into_iter().map(str::to_owned).collect();
+        let mut hasher = Box::new(RustHasher {
+            executable: "rustc".into(),
+            host: "x86-64-unknown-unknown-unknown".to_owned(),
+            version: TEST_RUSTC_VERSION.to_string(),
+            sysroot: f.tempdir.path().join("sysroot"),
+            #[cfg(feature = "dist-client")]
+            target_libdir: f.tempdir.path().join("sysroot/lib/rustlib/fake-target/lib"),
+            compiler_shlibs_digests: vec![],
+            dist_archive: None,
+            #[cfg(feature = "dist-client")]
+            rlib_dep_reader: None,
+            parsed_args: ParsedArguments {
+                arguments: vec![],
+                output_dir: "out".into(),
+                externs: vec![],
+                crate_link_paths: vec![],
+                staticlibs: vec![],
+                crate_name: "foo".into(),
+                crate_types: CrateTypes {
+                    rlib: true,
+                    staticlib: true,
+                },
+                extra_filename: Some("-abc".into()),
+                dep_info: None,
+                emit,
+                color_mode: ColorMode::Auto,
+                has_json: false,
+                profile: Some("foo.profdata".into()),
+                gcno: Some("foo-abc.gcno".into()),
+                target_json: None,
+            },
+        });
+        let creator = new_creator();
+        mock_dep_info(&creator, &["foo.rs"]);
+        mock_file_names(&creator, &["libfoo-abc.rlib", "libfoo-abc.a"]);
+        let runtime = single_threaded_runtime();
+        let pool = runtime.handle().clone();
+        let res = hasher
+            .generate_hash_key(
+                &creator,
+                f.tempdir.path().to_owned(),
+                vec![],
+                false,
+                &pool,
+                false,
+                Arc::new(MockStorage::new(None, false)),
+                CacheControl::Default,
+            )
+            .wait()
+            .unwrap();
+
+        // The extra-filename is removed from the cache keys of every output which has it
+        // (including the optional ones), but the paths point at the real files.
+        let mut out = res
+            .compilation
+            .outputs()
+            .map(|k| (k.key, k.path, k.optional))
+            .collect::<Vec<_>>();
+        out.sort();
+        let out_dir = Path::new("out");
+        assert_eq!(
+            out,
+            [
+                ("foo.gcno".to_owned(), out_dir.join("foo-abc.gcno"), true),
+                (
+                    "foo.profdata".to_owned(),
+                    out_dir.join("foo.profdata"),
+                    true
+                ),
+                ("libfoo.a".to_owned(), out_dir.join("libfoo-abc.a"), false),
+                (
+                    "libfoo.rlib".to_owned(),
+                    out_dir.join("libfoo-abc.rlib"),
+                    false
+                ),
+            ]
         );
     }
 
@@ -4318,7 +4457,11 @@ foo.rs:
                     "--crate-type",
                     "lib",
                     "-L",
-                    "y=y"
+                    "y=y",
+                    "-C",
+                    "prefer-dynamic",
+                    "-C",
+                    "extra-filename=-abcdabcdabcd"
                 ],
                 &[],
                 nothing,
@@ -4341,7 +4484,11 @@ foo.rs:
                     "--crate-name",
                     "foo",
                     "--crate-type",
-                    "lib"
+                    "lib",
+                    "-C",
+                    "prefer-dynamic=no",
+                    "--codegen",
+                    "extra-filename=-dcbadcbadcba"
                 ],
                 &[],
                 nothing,
