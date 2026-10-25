@@ -271,6 +271,11 @@ harness = false
 name = "sccache_bench"
 test = false
 
+[[bench]]
+harness = false
+name = "preprocessor_cache_bench"
+test = false
+
 [lints]
 workspace = true
 
