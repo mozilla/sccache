@@ -196,6 +196,7 @@ Note that some env variables may need sccache server restart to take effect.
 * `SCCACHE_MAX_FRAME_LENGTH` how much data can be transferred between client and server
 * `SCCACHE_NO_DAEMON` set to `1` to disable putting the server to the background
 * `SCCACHE_CLIENT_SIDE` set to `1` to run the compile in the client process and use the daemon only as a gateway to the cache storage (see [the architecture doc](Architecture.md#client-side-mode-sccache_client_side)). This is the recommended mode and is expected to become the only supported configuration in the future. Ignored when `SCCACHE_ERROR_LOG` or distributed compilation is in use.
+* `SCCACHE_CACHE_READ_TIMEOUT_SECS` how long, in seconds, a cache lookup may take before sccache gives up on it and compiles locally. Defaults to `60`. A lower value helps when the storage backend is slow or unresponsive rather than failing outright, for example in CI.
 * `SCCACHE_SKIP_CACHE_CHECK` set to `true`, `on`, or `1` to skip remote cache capability checks. The configured backend `rw_mode` is used without reading or writing `.sccache_check`. The user is responsible for ensuring that the cache is reachable and grants the configured access.
 * `SCCACHE_CACHE_MULTIARCH` set (to any value, even `0`) to enable caching of builds with several different `-arch` flags, which are not cached by default. See [the caching doc](Caching.md#cc-compiler).
 * `SCCACHE_CACHE_ZSTD_LEVEL` to set zstd compression level of cache. the range is `1-22` and default is `3`.

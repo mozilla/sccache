@@ -56,7 +56,7 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::{self, Stdio};
 use std::str;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
@@ -248,6 +248,33 @@ pub enum CompilerKind {
 // Need to be consistent with `Language`
 #[allow(dead_code)]
 const EXPECTED_LANGUAGE_COUNT: usize = 21;
+
+const DEFAULT_CACHE_READ_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How long a cache lookup may take before the compilation runs locally
+/// instead, from `SCCACHE_CACHE_READ_TIMEOUT_SECS`.
+fn cache_read_timeout() -> Duration {
+    static TIMEOUT: LazyLock<Duration> = LazyLock::new(|| {
+        parse_cache_read_timeout(env::var("SCCACHE_CACHE_READ_TIMEOUT_SECS").ok().as_deref())
+    });
+    *TIMEOUT
+}
+
+fn parse_cache_read_timeout(value: Option<&str>) -> Duration {
+    let Some(value) = value.map(str::trim).filter(|v| !v.is_empty()) else {
+        return DEFAULT_CACHE_READ_TIMEOUT;
+    };
+    match value.parse::<u64>() {
+        Ok(secs) if secs > 0 => Duration::from_secs(secs),
+        _ => {
+            warn!(
+                "Ignoring invalid SCCACHE_CACHE_READ_TIMEOUT_SECS value {value:?}, using {}s",
+                DEFAULT_CACHE_READ_TIMEOUT.as_secs()
+            );
+            DEFAULT_CACHE_READ_TIMEOUT
+        }
+    }
+}
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Language {
@@ -614,7 +641,7 @@ where
 
         // Set a maximum time limit for the cache to respond before we forge
         // ahead ourselves with a compilation.
-        let timeout = Duration::new(60, 0);
+        let timeout = cache_read_timeout();
         let cache_status = async {
             let res = tokio::time::timeout(timeout, cache_status).await;
             let duration = start.elapsed();
@@ -2081,6 +2108,23 @@ mod test {
     use std::time::Duration;
     use test_case::test_case;
     use tokio::runtime::Runtime;
+
+    #[test]
+    fn test_parse_cache_read_timeout() {
+        assert_eq!(parse_cache_read_timeout(Some("5")), Duration::from_secs(5));
+        assert_eq!(
+            parse_cache_read_timeout(Some(" 2 ")),
+            Duration::from_secs(2)
+        );
+        assert_eq!(parse_cache_read_timeout(None), DEFAULT_CACHE_READ_TIMEOUT);
+        for invalid in ["", "0", "-1", "1.5", "abc"] {
+            assert_eq!(
+                parse_cache_read_timeout(Some(invalid)),
+                DEFAULT_CACHE_READ_TIMEOUT,
+                "{invalid:?}"
+            );
+        }
+    }
 
     #[test]
     fn test_c_preprocessing_consistent() {
