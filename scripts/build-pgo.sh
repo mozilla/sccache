@@ -96,6 +96,22 @@ if [ ! -x "$LLVM_PROFDATA" ]; then
 fi
 echo "llvm-profdata: ${LLVM_PROFDATA}"
 
+# The profile format changes between LLVM major versions: an llvm-profdata from
+# another one either cannot read what the instrumented binary writes, or writes
+# a profile rustc cannot read. Check it now rather than after the builds.
+RUSTC_LLVM="$(rustc -vV | sed -n 's/^LLVM version: *//p')"
+PROFDATA_LLVM="$("$LLVM_PROFDATA" --version | sed -n 's/.*LLVM version \([0-9][0-9.]*\).*/\1/p' | head -n 1)"
+if [ -z "$RUSTC_LLVM" ] || [ -z "$PROFDATA_LLVM" ]; then
+    echo "warning: could not compare the LLVM versions of rustc (${RUSTC_LLVM:-unknown})" \
+        "and llvm-profdata (${PROFDATA_LLVM:-unknown})" >&2
+elif [ "${RUSTC_LLVM%%.*}" != "${PROFDATA_LLVM%%.*}" ]; then
+    echo "llvm-profdata is from LLVM ${PROFDATA_LLVM}, but rustc uses LLVM ${RUSTC_LLVM}" >&2
+    echo "Pass an llvm-profdata from LLVM ${RUSTC_LLVM%%.*} with --llvm-profdata," \
+        "or run: rustup component add llvm-tools" >&2
+    exit 1
+fi
+echo "LLVM version: ${PROFDATA_LLVM} (rustc: ${RUSTC_LLVM})"
+
 # Integration tests used for training. They start their own servers and must
 # run sequentially; the dist ones need Docker and are left out.
 TRAINING_TESTS=(system sccache_cargo sccache_rustc cache_hit_rate sccache_args)
