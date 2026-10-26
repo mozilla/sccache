@@ -73,21 +73,15 @@ fn preprocessor_cache_entry() -> (tempfile::TempDir, PreprocessorCacheEntry) {
 /// direct-mode cache hit.
 #[divan::bench]
 fn preprocessor_cache_lookup(bencher: Bencher) {
-    let (_dir, mut entry) = preprocessor_cache_entry();
+    let (_dir, entry) = preprocessor_cache_entry();
     let config = PreprocessorCacheModeConfig::activated();
     // Measure the steady state of rebuilds: the headers were already looked
     // at by an earlier build. CodSpeed may run the benchmark only once, which
     // would otherwise measure a first lookup instead.
-    let mut updated = false;
-    assert!(
-        entry
-            .lookup_result_digest(config, None, &mut updated)
-            .is_some()
-    );
+    assert!(entry.lookup_result_digest(config, None).is_some());
 
     bencher.bench_local(|| {
-        let mut updated = false;
-        let digest = entry.lookup_result_digest(config, None, &mut updated);
+        let digest = entry.lookup_result_digest(config, None);
         assert!(digest.is_some());
         black_box(digest)
     });
