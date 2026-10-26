@@ -380,6 +380,21 @@ impl MultiLevelStorage {
     /// corresponding configuration present (e.g., SCCACHE_DIR for disk,
     /// SCCACHE_REDIS_ENDPOINT for redis, etc).
     pub fn from_config(config: &Config, pool: &tokio::runtime::Handle) -> Result<Option<Self>> {
+        Self::from_config_with_process_safe_disk(config, pool, false)
+    }
+
+    pub fn from_config_in_process(
+        config: &Config,
+        pool: &tokio::runtime::Handle,
+    ) -> Result<Option<Self>> {
+        Self::from_config_with_process_safe_disk(config, pool, true)
+    }
+
+    fn from_config_with_process_safe_disk(
+        config: &Config,
+        pool: &tokio::runtime::Handle,
+        process_safe_disk: bool,
+    ) -> Result<Option<Self>> {
         let ml_config = match config.cache_configs.multilevel.as_ref() {
             Some(cfg) if !cfg.chain.is_empty() => cfg,
             _ => return Ok(None),
@@ -410,14 +425,26 @@ impl MultiLevelStorage {
                     "Adding disk cache level with dir {:?}, size {}",
                     disk_config.dir, disk_config.size
                 );
-                let disk_storage: Arc<dyn Storage> = Arc::new(DiskCache::new(
-                    &disk_config.dir,
-                    disk_config.size,
-                    pool,
-                    preprocessor_cache_mode_config,
-                    rw_mode,
-                    config.basedirs.clone(),
-                ));
+                let disk_cache = if process_safe_disk {
+                    DiskCache::new_process_safe(
+                        &disk_config.dir,
+                        disk_config.size,
+                        pool,
+                        preprocessor_cache_mode_config,
+                        rw_mode,
+                        config.basedirs.clone(),
+                    )
+                } else {
+                    DiskCache::new(
+                        &disk_config.dir,
+                        disk_config.size,
+                        pool,
+                        preprocessor_cache_mode_config,
+                        rw_mode,
+                        config.basedirs.clone(),
+                    )
+                };
+                let disk_storage: Arc<dyn Storage> = Arc::new(disk_cache);
                 storages.push(disk_storage);
                 trace!("Added disk cache level");
             } else {

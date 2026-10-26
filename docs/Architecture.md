@@ -58,7 +58,7 @@ sccache is split in two:
   backend and the accumulated statistics.
 
 The two communicate over a local IPC connection. There are two ways to divide
-the work between them.
+the work between them, plus an in-process mode that does not use a daemon.
 
 ### Server-side mode (default)
 
@@ -171,3 +171,15 @@ removed. It is currently mutually exclusive with:
 
 If either is in use, the setting is ignored and sccache stays in server-side
 mode.
+
+### In-process mode (`SCCACHE_IN_PROCESS`)
+
+Set `SCCACHE_IN_PROCESS=1` to run the full compile pipeline and access the
+configured storage backend in each CLI process. This avoids starting or
+contacting the daemon, so it works when the environment permits cache access
+but denies local IPC. Each process records its statistics inside the cache
+directory; `sccache --show-stats` includes these totals and
+`sccache --zero-stats` clears them. Distributed compilation is disabled in
+this mode. Local disk cache operations use a short cross-process lock for
+entry reads and LRU updates, while compiler invocations remain concurrent.
+Simultaneous misses for the same key may compile more than once.

@@ -84,6 +84,120 @@ fn test_rmeta_notification_delivery_on_miss_and_hit_client_side() {
     rmeta_notification_delivery_on_miss_and_hit(4323, true);
 }
 
+#[test]
+fn test_in_process_compile_uses_cache_without_server() {
+    let root = tempdir().unwrap();
+    let root = root.path();
+
+    fs::write(root.join("counter"), b"0").unwrap();
+    fs::write(root.join("RUST_FILE.rs"), []).unwrap();
+    create_mock_rustc(root.join("rust"));
+    let bin = root.join("rust/bin");
+    let out_file = root.join("RUST_FILE");
+
+    let first = run_sccache_in_process(root, &bin);
+    assert!(
+        first.status.success(),
+        "first compile failed: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let compiled_once = fs::read(&out_file).unwrap();
+    let second = run_sccache_in_process(root, &bin);
+    assert!(
+        second.status.success(),
+        "second compile failed: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert_eq!(compiled_once, fs::read(out_file).unwrap());
+    assert_eq!(b"1\n", fs::read(root.join("counter")).unwrap().as_slice());
+
+    let stats =
+        run_sccache_in_process_command(root, &["--show-stats", "--stats-format=json"], true);
+    assert!(
+        stats.status.success(),
+        "show-stats failed: {}",
+        String::from_utf8_lossy(&stats.stderr)
+    );
+    let stats: serde_json::Value = serde_json::from_slice(&stats.stdout).unwrap();
+    assert_eq!(stats["stats"]["compile_requests"], 2);
+    assert_eq!(stats["stats"]["compilations"], 1);
+
+    let default_mode_stats =
+        run_sccache_in_process_command(root, &["--show-stats", "--stats-format=json"], false);
+    assert!(default_mode_stats.status.success());
+    let default_mode_stats: serde_json::Value =
+        serde_json::from_slice(&default_mode_stats.stdout).unwrap();
+    assert_eq!(default_mode_stats["stats"]["compile_requests"], 2);
+
+    let zero_stats = run_sccache_in_process_command(root, &["--zero-stats"], true);
+    assert!(
+        zero_stats.status.success(),
+        "zero-stats failed: {}",
+        String::from_utf8_lossy(&zero_stats.stderr)
+    );
+    let reset_stats =
+        run_sccache_in_process_command(root, &["--show-stats", "--stats-format=json"], false);
+    assert!(reset_stats.status.success());
+    let reset_stats: serde_json::Value = serde_json::from_slice(&reset_stats.stdout).unwrap();
+    assert_eq!(reset_stats["stats"]["compile_requests"], 0);
+    assert_eq!(reset_stats["stats"]["compilations"], 0);
+}
+
+#[test]
+fn test_in_process_disk_cache_supports_concurrent_wrappers() {
+    let root = tempdir().unwrap();
+    let root = root.path();
+    let cache_dir = root.join("sccache");
+
+    let wrappers: Vec<_> = (0..4)
+        .map(|worker| {
+            let root = root.to_path_buf();
+            let cache_dir = cache_dir.clone();
+            std::thread::spawn(move || {
+                let work_dir = root.join(format!("worker-{worker}"));
+                create_dir_all(&work_dir).unwrap();
+                fs::write(work_dir.join("counter"), b"0").unwrap();
+                fs::write(work_dir.join("RUST_FILE.rs"), []).unwrap();
+                create_mock_rustc(work_dir.join("rust"));
+                run_sccache_in_process_with_cache(&work_dir, &work_dir.join("rust/bin"), &cache_dir)
+            })
+        })
+        .collect();
+    for wrapper in wrappers {
+        let result = wrapper.join().unwrap();
+        assert!(
+            result.status.success(),
+            "concurrent compile failed: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+
+    let before =
+        run_sccache_in_process_command(root, &["--show-stats", "--stats-format=json"], true);
+    assert!(before.status.success());
+    let before: serde_json::Value = serde_json::from_slice(&before.stdout).unwrap();
+    assert_eq!(before["stats"]["compile_requests"], 4);
+    let compilations_before = before["stats"]["compilations"].as_u64().unwrap();
+    assert!(compilations_before >= 1);
+
+    let first_work_dir = root.join("worker-0");
+    let cached = run_sccache_in_process_with_cache(
+        &first_work_dir,
+        &first_work_dir.join("rust/bin"),
+        &cache_dir,
+    );
+    assert!(cached.status.success());
+    let after = run_sccache_in_process_command_with_cache(
+        root,
+        &cache_dir,
+        &["--show-stats", "--stats-format=json"],
+        true,
+    );
+    assert!(after.status.success());
+    let after: serde_json::Value = serde_json::from_slice(&after.stdout).unwrap();
+    assert_eq!(after["stats"]["compilations"], compilations_before);
+}
+
 /// Runs the real sccache and checks the caller sees the `.rmeta`
 /// notification exactly once on both the miss and the hit.
 fn rmeta_notification_delivery_on_miss_and_hit(port: u16, client_side: bool) {
@@ -225,4 +339,67 @@ fn run_sccache(root: &Path, path: &Path, port: u16, client_side: bool) -> std::p
         .success()
         .get_output()
         .clone()
+}
+
+fn run_sccache_in_process(root: &Path, path: &Path) -> std::process::Output {
+    run_sccache_in_process_with_cache(root, path, &root.join("sccache"))
+}
+
+fn run_sccache_in_process_with_cache(
+    root: &Path,
+    path: &Path,
+    cache_dir: &Path,
+) -> std::process::Output {
+    let mut paths: OsString = path.into();
+    paths.push(":");
+    paths.push(var_os("PATH").unwrap());
+
+    Command::cargo_bin("sccache")
+        .unwrap()
+        .current_dir(root)
+        .env("PATH", paths)
+        .env("SCCACHE_DIR", cache_dir)
+        .env("SCCACHE_IN_PROCESS", "1")
+        .env("SCCACHE_SERVER_PORT", "invalid")
+        .env_remove("SCCACHE_SERVER_UDS")
+        .arg("rustc")
+        .arg("RUST_FILE.rs")
+        .arg("--crate-name=sccache_rustc_tests")
+        .arg("--crate-type=lib")
+        .arg("--emit=link")
+        .arg("--out-dir")
+        .arg(root)
+        .output()
+        .unwrap()
+}
+
+fn run_sccache_in_process_command(
+    root: &Path,
+    args: &[&str],
+    in_process: bool,
+) -> std::process::Output {
+    run_sccache_in_process_command_with_cache(root, &root.join("sccache"), args, in_process)
+}
+
+fn run_sccache_in_process_command_with_cache(
+    root: &Path,
+    cache_dir: &Path,
+    args: &[&str],
+    in_process: bool,
+) -> std::process::Output {
+    let mut command = Command::cargo_bin("sccache").unwrap();
+    command
+        .current_dir(root)
+        .env("SCCACHE_DIR", cache_dir)
+        .env_remove("SCCACHE_SERVER_UDS");
+    if in_process {
+        command
+            .env("SCCACHE_IN_PROCESS", "1")
+            .env("SCCACHE_SERVER_PORT", "invalid");
+    } else {
+        command
+            .env_remove("SCCACHE_IN_PROCESS")
+            .env("SCCACHE_SERVER_PORT", "4324");
+    }
+    command.args(args).output().unwrap()
 }

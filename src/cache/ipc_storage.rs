@@ -73,8 +73,25 @@ impl Storage for IpcStorage {
     async fn get(&self, key: &str) -> Result<Cache> {
         match self.get_path(key).await {
             GetPathResult::Found(path) => {
-                let file = std::fs::File::open(&path)
-                    .with_context(|| format!("IpcStorage::get: open {}", path.display()))?;
+                let file = match std::fs::File::open(&path) {
+                    Ok(file) => file,
+                    // A process-safe disk cache may evict the entry after the daemon
+                    // returns its path. Retry through the daemon while it holds the
+                    // cache lock so this remains a cache miss only if it was evicted.
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        return match self.get_raw(key).await? {
+                            Some(bytes) => match CacheRead::from(Cursor::new(bytes)) {
+                                Ok(entry) => Ok(Cache::Hit(entry)),
+                                Err(_) => Ok(Cache::Miss),
+                            },
+                            None => Ok(Cache::Miss),
+                        };
+                    }
+                    Err(error) => {
+                        return Err(error)
+                            .with_context(|| format!("IpcStorage::get: open {}", path.display()));
+                    }
+                };
                 match CacheRead::from(file) {
                     Ok(entry) => Ok(Cache::Hit(entry)),
                     Err(_) => Ok(Cache::Miss),

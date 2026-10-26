@@ -20,7 +20,9 @@ use walkdir::WalkDir;
 
 use crate::util::OsStrExt;
 
-const TEMPFILE_PREFIX: &str = ".sccachetmp";
+pub(crate) const TEMPFILE_PREFIX: &str = ".sccachetmp";
+pub(crate) const CACHE_LOCK_FILE_NAME: &str = ".sccache.lock";
+pub(crate) const IN_PROCESS_STATS_FILE_NAME: &str = ".sccache_in_process_stats.json";
 
 struct FileSize;
 
@@ -38,12 +40,15 @@ impl<K> Meter<K, u64> for FileSize {
 /// Return an iterator of `(path, size)` of files under `path` sorted by ascending last-modified
 /// time, such that the oldest modified file is returned first.
 fn get_all_files<P: AsRef<Path>>(path: P) -> Box<dyn Iterator<Item = (PathBuf, u64)>> {
-    let mut files: Vec<_> = WalkDir::new(path.as_ref())
+    let root = path.as_ref();
+    let lock_file = root.join(CACHE_LOCK_FILE_NAME);
+    let stats_file = root.join(IN_PROCESS_STATS_FILE_NAME);
+    let mut files: Vec<_> = WalkDir::new(root)
         .into_iter()
         .filter_map(|e| {
             e.ok().and_then(|f| {
                 // Only look at files
-                if f.file_type().is_file() {
+                if f.file_type().is_file() && f.path() != lock_file && f.path() != stats_file {
                     // Get the last-modified time, size, and the full path.
                     f.metadata().ok().and_then(|m| {
                         m.modified()
@@ -423,7 +428,10 @@ impl LruDiskCache {
 #[cfg(test)]
 mod tests {
     use super::fs::{self, File};
-    use super::{Error, LruDiskCache, LruDiskCacheAddEntry, get_all_files};
+    use super::{
+        CACHE_LOCK_FILE_NAME, Error, IN_PROCESS_STATS_FILE_NAME, LruDiskCache,
+        LruDiskCacheAddEntry, get_all_files,
+    };
 
     use filetime::{FileTime, set_file_times};
     use std::io::{self, Read, Write};
@@ -487,6 +495,25 @@ mod tests {
     fn test_empty_dir() {
         let f = TestFixture::new();
         LruDiskCache::new(f.tmp(), 1024).unwrap();
+    }
+
+    #[test]
+    fn cache_lock_file_is_not_counted_or_evicted() {
+        let f = TestFixture::new();
+        let lock_file = f.tmp().join(CACHE_LOCK_FILE_NAME);
+        let stats_file = f.tmp().join(IN_PROCESS_STATS_FILE_NAME);
+        fs::write(&lock_file, b"lock").unwrap();
+        fs::write(&stats_file, b"stats").unwrap();
+
+        let mut cache = LruDiskCache::new(f.tmp(), 1).unwrap();
+        assert_eq!(cache.len(), 0);
+        assert_eq!(cache.size(), 0);
+        assert!(lock_file.exists());
+        assert!(stats_file.exists());
+
+        cache.insert_bytes("entry", &[1]).unwrap();
+        assert!(lock_file.exists());
+        assert!(stats_file.exists());
     }
 
     #[test]

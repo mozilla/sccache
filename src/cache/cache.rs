@@ -610,8 +610,23 @@ pub fn storage_from_config(
     config: &Config,
     pool: &tokio::runtime::Handle,
 ) -> Result<Arc<dyn Storage>> {
+    storage_from_config_inner(config, pool)
+}
+
+pub fn storage_from_config_in_process(
+    config: &Config,
+    pool: &tokio::runtime::Handle,
+) -> Result<Arc<dyn Storage>> {
+    storage_from_config(config, pool)
+}
+
+fn storage_from_config_inner(
+    config: &Config,
+    pool: &tokio::runtime::Handle,
+) -> Result<Arc<dyn Storage>> {
     // Check for multi-level cache configuration
-    if let Some(multilevel) = MultiLevelStorage::from_config(config, pool)? {
+    let multilevel = MultiLevelStorage::from_config_in_process(config, pool)?;
+    if let Some(multilevel) = multilevel {
         return Ok(Arc::new(multilevel));
     }
 
@@ -627,14 +642,15 @@ pub fn storage_from_config(
     let preprocessor_cache_mode_config = config.fallback_cache.preprocessor_cache_mode;
     let rw_mode = config.fallback_cache.rw_mode.into();
     debug!("Init disk cache with dir {:?}, size {}", dir, size);
-    Ok(Arc::new(DiskCache::new(
+    let disk_cache = DiskCache::new_process_safe(
         dir,
         size,
         pool,
         preprocessor_cache_mode_config,
         rw_mode,
         config.basedirs.clone(),
-    )))
+    );
+    Ok(Arc::new(disk_cache))
 }
 
 #[cfg(test)]
