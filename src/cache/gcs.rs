@@ -18,11 +18,11 @@ use crate::errors::*;
 use opendal::Operator;
 use opendal::{OperationContext, services::Gcs};
 use opendal_layer_logging::LoggingLayer;
-use reqwest::Client;
 use serde::Deserialize;
 use url::Url;
 
-use super::http_client::set_user_agent;
+use super::http_client::new_http_transport;
+use crate::util::new_reqwest_client_builder;
 
 fn rw_to_scope(mode: CacheMode) -> &'static str {
     match mode {
@@ -72,7 +72,7 @@ impl GCSCache {
         }
 
         let op = Operator::new(builder)?
-            .with_context(OperationContext::new().with_http_transport(set_user_agent()))
+            .with_context(OperationContext::new().with_http_transport(new_http_transport()?))
             .layer(LoggingLayer::default());
         Ok(op)
     }
@@ -91,7 +91,10 @@ async fn fetch_taskcluster_token(url: &str, scope: &str) -> Result<String> {
     debug!("gcs: start to load token from: {}", url);
 
     let user_agent = format!("{}/{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
-    let client = Client::builder().user_agent(user_agent).build()?;
+    let client = new_reqwest_client_builder()?
+        .user_agent(user_agent)
+        .build()
+        .context("failed to create GCS credential HTTP client")?;
     let res = client.get(url).send().await?;
 
     if res.status().is_success() {

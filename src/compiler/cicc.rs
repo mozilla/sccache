@@ -245,6 +245,7 @@ where
         extra_hash_files: extra_dist_files,
         uses_external_assembler: false,
         msvc_show_includes: false,
+        msvc_explicit_language: false,
         profile_generate: false,
         color_mode: ColorMode::Off,
         suppress_rewrite_includes_only: false,

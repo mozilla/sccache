@@ -6,9 +6,11 @@ pub mod helpers;
 
 use anyhow::Result;
 use assert_cmd::prelude::*;
+use fs_err as fs;
 use helpers::{SCCACHE_BIN, stop_sccache};
 use predicates::prelude::*;
 use serial_test::serial;
+use std::path::Path;
 use std::process::Command;
 
 #[macro_use]
@@ -74,6 +76,65 @@ fn test_s3_invalid_args() -> Result<()> {
     cmd.assert()
         .failure()
         .stderr(predicate::str::contains("cache storage failed to read"));
+
+    Ok(())
+}
+
+/// An empty entry file reads as a valid, empty entry.
+fn write_empty_preprocessor_entry(cache_dir: &Path) -> Result<String> {
+    let entries_dir = cache_dir.join("preprocessor");
+    fs::create_dir_all(&entries_dir)?;
+    let entry = entries_dir.join("entry");
+    fs::write(&entry, b"")?;
+    let expected = format!("Showing preprocessor entry file {}", entry.display());
+    Ok(expected)
+}
+
+fn debug_preprocessor_cache_cmd(tempdir: &Path) -> Command {
+    let mut cmd = Command::new(SCCACHE_BIN.as_os_str());
+    // Keep any user config out, and on Linux point the default cache dir
+    // somewhere empty.
+    cmd.arg("--debug-preprocessor-cache")
+        .env_remove("SCCACHE_DIR")
+        .env("SCCACHE_CONF", tempdir.join("missing-config"))
+        .env("XDG_CACHE_HOME", tempdir.join("xdg-cache"));
+    cmd
+}
+
+#[test]
+#[serial]
+fn test_debug_preprocessor_cache_uses_sccache_dir() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let cache_dir = tempdir.path().join("cache");
+    let expected = write_empty_preprocessor_entry(&cache_dir)?;
+
+    debug_preprocessor_cache_cmd(tempdir.path())
+        .env("SCCACHE_DIR", &cache_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(expected));
+
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn test_debug_preprocessor_cache_uses_config_disk_dir() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let cache_dir = tempdir.path().join("cache");
+    let expected = write_empty_preprocessor_entry(&cache_dir)?;
+    let config = tempdir.path().join("config");
+    // TOML literal string, so Windows backslashes are not escapes.
+    fs::write(
+        &config,
+        format!("[cache.disk]\ndir = '{}'\n", cache_dir.display()),
+    )?;
+
+    debug_preprocessor_cache_cmd(tempdir.path())
+        .env("SCCACHE_CONF", &config)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(expected));
 
     Ok(())
 }

@@ -591,12 +591,11 @@ fn test_config_validation_invalid_level_name() {
     let config = Config::load().unwrap();
     let result = MultiLevelStorage::from_config(&config, runtime.handle());
 
-    // Should error with unknown cache level
-    assert!(result.is_err());
-    if let Err(e) = result {
-        let err_msg = format!("{}", e);
-        assert!(err_msg.contains("Unknown cache level") || err_msg.contains("invalid_backend"));
-    }
+    let err = result
+        .err()
+        .expect("invalid level must be rejected")
+        .to_string();
+    assert_eq!(err, "Unknown cache level: 'invalid_backend'");
 
     unsafe {
         env::remove_var("SCCACHE_MULTILEVEL_CHAIN");
@@ -673,18 +672,17 @@ fn test_config_level_not_configured() {
     let config = Config::load().unwrap();
     let result = MultiLevelStorage::from_config(&config, runtime.handle());
 
-    // Should error with "not configured" or "requires" (when feature disabled)
-    assert!(result.is_err());
-    if let Err(e) = result {
-        let err_msg = format!("{}", e);
-        assert!(
-            err_msg.contains("not configured")
-                || err_msg.contains("missing")
-                || err_msg.contains("requires"),
-            "Expected error about missing config or feature, got: {}",
-            err_msg
-        );
-    }
+    let err = result
+        .err()
+        .expect("unconfigured level must be rejected")
+        .to_string();
+    #[cfg(feature = "redis")]
+    assert_eq!(
+        err,
+        "Cache level 'redis' specified in SCCACHE_MULTILEVEL_CHAIN but not configured (missing environment variables)"
+    );
+    #[cfg(not(feature = "redis"))]
+    assert_eq!(err, "Cache level 'redis' requires the 'redis' feature");
 
     unsafe {
         env::remove_var("SCCACHE_MULTILEVEL_CHAIN");
@@ -1063,6 +1061,133 @@ fn test_mixed_readonly_chain_is_readwrite_in_check() {
             CacheMode::ReadWrite => {} // Expected
             _ => panic!("Read-only L0 + writable L1 should be ReadWrite"),
         }
+    });
+}
+
+struct CheckFailingStorage;
+
+#[async_trait]
+impl Storage for CheckFailingStorage {
+    async fn get(&self, _key: &str) -> Result<Cache> {
+        Err(anyhow!("intentional check failure"))
+    }
+
+    async fn put(&self, _key: &str, _entry: CacheWrite) -> Result<Duration> {
+        Err(anyhow!("intentional check failure"))
+    }
+
+    async fn check(&self) -> Result<CacheMode> {
+        Err(anyhow!("intentional check failure"))
+    }
+
+    async fn get_raw(&self, _key: &str) -> Result<Option<Bytes>> {
+        Err(anyhow!("intentional raw read failure"))
+    }
+
+    fn location(&self) -> String {
+        "CheckFailingStorage".to_owned()
+    }
+
+    async fn current_size(&self) -> Result<Option<u64>> {
+        Ok(None)
+    }
+
+    async fn max_size(&self) -> Result<Option<u64>> {
+        Ok(None)
+    }
+}
+
+#[test]
+fn test_unavailable_l1_does_not_block_healthy_l0() {
+    let runtime = RuntimeBuilder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let l0 = Arc::new(InMemoryStorage::new());
+    let l1 = Arc::new(CheckFailingStorage);
+    let storage = MultiLevelStorage::new(vec![l0 as Arc<dyn Storage>, l1 as Arc<dyn Storage>]);
+
+    runtime.block_on(async {
+        assert!(matches!(
+            storage.check().await.unwrap(),
+            CacheMode::ReadWrite
+        ));
+    });
+}
+
+#[test]
+fn test_unavailable_l1_keeps_readonly_l0_chain_potentially_writable() {
+    let runtime = RuntimeBuilder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let l0 = Arc::new(ReadOnlyStorage(Arc::new(InMemoryStorage::new())));
+    let l1 = Arc::new(CheckFailingStorage);
+    let storage = MultiLevelStorage::new(vec![l0 as Arc<dyn Storage>, l1 as Arc<dyn Storage>]);
+
+    runtime.block_on(async {
+        assert!(matches!(
+            storage.check().await.unwrap(),
+            CacheMode::ReadWrite
+        ));
+    });
+}
+
+#[test]
+fn test_unavailable_l1_remains_fatal_with_all_write_policy() {
+    let runtime = RuntimeBuilder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let l0 = Arc::new(InMemoryStorage::new());
+    let l1 = Arc::new(CheckFailingStorage);
+    let storage = MultiLevelStorage::with_write_error_policy(
+        vec![l0 as Arc<dyn Storage>, l1 as Arc<dyn Storage>],
+        WriteErrorPolicy::All,
+    );
+
+    runtime.block_on(async {
+        assert!(storage.check().await.is_err());
+    });
+}
+
+#[test]
+fn test_unavailable_l0_is_tolerated_with_ignore_write_policy() {
+    let runtime = RuntimeBuilder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let l0 = Arc::new(CheckFailingStorage);
+    let storage = MultiLevelStorage::with_write_error_policy(
+        vec![l0 as Arc<dyn Storage>],
+        WriteErrorPolicy::Ignore,
+    );
+
+    runtime.block_on(async {
+        assert!(matches!(
+            storage.check().await.unwrap(),
+            CacheMode::ReadWrite
+        ));
+    });
+}
+
+#[test]
+fn test_unavailable_l0_remains_fatal() {
+    let runtime = RuntimeBuilder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let l0 = Arc::new(CheckFailingStorage);
+    let l1 = Arc::new(InMemoryStorage::new());
+    let storage = MultiLevelStorage::new(vec![l0 as Arc<dyn Storage>, l1 as Arc<dyn Storage>]);
+
+    runtime.block_on(async {
+        assert!(storage.check().await.is_err());
     });
 }
 
@@ -1556,6 +1681,40 @@ fn test_multilevel_get_raw_finds_first_hit() {
 }
 
 #[test]
+fn test_multilevel_get_raw_backfills_lower_levels() {
+    let runtime = RuntimeBuilder::new_multi_thread()
+        .enable_all()
+        .worker_threads(1)
+        .build()
+        .unwrap();
+
+    let l0 = Arc::new(InMemoryStorage::new());
+    let l1 = Arc::new(InMemoryStorage::new());
+    let storage = MultiLevelStorage::new(vec![
+        l0.clone() as Arc<dyn Storage>,
+        l1.clone() as Arc<dyn Storage>,
+    ]);
+
+    runtime.block_on(async {
+        l1.put("key", CacheWrite::default()).await.unwrap();
+        assert!(l0.get_raw("key").await.unwrap().is_none());
+
+        assert!(storage.get_raw("key").await.unwrap().is_some());
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if l0.get_raw("key").await.unwrap().is_some() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("L1 raw hit should backfill L0");
+    });
+}
+
+#[test]
 fn test_multilevel_get_raw_skips_levels_without_raw_support() {
     // Verifies that MultiLevelStorage::get_raw gracefully skips a level
     // that inherits the default no-op get_raw (returns Ok(None)) and
@@ -1592,6 +1751,73 @@ fn test_multilevel_get_raw_skips_levels_without_raw_support() {
             "expected hit at L1 after skipping L0 (no raw support)"
         );
     });
+}
+
+#[test]
+fn test_multilevel_get_raw_records_per_level_stats() {
+    let runtime = RuntimeBuilder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let l0 = Arc::new(InMemoryStorage::new());
+    let l1 = Arc::new(InMemoryStorage::new());
+    let storage =
+        MultiLevelStorage::new(vec![l0 as Arc<dyn Storage>, l1.clone() as Arc<dyn Storage>]);
+
+    runtime.block_on(async {
+        l1.put("hit", CacheWrite::default()).await.unwrap();
+        assert!(storage.get_raw("hit").await.unwrap().is_some());
+    });
+
+    let stats = storage.stats();
+    assert_eq!(stats.0[0].hits, 0);
+    assert_eq!(stats.0[0].misses, 1);
+    assert_eq!(stats.0[1].hits, 1);
+    assert_eq!(stats.0[1].misses, 0);
+}
+
+#[test]
+fn test_multilevel_get_raw_continues_after_level_error() {
+    let runtime = RuntimeBuilder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let l0 = Arc::new(CheckFailingStorage);
+    let l1 = Arc::new(InMemoryStorage::new());
+    let storage =
+        MultiLevelStorage::new(vec![l0 as Arc<dyn Storage>, l1.clone() as Arc<dyn Storage>]);
+
+    runtime.block_on(async {
+        l1.put("hit", CacheWrite::default()).await.unwrap();
+        assert!(storage.get_raw("hit").await.unwrap().is_some());
+    });
+
+    let stats = storage.stats();
+    assert_eq!(stats.0[0].hits, 0);
+    assert_eq!(stats.0[0].misses, 1);
+    assert_eq!(stats.0[1].hits, 1);
+    assert_eq!(stats.0[1].misses, 0);
+}
+
+#[test]
+fn test_multilevel_get_raw_records_all_level_misses() {
+    let runtime = RuntimeBuilder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let l0 = Arc::new(InMemoryStorage::new());
+    let l1 = Arc::new(InMemoryStorage::new());
+    let storage = MultiLevelStorage::new(vec![l0 as Arc<dyn Storage>, l1 as Arc<dyn Storage>]);
+
+    runtime.block_on(async {
+        assert!(storage.get_raw("missing").await.unwrap().is_none());
+    });
+
+    let stats = storage.stats();
+    assert_eq!(stats.0[0].hits, 0);
+    assert_eq!(stats.0[0].misses, 1);
+    assert_eq!(stats.0[1].hits, 0);
+    assert_eq!(stats.0[1].misses, 1);
 }
 
 #[test]

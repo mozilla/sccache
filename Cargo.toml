@@ -3,7 +3,7 @@
 edition = "2024"
 name = "sccache"
 rust-version = "1.91.0"
-version = "0.18.0"
+version = "0.19.0"
 
 categories = ["command-line-utilities", "development-tools::build-utils"]
 description = "Sccache is a ccache-like tool. It is used as a compiler wrapper and avoids compilation when possible. Sccache has the capability to utilize caching in remote storage environments, including various cloud storage options, or alternatively, in local storage."
@@ -93,7 +93,6 @@ reqwest = { version = "0.13", features = [
   "rustls",
   "hickory-dns",
 ], optional = true }
-rustls-native-certs = { version = "0.8", optional = true }
 semver = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = ">=1.0, <1.0.147" # zmij (used in 1.0.147+) requires Rust 1.84+
@@ -114,10 +113,11 @@ tokio-serde = "0.9"
 tokio-util = { version = "0.7.18", features = ["codec", "io", "rt"] }
 toml = "0.9"
 tower-service = "0.3"
-typed-path = "0.12.0"
+typed-path = "0.13.0"
 url = { version = "2", optional = true }
 uuid = { version = "1.9", features = ["v4"] }
 walkdir = "2"
+webpki-root-certs = { version = "1", optional = true }
 # by default which pulls in an outdated failure version
 which = { version = "6", default-features = false }
 zip = { version = "0.6", default-features = false }
@@ -136,6 +136,9 @@ rouille = { version = "3.6", optional = true, default-features = false, features
 ] }
 syslog = { version = "7", optional = true }
 version-compare = { version = "0.1.1", optional = true }
+
+[build-dependencies]
+cfg_aliases = "0.2.2"
 
 [dev-dependencies]
 assert_cmd = "2.0.13"
@@ -215,6 +218,7 @@ oss = [
   "reqwest",
 ]
 redis = ["url", "opendal/services-redis", "opendal-layer-logging"]
+reqwest = ["dep:reqwest", "dep:webpki-root-certs"]
 s3 = [
   "opendal/services-s3",
   "opendal-layer-logging",
@@ -242,7 +246,6 @@ dist-client = [
   "reqwest",
   "url",
   "sha2",
-  "rustls-native-certs",
 ]
 # Enables the sccache-dist binary
 dist-server = [
@@ -255,7 +258,6 @@ dist-server = [
   "rouille",
   "syslog",
   "version-compare",
-  "rustls-native-certs",
 ]
 # Enables dist tests with external requirements
 dist-tests = ["dist-client", "dist-server"]
@@ -267,6 +269,11 @@ members = ["tests/integration/randomize_readdir"]
 [[bench]]
 harness = false
 name = "sccache_bench"
+test = false
+
+[[bench]]
+harness = false
+name = "preprocessor_cache_bench"
 test = false
 
 [lints]
