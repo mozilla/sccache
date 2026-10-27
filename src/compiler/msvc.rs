@@ -291,6 +291,7 @@ ArgData! {
     ClangModuleFile(OsString),
     ClangModuleOutput(OsString),
     ClangLanguage(OsString),
+    ClangProfileUse(PathBuf),
 }
 
 use self::ArgData::*;
@@ -503,6 +504,8 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("forceInterlockedFunctions-", PassThrough),
     msvc_take_arg!("fp:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("fpcvt:", OsString, Concatenated, PassThroughWithSuffix),
+    msvc_take_arg!("fprofile-instr-use", PathBuf, Concatenated(b'='), ClangProfileUse),
+    msvc_take_arg!("fprofile-use", PathBuf, Concatenated(b'='), ClangProfileUse),
     msvc_flag!("fsanitize-address-asan-compat-lib", PassThrough),
     msvc_flag!("fsanitize-address-use-after-return", PassThrough),
     msvc_take_arg!("fsanitize-blacklist", PathBuf, Concatenated(b'='), ExtraHashFile),
@@ -715,6 +718,12 @@ pub fn parse_arguments(
             }
             Some(ClangModuleOutput(p)) if !p.is_empty() => module_output = Some(PathBuf::from(p)),
             Some(ClangLanguage(lang)) if is_clang && lang == "c++-module" => cxx_module = true,
+            Some(ClangProfileUse(path)) if is_clang => {
+                extra_hash_files.push(clang::resolve_profile_use_path(path, cwd));
+            }
+            Some(ClangProfileUse(_)) => {
+                cannot_cache!(arg.flag_str().expect("Profile-use flag expected"))
+            }
             Some(ClangModuleFile(_)) | Some(ClangModuleOutput(_)) | Some(ClangLanguage(_)) => {
                 cannot_cache!(arg.flag_str().expect("Can't be Argument::Raw/UnknownFlag"))
             }
@@ -745,6 +754,7 @@ pub fn parse_arguments(
                         .iter_os_strings(),
                 ),
             Some(ProgramDatabase(_))
+            | Some(ClangProfileUse(_))
             | Some(ClangModuleFile(_))
             | Some(ClangModuleOutput(_))
             | Some(ClangLanguage(_))
@@ -2101,6 +2111,67 @@ mod test {
             assert!(common_args.is_empty());
             assert!(!msvc_show_includes);
         }
+    }
+
+    #[test]
+    fn test_parse_arguments_clang_profile_use() {
+        let cwd = std::env::current_dir().unwrap();
+        for flag in ["-fprofile-instr-use", "-fprofile-use"] {
+            for path in [
+                PathBuf::from("profile.profdata"),
+                PathBuf::from("profiles with spaces").join("profile.profdata"),
+                cwd.join("absolute.profdata"),
+            ] {
+                let mut option = OsString::from(format!("{flag}="));
+                option.push(&path);
+                let args = ovec!["-c", "foo.c", option.clone()];
+                let parsed = match parse_arguments_clang(args.clone()) {
+                    CompilerArguments::Ok(parsed) => parsed,
+                    other => panic!("Unexpected parse result: {other:?}"),
+                };
+                assert_eq!(parsed.common_args, vec![option]);
+                assert_eq!(parsed.extra_hash_files, vec![cwd.join(&path)]);
+                assert!(matches!(
+                    parse_arguments(args),
+                    CompilerArguments::CannotCache(..)
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn test_parse_arguments_clang_profile_use_default() {
+        let cwd = std::env::current_dir().unwrap();
+        for option in ["-fprofile-use", "-fprofile-use=."] {
+            let parsed = match parse_arguments_clang(ovec!["-c", "foo.c", option]) {
+                CompilerArguments::Ok(parsed) => parsed,
+                other => panic!("Unexpected parse result: {other:?}"),
+            };
+            assert_eq!(parsed.common_args, ovec![option]);
+            assert_eq!(parsed.extra_hash_files, vec![cwd.join("default.profdata")]);
+        }
+    }
+
+    #[test]
+    fn test_parse_arguments_clang_profile_use_response_file() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("args.rsp"),
+            "-c foo.c -fprofile-instr-use=\"profiles with spaces/test.profdata\"",
+        )
+        .unwrap();
+        let parsed = match super::parse_arguments(&["@args.rsp".into()], temp.path(), true) {
+            CompilerArguments::Ok(parsed) => parsed,
+            other => panic!("Unexpected parse result: {other:?}"),
+        };
+        assert_eq!(
+            parsed.common_args,
+            ovec!["-fprofile-instr-use=profiles with spaces/test.profdata"]
+        );
+        assert_eq!(
+            parsed.extra_hash_files,
+            vec![temp.path().join("profiles with spaces/test.profdata")]
+        );
     }
 
     #[test]
