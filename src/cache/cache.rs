@@ -610,22 +610,27 @@ pub fn storage_from_config(
     config: &Config,
     pool: &tokio::runtime::Handle,
 ) -> Result<Arc<dyn Storage>> {
-    storage_from_config_inner(config, pool)
+    storage_from_config_inner(config, pool, false)
 }
 
 pub fn storage_from_config_in_process(
     config: &Config,
     pool: &tokio::runtime::Handle,
 ) -> Result<Arc<dyn Storage>> {
-    storage_from_config(config, pool)
+    storage_from_config_inner(config, pool, true)
 }
 
 fn storage_from_config_inner(
     config: &Config,
     pool: &tokio::runtime::Handle,
+    process_safe_disk: bool,
 ) -> Result<Arc<dyn Storage>> {
     // Check for multi-level cache configuration
-    let multilevel = MultiLevelStorage::from_config_in_process(config, pool)?;
+    let multilevel = if process_safe_disk {
+        MultiLevelStorage::from_config_in_process(config, pool)?
+    } else {
+        MultiLevelStorage::from_config(config, pool)?
+    };
     if let Some(multilevel) = multilevel {
         return Ok(Arc::new(multilevel));
     }
@@ -642,14 +647,25 @@ fn storage_from_config_inner(
     let preprocessor_cache_mode_config = config.fallback_cache.preprocessor_cache_mode;
     let rw_mode = config.fallback_cache.rw_mode.into();
     debug!("Init disk cache with dir {:?}, size {}", dir, size);
-    let disk_cache = DiskCache::new_process_safe(
-        dir,
-        size,
-        pool,
-        preprocessor_cache_mode_config,
-        rw_mode,
-        config.basedirs.clone(),
-    );
+    let disk_cache = if process_safe_disk {
+        DiskCache::new_process_safe(
+            dir,
+            size,
+            pool,
+            preprocessor_cache_mode_config,
+            rw_mode,
+            config.basedirs.clone(),
+        )
+    } else {
+        DiskCache::new(
+            dir,
+            size,
+            pool,
+            preprocessor_cache_mode_config,
+            rw_mode,
+            config.basedirs.clone(),
+        )
+    };
     Ok(Arc::new(disk_cache))
 }
 
@@ -700,6 +716,48 @@ mod test {
             err.to_string(),
             "Cache type not supported with current feature configuration"
         );
+    }
+
+    #[test]
+    fn storage_from_config_only_uses_process_safe_disk_when_requested() {
+        use crate::lru_disk_cache::CACHE_LOCK_FILE_NAME;
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .worker_threads(1)
+            .build()
+            .unwrap();
+        let tempdir = tempfile::tempdir().unwrap();
+        let fallback_dir = tempdir.path().join("fallback");
+        let multilevel_dir = tempdir.path().join("multilevel");
+        let mut fallback_config = Config::default();
+        fallback_config.fallback_cache.dir = fallback_dir.clone();
+        let mut multilevel_config = Config::default();
+        multilevel_config.cache_configs.disk = Some(config::DiskCacheConfig {
+            dir: multilevel_dir.clone(),
+            ..Default::default()
+        });
+        multilevel_config.cache_configs.multilevel = Some(config::MultiLevelConfig {
+            chain: vec!["disk".to_owned()],
+            write_error_policy: config::WriteErrorPolicy::default(),
+        });
+
+        for (config, cache_dir) in [
+            (&fallback_config, &fallback_dir),
+            (&multilevel_config, &multilevel_dir),
+        ] {
+            let storage = storage_from_config(config, runtime.handle()).unwrap();
+            runtime
+                .block_on(storage.put("standard", CacheWrite::default()))
+                .unwrap();
+            assert!(!cache_dir.join(CACHE_LOCK_FILE_NAME).exists());
+
+            let storage = storage_from_config_in_process(config, runtime.handle()).unwrap();
+            runtime
+                .block_on(storage.put("in-process", CacheWrite::default()))
+                .unwrap();
+            assert!(cache_dir.join(CACHE_LOCK_FILE_NAME).exists());
+        }
     }
 
     #[test]

@@ -3,7 +3,6 @@ use std::{path::PathBuf, thread};
 use tempfile::tempdir;
 
 use super::{add, read, zero};
-use crate::lru_disk_cache::IN_PROCESS_STATS_FILE_NAME;
 use crate::server::ServerStats;
 
 #[test]
@@ -42,6 +41,7 @@ fn concurrent_updates_are_preserved_and_can_be_zeroed() {
 #[cfg(unix)]
 #[test]
 fn stats_are_stored_in_cache_when_parent_is_not_writable() {
+    use crate::lru_disk_cache::IN_PROCESS_STATS_FILE_NAME;
     use std::{fs, os::unix::fs::PermissionsExt};
 
     let dir = tempdir().unwrap();
