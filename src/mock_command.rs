@@ -55,7 +55,7 @@ use std::io;
 use std::path::Path;
 use std::process::{Command, ExitStatus, Output, Stdio};
 use std::sync::{Arc, Mutex};
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tokio::process::{ChildStderr, ChildStdin, ChildStdout};
 
 /// A trait that provides a subset of the methods of `std::process::Child`.
@@ -173,16 +173,63 @@ impl CommandChild for Child {
 
     async fn wait(self) -> io::Result<ExitStatus> {
         let Child { mut inner, token } = self;
-        inner.wait().await.inspect(|_ret| {
+        let result = if std::env::var("SCCACHE_IN_PROCESS").is_ok_and(|value| value == "1") {
+            wait_for_process_exit(&mut inner).await
+        } else {
+            inner.wait().await
+        };
+        result.inspect(|_ret| {
             drop(token);
         })
     }
 
     async fn wait_with_output(self) -> io::Result<Output> {
-        let Child { inner, token } = self;
-        inner.wait_with_output().await.inspect(|_ret| {
-            drop(token);
+        let Child { mut inner, token } = self;
+        if !std::env::var("SCCACHE_IN_PROCESS").is_ok_and(|value| value == "1") {
+            return inner.wait_with_output().await.inspect(|_ret| {
+                drop(token);
+            });
+        }
+
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let child_stdout = inner.stdout.take();
+        let child_stderr = inner.stderr.take();
+        drop(inner.stdin.take());
+        let (stdout_result, stderr_result, status) = tokio::join!(
+            async {
+                if let Some(mut child_stdout) = child_stdout {
+                    child_stdout.read_to_end(&mut stdout).await?;
+                }
+                Ok::<_, io::Error>(())
+            },
+            async {
+                if let Some(mut child_stderr) = child_stderr {
+                    child_stderr.read_to_end(&mut stderr).await?;
+                }
+                Ok::<_, io::Error>(())
+            },
+            wait_for_process_exit(&mut inner),
+        );
+        stdout_result?;
+        stderr_result?;
+        let status = status?;
+        drop(token);
+        Ok(Output {
+            status,
+            stdout,
+            stderr,
         })
+    }
+}
+
+async fn wait_for_process_exit(child: &mut tokio::process::Child) -> io::Result<ExitStatus> {
+    // Tokio's signal-based wait can stall under the Android app sandbox.
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
 }
 
@@ -728,5 +775,22 @@ mod test {
             child_sees_cargo_makeflags(true),
             "share_jobserver() should give the child CARGO_MAKEFLAGS"
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn wait_for_process_exit_reaps_child() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let mut child = tokio::process::Command::new("/bin/sh")
+                .args(["-c", "exit 17"])
+                .spawn()
+                .unwrap();
+            let status = wait_for_process_exit(&mut child).await.unwrap();
+            assert_eq!(status.code(), Some(17));
+        });
     }
 }

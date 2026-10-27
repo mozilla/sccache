@@ -12,7 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cache::{CacheMode, IpcStorage, Storage, storage_from_config};
+use crate::cache::readonly::ReadOnlyStorage;
+use crate::cache::{
+    CacheMode, IpcStorage, Storage, storage_from_config, storage_from_config_in_process,
+};
 use crate::client::{ServerConnection, connect_to_server, connect_with_retry};
 use crate::cmdline::{Command, StatsFormat};
 use crate::compiler::{ColorMode, is_rmeta_artifact_notification};
@@ -25,7 +28,7 @@ use crate::util::{daemonize, new_client_runtime, run_input_output};
 use byteorder::{BigEndian, ByteOrder};
 use fs::{File, OpenOptions};
 use fs_err as fs;
-use log::Level::Trace;
+use log::{Level::Trace, warn};
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::io::{self, IsTerminal, Write};
@@ -793,6 +796,86 @@ fn empty_server_info(config: &Config) -> Result<ServerInfo> {
     runtime.block_on(ServerInfo::new(ServerStats::default(), storage.as_deref()))
 }
 
+/// Run a compile against storage in this wrapper process, without a daemon or
+/// local IPC. This is intended for isolated build sandboxes with a writable
+/// cache directory but no socket permission.
+#[allow(clippy::too_many_arguments)]
+pub fn do_compile_in_process<C>(
+    jobserver: &Client,
+    runtime: &mut Runtime,
+    storage: Arc<dyn Storage>,
+    cache_mode: CacheMode,
+    cache_dir: &Path,
+    exe: &Path,
+    cmdline: Vec<OsString>,
+    cwd: &Path,
+    path: Option<OsString>,
+    env_vars: Vec<(OsString, OsString)>,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<i32>
+where
+    C: CommandCreatorSync + Clone + Send + Sync + 'static,
+{
+    trace!("do_compile_in_process");
+    let exe_path = which_in(exe, path, cwd)?;
+    let (tx, _rx) = futures::channel::mpsc::channel(1);
+    let (_, info) = server::WaitUntilZero::new();
+    let service = server::SccacheService::<C>::new(
+        server::DistClientContainer::new_disabled(),
+        storage,
+        cache_mode,
+        jobserver,
+        runtime.handle().clone(),
+        tx,
+        info,
+    );
+    let compile = Compile {
+        exe: exe_path.as_os_str().to_owned(),
+        cwd: cwd.as_os_str().to_owned(),
+        args: cmdline.clone(),
+        env_vars: env_vars.clone(),
+    };
+    let (compile_resp, finished, forwarded_notification) =
+        runtime.block_on(service.compile_direct(compile, &mut *stderr))?;
+    let exit_code = if matches!(compile_resp, CompileResponse::UnhandledCompile) {
+        // Run unsupported compiler invocations directly. In isolated
+        // environments Tokio may not reap a compiler child reliably, while
+        // std::process::Command::status waits synchronously without IPC.
+        let status = process::Command::new(&exe_path)
+            .args(&cmdline)
+            .current_dir(cwd)
+            .envs(env_vars)
+            .status()
+            .context("failed to execute unhandled compile")?;
+        status.code().unwrap_or_else(|| {
+            if let Some(signal) = status_signal(status) {
+                println!("sccache: Compiler killed by signal {}", signal);
+            }
+            2
+        })
+    } else {
+        handle_compile_result(
+            C::new(jobserver),
+            runtime,
+            compile_resp,
+            finished,
+            forwarded_notification,
+            &exe_path,
+            cmdline,
+            cwd,
+            stdout,
+            stderr,
+        )?
+    };
+    let mut stats = runtime.block_on(service.take_stats());
+    stats.compile_requests += 1;
+    if let Err(error) = crate::in_process_stats::add(cache_dir, stats) {
+        warn!("failed to record in-process statistics: {error:#}");
+    }
+    Ok(exit_code)
+}
+
 /// Run `cmd` and return the process exit status.
 pub fn run_command(cmd: Command) -> Result<i32> {
     // Config isn't required for all commands, but if it's broken then we should flag
@@ -803,16 +886,22 @@ pub fn run_command(cmd: Command) -> Result<i32> {
     match cmd {
         Command::ShowStats(fmt, advanced) => {
             trace!("Command::ShowStats({:?})", fmt);
-            let (stats, effective_cache_mode) = match connect_to_server(&get_addr()) {
-                Ok(srv) => {
-                    let (info, cache_mode) = request_stats_with_cache_mode(srv)
-                        .context("failed to get stats from server")?;
-                    (info, Some(cache_mode))
+            let in_process_mode = env::var("SCCACHE_IN_PROCESS").is_ok_and(|value| value == "1");
+            let (mut stats, effective_cache_mode) = if in_process_mode {
+                (empty_server_info(config)?, None)
+            } else {
+                match connect_to_server(&get_addr()) {
+                    Ok(srv) => {
+                        let (info, cache_mode) = request_stats_with_cache_mode(srv)
+                            .context("failed to get stats from server")?;
+                        (info, Some(cache_mode))
+                    }
+                    // If there is no server, spawning a new server would start with zero stats
+                    // anyways, so we can just return (mostly) empty stats directly.
+                    Err(_) => (empty_server_info(config)?, None),
                 }
-                // If there is no server, spawning a new server would start with zero stats
-                // anyways, so we can just return (mostly) empty stats directly.
-                Err(_) => (empty_server_info(config)?, None),
             };
+            stats.stats += crate::in_process_stats::read(&config.fallback_cache.dir)?;
             match fmt {
                 StatsFormat::Text => stats.print(advanced, effective_cache_mode),
                 StatsFormat::Json => serde_json::to_writer(
@@ -882,8 +971,13 @@ pub fn run_command(cmd: Command) -> Result<i32> {
         }
         Command::ZeroStats => {
             trace!("Command::ZeroStats");
-            let conn = connect_or_start_server(&get_addr(), startup_timeout)?;
-            request_zero_stats(conn).context("couldn't zero stats on server")?;
+            if env::var("SCCACHE_IN_PROCESS").is_ok_and(|value| value == "1") {
+                crate::in_process_stats::zero(&config.fallback_cache.dir)?;
+            } else {
+                let conn = connect_or_start_server(&get_addr(), startup_timeout)?;
+                request_zero_stats(conn).context("couldn't zero stats on server")?;
+                crate::in_process_stats::zero(&config.fallback_cache.dir)?;
+            }
             eprintln!("Statistics zeroed.");
         }
         #[cfg(feature = "dist-client")]
@@ -998,6 +1092,36 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                 });
 
             let jobserver = Client::new();
+            if env::var("SCCACHE_IN_PROCESS").is_ok_and(|value| value == "1") {
+                // In-process compile fallback waits for child processes while the
+                // runtime is blocked. Keep a worker thread available to drive the
+                // process driver and reap the compiler in restricted environments.
+                let mut runtime = Builder::new_multi_thread()
+                    .worker_threads(2)
+                    .enable_all()
+                    .build()?;
+                let storage = storage_from_config_in_process(config, runtime.handle())?;
+                let cache_mode = runtime.block_on(storage.check())?;
+                let storage: Arc<dyn Storage> = match cache_mode {
+                    CacheMode::ReadOnly => Arc::new(ReadOnlyStorage(storage)),
+                    CacheMode::ReadWrite => storage,
+                };
+                return do_compile_in_process::<ProcessCommandCreator>(
+                    &jobserver,
+                    &mut runtime,
+                    storage,
+                    cache_mode,
+                    &config.fallback_cache.dir,
+                    exe.as_ref(),
+                    cmdline,
+                    &cwd,
+                    env::var_os("PATH"),
+                    env_vars,
+                    &mut io::stdout(),
+                    &mut io::stderr(),
+                )
+                .context("failed to execute compile in process");
+            }
             let conn = connect_or_start_server(&get_addr(), startup_timeout)?;
             if config.client_side_mode {
                 // Under make -jN each CLI process gets only 2 worker threads;
