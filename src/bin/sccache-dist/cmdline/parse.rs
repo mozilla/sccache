@@ -125,7 +125,8 @@ fn get_clap_command() -> ClapCommand {
                                 .required(true),
                             flag_infer_long("secret-key")
                                 .help("Use specified key to create the token")
-                                .value_name("KEY"),
+                                .value_name("KEY")
+                                .allow_hyphen_values(true),
                             config_with_help_message(
                                 "Use the key from the scheduler config file at PATH",
                             ),
@@ -345,6 +346,25 @@ mod tests {
             AuthSubcommand::JwtHS256ServerToken {
                 server_id,
                 secret_key: "very secret".to_owned(),
+            },
+        );
+    }
+
+    #[test]
+    fn auth_generate_jwt_hs256_server_token_key_with_leading_hyphen() {
+        let args = auth_generate_jwt_hs256_server_token(&[
+            "--server",
+            "127.0.0.1:4321",
+            "--secret-key",
+            "-9LcjCfJykRqRV6hR4sb37JFaVEmSiXVPKr-GJGBtkU",
+        ]);
+        let server_id = ServerId::new("127.0.0.1:4321".parse().unwrap());
+
+        assert_args_parse_to_auth(
+            args,
+            AuthSubcommand::JwtHS256ServerToken {
+                server_id,
+                secret_key: "-9LcjCfJykRqRV6hR4sb37JFaVEmSiXVPKr-GJGBtkU".to_owned(),
             },
         );
     }
