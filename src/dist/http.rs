@@ -759,10 +759,10 @@ pub(crate) mod server {
                 cert_digest: Vec<u8>,
                 cert_pem: Vec<u8>,
             ) -> Result<()> {
-                if let Some((saved_cert_digest, _)) = certs.get(&server_id) {
-                    if saved_cert_digest == &cert_digest {
-                        return Ok(());
-                    }
+                if let Some((saved_cert_digest, _)) = certs.get(&server_id)
+                    && saved_cert_digest == &cert_digest
+                {
+                    return Ok(());
                 }
                 info!(
                     "Adding new certificate for {} to scheduler",
@@ -997,11 +997,11 @@ pub(crate) mod server {
                             if is_new {
                                 info!("Server connected to scheduler");
                             }
-                            thread::sleep(HEARTBEAT_INTERVAL)
+                            thread::sleep(HEARTBEAT_INTERVAL);
                         }
                         Err(e) => {
                             error!(target: "sccache_heartbeat", "Failed to send heartbeat to server: {}", e);
-                            thread::sleep(HEARTBEAT_ERROR_INTERVAL)
+                            thread::sleep(HEARTBEAT_ERROR_INTERVAL);
                         }
                     }
                 }
