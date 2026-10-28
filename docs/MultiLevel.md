@@ -8,6 +8,7 @@ Multi-level caching enables hierarchical cache storage, similar to how CPUs use 
 - [Architecture](#architecture)
 - [Use Cases](#use-cases)
 - [Configuration](#configuration)
+- [Statistics](#statistics)
 - [Best Practices](#best-practices)
 
 ## Overview
@@ -233,6 +234,29 @@ If `SCCACHE_MULTILEVEL_CHAIN` is not set, sccache uses the first configured cach
 # Just uses disk (backwards compatible)
 export SCCACHE_DIR="/tmp/cache"
 ```
+
+## Statistics
+
+`sccache --show-stats` and `--show-adv-stats` report each level's completed
+read outcomes:
+
+- **Hits**: the level returned a cached entry or raw cached bytes.
+- **Misses**: the level completed the read without finding the key.
+- **Read failures**: the level's read returned an error.
+
+A failed read is not also counted as a miss. Levels after a hit are not
+consulted and their counters do not change. The per-level hit rate is
+`hits / (hits + misses)`; read failures are excluded. JSON statistics expose
+the failure count as `stats.multi_level[].read_failures`.
+
+Completed reads are counted even if a later level stalls and the lookup is
+cancelled. A still-pending read is not counted as a completed outcome.
+
+Read failures do not change fallback behavior: the next level is tried, and
+exhausting the chain still returns an overall miss, even if every level
+failed. Per-level failures are therefore distinct from the aggregate
+`Cache read errors` counter, which counts lookup errors reported to the
+compilation pipeline.
 
 ## Best Practices
 
