@@ -160,6 +160,16 @@ are exchanged with `StorageGetPreprocessorEntry` / `StoragePutPreprocessorEntry`
 Because each CLI process accumulates its own statistics, it flushes them to the
 daemon with `RecordStats` before exiting.
 
+`StorageGetRaw` preserves backend read errors across IPC; an error is not an
+ordinary missing key. Invalid cached archives also produce lookup errors,
+whether the CLI reads a local path or receives raw bytes.
+
+In both execution modes, a cache read error followed by a successful local
+compilation increments `Cache read errors` as well as the existing `Cache errors`
+and `Cache misses` counters. Ordinary misses do not increment the read-error
+counter, and overall lookup timeouts are recorded separately as `Cache timeouts`.
+Errors handled inside a multilevel tier walk are not aggregate lookup errors.
+
 Client-side mode is enabled with the `SCCACHE_CLIENT_SIDE` environment variable
 (or the `client_side_mode` config key). It is expected to become the only
 supported configuration in the future, with server-side mode eventually

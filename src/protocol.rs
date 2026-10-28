@@ -58,8 +58,8 @@ pub enum Response {
     StorageHandshake(StorageHandshakeInfo),
     /// Response for `Request::StorageGetPath`.
     StorageGetPath(GetPathResult),
-    /// Response for `Request::StorageGetRaw`: zip bytes on hit, `None` on miss.
-    StorageGetRaw(Option<Vec<u8>>),
+    /// Response for `Request::StorageGetRaw`: zip bytes on hit, `None` on miss, or a read error.
+    StorageGetRaw(Result<Option<Vec<u8>>, String>),
     /// Response for `Request::StoragePutRaw`.
     StoragePutRaw(Result<(), String>),
     /// Response for `Request::StorageGetPreprocessorEntry`.
