@@ -353,16 +353,6 @@ pub struct ParsedArguments {
     crate_types: CrateTypes,
     /// If dependency info is being emitted, the name of the dep info file.
     dep_info: Option<PathBuf>,
-    /// If profile info is being emitted, the path of the profile.
-    ///
-    /// This could be filled while `-Cprofile-use` been enabled.
-    ///
-    /// We need to add the profile into our outputs to enable distributed compilation.
-    /// We don't need to track `profile-generate` since it's users work to make sure
-    /// the `profdata` been generated from profraw files.
-    ///
-    /// For more information, see https://doc.rust-lang.org/rustc/profile-guided-optimization.html
-    profile: Option<PathBuf>,
     /// If `-Z profile` has been enabled, we will use a GCC-compatible, gcov-based
     /// coverage implementation.
     ///
@@ -1419,7 +1409,6 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
     let mut static_link_paths: Vec<PathBuf> = vec![];
     let mut color_mode = ColorMode::Auto;
     let mut has_json = false;
-    let mut profile = None;
     let mut gcno = false;
     let mut target_json = None;
 
@@ -1481,7 +1470,6 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                 match (opt.as_ref(), value) {
                     ("extra-filename", Some(value)) => extra_filename = Some(value.to_owned()),
                     ("extra-filename", None) => cannot_cache!("extra-filename"),
-                    ("profile-use", Some(v)) => profile = Some(v.clone()),
                     // Incremental compilation makes a mess of sccache's entire world
                     // view. It produces additional compiler outputs that we don't cache,
                     // and just letting rustc do its work in incremental mode is likely
@@ -1600,9 +1588,6 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
         None
     };
 
-    // Ignore profile is `link` is not in emit which means we are running `cargo check`.
-    let profile = if emit.contains("link") { profile } else { None };
-
     // Figure out the gcno filename, if producing gcno files with `-Zprofile`.
     let gcno = if gcno && emit.contains("link") {
         let mut gcno = crate_name.clone();
@@ -1650,7 +1635,6 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
         staticlibs,
         crate_name,
         dep_info: dep_info.map(|s| s.into()),
-        profile: profile.map(|s| s.into()),
         gcno: gcno.map(|s| s.into()),
         emit,
         color_mode,
@@ -1998,16 +1982,6 @@ where
                 )
             })
             .collect::<HashMap<_, _>>();
-        if let Some(profile) = &self.parsed_args.profile {
-            let p = self.parsed_args.output_dir.join(profile);
-            outputs.insert(
-                profile.to_string_lossy().into_owned(),
-                ArtifactDescriptor {
-                    path: p,
-                    optional: true,
-                },
-            );
-        }
         if let Some(gcno) = &self.parsed_args.gcno {
             let p = self.parsed_args.output_dir.join(gcno);
             outputs.insert(
@@ -4024,7 +3998,6 @@ hash 42fac6f0 stable_crate_id StableCrateId(12206970385906972588)
                 emit,
                 color_mode: ColorMode::Auto,
                 has_json: false,
-                profile: None,
                 gcno: None,
                 target_json: None,
             },
@@ -4130,7 +4103,6 @@ hash 42fac6f0 stable_crate_id StableCrateId(12206970385906972588)
                 emit,
                 color_mode: ColorMode::Auto,
                 has_json: false,
-                profile: None,
                 gcno: None,
                 target_json: None,
             },
@@ -4175,6 +4147,79 @@ foo.rs:
                 rmeta = out_dir.join("libfoo-abc.rmeta").display(),
             )
         );
+    }
+
+    #[test]
+    fn test_generate_hash_key_profile_use() {
+        // The profile is an input: rustc lists it in its dep-info, which is how its
+        // contents reach the key. As an output it was rewritten on every cache hit, and
+        // the new mtime made cargo rebuild every crate that had read it.
+        let f = TestFixture::new();
+        f.touch("foo.rs").unwrap();
+        let args = [
+            "--emit",
+            "link",
+            "foo.rs",
+            "--out-dir",
+            "out",
+            "--crate-name",
+            "foo",
+            "--crate-type",
+            "lib",
+            "-C",
+            "profile-use=merged.profdata",
+        ]
+        .iter()
+        .map(OsString::from)
+        .collect::<Vec<_>>();
+        let key_and_outputs = |profile: &[u8]| {
+            create_file(f.tempdir.path(), "merged.profdata", |mut f| {
+                f.write_all(profile)
+            })
+            .unwrap();
+            let parsed_args = match parse_arguments(&args, f.tempdir.path()) {
+                CompilerArguments::Ok(parsed_args) => parsed_args,
+                o => panic!("Got unexpected parse result: {:?}", o),
+            };
+            let mut hasher = Box::new(RustHasher {
+                executable: "rustc".into(),
+                host: "x86-64-unknown-unknown-unknown".to_owned(),
+                version: TEST_RUSTC_VERSION.to_string(),
+                sysroot: f.tempdir.path().join("sysroot"),
+                #[cfg(feature = "dist-client")]
+                target_libdir: f.tempdir.path().join("sysroot/lib/rustlib/fake-target/lib"),
+                compiler_shlibs_digests: vec![],
+                dist_archive: None,
+                #[cfg(feature = "dist-client")]
+                rlib_dep_reader: None,
+                parsed_args,
+            });
+            let creator = new_creator();
+            mock_dep_info(&creator, &["foo.rs", "merged.profdata"]);
+            mock_file_names(&creator, &["libfoo.rlib"]);
+            let runtime = single_threaded_runtime();
+            let pool = runtime.handle().clone();
+            let res = hasher
+                .generate_hash_key(
+                    &creator,
+                    f.tempdir.path().to_owned(),
+                    vec![],
+                    false,
+                    &pool,
+                    false,
+                    Arc::new(MockStorage::new(None, false)),
+                    CacheControl::Default,
+                )
+                .wait()
+                .unwrap();
+            let outputs = res.compilation.outputs().map(|k| k.key).collect::<Vec<_>>();
+            (res.key, outputs)
+        };
+
+        let (key, outputs) = key_and_outputs(b"one profile");
+        assert_eq!(outputs, ["libfoo.rlib"]);
+        assert_eq!(key, key_and_outputs(b"one profile").0);
+        assert_ne!(key, key_and_outputs(b"another profile").0);
     }
 
     fn hash_key<F>(
