@@ -75,18 +75,12 @@ impl Storage for IpcStorage {
             GetPathResult::Found(path) => {
                 let file = std::fs::File::open(&path)
                     .with_context(|| format!("IpcStorage::get: open {}", path.display()))?;
-                match CacheRead::from(file) {
-                    Ok(entry) => Ok(Cache::Hit(entry)),
-                    Err(_) => Ok(Cache::Miss),
-                }
+                Ok(Cache::Hit(CacheRead::from(file)?))
             }
             GetPathResult::Miss => Ok(Cache::Miss),
             // Backend doesn't support paths (S3, Redis, …); fall back to bytes over IPC.
             GetPathResult::Unsupported => match self.get_raw(key).await? {
-                Some(bytes) => match CacheRead::from(Cursor::new(bytes)) {
-                    Ok(entry) => Ok(Cache::Hit(entry)),
-                    Err(_) => Ok(Cache::Miss),
-                },
+                Some(bytes) => Ok(Cache::Hit(CacheRead::from(Cursor::new(bytes))?)),
                 None => Ok(Cache::Miss),
             },
         }
@@ -115,7 +109,8 @@ impl Storage for IpcStorage {
             })
             .await?;
         match resp {
-            Response::StorageGetRaw(opt) => Ok(opt.map(Bytes::from)),
+            Response::StorageGetRaw(Ok(opt)) => Ok(opt.map(Bytes::from)),
+            Response::StorageGetRaw(Err(e)) => bail!("IpcStorage::get_raw: daemon error: {e}"),
             other => bail!("IpcStorage::get_raw: unexpected response: {other:?}"),
         }
     }
