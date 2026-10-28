@@ -184,12 +184,12 @@ impl<T: ArgumentValue> Iterator for Iter<'_, T> {
                 (0, &ArgDisposition::CanBeSeparated(d)) | (0, &ArgDisposition::Concatenated(d)) => {
                     let mut s = OsString::from(s);
                     let v = v.clone().into_arg_os_string();
-                    if let Some(d) = d {
-                        if !v.is_empty() {
-                            s.push(OsString::from(
-                                str::from_utf8(&[d]).expect("delimiter should be ascii"),
-                            ));
-                        }
+                    if let Some(d) = d
+                        && !v.is_empty()
+                    {
+                        s.push(OsString::from(
+                            str::from_utf8(&[d]).expect("delimiter should be ascii"),
+                        ));
                     }
                     s.push(v);
                     Some(s)
@@ -238,10 +238,10 @@ impl<T: ArgumentValue, F: FnMut(&Path) -> Option<String>> Iterator for IterStrin
                         Ok(s) => s,
                         Err(e) => return Some(Err(e)),
                     };
-                    if let Some(d) = d {
-                        if !v.is_empty() {
-                            s.push_str(str::from_utf8(&[d]).expect("delimiter should be ascii"));
-                        }
+                    if let Some(d) = d
+                        && !v.is_empty()
+                    {
+                        s.push_str(str::from_utf8(&[d]).expect("delimiter should be ascii"));
                     }
                     s.push_str(&v);
                     Some(Ok(s))
@@ -388,6 +388,7 @@ pub fn split_os_string_arg(val: OsString, split: &str) -> ArgParseResult<(String
 
 /// The description of how an argument may be parsed
 #[derive(PartialEq, Eq, Clone, Debug)]
+#[allow(unpredictable_function_pointer_comparisons)]
 pub enum ArgInfo<T> {
     /// An simple flag argument, of the form "-foo"
     Flag(&'static str, T),
@@ -425,10 +426,10 @@ impl<T: ArgumentValue> ArgInfo<T> {
             ArgInfo::TakeArg(s, create, ArgDisposition::Concatenated(d)) => {
                 let mut len = s.len();
                 debug_assert_eq!(&arg[..len], s);
-                if let Some(d) = d {
-                    if arg.as_bytes().get(len) == Some(&d) {
-                        len += 1;
-                    }
+                if let Some(d) = d
+                    && arg.as_bytes().get(len) == Some(&d)
+                {
+                    len += 1;
                 }
                 Argument::WithValue(
                     s,
@@ -465,12 +466,14 @@ impl<T: ArgumentValue> ArgInfo<T> {
         match self {
             &ArgInfo::TakeArg(s, _, ArgDisposition::CanBeSeparated(None))
             | &ArgInfo::TakeArg(s, _, ArgDisposition::Concatenated(None))
+            | &ArgInfo::TakeArg(s, _, ArgDisposition::CanBeConcatenated(None))
                 if arg.starts_with(s) =>
             {
                 Ordering::Equal
             }
             &ArgInfo::TakeArg(s, _, ArgDisposition::CanBeSeparated(Some(d)))
             | &ArgInfo::TakeArg(s, _, ArgDisposition::Concatenated(Some(d)))
+            | &ArgInfo::TakeArg(s, _, ArgDisposition::CanBeConcatenated(Some(d)))
                 if arg.len() > s.len() && arg.starts_with(s) =>
             {
                 arg.as_bytes()[s.len()].cmp(&d)
@@ -651,7 +654,7 @@ macro_rules! flag {
 /// Variant is an enum variant, e.g. enum ArgType { Variant(OsString) }
 ///     take_arg!("-foo", OsString, Separated, Variant)
 ///     take_arg!("-foo", OsString, Concatenated, Variant)
-///     take_arg!("-foo", OsString, Concatenated('='), Variant)
+///     take_arg!("-foo", OsString, Concatenated(b'='), Variant)
 macro_rules! take_arg {
     ($s:expr, $vtype:ident, Separated, $variant:expr) => {
         ArgInfo::TakeArg(
@@ -671,7 +674,7 @@ macro_rules! take_arg {
         ArgInfo::TakeArg(
             $s,
             |arg: OsString| $vtype::process(arg).map($variant),
-            ArgDisposition::$d(Some($x as u8)),
+            ArgDisposition::$d(Some($x)),
         )
     };
 }
@@ -679,8 +682,7 @@ macro_rules! take_arg {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use itertools::{diff_with, Diff};
-    use std::iter::FromIterator;
+    use itertools::{Diff, Itertools as _, diff_with};
 
     macro_rules! arg {
         ($name:ident($x:expr)) => {
@@ -758,7 +760,16 @@ mod tests {
         assert_eq!(info.cmp("-foo="), Ordering::Equal);
         assert_eq!(info.cmp("-foo=bar"), Ordering::Equal);
 
-        let info = take_arg!("-foo", OsString, Concatenated('='), Foo);
+        let info = take_arg!("-foo", OsString, Concatenated(b'='), Foo);
+        assert_eq!(info.cmp("-foo"), Ordering::Equal);
+        assert_eq!(info.cmp("bar"), Ordering::Less);
+        assert_eq!(info.cmp("-bar"), Ordering::Greater);
+        assert_eq!(info.cmp("-qux"), Ordering::Less);
+        assert_eq!(info.cmp("-foobar"), Ordering::Greater);
+        assert_eq!(info.cmp("-foo="), Ordering::Equal);
+        assert_eq!(info.cmp("-foo=bar"), Ordering::Equal);
+
+        let info = take_arg!("-foo", OsString, CanBeConcatenated(b'='), Foo);
         assert_eq!(info.cmp("-foo"), Ordering::Equal);
         assert_eq!(info.cmp("bar"), Ordering::Less);
         assert_eq!(info.cmp("-bar"), Ordering::Greater);
@@ -776,7 +787,7 @@ mod tests {
         assert_eq!(info.cmp("-foo="), Ordering::Equal);
         assert_eq!(info.cmp("-foo=bar"), Ordering::Equal);
 
-        let info = take_arg!("-foo", OsString, CanBeSeparated('='), Foo);
+        let info = take_arg!("-foo", OsString, CanBeSeparated(b'='), Foo);
         assert_eq!(info.cmp("-foo"), Ordering::Equal);
         assert_eq!(info.cmp("bar"), Ordering::Less);
         assert_eq!(info.cmp("-bar"), Ordering::Greater);
@@ -814,14 +825,14 @@ mod tests {
             arg!(WithValue("-foo", Foo("bar"), Concatenated))
         );
 
-        let info = take_arg!("-foo", OsString, Concatenated('='), Foo);
+        let info = take_arg!("-foo", OsString, Concatenated(b'='), Foo);
         assert_eq!(
             info.clone().process("-foo=", || None).unwrap(),
-            arg!(WithValue("-foo", Foo(""), Concatenated('=')))
+            arg!(WithValue("-foo", Foo(""), Concatenated(b'=')))
         );
         assert_eq!(
             info.process("-foo=bar", || None).unwrap(),
-            arg!(WithValue("-foo", Foo("bar"), Concatenated('=')))
+            arg!(WithValue("-foo", Foo("bar"), Concatenated(b'=')))
         );
 
         let info = take_arg!("-foo", OsString, CanBeSeparated, Foo);
@@ -838,22 +849,22 @@ mod tests {
             arg!(WithValue("-foo", Foo("bar"), CanBeConcatenated))
         );
 
-        let info = take_arg!("-foo", OsString, CanBeSeparated('='), Foo);
+        let info = take_arg!("-foo", OsString, CanBeSeparated(b'='), Foo);
         assert_eq!(
             info.clone().process("-foo", || None).unwrap_err(),
             ArgParseError::UnexpectedEndOfArgs
         );
         assert_eq!(
             info.clone().process("-foo=", || None).unwrap(),
-            arg!(WithValue("-foo", Foo(""), CanBeSeparated('=')))
+            arg!(WithValue("-foo", Foo(""), CanBeSeparated(b'=')))
         );
         assert_eq!(
             info.clone().process("-foo=bar", || None).unwrap(),
-            arg!(WithValue("-foo", Foo("bar"), CanBeSeparated('=')))
+            arg!(WithValue("-foo", Foo("bar"), CanBeSeparated(b'=')))
         );
         assert_eq!(
             info.process("-foo", || Some("bar".into())).unwrap(),
-            arg!(WithValue("-foo", Foo("bar"), CanBeConcatenated('=')))
+            arg!(WithValue("-foo", Foo("bar"), CanBeConcatenated(b'=')))
         );
     }
 
@@ -954,7 +965,7 @@ mod tests {
             flag!("-fuga", ArgData::Fuga),
             take_arg!("-hoge", PathBuf, Concatenated, ArgData::Hoge),
             flag!("-plop", ArgData::Plop),
-            take_arg!("-qux", OsString, CanBeSeparated('='), ArgData::Qux),
+            take_arg!("-qux", OsString, CanBeSeparated(b'='), ArgData::Qux),
             flag!("-zorglub", ArgData::Zorglub),
         ];
 
@@ -988,14 +999,14 @@ mod tests {
             arg!(WithValue(
                 "-qux",
                 ArgData::Qux("value"),
-                CanBeConcatenated('=')
+                CanBeConcatenated(b'=')
             )),
             arg!(Flag("-plop", ArgData::Plop)),
             arg!(UnknownFlag("-quxbar")),
             arg!(WithValue(
                 "-qux",
                 ArgData::Qux("value"),
-                CanBeSeparated('=')
+                CanBeSeparated(b'=')
             )),
             arg!(Raw("--")),
             arg!(Raw("non_flag")),
@@ -1008,53 +1019,51 @@ mod tests {
             None => {}
             Some(Diff::FirstMismatch(_, _, _)) => unreachable!(),
             Some(Diff::Shorter(_, i)) => {
-                assert_eq!(i.map(|a| a.unwrap()).collect::<Vec<_>>(), vec![])
+                assert_eq!(i.map(|a| a.unwrap()).collect::<Vec<_>>(), vec![]);
             }
             Some(Diff::Longer(_, i)) => {
-                assert_eq!(Vec::<Argument<ArgData>>::new(), i.collect::<Vec<_>>())
+                assert_eq!(Vec::<Argument<ArgData>>::new(), i.collect::<Vec<_>>());
             }
         }
     }
 
-    // https://github.com/rust-lang/rust-clippy/issues/6550
-    #[allow(clippy::from_iter_instead_of_collect)]
     #[test]
     fn test_argument_into_iter() {
         // Needs type annotation or ascription
         let raw: Argument<ArgData> = arg!(Raw("value"));
         let unknown: Argument<ArgData> = arg!(UnknownFlag("-foo"));
-        assert_eq!(Vec::from_iter(raw.iter_os_strings()), ovec!["value"]);
-        assert_eq!(Vec::from_iter(unknown.iter_os_strings()), ovec!["-foo"]);
+        assert_eq!(raw.iter_os_strings().collect_vec(), ovec!["value"]);
+        assert_eq!(unknown.iter_os_strings().collect_vec(), ovec!["-foo"]);
         assert_eq!(
-            Vec::from_iter(arg!(Flag("-foo", FooFlag)).iter_os_strings()),
+            arg!(Flag("-foo", FooFlag)).iter_os_strings().collect_vec(),
             ovec!["-foo"]
         );
 
         let arg = arg!(WithValue("-foo", Foo("bar"), Concatenated));
-        assert_eq!(Vec::from_iter(arg.iter_os_strings()), ovec!["-foobar"]);
+        assert_eq!(arg.iter_os_strings().collect_vec(), ovec!["-foobar"]);
 
-        let arg = arg!(WithValue("-foo", Foo("bar"), Concatenated('=')));
-        assert_eq!(Vec::from_iter(arg.iter_os_strings()), ovec!["-foo=bar"]);
+        let arg = arg!(WithValue("-foo", Foo("bar"), Concatenated(b'=')));
+        assert_eq!(arg.iter_os_strings().collect_vec(), ovec!["-foo=bar"]);
 
         let arg = arg!(WithValue("-foo", Foo("bar"), CanBeSeparated));
-        assert_eq!(Vec::from_iter(arg.iter_os_strings()), ovec!["-foobar"]);
+        assert_eq!(arg.iter_os_strings().collect_vec(), ovec!["-foobar"]);
 
-        let arg = arg!(WithValue("-foo", Foo("bar"), CanBeSeparated('=')));
-        assert_eq!(Vec::from_iter(arg.iter_os_strings()), ovec!["-foo=bar"]);
+        let arg = arg!(WithValue("-foo", Foo("bar"), CanBeSeparated(b'=')));
+        assert_eq!(arg.iter_os_strings().collect_vec(), ovec!["-foo=bar"]);
 
         let arg = arg!(WithValue("-foo", Foo("bar"), CanBeConcatenated));
-        assert_eq!(Vec::from_iter(arg.iter_os_strings()), ovec!["-foo", "bar"]);
+        assert_eq!(arg.iter_os_strings().collect_vec(), ovec!["-foo", "bar"]);
 
-        let arg = arg!(WithValue("-foo", Foo("bar"), CanBeConcatenated('=')));
-        assert_eq!(Vec::from_iter(arg.iter_os_strings()), ovec!["-foo", "bar"]);
+        let arg = arg!(WithValue("-foo", Foo("bar"), CanBeConcatenated(b'=')));
+        assert_eq!(arg.iter_os_strings().collect_vec(), ovec!["-foo", "bar"]);
 
         let arg = arg!(WithValue("-foo", Foo("bar"), Separated));
-        assert_eq!(Vec::from_iter(arg.iter_os_strings()), ovec!["-foo", "bar"]);
+        assert_eq!(arg.iter_os_strings().collect_vec(), ovec!["-foo", "bar"]);
     }
 
     #[test]
     fn test_arginfo_process_take_concat_arg_delim_doesnt_crash() {
-        let _ = take_arg!("-foo", OsString, Concatenated('='), Foo).process("-foo", || None);
+        let _ = take_arg!("-foo", OsString, Concatenated(b'='), Foo).process("-foo", || None);
     }
 
     #[cfg(debug_assertions)]
@@ -1086,7 +1095,7 @@ mod tests {
         #[test]
         #[should_panic]
         fn test_arginfo_process_take_concat_arg_delim() {
-            take_arg!("-foo", OsString, Concatenated('='), Foo)
+            take_arg!("-foo", OsString, Concatenated(b'='), Foo)
                 .process("-bar", || None)
                 .unwrap();
         }
@@ -1102,7 +1111,7 @@ mod tests {
         #[test]
         #[should_panic]
         fn test_arginfo_process_take_maybe_concat_arg_delim() {
-            take_arg!("-foo", OsString, CanBeSeparated('='), Foo)
+            take_arg!("-foo", OsString, CanBeSeparated(b'='), Foo)
                 .process("-bar", || None)
                 .unwrap();
         }

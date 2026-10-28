@@ -16,13 +16,13 @@
 use crate::cache::CacheMode;
 use crate::errors::*;
 use opendal::Operator;
-use opendal::{layers::LoggingLayer, services::Gcs};
-use reqsign::{GoogleToken, GoogleTokenLoad};
-use reqwest::Client;
+use opendal::{OperationContext, services::Gcs};
+use opendal_layer_logging::LoggingLayer;
 use serde::Deserialize;
 use url::Url;
 
-use super::http_client::set_user_agent;
+use super::http_client::new_http_transport;
+use crate::util::new_reqwest_client_builder;
 
 fn rw_to_scope(mode: CacheMode) -> &'static str {
     match mode {
@@ -47,8 +47,7 @@ impl GCSCache {
         let mut builder = Gcs::default()
             .bucket(bucket)
             .root(key_prefix)
-            .scope(rw_to_scope(rw_mode))
-            .http_client(set_user_agent());
+            .scope(rw_to_scope(rw_mode));
 
         if let Some(service_account) = service_account {
             builder = builder.service_account(service_account);
@@ -62,20 +61,24 @@ impl GCSCache {
             let _ = Url::parse(cred_url)
                 .map_err(|err| anyhow!("gcs credential url is invalid: {err:?}"))?;
 
-            builder = builder.customized_token_loader(Box::new(TaskClusterTokenLoader {
-                scope: rw_to_scope(rw_mode).to_string(),
-                url: cred_url.to_string(),
-            }));
+            // For TaskCluster integration, fetch token directly and provide it to OpenDAL
+            let token = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| anyhow!("Failed to create runtime for token fetch: {e}"))?
+                .block_on(fetch_taskcluster_token(cred_url, rw_to_scope(rw_mode)))
+                .map_err(|e| anyhow!("Failed to fetch TaskCluster token: {e}"))?;
+            builder = builder.token(token);
         }
 
         let op = Operator::new(builder)?
-            .layer(LoggingLayer::default())
-            .finish();
+            .with_context(OperationContext::new().with_http_transport(new_http_transport()?))
+            .layer(LoggingLayer::default());
         Ok(op)
     }
 }
 
-/// TaskClusterTokenLoeader is used to load tokens from [TaskCluster](https://taskcluster.net/)
+/// Fetch token from TaskCluster for GCS authentication
 ///
 /// This feature is required to run [mozilla's CI](https://searchfox.org/mozilla-central/source/build/mozconfig.cache#67-84):
 ///
@@ -84,37 +87,26 @@ impl GCSCache {
 /// ```
 ///
 /// Reference: [gcpCredentials](https://docs.taskcluster.net/docs/reference/platform/auth/api#gcpCredentials)
-#[derive(Debug)]
-struct TaskClusterTokenLoader {
-    scope: String,
-    url: String,
-}
+async fn fetch_taskcluster_token(url: &str, scope: &str) -> Result<String> {
+    debug!("gcs: start to load token from: {}", url);
 
-#[async_trait::async_trait]
-impl GoogleTokenLoad for TaskClusterTokenLoader {
-    async fn load(&self, client: Client) -> Result<Option<GoogleToken>> {
-        debug!("gcs: start to load token from: {}", &self.url);
+    let user_agent = format!("{}/{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+    let client = new_reqwest_client_builder()?
+        .user_agent(user_agent)
+        .build()
+        .context("failed to create GCS credential HTTP client")?;
+    let res = client.get(url).send().await?;
 
-        let res = client.get(&self.url).send().await?;
-
-        if res.status().is_success() {
-            let resp = res.json::<TaskClusterToken>().await?;
-
-            debug!("gcs: token load succeeded for scope: {}", &self.scope);
-
-            // TODO: we can parse expire time instead using hardcode 1 hour.
-            Ok(Some(GoogleToken::new(
-                &resp.access_token,
-                3600,
-                &self.scope,
-            )))
-        } else {
-            let status_code = res.status();
-            let content = res.text().await?;
-            Err(anyhow!(
-                "token load failed for: code: {status_code}, {content}"
-            ))
-        }
+    if res.status().is_success() {
+        let resp = res.json::<TaskClusterToken>().await?;
+        debug!("gcs: token load succeeded for scope: {}", scope);
+        Ok(resp.access_token)
+    } else {
+        let status_code = res.status();
+        let content = res.text().await?;
+        Err(anyhow!(
+            "token load failed for: code: {status_code}, {content}"
+        ))
     }
 }
 

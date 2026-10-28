@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cache::{FileObjectSource, PreprocessorCacheModeConfig, Storage};
+use crate::cache::{FileObjectSource, Storage};
 use crate::compiler::preprocessor_cache::preprocessor_cache_entry_hash_key;
 use crate::compiler::{
     Cacheable, ColorMode, Compilation, CompileCommand, Compiler, CompilerArguments, CompilerHasher,
@@ -20,17 +20,17 @@ use crate::compiler::{
 };
 #[cfg(feature = "dist-client")]
 use crate::compiler::{DistPackagers, NoopOutputsRewriter};
+use crate::config::PreprocessorCacheModeConfig;
 use crate::dist;
 #[cfg(feature = "dist-client")]
 use crate::dist::pkg;
 use crate::mock_command::CommandCreatorSync;
 use crate::util::{
-    decode_path, encode_path, hash_all, Digest, HashToDigest, MetadataCtimeExt, TimeMacroFinder,
-    Timestamp,
+    Digest, HashToDigest, MetadataCtimeExt, TimeMacroFinder, Timestamp, decode_path, encode_path,
+    hash_all, strip_basedirs, strip_basedirs_from_arg,
 };
 use async_trait::async_trait;
 use fs_err as fs;
-use once_cell::sync::Lazy;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
@@ -40,12 +40,12 @@ use std::io;
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::process;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use crate::errors::*;
 
-use super::preprocessor_cache::PreprocessorCacheEntry;
 use super::CacheControl;
+use super::preprocessor_cache::PreprocessorCacheEntry;
 
 /// A generic implementation of the `Compiler` trait for C/C++ compilers.
 #[derive(Clone)]
@@ -109,8 +109,12 @@ pub struct ParsedArguments {
     pub extra_dist_files: Vec<PathBuf>,
     /// Extra files that need to have their contents hashed.
     pub extra_hash_files: Vec<PathBuf>,
+    /// Whether the compiler runs a separate assembler to produce the object file.
+    pub uses_external_assembler: bool,
     /// Whether or not the `-showIncludes` argument is passed on MSVC
     pub msvc_show_includes: bool,
+    /// Whether the MSVC input was given with `/Tc` or `/Tp`
+    pub msvc_explicit_language: bool,
     /// Whether the compilation is generating profiling or coverage data.
     pub profile_generate: bool,
     /// The color mode.
@@ -129,11 +133,31 @@ impl ParsedArguments {
             .map(|s| s.to_string_lossy())
             .unwrap_or(Cow::Borrowed("Unknown filename"))
     }
+
+    /// The distinct architectures given with `-arch`, in command line order.
+    pub fn archs(&self) -> Vec<&OsString> {
+        use itertools::Itertools as _;
+        self.arch_values().unique().collect()
+    }
+
+    pub fn is_multiarch(&self) -> bool {
+        let mut archs = self.arch_values();
+        archs
+            .next()
+            .is_some_and(|first| archs.any(|arch| arch != first))
+    }
+
+    fn arch_values(&self) -> impl Iterator<Item = &OsString> {
+        self.arch_args
+            .iter()
+            .filter(|arg| *arg != super::gcc::ARCH_FLAG)
+    }
 }
 
 /// A generic implementation of the `Compilation` trait for C/C++ compilers.
 struct CCompilation<I: CCompilerImpl> {
     parsed_args: ParsedArguments,
+    is_locally_preprocessed: bool,
     #[cfg(feature = "dist-client")]
     preprocessed_input: Vec<u8>,
     executable: PathBuf,
@@ -176,6 +200,11 @@ pub trait CCompilerImpl: Clone + fmt::Debug + Send + Sync + 'static {
     fn plusplus(&self) -> bool;
     /// Return the compiler version reported by the compiler executable.
     fn version(&self) -> Option<String>;
+    /// Return the identity of the assembler the compiler would run, when it
+    /// runs one at all.
+    fn assembler_digest(&self) -> Option<String> {
+        None
+    }
     /// Determine whether `arguments` are supported by this compiler.
     fn parse_arguments(
         &self,
@@ -319,7 +348,7 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compiler<T> for CCompiler<I> {
                 // Handle SCCACHE_EXTRAFILES
                 for (k, v) in env_vars.iter() {
                     if k.as_os_str() == OsStr::new("SCCACHE_EXTRAFILES") {
-                        args.extra_hash_files.extend(std::env::split_paths(&v))
+                        args.extra_hash_files.extend(std::env::split_paths(&v));
                     }
                 }
 
@@ -336,7 +365,7 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compiler<T> for CCompiler<I> {
                 // too much to handle on our side so we just hash every bitcode library we find.
                 if args.language == Language::Hip {
                     args.extra_hash_files
-                        .extend(Self::search_hip_device_libs(&args, env_vars))
+                        .extend(Self::search_hip_device_libs(&args, env_vars));
                 }
 
                 CompilerArguments::Ok(Box::new(CCompilerHasher {
@@ -365,7 +394,7 @@ where
     I: CCompilerImpl,
 {
     async fn generate_hash_key(
-        self: Box<Self>,
+        &mut self,
         creator: &T,
         cwd: PathBuf,
         env_vars: Vec<(OsString, OsString)>,
@@ -376,42 +405,47 @@ where
         cache_control: CacheControl,
     ) -> Result<HashResult<T>> {
         let start_of_compilation = std::time::SystemTime::now();
-        let CCompilerHasher {
-            parsed_args,
-            executable,
-            executable_digest,
-            compiler,
-        } = *self;
 
-        let extra_hashes = hash_all(&parsed_args.extra_hash_files, &pool.clone()).await?;
+        let extra_hashes = hash_all(&self.parsed_args.extra_hash_files, &pool.clone()).await?;
+        // The assembler that turns the compiler's output into the object file is
+        // as much a part of the result as the compiler itself.
+        let assembler_digest = if self.parsed_args.uses_external_assembler {
+            self.compiler.assembler_digest()
+        } else {
+            None
+        };
         // Create an argument vector containing both preprocessor and arch args, to
         // use in creating a hash key
-        let mut preprocessor_and_arch_args = parsed_args.preprocessor_args.clone();
-        preprocessor_and_arch_args.extend(parsed_args.arch_args.to_vec());
+        let mut preprocessor_and_arch_args = self.parsed_args.preprocessor_args.clone();
+        preprocessor_and_arch_args.extend(self.parsed_args.arch_args.clone());
         // common_args is used in preprocessing too
-        preprocessor_and_arch_args.extend(parsed_args.common_args.to_vec());
+        preprocessor_and_arch_args.extend(self.parsed_args.common_args.clone());
 
-        let absolute_input_path: Cow<'_, _> = if parsed_args.input.is_absolute() {
-            Cow::Borrowed(&parsed_args.input)
+        let absolute_input_path: Cow<'_, _> = if self.parsed_args.input.is_absolute() {
+            Cow::Borrowed(&self.parsed_args.input)
         } else {
-            Cow::Owned(cwd.join(&parsed_args.input))
+            Cow::Owned(cwd.join(&self.parsed_args.input))
         };
 
         // Try to look for a cached preprocessing step for this compilation
         // request.
         let preprocessor_cache_mode_config = storage.preprocessor_cache_mode_config();
-        let too_hard_for_preprocessor_cache_mode =
-            parsed_args.too_hard_for_preprocessor_cache_mode.is_some();
-        if let Some(arg) = &parsed_args.too_hard_for_preprocessor_cache_mode {
+        let too_hard_for_preprocessor_cache_mode = self
+            .parsed_args
+            .too_hard_for_preprocessor_cache_mode
+            .is_some();
+        if let Some(arg) = &self.parsed_args.too_hard_for_preprocessor_cache_mode {
             debug!(
-                "parse_arguments: Cannot use preprocessor cache because of {:?}",
+                "generate_hash_key: Cannot use preprocessor cache because of {:?}",
                 arg
             );
         }
 
-        let use_preprocessor_cache_mode = {
-            let can_use_preprocessor_cache_mode = !may_dist
-                && preprocessor_cache_mode_config.use_preprocessor_cache_mode
+        let needs_preprocessing = self.parsed_args.language.needs_c_preprocessing();
+
+        let use_preprocessor_cache_mode = if needs_preprocessing {
+            let can_use_preprocessor_cache_mode = preprocessor_cache_mode_config
+                .use_preprocessor_cache_mode
                 && !too_hard_for_preprocessor_cache_mode;
 
             let mut use_preprocessor_cache_mode = can_use_preprocessor_cache_mode;
@@ -431,223 +465,245 @@ where
 
             if can_use_preprocessor_cache_mode && !use_preprocessor_cache_mode {
                 debug!(
-                    "parse_arguments: Disabling preprocessor cache because SCCACHE_DIRECT=false"
+                    "generate_hash_key: Disabling preprocessor cache because SCCACHE_DIRECT=false"
                 );
             }
 
             use_preprocessor_cache_mode
+        } else {
+            debug!(
+                "generate_hash_key: Disabling preprocessor cache because {} language doesn't need C preprocessing",
+                self.parsed_args.language.as_str()
+            );
+            false
         };
 
-        // Disable preprocessor cache when doing distributed compilation
         let mut preprocessor_key = if use_preprocessor_cache_mode {
             preprocessor_cache_entry_hash_key(
-                &executable_digest,
-                parsed_args.language,
+                &self.executable_digest,
+                self.parsed_args.language,
                 &preprocessor_and_arch_args,
                 &extra_hashes,
+                assembler_digest.as_deref(),
                 &env_vars,
                 &absolute_input_path,
-                compiler.plusplus(),
+                self.compiler.plusplus(),
+                self.parsed_args.is_multiarch(),
                 preprocessor_cache_mode_config,
+                storage.basedirs(),
             )?
         } else {
             None
         };
-        if let Some(preprocessor_key) = &preprocessor_key {
-            if cache_control == CacheControl::Default {
-                if let Some(mut seekable) = storage
+
+        let (preprocessor_output, include_files) = if needs_preprocessing {
+            if let Some(preprocessor_key) = &preprocessor_key
+                && cache_control == CacheControl::Default
+                && let Some(mut seekable) = storage
                     .get_preprocessor_cache_entry(preprocessor_key)
                     .await?
-                {
-                    let mut buf = vec![];
-                    seekable.read_to_end(&mut buf)?;
-                    let mut preprocessor_cache_entry = PreprocessorCacheEntry::read(&buf)?;
-                    let mut updated = false;
-                    let hit = preprocessor_cache_entry
-                        .lookup_result_digest(preprocessor_cache_mode_config, &mut updated);
+            {
+                let mut buf = vec![];
+                seekable.read_to_end(&mut buf)?;
+                let mut preprocessor_cache_entry = PreprocessorCacheEntry::read(&buf)?;
+                let mut updated = false;
+                let hit = preprocessor_cache_entry
+                    .lookup_result_digest(preprocessor_cache_mode_config, &mut updated);
 
-                    let mut update_failed = false;
-                    if updated {
-                        // Time macros have been found, we need to update
-                        // the preprocessor cache entry. See [`PreprocessorCacheEntry::result_matches`].
-                        debug!(
-                            "Preprocessor cache updated because of time macros: {preprocessor_key}"
+                let mut update_failed = false;
+                if updated {
+                    // Time macros have been found, we need to update
+                    // the preprocessor cache entry. See [`PreprocessorCacheEntry::result_matches`].
+                    debug!("Preprocessor cache updated because of time macros: {preprocessor_key}");
+
+                    if let Err(e) = storage
+                        .put_preprocessor_cache_entry(preprocessor_key, preprocessor_cache_entry)
+                        .await
+                    {
+                        debug!("Failed to update preprocessor cache: {}", e);
+                        update_failed = true;
+                    }
+                }
+
+                if !update_failed {
+                    if let Some(key) = hit {
+                        debug!("Preprocessor cache hit: {preprocessor_key}");
+                        // A compiler binary may be a symlink to another and
+                        // so has the same digest, but that means
+                        // the toolchain will not contain the correct path
+                        // to invoke the compiler! Add the compiler
+                        // executable path to try and prevent this
+                        let weak_toolchain_key = format!(
+                            "{}-{}",
+                            self.executable.to_string_lossy(),
+                            self.executable_digest
                         );
-
-                        if let Err(e) = storage
-                            .put_preprocessor_cache_entry(
-                                preprocessor_key,
-                                preprocessor_cache_entry,
-                            )
-                            .await
-                        {
-                            debug!("Failed to update preprocessor cache: {}", e);
-                            update_failed = true;
-                        }
-                    }
-
-                    if !update_failed {
-                        if let Some(key) = hit {
-                            debug!("Preprocessor cache hit: {preprocessor_key}");
-                            // A compiler binary may be a symlink to another and
-                            // so has the same digest, but that means
-                            // the toolchain will not contain the correct path
-                            // to invoke the compiler! Add the compiler
-                            // executable path to try and prevent this
-                            let weak_toolchain_key =
-                                format!("{}-{}", executable.to_string_lossy(), executable_digest);
-                            return Ok(HashResult {
-                                key,
-                                compilation: Box::new(CCompilation {
-                                    parsed_args: parsed_args.to_owned(),
-                                    #[cfg(feature = "dist-client")]
-                                    // TODO or is it never relevant since dist?
-                                    preprocessed_input: vec![],
-                                    executable: executable.to_owned(),
-                                    compiler: compiler.to_owned(),
-                                    cwd: cwd.to_owned(),
-                                    env_vars: env_vars.to_owned(),
-                                }),
-                                weak_toolchain_key,
-                            });
-                        } else {
-                            debug!("Preprocessor cache miss: {preprocessor_key}");
-                        }
+                        return Ok(HashResult {
+                            key,
+                            compilation: Box::new(CCompilation {
+                                parsed_args: self.parsed_args.clone(),
+                                is_locally_preprocessed: false,
+                                #[cfg(feature = "dist-client")]
+                                preprocessed_input: PREPROCESSING_SKIPPED_COMPILE_POISON.to_vec(),
+                                executable: self.executable.clone(),
+                                compiler: self.compiler.to_owned(),
+                                cwd: cwd.clone(),
+                                env_vars: env_vars.clone(),
+                            }),
+                            weak_toolchain_key,
+                        });
+                    } else {
+                        debug!("Preprocessor cache miss: {preprocessor_key}");
                     }
                 }
             }
-        }
 
-        let result = compiler
-            .preprocess(
-                creator,
-                &executable,
-                &parsed_args,
-                &cwd,
-                &env_vars,
-                may_dist,
-                rewrite_includes_only,
-                use_preprocessor_cache_mode,
-            )
-            .await;
-        let out_pretty = parsed_args.output_pretty().into_owned();
-        let result = result.map_err(|e| {
-            debug!("[{}]: preprocessor failed: {:?}", out_pretty, e);
-            e
-        });
+            let result = self
+                .compiler
+                .preprocess(
+                    creator,
+                    &self.executable,
+                    &self.parsed_args,
+                    &cwd,
+                    &env_vars,
+                    may_dist,
+                    rewrite_includes_only,
+                    use_preprocessor_cache_mode,
+                )
+                .await;
+            let out_pretty = self.parsed_args.output_pretty().into_owned();
+            let result = result.map_err(|e| {
+                debug!("[{}]: preprocessor failed: {:?}", out_pretty, e);
+                e
+            });
 
-        let outputs = parsed_args.outputs.clone();
-        let args_cwd = cwd.clone();
+            let outputs = self.parsed_args.outputs.clone();
+            let args_cwd = cwd.clone();
 
-        let mut preprocessor_result = result.or_else(move |err| {
-            // Errors remove all traces of potential output.
-            debug!("removing files {:?}", &outputs);
+            let mut preprocessor_result = result.or_else(move |err| {
+                // Errors remove all traces of potential output.
+                debug!("removing files {:?}", outputs);
 
-            let v: std::result::Result<(), std::io::Error> =
-                outputs.values().try_for_each(|output| {
-                    let mut path = args_cwd.clone();
-                    path.push(&output.path);
-                    match fs::metadata(&path) {
-                        // File exists, remove it.
-                        Ok(_) => fs::remove_file(&path),
-                        _ => Ok(()),
-                    }
-                });
-            if v.is_err() {
-                warn!("Could not remove files after preprocessing failed!");
-            }
-
-            match err.downcast::<ProcessError>() {
-                Ok(ProcessError(output)) => {
-                    debug!(
-                        "[{}]: preprocessor returned error status {:?}",
-                        out_pretty,
-                        output.status.code()
-                    );
-                    // Drop the stdout since it's the preprocessor output,
-                    // just hand back stderr and the exit status.
-                    bail!(ProcessError(process::Output {
-                        stdout: vec!(),
-                        ..output
-                    }))
+                let v: std::result::Result<(), std::io::Error> =
+                    outputs.values().try_for_each(|output| {
+                        let mut path = args_cwd.clone();
+                        path.push(&output.path);
+                        match fs::metadata(&path) {
+                            // File exists, remove it.
+                            Ok(_) => fs::remove_file(&path),
+                            _ => Ok(()),
+                        }
+                    });
+                if v.is_err() {
+                    warn!("Could not remove files after preprocessing failed!");
                 }
-                Err(err) => Err(err),
+
+                match err.downcast::<ProcessError>() {
+                    Ok(ProcessError(output)) => {
+                        debug!(
+                            "[{}]: preprocessor returned error status {:?}",
+                            out_pretty,
+                            output.status.code()
+                        );
+                        // Drop the stdout since it's the preprocessor output,
+                        // just hand back stderr and the exit status.
+                        bail!(ProcessError(process::Output {
+                            stdout: vec!(),
+                            ..output
+                        }))
+                    }
+                    Err(err) => Err(err),
+                }
+            })?;
+
+            // Remember include files needed in this preprocessing step
+            let mut include_files = HashMap::new();
+            if preprocessor_key.is_some() {
+                // TODO how to propagate stats and which stats?
+                if !process_preprocessed_file(
+                    &absolute_input_path,
+                    &cwd,
+                    &mut preprocessor_result.stdout,
+                    &mut include_files,
+                    preprocessor_cache_mode_config,
+                    start_of_compilation,
+                    StandardFsAbstraction,
+                )? {
+                    debug!("Disabling preprocessor cache mode");
+                    preprocessor_key = None;
+                }
             }
-        })?;
 
-        // Remember include files needed in this preprocessing step
-        let mut include_files = HashMap::new();
-        if preprocessor_key.is_some() {
-            // TODO how to propagate stats and which stats?
-            if !process_preprocessed_file(
-                &absolute_input_path,
-                &cwd,
-                &mut preprocessor_result.stdout,
-                &mut include_files,
-                preprocessor_cache_mode_config,
-                start_of_compilation,
-                StandardFsAbstraction,
-            )? {
-                debug!("Disabling preprocessor cache mode");
-                preprocessor_key = None;
-            }
-        }
+            trace!(
+                "[{}]: Preprocessor output is {} bytes",
+                self.parsed_args.output_pretty(),
+                preprocessor_result.stdout.len()
+            );
 
-        trace!(
-            "[{}]: Preprocessor output is {} bytes",
-            parsed_args.output_pretty(),
-            preprocessor_result.stdout.len()
-        );
-
-        // Create an argument vector containing both common and arch args, to
-        // use in creating a hash key
-        let mut common_and_arch_args = parsed_args.common_args.clone();
-        common_and_arch_args.extend(parsed_args.arch_args.to_vec());
-
-        let key = {
-            hash_key(
-                &executable_digest,
-                parsed_args.language,
-                &common_and_arch_args,
-                &extra_hashes,
-                &env_vars,
-                &preprocessor_result.stdout,
-                compiler.plusplus(),
+            (preprocessor_result.stdout, include_files)
+        } else {
+            // No preprocessing is supported - input is already preprocessed
+            (
+                std::fs::read(absolute_input_path.as_path())?,
+                HashMap::new(),
             )
         };
 
-        // Cache the preprocessing step
-        if let Some(preprocessor_key) = preprocessor_key {
-            if !include_files.is_empty() {
-                let mut preprocessor_cache_entry = PreprocessorCacheEntry::new();
-                let mut files: Vec<_> = include_files
-                    .into_iter()
-                    .map(|(path, digest)| (digest, path))
-                    .collect();
-                files.sort_unstable_by(|a, b| a.1.cmp(&b.1));
-                preprocessor_cache_entry.add_result(start_of_compilation, &key, files);
+        // Create an argument vector containing both common and arch args, to
+        // use in creating a hash key
+        let mut common_and_arch_args = self.parsed_args.common_args.clone();
+        common_and_arch_args.extend(self.parsed_args.arch_args.clone());
 
-                if let Err(e) = storage
-                    .put_preprocessor_cache_entry(&preprocessor_key, preprocessor_cache_entry)
-                    .await
-                {
-                    debug!("Failed to update preprocessor cache: {}", e);
-                }
+        let key = HashKeyParams::new(
+            &self.executable_digest,
+            self.parsed_args.language,
+            &common_and_arch_args,
+            &preprocessor_output,
+        )
+        .with_extra_hashes(&extra_hashes)
+        .with_env_vars(&env_vars)
+        .with_plusplus(self.compiler.plusplus())
+        .with_basedirs(storage.basedirs())
+        .with_assembler_digest(assembler_digest.as_deref())
+        .compute();
+
+        // Cache the preprocessing step
+        if let Some(preprocessor_key) = preprocessor_key
+            && !include_files.is_empty()
+        {
+            let mut preprocessor_cache_entry = PreprocessorCacheEntry::new();
+            let mut files: Vec<_> = include_files
+                .into_iter()
+                .map(|(path, digest)| (digest, path))
+                .collect();
+            files.sort_unstable_by(|a, b| a.1.cmp(&b.1));
+            preprocessor_cache_entry.add_result(start_of_compilation, &key, files);
+
+            if let Err(e) = storage
+                .put_preprocessor_cache_entry(&preprocessor_key, preprocessor_cache_entry)
+                .await
+            {
+                debug!("Failed to update preprocessor cache: {}", e);
             }
         }
 
         // A compiler binary may be a symlink to another and so has the same digest, but that means
         // the toolchain will not contain the correct path to invoke the compiler! Add the compiler
         // executable path to try and prevent this
-        let weak_toolchain_key = format!("{}-{}", executable.to_string_lossy(), executable_digest);
+        let weak_toolchain_key = format!(
+            "{}-{}",
+            self.executable.to_string_lossy(),
+            self.executable_digest
+        );
         Ok(HashResult {
             key,
             compilation: Box::new(CCompilation {
-                parsed_args,
+                parsed_args: self.parsed_args.clone(),
+                is_locally_preprocessed: true,
                 #[cfg(feature = "dist-client")]
-                preprocessed_input: preprocessor_result.stdout,
-                executable,
-                compiler,
+                preprocessed_input: preprocessor_output,
+                executable: self.executable.clone(),
+                compiler: self.compiler.clone(),
                 cwd,
                 env_vars,
             }),
@@ -723,7 +779,7 @@ fn process_preprocessed_file(
             // GCC precompiled header:
             || slice[1..].starts_with(PRAGMA_GCC_PCH_PREPROCESS)
             // HP/AIX:
-            || (&slice[1..5] == b"line "))
+            || slice[1..].starts_with(b"line "))
         && (start == 0 || bytes[start - 1] == b'\n')
         {
             match process_preprocessor_line(
@@ -752,7 +808,7 @@ fn process_preprocessed_file(
                     hash_start = h;
                     continue;
                 }
-            };
+            }
         } else if slice
             .strip_prefix(INCBIN_DIRECTIVE)
             .filter(|slice| {
@@ -918,7 +974,7 @@ fn process_preprocessor_line(
         fs_impl,
     )? {
         return Ok(ControlFlow::Break((start, hash_start, false)));
-    };
+    }
     // Everything of interest between hash_start and start has been hashed now.
     hash_start = start;
     Ok(ControlFlow::Continue((start, hash_start)))
@@ -933,7 +989,7 @@ fn process_preprocessor_line(
 pub fn normalize_path(path: &Path) -> PathBuf {
     use std::path::Component;
     let mut components = path.components().peekable();
-    let mut ret = if let Some(c @ Component::Prefix(..)) = components.peek().cloned() {
+    let mut ret = if let Some(c @ Component::Prefix(..)) = components.peek().copied() {
         components.next();
         PathBuf::from(c.as_os_str())
     } else {
@@ -1134,23 +1190,31 @@ fn include_is_too_new(
 ) -> bool {
     // The comparison using >= is intentional, due to a possible race between
     // starting compilation and writing the include file.
-    if let Some(mtime) = meta.modified {
-        if mtime >= time_of_compilation.into() {
-            debug!("Include file {} is too new", path.display());
-            return true;
-        }
+    if let Some(mtime) = meta.modified
+        && mtime >= time_of_compilation.into()
+    {
+        debug!("Include file {} is too new", path.display());
+        return true;
     }
 
     // The same >= logic as above applies to the change time of the file.
-    if let Some(ctime) = meta.ctime_or_creation {
-        if ctime >= time_of_compilation.into() {
-            debug!("Include file {} is too new", path.display());
-            return true;
-        }
+    if let Some(ctime) = meta.ctime_or_creation
+        && ctime >= time_of_compilation.into()
+    {
+        debug!("Include file {} is too new", path.display());
+        return true;
     }
 
     false
 }
+
+// Used as "preprocessed code" when no preprocessing was done so that compilation fails. That should never
+// happen though because, where necessary, the situation is detected and preprocessing is *then* done to
+// salvage the situation. Previously, an empty u8 vector was used, which is unfortunately a valid C and C++
+// compilation unit and caused errors that only surfaced when linking: the symbols expected from the
+// compilation unit were of course not produced.
+#[cfg(feature = "dist-client")]
+const PREPROCESSING_SKIPPED_COMPILE_POISON: &[u8] = b"([{SCCACHE -*-* INVALID_C_CPP_CODE([{\"";
 
 impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I> {
     fn generate_compile_commands(
@@ -1162,21 +1226,12 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I>
         Option<dist::CompileCommand>,
         Cacheable,
     )> {
-        let CCompilation {
-            ref parsed_args,
-            ref executable,
-            ref compiler,
-            ref cwd,
-            ref env_vars,
-            ..
-        } = *self;
-
-        compiler.generate_compile_commands(
+        self.compiler.generate_compile_commands(
             path_transformer,
-            executable,
-            parsed_args,
-            cwd,
-            env_vars,
+            &self.executable,
+            &self.parsed_args,
+            &self.cwd,
+            &self.env_vars,
             rewrite_includes_only,
         )
     }
@@ -1210,6 +1265,10 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I>
         });
         let outputs_rewriter = Box::new(NoopOutputsRewriter);
         Ok((inputs_packager, toolchain_packager, outputs_rewriter))
+    }
+
+    fn is_locally_preprocessed(&self) -> bool {
+        self.is_locally_preprocessed
     }
 
     fn outputs<'a>(&'a self) -> Box<dyn Iterator<Item = FileObjectSource> + 'a> {
@@ -1302,7 +1361,10 @@ struct CToolchainPackager {
 }
 
 #[cfg(feature = "dist-client")]
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 impl pkg::ToolchainPackager for CToolchainPackager {
     fn write_pkg(self: Box<Self>, f: fs::File) -> Result<()> {
         use std::os::unix::ffi::OsStringExt;
@@ -1371,6 +1433,10 @@ impl pkg::ToolchainPackager for CToolchainPackager {
         if Path::new("/etc/ld.so.conf").is_file() {
             package_builder.add_file("/etc/ld.so.conf".into())?;
         }
+        let ld_conf_dir = Path::new("/etc/ld.so.conf.d");
+        if ld_conf_dir.is_dir() {
+            package_builder.add_dir_contents(ld_conf_dir)?;
+        }
 
         // Compiler-specific handling
         match self.kind {
@@ -1412,11 +1478,11 @@ impl pkg::ToolchainPackager for CToolchainPackager {
     }
 }
 
-/// The cache is versioned by the inputs to `hash_key`.
-pub const CACHE_VERSION: &[u8] = b"11";
+/// The cache is versioned by the inputs to `HashKeyParams::compute`.
+pub const CACHE_VERSION: &[u8] = b"13";
 
 /// Environment variables that are factored into the cache key.
-static CACHED_ENV_VARS: Lazy<HashSet<&'static OsStr>> = Lazy::new(|| {
+static CACHED_ENV_VARS: LazyLock<HashSet<&'static OsStr>> = LazyLock::new(|| {
     [
         // SCCACHE_C_CUSTOM_CACHE_BUSTER has no particular meaning behind it,
         // serving as a way for the user to factor custom data into the hash.
@@ -1435,40 +1501,147 @@ static CACHED_ENV_VARS: Lazy<HashSet<&'static OsStr>> = Lazy::new(|| {
     .collect()
 });
 
-/// Compute the hash key of `compiler` compiling `preprocessor_output` with `args`.
-pub fn hash_key(
-    compiler_digest: &str,
-    language: Language,
-    arguments: &[OsString],
-    extra_hashes: &[String],
-    env_vars: &[(OsString, OsString)],
-    preprocessor_output: &[u8],
-    plusplus: bool,
-) -> String {
-    // If you change any of the inputs to the hash, you should change `CACHE_VERSION`.
-    let mut m = Digest::new();
-    m.update(compiler_digest.as_bytes());
-    // clang and clang++ have different behavior despite being byte-for-byte identical binaries, so
-    // we have to incorporate that into the hash as well.
-    m.update(&[plusplus as u8]);
-    m.update(CACHE_VERSION);
-    m.update(language.as_str().as_bytes());
+/// Feed the compiler arguments into `m`, with the base directories stripped.
+///
+/// The arguments are hashed verbatim, so any that spell out an absolute path -
+/// `-ffile-prefix-map=/home/user/project=.` above all - would tie the cache
+/// entry to one checkout of the tree. See [`strip_basedirs_from_arg`].
+pub fn hash_arguments(m: &mut Digest, arguments: &[OsString], basedirs: &[Vec<u8>]) {
     for arg in arguments {
-        arg.hash(&mut HashToDigest { digest: &mut m });
+        // Same shape as OsString's own Hash impl: the bytes, then a separator
+        // that cannot occur in them.
+        m.update(&strip_basedirs_from_arg(arg.as_encoded_bytes(), basedirs));
+        m.update(&[0xff]);
     }
-    for hash in extra_hashes {
-        m.update(hash.as_bytes());
-    }
+}
 
-    for (var, val) in env_vars.iter() {
-        if CACHED_ENV_VARS.contains(var.as_os_str()) {
-            var.hash(&mut HashToDigest { digest: &mut m });
-            m.update(&b"="[..]);
-            val.hash(&mut HashToDigest { digest: &mut m });
+/// Parameters for computing a hash key for C/C++ compilation caching.
+///
+/// Construct with required fields via [`HashKeyParams::new`], then add optional
+/// fields with builder methods.
+///
+/// # Example
+/// ```ignore
+/// let hash = HashKeyParams::new(
+///     "abc123",          // compiler_digest
+///     Language::C,        // language
+///     &args,             // arguments
+///     output             // preprocessor_output
+/// )
+/// .with_extra_hashes(&extra)
+/// .with_plusplus(true)
+/// .compute();
+/// ```
+#[derive(Debug, Clone)]
+pub struct HashKeyParams<'a> {
+    compiler_digest: &'a str,
+    language: Language,
+    arguments: &'a [OsString],
+    extra_hashes: &'a [String],
+    env_vars: &'a [(OsString, OsString)],
+    preprocessor_output: &'a [u8],
+    plusplus: bool,
+    basedirs: &'a [Vec<u8>],
+    assembler_digest: Option<&'a str>,
+}
+
+impl<'a> HashKeyParams<'a> {
+    /// Creates a new hash key parameter set with required fields.
+    ///
+    /// Optional fields have default values and can be set via `with_*` methods.
+    ///
+    /// # Arguments
+    /// * `compiler_digest` - Hash of the compiler executable
+    /// * `language` - Source language being compiled
+    /// * `arguments` - Compiler arguments
+    /// * `preprocessor_output` - Preprocessed source to hash
+    pub fn new(
+        compiler_digest: &'a str,
+        language: Language,
+        arguments: &'a [OsString],
+        preprocessor_output: &'a [u8],
+    ) -> Self {
+        Self {
+            compiler_digest,
+            language,
+            arguments,
+            preprocessor_output,
+            extra_hashes: &[],
+            env_vars: &[],
+            plusplus: false,
+            basedirs: &[],
+            assembler_digest: None,
         }
     }
-    m.update(preprocessor_output);
-    m.finish()
+
+    /// Sets additional hash data to include in the cache key.
+    pub fn with_extra_hashes(mut self, extra_hashes: &'a [String]) -> Self {
+        self.extra_hashes = extra_hashes;
+        self
+    }
+
+    /// Sets the environment variables to consider for caching.
+    pub fn with_env_vars(mut self, env_vars: &'a [(OsString, OsString)]) -> Self {
+        self.env_vars = env_vars;
+        self
+    }
+
+    /// Sets whether this is a C++ compiler (affects clang/clang++ distinction).
+    pub fn with_plusplus(mut self, plusplus: bool) -> Self {
+        self.plusplus = plusplus;
+        self
+    }
+
+    /// Sets the base directories for path normalization.
+    pub fn with_basedirs(mut self, basedirs: &'a [Vec<u8>]) -> Self {
+        self.basedirs = basedirs;
+        self
+    }
+
+    /// Sets the identity of the assembler the compiler will run, if any.
+    pub fn with_assembler_digest(mut self, assembler_digest: Option<&'a str>) -> Self {
+        self.assembler_digest = assembler_digest;
+        self
+    }
+
+    /// Computes the hash key based on the configured parameters.
+    ///
+    /// If `basedirs` are provided, paths in the preprocessor output will be normalized by
+    /// stripping the longest matching basedir prefix. This enables cache hits across different
+    /// absolute paths (similar to ccache's CCACHE_BASEDIR).
+    ///
+    /// # Note
+    /// If you change any of the inputs to the hash, you should change `CACHE_VERSION`.
+    pub fn compute(&self) -> String {
+        let mut m = Digest::new();
+        m.update(self.compiler_digest.as_bytes());
+        // clang and clang++ have different behavior despite being byte-for-byte identical binaries, so
+        // we have to incorporate that into the hash as well.
+        m.update(&[self.plusplus as u8]);
+        m.update(CACHE_VERSION);
+        m.update(self.language.as_str().as_bytes());
+        hash_arguments(&mut m, self.arguments, self.basedirs);
+        for hash in self.extra_hashes {
+            m.update(hash.as_bytes());
+        }
+        if let Some(assembler_digest) = self.assembler_digest {
+            m.update(assembler_digest.as_bytes());
+        }
+
+        for (var, val) in self.env_vars.iter() {
+            if CACHED_ENV_VARS.contains(var.as_os_str()) {
+                var.hash(&mut HashToDigest { digest: &mut m });
+                m.update(&b"="[..]);
+                val.hash(&mut HashToDigest { digest: &mut m });
+            }
+        }
+
+        // Strip basedirs from preprocessor output if configured
+        let preprocessor_output_to_hash = strip_basedirs(self.preprocessor_output, self.basedirs);
+
+        m.update(&preprocessor_output_to_hash);
+        m.finish()
+    }
 }
 
 #[cfg(test)]
@@ -1480,121 +1653,110 @@ mod test {
     #[test]
     fn test_same_content() {
         let args = ovec!["a", "b", "c"];
-        const PREPROCESSED: &[u8] = b"hello world";
-        assert_eq!(
-            hash_key("abcd", Language::C, &args, &[], &[], PREPROCESSED, false),
-            hash_key("abcd", Language::C, &args, &[], &[], PREPROCESSED, false)
-        );
+        let h1 = HashKeyParams::new("abcd", Language::C, &args, b"hello world").compute();
+        let h2 = HashKeyParams::new("abcd", Language::C, &args, b"hello world").compute();
+        assert_eq!(h1, h2);
     }
 
     #[test]
     fn test_plusplus_differs() {
         let args = ovec!["a", "b", "c"];
-        const PREPROCESSED: &[u8] = b"hello world";
-        assert_neq!(
-            hash_key("abcd", Language::C, &args, &[], &[], PREPROCESSED, false),
-            hash_key("abcd", Language::C, &args, &[], &[], PREPROCESSED, true)
-        );
+        let h1 = HashKeyParams::new("abcd", Language::C, &args, b"hello world").compute();
+        let h2 = HashKeyParams::new("abcd", Language::C, &args, b"hello world")
+            .with_plusplus(true)
+            .compute();
+        assert_neq!(h1, h2);
+    }
+
+    #[test]
+    fn test_assembler_digest_differs() {
+        let args = ovec!["a", "b", "c"];
+        let h1 = HashKeyParams::new("abcd", Language::C, &args, b"hello world").compute();
+        let h2 = HashKeyParams::new("abcd", Language::C, &args, b"hello world")
+            .with_assembler_digest(Some("abcd"))
+            .compute();
+        let h3 = HashKeyParams::new("abcd", Language::C, &args, b"hello world")
+            .with_assembler_digest(Some("efgh"))
+            .compute();
+        assert_neq!(h1, h2);
+        assert_neq!(h2, h3);
+        // Not knowing the assembler must keep the key the compiler alone would give,
+        // so that caches predating assembler tracking stay usable.
+        let h4 = HashKeyParams::new("abcd", Language::C, &args, b"hello world")
+            .with_assembler_digest(None)
+            .compute();
+        assert_eq!(h1, h4);
     }
 
     #[test]
     fn test_header_differs() {
         let args = ovec!["a", "b", "c"];
-        const PREPROCESSED: &[u8] = b"hello world";
-        assert_neq!(
-            hash_key("abcd", Language::C, &args, &[], &[], PREPROCESSED, false),
-            hash_key(
-                "abcd",
-                Language::CHeader,
-                &args,
-                &[],
-                &[],
-                PREPROCESSED,
-                false
-            )
-        );
+        let h1 = HashKeyParams::new("abcd", Language::C, &args, b"hello world").compute();
+        let h2 = HashKeyParams::new("abcd", Language::CHeader, &args, b"hello world").compute();
+        assert_neq!(h1, h2);
     }
 
     #[test]
     fn test_plusplus_header_differs() {
         let args = ovec!["a", "b", "c"];
-        const PREPROCESSED: &[u8] = b"hello world";
-        assert_neq!(
-            hash_key("abcd", Language::Cxx, &args, &[], &[], PREPROCESSED, true),
-            hash_key(
-                "abcd",
-                Language::CxxHeader,
-                &args,
-                &[],
-                &[],
-                PREPROCESSED,
-                true
-            )
-        );
+        let h1 = HashKeyParams::new("abcd", Language::Cxx, &args, b"hello world")
+            .with_plusplus(true)
+            .compute();
+        let h2 = HashKeyParams::new("abcd", Language::CxxHeader, &args, b"hello world")
+            .with_plusplus(true)
+            .compute();
+        assert_neq!(h1, h2);
     }
 
     #[test]
     fn test_hash_key_executable_contents_differs() {
         let args = ovec!["a", "b", "c"];
-        const PREPROCESSED: &[u8] = b"hello world";
-        assert_neq!(
-            hash_key("abcd", Language::C, &args, &[], &[], PREPROCESSED, false),
-            hash_key("wxyz", Language::C, &args, &[], &[], PREPROCESSED, false)
-        );
+        let h1 = HashKeyParams::new("abcd", Language::C, &args, b"hello world").compute();
+        let h2 = HashKeyParams::new("wxyz", Language::C, &args, b"hello world").compute();
+        assert_neq!(h1, h2);
     }
 
     #[test]
     fn test_hash_key_args_differs() {
-        let digest = "abcd";
         let abc = ovec!["a", "b", "c"];
         let xyz = ovec!["x", "y", "z"];
         let ab = ovec!["a", "b"];
         let a = ovec!["a"];
-        const PREPROCESSED: &[u8] = b"hello world";
-        assert_neq!(
-            hash_key(digest, Language::C, &abc, &[], &[], PREPROCESSED, false),
-            hash_key(digest, Language::C, &xyz, &[], &[], PREPROCESSED, false)
-        );
 
-        assert_neq!(
-            hash_key(digest, Language::C, &abc, &[], &[], PREPROCESSED, false),
-            hash_key(digest, Language::C, &ab, &[], &[], PREPROCESSED, false)
-        );
+        let h_abc = HashKeyParams::new("abcd", Language::C, &abc, b"hello world").compute();
+        let h_xyz = HashKeyParams::new("abcd", Language::C, &xyz, b"hello world").compute();
+        let h_ab = HashKeyParams::new("abcd", Language::C, &ab, b"hello world").compute();
+        let h_a = HashKeyParams::new("abcd", Language::C, &a, b"hello world").compute();
 
-        assert_neq!(
-            hash_key(digest, Language::C, &abc, &[], &[], PREPROCESSED, false),
-            hash_key(digest, Language::C, &a, &[], &[], PREPROCESSED, false)
-        );
+        assert_neq!(h_abc, h_xyz);
+        assert_neq!(h_abc, h_ab);
+        assert_neq!(h_abc, h_a);
     }
 
     #[test]
     fn test_hash_key_preprocessed_content_differs() {
         let args = ovec!["a", "b", "c"];
-        assert_neq!(
-            hash_key(
-                "abcd",
-                Language::C,
-                &args,
-                &[],
-                &[],
-                &b"hello world"[..],
-                false
-            ),
-            hash_key("abcd", Language::C, &args, &[], &[], &b"goodbye"[..], false)
-        );
+        let h1 = HashKeyParams::new("abcd", Language::C, &args, b"hello world").compute();
+        let h2 = HashKeyParams::new("abcd", Language::C, &args, b"goodbye").compute();
+        assert_neq!(h1, h2);
     }
 
     #[test]
     fn test_hash_key_env_var_differs() {
         let args = ovec!["a", "b", "c"];
-        let digest = "abcd";
-        const PREPROCESSED: &[u8] = b"hello world";
         for var in CACHED_ENV_VARS.iter() {
-            let h1 = hash_key(digest, Language::C, &args, &[], &[], PREPROCESSED, false);
-            let vars = vec![(OsString::from(var), OsString::from("something"))];
-            let h2 = hash_key(digest, Language::C, &args, &[], &vars, PREPROCESSED, false);
-            let vars = vec![(OsString::from(var), OsString::from("something else"))];
-            let h3 = hash_key(digest, Language::C, &args, &[], &vars, PREPROCESSED, false);
+            let h1 = HashKeyParams::new("abcd", Language::C, &args, b"hello world").compute();
+
+            let vars1 = vec![(OsString::from(var), OsString::from("something"))];
+            let h2 = HashKeyParams::new("abcd", Language::C, &args, b"hello world")
+                .with_env_vars(&vars1)
+                .compute();
+
+            let vars2 = vec![(OsString::from(var), OsString::from("something else"))];
+            let h3 = HashKeyParams::new("abcd", Language::C, &args, b"hello world")
+                .with_env_vars(&vars2)
+                .compute();
+
             assert_neq!(h1, h2);
             assert_neq!(h2, h3);
         }
@@ -1603,21 +1765,111 @@ mod test {
     #[test]
     fn test_extra_hash_data() {
         let args = ovec!["a", "b", "c"];
-        let digest = "abcd";
-        const PREPROCESSED: &[u8] = b"hello world";
         let extra_data = stringvec!["hello", "world"];
 
+        let h1 = HashKeyParams::new("abcd", Language::C, &args, b"hello world")
+            .with_extra_hashes(&extra_data)
+            .compute();
+        let h2 = HashKeyParams::new("abcd", Language::C, &args, b"hello world").compute();
+
+        assert_neq!(h1, h2);
+    }
+
+    #[test]
+    fn test_hash_key_basedirs() {
+        let args = ovec!["a", "b", "c"];
+        let preprocessed1 = b"# 1 \"/home/user1/project/src/main.c\"\nint main() { return 0; }";
+        let preprocessed2 = b"# 1 \"/home/user2/project/src/main.c\"\nint main() { return 0; }";
+        let basedirs = [
+            b"/home/user1/project".to_vec(),
+            b"/home/user2/project".to_vec(),
+        ];
+
+        // Helper to compute with basedirs
+        let hash_with_basedirs = |output: &[u8], dirs: &[Vec<u8>]| {
+            HashKeyParams::new("abcd", Language::C, &args, output)
+                .with_basedirs(dirs)
+                .compute()
+        };
+
+        // Test 1: Same hash with different absolute paths when basedir is used
+        let h1 = hash_with_basedirs(preprocessed1, &basedirs);
+        let h2 = hash_with_basedirs(preprocessed2, &basedirs);
+        assert_eq!(h1, h2);
+
+        // Test 2: Same hash with single basedir that matches each
+        assert_eq!(
+            hash_with_basedirs(preprocessed1, &basedirs[..1]),
+            hash_with_basedirs(preprocessed2, &basedirs[1..])
+        );
+
+        // Test 3: Different hashes without basedir
         assert_neq!(
-            hash_key(
-                digest,
-                Language::C,
-                &args,
-                &extra_data,
-                &[],
-                PREPROCESSED,
-                false
-            ),
-            hash_key(digest, Language::C, &args, &[], &[], PREPROCESSED, false)
+            HashKeyParams::new("abcd", Language::C, &args, preprocessed1).compute(),
+            HashKeyParams::new("abcd", Language::C, &args, preprocessed2).compute()
+        );
+
+        // Test 4: Works for C++ files too
+        let preprocessed_cpp1 =
+            b"# 1 \"/home/user1/project/src/main.cpp\"\nint main() { return 0; }";
+        let preprocessed_cpp2 =
+            b"# 1 \"/home/user2/project/src/main.cpp\"\nint main() { return 0; }";
+        let h_cpp1 = HashKeyParams::new("abcd", Language::Cxx, &args, preprocessed_cpp1)
+            .with_plusplus(true)
+            .with_basedirs(&basedirs)
+            .compute();
+        let h_cpp2 = HashKeyParams::new("abcd", Language::Cxx, &args, preprocessed_cpp2)
+            .with_plusplus(true)
+            .with_basedirs(&basedirs)
+            .compute();
+        assert_eq!(h_cpp1, h_cpp2);
+
+        // Test 5: Doesn't work with trailing slash in basedir, they must be normalized in config
+        let basedir_slash = b"/home/user1/project/".to_vec();
+        let h_slash = hash_with_basedirs(preprocessed1, std::slice::from_ref(&basedir_slash));
+        assert_neq!(h1, h_slash);
+
+        // Test 6: Multiple basedirs - longest match wins
+        let multi_basedirs = vec![
+            b"/home/user1".to_vec(),
+            b"/home/user1/project".to_vec(), // This should match (longest)
+        ];
+        assert_eq!(h1, hash_with_basedirs(preprocessed1, &multi_basedirs));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_hash_key_basedirs_windows_escaped_backslashes() {
+        // On Windows, paths in preprocessor output are C string literals with
+        // escaped backslashes (e.g. MSVC: #line 1 "D:\\dir\\file.c", clang:
+        // # 1 "D:\\dir\\file.c"). The same source compiled from two different
+        // directories must produce the same hash when both are basedirs.
+        let args = ovec!["a", "b", "c"];
+        let preprocessed1 =
+            b"#line 1 \"D:\\\\dev\\\\user1\\\\project\\\\src\\\\main.c\"\nint main() { return 0; }";
+        let preprocessed2 =
+            b"#line 1 \"E:\\\\work\\\\user2\\\\checkout\\\\src\\\\main.c\"\nint main() { return 0; }";
+        // As normalized by Config: lowercase, forward slashes, trailing slash
+        let basedirs = [
+            b"d:/dev/user1/project/".to_vec(),
+            b"e:/work/user2/checkout/".to_vec(),
+        ];
+
+        let hash_with_basedirs = |output: &[u8], dirs: &[Vec<u8>]| {
+            HashKeyParams::new("abcd", Language::C, &args, output)
+                .with_basedirs(dirs)
+                .compute()
+        };
+
+        // Same hash with different absolute (escaped backslash) paths
+        let h1 = hash_with_basedirs(preprocessed1, &basedirs);
+        let h2 = hash_with_basedirs(preprocessed2, &basedirs);
+        assert_eq!(h1, h2);
+
+        // Different hashes without basedirs
+        assert_neq!(
+            HashKeyParams::new("abcd", Language::C, &args, preprocessed1).compute(),
+            HashKeyParams::new("abcd", Language::C, &args, preprocessed2).compute()
         );
     }
 
@@ -1630,7 +1882,13 @@ mod test {
             assert_eq!(actual, Some(expected));
         }
 
+        t("s", Language::Assembler);
+        t("S", Language::AssemblerToPreprocess);
+        t("sx", Language::AssemblerToPreprocess);
+
         t("c", Language::C);
+
+        t("i", Language::CPreprocessed);
 
         t("C", Language::Cxx);
         t("cc", Language::Cxx);
@@ -1639,6 +1897,8 @@ mod test {
         t("CPP", Language::Cxx);
         t("cxx", Language::Cxx);
         t("c++", Language::Cxx);
+
+        t("ii", Language::CxxPreprocessed);
 
         t("h", Language::GenericHeader);
 
@@ -1653,8 +1913,12 @@ mod test {
 
         t("m", Language::ObjectiveC);
 
+        t("mi", Language::ObjectiveCPreprocessed);
+
         t("M", Language::ObjectiveCxx);
         t("mm", Language::ObjectiveCxx);
+
+        t("mii", Language::ObjectiveCxxPreprocessed);
 
         t("cu", Language::Cuda);
         t("hip", Language::Hip);
@@ -1720,6 +1984,56 @@ mod test {
         assert_eq!(&bytes, &original_bytes);
         assert!(success);
         assert_eq!(include_files.len(), 0);
+    }
+
+    #[test]
+    fn test_process_preprocessed_file_line_directive() {
+        let header = PathBuf::from("tests/test.h");
+        let fs_impl = TestFs {
+            metadata_results: Mutex::new(
+                [(
+                    header.clone(),
+                    PreprocessorFileMetadata {
+                        is_dir: false,
+                        is_file: true,
+                        modified: Some(Timestamp::new(12341234, 0)),
+                        ctime_or_creation: None,
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            ),
+            open_results: Mutex::new(
+                [(
+                    header.clone(),
+                    Box::new(&b"contents"[..]) as Box<dyn std::io::Read>,
+                )]
+                .into_iter()
+                .collect(),
+            ),
+        };
+        let mut bytes = br#"#line 1 "tests/test.h"
+int value;
+"#
+        .to_vec();
+        let mut include_files = HashMap::new();
+
+        let success = process_preprocessed_file(
+            Path::new("tests/test.c"),
+            Path::new(""),
+            &mut bytes,
+            &mut include_files,
+            PreprocessorCacheModeConfig::activated(),
+            std::time::SystemTime::now(),
+            fs_impl,
+        )
+        .unwrap();
+
+        assert!(success);
+        assert_eq!(
+            include_files.get(&header).map(String::as_str),
+            Some("a93900c371d997927c5bc568ea538bed59ae5c960021dcfe7b0b369da5267528")
+        );
     }
 
     /// A filesystem interface that only panics to test that we don't access it.

@@ -16,8 +16,8 @@ use crate::errors::*;
 use crate::net::Connection;
 use crate::protocol::{Request, Response};
 use crate::util;
+use backon::BlockingRetryable;
 use byteorder::{BigEndian, ByteOrder};
-use retry::{delay::Fixed, retry};
 use std::io::{self, BufReader, BufWriter, Read};
 
 /// A connection to an sccache server.
@@ -50,9 +50,15 @@ impl ServerConnection {
     pub fn read_one_response(&mut self) -> Result<Response> {
         trace!("ServerConnection::read_one_response");
         let mut bytes = [0; 4];
-        self.reader
-            .read_exact(&mut bytes)
-            .context("Failed to read response header")?;
+        self.reader.read_exact(&mut bytes).map_err(|e| {
+            let context = if e.kind() == io::ErrorKind::UnexpectedEof {
+                "the sccache server closed the connection without replying; \
+                 it may have crashed, check its log (SCCACHE_ERROR_LOG)"
+            } else {
+                "Failed to read response header"
+            };
+            anyhow::Error::new(e).context(context)
+        })?;
         let len = BigEndian::read_u32(&bytes);
         trace!("Should read {} more bytes", len);
         let mut data = vec![0; len as usize];
@@ -79,11 +85,34 @@ pub fn connect_with_retry(addr: &crate::net::SocketAddr) -> io::Result<ServerCon
     //   if the process exited.
     // * Send a pipe handle to the server process so it can notify
     //   us once it starts the server instead of us polling.
-    match retry(Fixed::from_millis(500).take(10), || connect_to_server(addr)) {
+    let backoff = backon::ConstantBuilder::default()
+        .with_delay(std::time::Duration::from_millis(500))
+        .with_max_times(10);
+    match (|| connect_to_server(addr)).retry(backoff).call() {
         Ok(conn) => Ok(conn),
         Err(e) => Err(io::Error::new(
             io::ErrorKind::TimedOut,
             format!("Connection to server timed out: {:?}", e),
         )),
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use std::net::{TcpListener, TcpStream};
+
+    #[test]
+    fn test_read_one_response_server_hung_up() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let stream = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        drop(listener.accept().unwrap());
+        let mut conn = ServerConnection::new(Box::new(stream)).unwrap();
+        let err = conn.read_one_response().unwrap_err();
+        assert!(
+            err.to_string()
+                .starts_with("the sccache server closed the connection without replying"),
+            "{err:#}"
+        );
     }
 }

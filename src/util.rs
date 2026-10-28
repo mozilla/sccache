@@ -20,6 +20,7 @@ use fs_err as fs;
 use object::read::archive::ArchiveFile;
 use object::read::macho::{FatArch, MachOFatFile32, MachOFatFile64};
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::cell::Cell;
 use std::ffi::{OsStr, OsString};
 use std::hash::Hasher;
@@ -37,6 +38,31 @@ pub const BASE64_URL_SAFE_ENGINE: base64::engine::GeneralPurpose =
     base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
 pub const HASH_BUFFER_SIZE: usize = 128 * 1024;
+
+/// Reads `reader` to the end, passing each chunk read to `f`.
+///
+/// Goes through `std::io::copy`, whose buffer lives on the stack and is not
+/// zeroed for readers that can fill uninitialized memory, such as files and
+/// byte slices. Zeroing a buffer for each input costs more than hashing a
+/// typical header, which is what direct mode hashes the most, and keeping one
+/// around between calls keeps that memory allocated.
+fn read_chunks<R: Read + ?Sized>(reader: &mut R, f: impl FnMut(&[u8])) -> Result<()> {
+    struct Chunks<F>(F);
+
+    impl<F: FnMut(&[u8])> Write for Chunks<F> {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            (self.0)(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    std::io::copy(reader, &mut Chunks(f))?;
+    Ok(())
+}
 
 #[derive(Clone)]
 pub struct Digest {
@@ -67,18 +93,11 @@ impl Digest {
     /// Calculate the BLAKE3 digest of the contents read from `reader`, calling
     /// `each` before each time the digest is updated.
     pub fn reader_sync_with<R: Read, F: FnMut(&[u8])>(mut reader: R, mut each: F) -> Result<Self> {
-        let mut m = Digest::new();
-        // A buffer of 128KB should give us the best performance.
-        // See https://eklitzke.org/efficient-file-copying-on-linux.
-        let mut buffer = [0; HASH_BUFFER_SIZE];
-        loop {
-            let count = reader.read(&mut buffer[..])?;
-            if count == 0 {
-                break;
-            }
-            each(&buffer[..count]);
-            m.update(&buffer[..count]);
-        }
+        let mut m = Digest::default();
+        read_chunks(&mut reader, |chunk| {
+            each(chunk);
+            m.update(chunk);
+        })?;
         Ok(m)
     }
 
@@ -98,11 +117,48 @@ impl Digest {
     /// the actual hash computation on a background thread in `pool`.
     pub async fn reader(path: PathBuf, pool: &tokio::runtime::Handle) -> Result<String> {
         pool.spawn_blocking(move || {
-            let reader = File::open(&path)
-                .with_context(|| format!("Failed to open file for hashing: {:?}", path))?;
-            Digest::reader_sync(reader)
+            let mut digest = Digest::new();
+            if path.is_dir() {
+                // For directories (e.g., from
+                // proc_macro::tracked_path::path()), recursively hash all file
+                // names and contents in sorted order.
+                let mut entries = Vec::new();
+                Self::collect_dir_entries(&path, &mut entries)?;
+                entries.sort();
+                for entry in &entries {
+                    let rel = entry.strip_prefix(&path).unwrap_or(entry);
+                    digest.delimiter(rel.to_string_lossy().as_bytes());
+                    digest.update_from_file(entry)?;
+                }
+            } else {
+                digest.update_from_file(&path)?;
+            }
+            Ok(digest.finish())
         })
         .await?
+    }
+
+    /// Open `path` and stream its contents into `self`.
+    fn update_from_file(&mut self, path: &Path) -> Result<()> {
+        let mut file = File::open(path)
+            .with_context(|| format!("Failed to open file for hashing: {path:?}"))?;
+        read_chunks(&mut file, |chunk| self.update(chunk))
+    }
+
+    /// Recursively collect all file paths within a directory.
+    fn collect_dir_entries(dir: &Path, entries: &mut Vec<PathBuf>) -> Result<()> {
+        for entry in std::fs::read_dir(dir)
+            .with_context(|| format!("Failed to read directory for hashing: {dir:?}"))?
+        {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                Self::collect_dir_entries(&path, entries)?;
+            } else {
+                entries.push(path);
+            }
+        }
+        Ok(())
     }
 
     pub fn update(&mut self, bytes: &[u8]) {
@@ -254,7 +310,7 @@ impl TimeMacroFinder {
         }
         // Also check the concatenation with the previous small read
         if !self.previous_small_read.is_empty() {
-            let mut concatenated = self.previous_small_read.to_owned();
+            let mut concatenated = self.previous_small_read.clone();
             concatenated.extend(visit);
             self.find_macros(&concatenated);
         }
@@ -277,10 +333,10 @@ impl TimeMacroFinder {
         }
         if memchr::memmem::find(buffer, b"__TIME__").is_some() {
             self.found_time.set(true);
-        };
+        }
         if memchr::memmem::find(buffer, b"__DATE__").is_some() {
             self.found_date.set(true);
-        };
+        }
     }
 
     pub fn found_time_macros(&self) -> bool {
@@ -333,6 +389,18 @@ pub async fn hash_all(files: &[PathBuf], pool: &tokio::runtime::Handle) -> Resul
         fmt_duration_as_secs(&start.elapsed())
     );
     Ok(hashes)
+}
+
+/// Build a tokio runtime suitable for the (short-lived) sccache client.
+///
+/// A multi-threaded runtime would spawn one worker thread per CPU for every
+/// client invocation; on a many-core host running many parallel clients that
+/// adds up to a large number of short-lived threads. A current-thread runtime
+/// is enough for the client's request/response work.
+pub fn new_client_runtime() -> std::io::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
 }
 
 /// Calculate the digest of each static library archive in `files` on background threads in
@@ -402,15 +470,23 @@ pub fn fmt_duration_as_secs(duration: &Duration) -> String {
     format!("{}.{:03} s", duration.as_secs(), duration.subsec_millis())
 }
 
+/// Callback invoked with each complete stderr line (including its `\n`) as
+/// soon as it is read, before the process has exited.
+pub type StderrLineObserver = Box<dyn FnMut(&[u8]) + Send>;
+
 /// If `input`, write it to `child`'s stdin while also reading `child`'s stdout and stderr, then wait on `child` and return its status and output.
 ///
 /// This was lifted from `std::process::Child::wait_with_output` and modified
 /// to also write to stdin.
-async fn wait_with_input_output<T>(mut child: T, input: Option<Vec<u8>>) -> Result<process::Output>
+async fn wait_with_input_output<T>(
+    mut child: T,
+    input: Option<Vec<u8>>,
+    mut on_stderr_line: Option<StderrLineObserver>,
+) -> Result<process::Output>
 where
     T: CommandChild + 'static,
 {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
     let stdin = input.and_then(|i| {
         child.take_stdin().map(|mut stdin| async move {
             stdin.write_all(&i).await.context("failed to write stdin")
@@ -436,10 +512,31 @@ where
         match stderr {
             Some(mut stderr) => {
                 let mut buf = Vec::new();
-                stderr
-                    .read_to_end(&mut buf)
-                    .await
-                    .context("failed to read stderr")?;
+                match on_stderr_line.as_mut() {
+                    None => {
+                        stderr
+                            .read_to_end(&mut buf)
+                            .await
+                            .context("failed to read stderr")?;
+                    }
+                    Some(observe) => {
+                        let mut reader = tokio::io::BufReader::new(stderr);
+                        loop {
+                            let start = buf.len();
+                            // rustc's JSON emitter writes each notification followed by `b"\n"`
+                            // so it should be safe to split.
+                            // https://github.com/rust-lang/rust/blob/5ceaf6608eb354c2f5bbb3b8d974caa367dac81c/compiler/rustc_errors/src/json.rs#L88
+                            let read = reader
+                                .read_until(b'\n', &mut buf)
+                                .await
+                                .context("failed to read stderr")?;
+                            if read == 0 {
+                                break;
+                            }
+                            observe(&buf[start..]);
+                        }
+                    }
+                }
                 Result::Ok(Some(buf))
             }
             None => Ok(None),
@@ -468,7 +565,20 @@ where
 ///
 /// If the command returns a non-successful exit status, an error of `SccacheError::ProcessError`
 /// will be returned containing the process output.
-pub async fn run_input_output<C>(mut command: C, input: Option<Vec<u8>>) -> Result<process::Output>
+pub async fn run_input_output<C>(command: C, input: Option<Vec<u8>>) -> Result<process::Output>
+where
+    C: RunCommand,
+{
+    run_input_output_observing(command, input, None).await
+}
+
+/// Like [`run_input_output`] but additionally hands every complete stderr line
+/// to `on_stderr_line` as it arrives.
+pub async fn run_input_output_observing<C>(
+    mut command: C,
+    input: Option<Vec<u8>>,
+    on_stderr_line: Option<StderrLineObserver>,
+) -> Result<process::Output>
 where
     C: RunCommand,
 {
@@ -483,7 +593,7 @@ where
         .spawn()
         .await?;
 
-    wait_with_input_output(child, input)
+    wait_with_input_output(child, input, on_stderr_line)
         .await
         .and_then(|output| {
             if output.status.success() {
@@ -492,6 +602,23 @@ where
                 Err(ProcessError(output).into())
             }
         })
+}
+
+/// The `ExitStatus` of a process that exited with `code`.
+///
+/// On Unix `ExitStatus::from_raw` takes a wait status, not an exit code: given an exit code
+/// directly, -2 reads as "killed by signal 126" and 1 as signal 1.
+#[cfg(unix)]
+pub fn exit_status_from_code(code: i32) -> process::ExitStatus {
+    use std::os::unix::process::ExitStatusExt;
+    process::ExitStatus::from_raw((code & 0xff) << 8)
+}
+
+/// The `ExitStatus` of a process that exited with `code`.
+#[cfg(windows)]
+pub fn exit_status_from_code(code: i32) -> process::ExitStatus {
+    use std::os::windows::process::ExitStatusExt;
+    process::ExitStatus::from_raw(code as u32)
 }
 
 /// Write `data` to `writer` with bincode serialization, prefixed by a `u32` length.
@@ -646,7 +773,7 @@ pub fn decode_path(bytes: &[u8]) -> std::io::Result<PathBuf> {
 
 #[cfg(windows)]
 pub fn wide_char_to_multi_byte(wide_char_str: &[u16]) -> std::io::Result<Vec<u8>> {
-    use windows_sys::Win32::Globalization::{WideCharToMultiByte, CP_OEMCP};
+    use windows_sys::Win32::Globalization::{CP_OEMCP, WideCharToMultiByte};
 
     let codepage = CP_OEMCP;
     let flags = 0;
@@ -675,7 +802,7 @@ pub fn wide_char_to_multi_byte(wide_char_str: &[u16]) -> std::io::Result<Vec<u8>
                 flags,
                 wide_char_str.as_ptr(),
                 wide_char_str.len() as i32,
-                astr.as_mut_ptr() as _,
+                astr.as_mut_ptr().cast(),
                 len,
                 std::ptr::null(),
                 std::ptr::null_mut(),
@@ -780,7 +907,7 @@ impl From<std::time::SystemTime> for Timestamp {
                     nanoseconds = NSEC_PER_SEC - negative_nanos;
                 }
             }
-        };
+        }
         Self {
             seconds,
             nanoseconds,
@@ -831,7 +958,7 @@ pub struct HashToDigest<'a> {
 
 impl Hasher for HashToDigest<'_> {
     fn write(&mut self, bytes: &[u8]) {
-        self.digest.update(bytes)
+        self.digest.update(bytes);
     }
 
     fn finish(&self) -> u64 {
@@ -839,11 +966,56 @@ impl Hasher for HashToDigest<'_> {
     }
 }
 
-/// Pipe `cmd`'s stdio to `/dev/null`, unless a specific env var is set.
+/// Close every file descriptor we inherited from whoever spawned us, keeping
+/// stdin/out/err and anything in `preserve`.
 #[cfg(not(windows))]
-pub fn daemonize() -> Result<()> {
-    use crate::jobserver::discard_inherited_jobserver;
-    use daemonize::Daemonize;
+fn close_inherited_fds(preserve: &[std::os::unix::io::RawFd]) {
+    use std::os::unix::io::RawFd;
+
+    let keep = |fd: RawFd| fd <= libc::STDERR_FILENO || preserve.contains(&fd);
+
+    // macOS/BSD: /dev/fd; Linux: /proc/self/fd
+    let listing = std::fs::read_dir("/dev/fd").or_else(|_| std::fs::read_dir("/proc/self/fd"));
+    let victims: Option<Vec<RawFd>> = listing.ok().map(|entries| {
+        entries
+            .flatten()
+            .filter_map(|e| e.file_name().to_str()?.parse::<RawFd>().ok())
+            .filter(|fd| !keep(*fd))
+            .collect()
+    });
+
+    match victims {
+        Some(fds) => {
+            for fd in fds {
+                unsafe { libc::close(fd) };
+            }
+        }
+        // No fd directory to enumerate, so fall back to sweeping the whole
+        // range. Bounded by the soft limit rather than the hard one to keep
+        // this from turning into a million syscalls.
+        None => {
+            let max = unsafe { libc::sysconf(libc::_SC_OPEN_MAX) };
+            let max = if max < 0 {
+                4096
+            } else {
+                max.min(65536) as RawFd
+            };
+            for fd in (libc::STDERR_FILENO + 1)..max {
+                if !keep(fd) {
+                    unsafe { libc::close(fd) };
+                }
+            }
+        }
+    }
+}
+
+/// Pipe `cmd`'s stdio to `/dev/null`, unless a specific env var is set.
+///
+/// `preserve_fds` lists descriptors the caller opened before daemonizing and
+/// still needs afterwards; everything else inherited is closed.
+#[cfg(not(windows))]
+pub fn daemonize(preserve_fds: &[std::os::unix::io::RawFd]) -> Result<()> {
+    use daemonix::Daemonize;
     use std::env;
     use std::mem;
 
@@ -854,13 +1026,11 @@ pub fn daemonize() -> Result<()> {
         }
     }
 
-    unsafe {
-        discard_inherited_jobserver();
-    }
+    close_inherited_fds(preserve_fds);
 
-    static mut PREV_SIGSEGV: *mut libc::sigaction = 0 as *mut _;
-    static mut PREV_SIGBUS: *mut libc::sigaction = 0 as *mut _;
-    static mut PREV_SIGILL: *mut libc::sigaction = 0 as *mut _;
+    static mut PREV_SIGSEGV: *mut libc::sigaction = std::ptr::null_mut();
+    static mut PREV_SIGBUS: *mut libc::sigaction = std::ptr::null_mut();
+    static mut PREV_SIGILL: *mut libc::sigaction = std::ptr::null_mut();
 
     // We don't have a parent process any more once we've reached this point,
     // which means that no one's probably listening for our exit status.
@@ -883,7 +1053,7 @@ pub fn daemonize() -> Result<()> {
         PREV_SIGBUS = Box::into_raw(Box::new(mem::zeroed::<libc::sigaction>()));
         PREV_SIGILL = Box::into_raw(Box::new(mem::zeroed::<libc::sigaction>()));
         let mut new: libc::sigaction = mem::zeroed();
-        new.sa_sigaction = handler as usize;
+        new.sa_sigaction = (handler as *const libc::c_void).expose_provenance();
         new.sa_flags = libc::SA_SIGINFO | libc::SA_RESTART;
         libc::sigaction(libc::SIGSEGV, &new, &mut *PREV_SIGSEGV);
         libc::sigaction(libc::SIGBUS, &new, &mut *PREV_SIGBUS);
@@ -905,7 +1075,7 @@ pub fn daemonize() -> Result<()> {
             fn write_str(&mut self, s: &str) -> Result {
                 unsafe {
                     let bytes = s.as_bytes();
-                    libc::write(libc::STDERR_FILENO, bytes.as_ptr() as *const _, bytes.len());
+                    libc::write(libc::STDERR_FILENO, bytes.as_ptr().cast(), bytes.len());
                     Ok(())
                 }
             }
@@ -928,28 +1098,33 @@ pub fn daemonize() -> Result<()> {
 
 /// This is a no-op on Windows.
 #[cfg(windows)]
-pub fn daemonize() -> Result<()> {
+pub fn daemonize(_preserve_fds: &[std::os::windows::io::RawHandle]) -> Result<()> {
     Ok(())
 }
 
 #[cfg(any(feature = "dist-server", feature = "dist-client"))]
 mod reqwest_dns_resolver {
-    use std::{net::SocketAddr, sync::Arc};
+    use std::{
+        net::SocketAddr,
+        sync::{Arc, OnceLock},
+    };
 
     use hickory_resolver::TokioAsyncResolver;
-    use once_cell::sync::OnceCell;
     use reqwest::dns::{Addrs, Resolve};
 
     #[derive(Debug, Default, Clone)]
-    pub struct HickoryResolver(Arc<OnceCell<TokioAsyncResolver>>);
+    pub struct HickoryResolver(Arc<OnceLock<TokioAsyncResolver>>);
 
     impl Resolve for HickoryResolver {
         fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
             let resolver = self.clone();
             Box::pin(async move {
-                let resolver = resolver
-                    .0
-                    .get_or_try_init(TokioAsyncResolver::tokio_from_system_conf)?;
+                if resolver.0.get().is_none() {
+                    let _ = resolver
+                        .0
+                        .set(TokioAsyncResolver::tokio_from_system_conf()?);
+                }
+                let resolver = resolver.0.get().expect("DNS resolver initialized");
 
                 let lookup = resolver.lookup_ip(name.as_str()).await?;
                 let addrs: Addrs = Box::new(lookup.into_iter().map(|ip| SocketAddr::new(ip, 0)));
@@ -962,22 +1137,53 @@ mod reqwest_dns_resolver {
 #[cfg(any(feature = "dist-server", feature = "dist-client"))]
 pub use reqwest_dns_resolver::HickoryResolver;
 
-/// Disable connection pool to avoid broken connection between runtime
+#[cfg(all(feature = "reqwest", not(target_os = "android")))]
+fn mozilla_root_certificates() -> reqwest::Result<Vec<reqwest::Certificate>> {
+    webpki_root_certs::TLS_SERVER_ROOT_CERTS
+        .iter()
+        .map(|cert| reqwest::Certificate::from_der(cert.as_ref()))
+        .collect()
+}
+
+/// Create an async reqwest client builder using the platform verifier, augmented with
+/// Mozilla roots when the verifier supports additional trust anchors.
+#[cfg(feature = "reqwest")]
+pub(crate) fn new_reqwest_client_builder() -> reqwest::Result<reqwest::ClientBuilder> {
+    let builder = reqwest::Client::builder();
+
+    // rustls-platform-verifier's Android backend intentionally has no
+    // `new_with_extra_roots`; adding roots there makes reqwest fail at build time.
+    #[cfg(target_os = "android")]
+    return Ok(builder);
+
+    #[cfg(not(target_os = "android"))]
+    Ok(builder.tls_certs_merge(mozilla_root_certificates()?))
+}
+
+/// Create a blocking reqwest client builder using the platform verifier, augmented with
+/// Mozilla roots when the verifier supports additional trust anchors.
+#[cfg(any_dist)]
+pub(crate) fn new_reqwest_blocking_builder() -> reqwest::Result<reqwest::blocking::ClientBuilder> {
+    let builder = reqwest::blocking::Client::builder();
+
+    // See `new_reqwest_client_builder`: Android cannot merge extra verifier roots.
+    #[cfg(target_os = "android")]
+    return Ok(builder);
+
+    #[cfg(not(target_os = "android"))]
+    Ok(builder.tls_certs_merge(mozilla_root_certificates()?))
+}
+
+/// Build the blocking HTTP client used by distributed sccache components.
 ///
-/// # TODO
-///
-/// We should refactor sccache current model to make sure that we only have
-/// one tokio runtime and keep reqwest alive inside it.
-///
-/// ---
-///
-/// More details could be found at https://github.com/mozilla/sccache/pull/1563
-#[cfg(any(feature = "dist-server", feature = "dist-client"))]
-pub fn new_reqwest_blocking_client() -> reqwest::blocking::Client {
-    reqwest::blocking::Client::builder()
+/// `sccache-dist` is a separate crate in this package, so this helper is public.
+#[cfg(any_dist)]
+pub fn new_reqwest_blocking_client() -> reqwest::Result<reqwest::blocking::Client> {
+    new_reqwest_blocking_builder()?
+        // Disable pooling while sccache uses multiple runtimes; pooled connections can
+        // otherwise outlive the runtime that created them. See #1563.
         .pool_max_idle_per_host(0)
         .build()
-        .expect("http client must build with success")
 }
 
 fn unhex(b: u8) -> std::io::Result<u8> {
@@ -990,6 +1196,25 @@ fn unhex(b: u8) -> std::io::Result<u8> {
             "invalid hex digit",
         )),
     }
+}
+
+pub fn spawn<F>(future: F) -> tokio_util::task::AbortOnDropHandle<F::Output>
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    tokio_util::task::AbortOnDropHandle::new(tokio::spawn(future))
+}
+
+pub fn spawn_on<F>(
+    handle: &tokio::runtime::Handle,
+    future: F,
+) -> tokio_util::task::AbortOnDropHandle<F::Output>
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    tokio_util::task::AbortOnDropHandle::new(handle.spawn(future))
 }
 
 /// A reverse version of std::ascii::escape_default
@@ -1022,7 +1247,7 @@ pub fn ascii_unescape_default(s: &[u8]) -> std::io::Result<Vec<u8>> {
                             "incomplete hex escape",
                         ));
                     }
-                    let v = unhex(s[offset])? << 4 | unhex(s[offset + 1])?;
+                    let v = (unhex(s[offset])? << 4) | unhex(s[offset + 1])?;
                     out.push(v);
                     offset += 1;
                 }
@@ -1045,10 +1270,613 @@ pub fn num_cpus() -> usize {
     std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
 }
 
+/// Strip base directories from absolute paths in preprocessor output.
+///
+/// This function searches for basedir paths in the preprocessor output and
+/// replaces them with relative path markers. When multiple basedirs are provided,
+/// the longest matching prefix is used. This is similar to ccache's CCACHE_BASEDIR.
+///
+/// Path matching is case-insensitive to handle various filesystem behaviors and build system
+/// configurations uniformly across all operating systems. On Windows, this function also handles
+/// paths with mixed forward and backward slashes, which can occur when different build tools
+/// produce preprocessor output.
+///
+/// Only paths that start with one of the basedirs are modified. The paths are expected to be
+/// in the format found in preprocessor output (e.g., `# 1 "/path/to/file"`).
+pub fn strip_basedirs<'a>(preprocessor_output: &'a [u8], basedirs: &[Vec<u8>]) -> Cow<'a, [u8]> {
+    if basedirs.is_empty() || preprocessor_output.is_empty() {
+        return Cow::Borrowed(preprocessor_output);
+    }
+
+    trace!(
+        "Stripping basedirs from preprocessor output with length {}",
+        preprocessor_output.len(),
+    );
+
+    // Find all potential matches for each basedir using fast substring search
+    // Store as (position, length, basedir_idx) sorted by position
+    let mut matches: Vec<(usize, usize, usize)> = Vec::new();
+    // We must return the original preprocessor output on all platforms,
+    // so we only normalize a copy for searching.
+    #[cfg(not(target_os = "windows"))]
+    let normalized_output = preprocessor_output;
+    #[cfg(target_os = "windows")]
+    let normalized_output = &normalize_win_path(preprocessor_output);
+
+    for (idx, basedir_bytes) in basedirs.iter().enumerate() {
+        let basedir = basedir_bytes.as_slice();
+
+        // On Windows, preprocessor output quotes paths as C string literals
+        // (#line directives and GNU linemarkers), so backslash separators
+        // appear escaped: `#line 1 "C:\\dir\\file.h"`. normalize_win_path
+        // converts each backslash to a forward slash, which turns every
+        // escaped separator into a DOUBLE forward slash ("c://dir//file.h").
+        // Search for that doubled variant of the basedir as well, otherwise
+        // such paths are never stripped.
+        #[cfg(target_os = "windows")]
+        let doubled_basedir = double_path_separators(basedir);
+        #[cfg(target_os = "windows")]
+        let needles: [&[u8]; 2] = [basedir, &doubled_basedir];
+        #[cfg(not(target_os = "windows"))]
+        let needles: [&[u8]; 1] = [basedir];
+
+        for needle in needles {
+            // Use memchr's fast substring search
+            let finder = memchr::memmem::find_iter(normalized_output, needle);
+
+            for pos in finder {
+                // Check if this is a valid boundary (start, whitespace, quote, or '<')
+                let is_boundary = pos == 0
+                    || normalized_output[pos - 1].is_ascii_whitespace()
+                    || normalized_output[pos - 1] == b'"'
+                    || normalized_output[pos - 1] == b'<';
+
+                if is_boundary {
+                    matches.push((pos, needle.len(), idx));
+                }
+            }
+        }
+    }
+
+    if matches.is_empty() {
+        return Cow::Borrowed(preprocessor_output);
+    }
+
+    // Sort matches by position, then by length descending (longest first for overlaps)
+    matches.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
+
+    // Remove overlapping matches, keeping the longest match at each position
+    let mut filtered_matches: Vec<(usize, usize)> = Vec::with_capacity(matches.len());
+    let mut last_end = 0;
+
+    for (pos, len, idx) in matches {
+        if pos >= last_end {
+            filtered_matches.push((pos, len));
+            last_end = pos + len;
+            trace!(
+                "Matched basedir {} at position {} with length {}",
+                String::from_utf8_lossy(&basedirs[idx]),
+                pos,
+                len
+            );
+        }
+    }
+
+    // Build the result in a single pass
+    let mut result = Vec::with_capacity(preprocessor_output.len());
+    let mut current_pos = 0;
+
+    for (match_pos, match_len) in filtered_matches {
+        // Copy everything before the match
+        result.extend_from_slice(&preprocessor_output[current_pos..match_pos]);
+        // Replace the basedir is removed completely, including trailing slash (it is expected, see
+        // Config::basedir)
+        current_pos = match_pos + match_len;
+    }
+
+    // Copy remaining data
+    result.extend_from_slice(&preprocessor_output[current_pos..]);
+
+    Cow::Owned(result)
+}
+
+/// Strip the base directories from a single compiler argument, for hashing.
+///
+/// [`strip_basedirs`] looks for a basedir where preprocessor output would put
+/// one: at the start of a line, after a quote, after whitespace.  A compiler
+/// argument spells the same paths differently.  `-I/home/user/project/include`
+/// has no boundary at all before the path, and `-ffile-prefix-map` names a
+/// directory without a trailing slash, as in
+/// `-ffile-prefix-map=/home/user/project=.`, which is what keeps two checkouts
+/// of the same tree from agreeing on a hash.
+///
+/// Only the places where an argument is expected to spell a pathname are
+/// considered, rather than any offset that happens to match:
+///
+/// * the whole argument, as in a source file or the path of a separated
+///   option such as `-include-pch <path>`;
+/// * the value of an option written with an `=`, as in `--sysroot=<path>` or
+///   either half of `-ffile-prefix-map=<path>=<path>`;
+/// * the value glued to an option, as in `-I<path>`, `-L<path>` or
+///   `-external:I<path>`, also when it starts with a drive letter, as in
+///   `-IC:\path` or `/IC:\path`.
+///
+/// A basedir sitting anywhere else is left alone, so `-DROOT="/home/user/project"`
+/// keeps a definition the compiler will bake into the output verbatim.  A match
+/// also has to end where a path component ends, so `/home/user/project` does not
+/// match the start of `/home/user/project-docs`.  The longest basedir wins, so a
+/// nested one takes precedence over the tree that contains it.
+pub fn strip_basedirs_from_arg<'a>(arg: &'a [u8], basedirs: &[Vec<u8>]) -> Cow<'a, [u8]> {
+    if basedirs.is_empty() || arg.is_empty() {
+        return Cow::Borrowed(arg);
+    }
+
+    // We must return the original argument on all platforms, so we only
+    // normalize a copy for searching.
+    #[cfg(not(target_os = "windows"))]
+    let haystack: &[u8] = arg;
+    #[cfg(target_os = "windows")]
+    let normalized = normalize_win_path(arg);
+    #[cfg(target_os = "windows")]
+    let haystack: &[u8] = &normalized;
+
+    let mut order: Vec<usize> = (0..basedirs.len()).collect();
+    order.sort_by_key(|&i| std::cmp::Reverse(basedirs[i].len()));
+
+    let mut result: Option<Vec<u8>> = None;
+    let mut copied = 0;
+    for pos in pathname_positions(haystack) {
+        if pos < copied {
+            // Inside a basedir we already stripped.
+            continue;
+        }
+        let rest = &haystack[pos..];
+        let mut matched = 0;
+        for &i in &order {
+            // Basedirs carry a trailing slash, see Config::basedirs. A path
+            // component can also end at the end of the argument, or at a
+            // separator such as the `=` of -ffile-prefix-map.
+            let with_slash = basedirs[i].as_slice();
+            let bare = &with_slash[..with_slash.len() - 1];
+            if rest.starts_with(with_slash) {
+                matched = with_slash.len();
+            } else if rest.starts_with(bare) && matches!(rest.get(bare.len()), None | Some(b'=')) {
+                matched = bare.len();
+            }
+            if matched > 0 {
+                trace!(
+                    "Matched basedir {} at position {} of argument",
+                    String::from_utf8_lossy(with_slash),
+                    pos
+                );
+                break;
+            }
+        }
+        if matched > 0 {
+            let out = result.get_or_insert_with(|| Vec::with_capacity(arg.len()));
+            out.extend_from_slice(&arg[copied..pos]);
+            copied = pos + matched;
+        }
+    }
+
+    match result {
+        Some(mut out) => {
+            out.extend_from_slice(&arg[copied..]);
+            Cow::Owned(out)
+        }
+        None => Cow::Borrowed(arg),
+    }
+}
+
+/// The offsets in a compiler argument where a pathname can begin.
+///
+/// See [`strip_basedirs_from_arg`] for what they are and why the rest of the
+/// argument is off limits.
+fn pathname_positions(arg: &[u8]) -> impl Iterator<Item = usize> + '_ {
+    // The value glued to an option starts where the option name ends:
+    // `-I/path` yields 2, `-isystem/path` 8 and `-external:I/path` 11. A drive
+    // letter belongs to the value even though it reads like part of the name:
+    // `-IC:\path` yields 2. Options spelled with a `/` glue only a drive
+    // letter, as in `/IC:\path`; otherwise the `/` starts an absolute path.
+    let glued = match arg.first() {
+        Some(b'-' | b'/') => {
+            let end = 1 + arg[1..]
+                .iter()
+                .take_while(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b':'))
+                .count();
+            let drive = end >= 4
+                && arg[end - 2].is_ascii_alphabetic()
+                && arg[end - 1] == b':'
+                && matches!(arg.get(end), Some(b'/' | b'\\'));
+            if drive {
+                Some(end - 2)
+            } else if arg[0] == b'-' {
+                Some(end)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
+
+    // The whole argument, the value of each `=`-separated option, and the one
+    // glued position, in ascending order and without duplicates.
+    let equals = arg
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| **b == b'=')
+        .map(|(i, _)| i + 1);
+
+    let mut positions: Vec<usize> = std::iter::once(0).chain(glued).chain(equals).collect();
+    positions.sort_unstable();
+    positions.dedup();
+    positions.into_iter().filter(move |&p| p < arg.len())
+}
+
+/// Double every `/` in a normalized path.
+///
+/// Paths inside preprocessor output are C string literals, so on Windows
+/// their backslash separators are escaped (`\\`). After normalize_win_path
+/// each backslash becomes a `/`, i.e. every escaped separator ends up as
+/// `//`. This produces the matching variant of a basedir for such paths.
+#[cfg(target_os = "windows")]
+fn double_path_separators(path: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(path.len() * 2);
+    for &b in path {
+        out.push(b);
+        if b == b'/' {
+            out.push(b'/');
+        }
+    }
+    out
+}
+
+/// Normalize path for case-insensitive comparison.
+/// On Windows: converts all backslashes to forward slashes;
+///             lowercases characters for consistency.
+/// This function is used for:
+///     - basedir_path: already normalized by std::path::absolute
+///     - preprocessor_output: plain text that may contain invalid UTF-8
+/// Leave it for any platform for testing purposes.
+pub fn normalize_win_path(path: &[u8]) -> Vec<u8> {
+    let mut result = Vec::with_capacity(path.len());
+    let mut i = 0;
+
+    while i < path.len() {
+        let b = path[i];
+
+        // Fast path: ASCII characters (most common case)
+        if b < 128 {
+            result.push(match b {
+                b'A'..=b'Z' => b + (b'a' - b'A'),
+                b'\\' => b'/',
+                _ => b,
+            });
+            i += 1;
+            continue;
+        }
+
+        // Non-ASCII: try to decode UTF-8 sequence
+        // Determine expected length from the first byte
+        let char_len = match b {
+            0b1100_0000..=0b1101_1111 => 2, // 110xxxxx
+            0b1110_0000..=0b1110_1111 => 3, // 1110xxxx
+            0b1111_0000..=0b1111_0111 => 4, // 11110xxx
+            _ => {
+                // Invalid UTF-8 start byte, copy as-is
+                result.push(b);
+                i += 1;
+                continue;
+            }
+        };
+
+        // Check if we have enough bytes
+        if i + char_len > path.len() {
+            // Incomplete sequence, copy as-is
+            result.push(b);
+            i += 1;
+            continue;
+        }
+
+        // Validate and decode the UTF-8 sequence
+        match std::str::from_utf8(&path[i..i + char_len]) {
+            Ok(s) => {
+                // Valid UTF-8, lowercase it
+                result.extend_from_slice(s.to_lowercase().as_bytes());
+                i += char_len;
+            }
+            Err(_) => {
+                // Invalid sequence, copy first byte as-is
+                result.push(b);
+                i += 1;
+            }
+        }
+    }
+
+    result
+}
+
+/// Resolve the compiler executable, avoiding ccache/sccache wrappers.
+///
+/// This function handles scenarios where ccache/sccache might interfere:
+/// 1. PATH contains directories like /usr/lib/ccache or /usr/lib64/ccache
+///    which contain wrapper scripts that would call ccache
+/// 2. The compiler executable itself is a symlink to ccache or sccache
+///
+/// Searches PATH for the compiler name, skipping any candidate whose path
+/// contains wrapper directories or that resolves (via symlink) to ccache/sccache.
+/// Returns the absolute path to the first valid match, or the original
+/// executable if no valid match is found.
+///
+/// If the executable is already an absolute path and resolves to a wrapper,
+/// PATH is searched for a non-wrapper compiler matching the executable name.
+pub fn resolve_compiler_avoiding_wrapper(
+    executable: &Path,
+    env_vars: &[(OsString, OsString)],
+) -> PathBuf {
+    const WRAPPER_DIR_COMPONENTS: [&str; 2] = ["ccache", "sccache"];
+
+    // Helper to check if a path points to ccache/sccache (via symlink resolution)
+    let resolves_to_wrapper = |path: &Path| -> bool {
+        std::fs::canonicalize(path)
+            .ok()
+            .and_then(|canonical| canonical.file_name().map(|n| n.to_os_string()))
+            .map(|name| {
+                let name_lower = name.to_string_lossy().to_lowercase();
+                name_lower == "ccache"
+                    || name_lower.starts_with("ccache.")
+                    || name_lower == "sccache"
+                    || name_lower.starts_with("sccache.")
+            })
+            .unwrap_or(false)
+    };
+
+    // Helper to check if a path contains wrapper directory components.
+    let path_contains_wrapper = |path: &Path| -> bool {
+        path.components().any(|c| {
+            WRAPPER_DIR_COMPONENTS
+                .iter()
+                .any(|component| c.as_os_str() == *component)
+        })
+    };
+
+    // Get the compiler name to search for
+    let compiler_name = match executable.file_name() {
+        Some(name) => name,
+        None => return executable.to_path_buf(),
+    };
+
+    // If the path is absolute and does not resolve to a wrapper, return it as-is.
+    if executable.is_absolute() && !resolves_to_wrapper(executable) {
+        return executable.to_path_buf();
+    }
+
+    // Get PATH from env_vars
+    let path_value = match env_vars.iter().find(|(key, _)| key == "PATH") {
+        Some((_, value)) => value,
+        None => return executable.to_path_buf(),
+    };
+
+    // Search PATH for a valid compiler, skipping wrapper candidates.
+    for dir in std::env::split_paths(path_value) {
+        // Skip directories that contain wrapper components in the path.
+        if path_contains_wrapper(&dir) {
+            continue;
+        }
+
+        let candidate = dir.join(compiler_name);
+        if candidate.exists() && !resolves_to_wrapper(&candidate) {
+            return candidate;
+        }
+    }
+
+    // No valid match found, return the original
+    executable.to_path_buf()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{OsStrExt, TimeMacroFinder};
+    use super::{
+        Digest, OsStrExt, TimeMacroFinder, exit_status_from_code, resolve_compiler_avoiding_wrapper,
+    };
     use std::ffi::{OsStr, OsString};
+    use std::path::Path;
+
+    #[test]
+    fn test_reader_sync_across_buffer_sizes() {
+        use super::HASH_BUFFER_SIZE;
+        // `std::io::copy` reads 8KB at a time (std's `DEFAULT_BUF_SIZE`):
+        // sizes around the end of the first and second chunks, and around
+        // `HASH_BUFFER_SIZE`, the chunk size used before.
+        const COPY_CHUNK: usize = 8 * 1024;
+        let boundaries = [COPY_CHUNK, 2 * COPY_CHUNK, HASH_BUFFER_SIZE];
+        for boundary in boundaries {
+            for len in [boundary - 1, boundary, boundary + 1] {
+                let data: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
+                let mut expected = Digest::new();
+                expected.update(&data);
+                let expected = expected.finish();
+                assert_eq!(Digest::reader_sync(data.as_slice()).unwrap(), expected);
+            }
+            // A time macro split by the chunk boundary is still found.
+            let mut data = vec![0u8; boundary + HASH_BUFFER_SIZE];
+            let start = boundary - b"__TIME__".len() / 2;
+            data[start..][..b"__TIME__".len()].copy_from_slice(b"__TIME__");
+            let finder = Digest::reader_sync_time_macros(data.as_slice()).unwrap().1;
+            assert!(finder.found_time());
+        }
+    }
+
+    #[test]
+    fn test_exit_status_from_code() {
+        assert!(exit_status_from_code(0).success());
+        assert_eq!(exit_status_from_code(1).code(), Some(1));
+        assert_eq!(exit_status_from_code(255).code(), Some(255));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_exit_status_from_code_is_not_a_signal() {
+        use std::os::unix::process::ExitStatusExt;
+        for code in [1, 2, 126, 127, 255, -2] {
+            let status = exit_status_from_code(code);
+            assert_eq!(status.signal(), None, "exit code {code}");
+            assert_eq!(status.code(), Some(code & 0xff), "exit code {code}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_exit_status_from_code_keeps_the_code() {
+        assert_eq!(exit_status_from_code(-2).code(), Some(-2));
+    }
+
+    #[cfg(all(any_dist, target_os = "linux"))]
+    #[test]
+    #[serial_test::serial(reqwest_tls_env)]
+    fn blocking_http_client_builds_with_invalid_native_ca_paths() -> reqwest::Result<()> {
+        temp_env::with_vars(
+            [
+                ("SSL_CERT_FILE", Some("/sccache-test-no-cert-file.crt")),
+                ("SSL_CERT_DIR", Some("/sccache-test-no-cert-dir")),
+            ],
+            || {
+                assert!(
+                    reqwest::blocking::Client::builder().build().is_err(),
+                    "test environment must reproduce the empty native trust-store failure"
+                );
+                super::new_reqwest_blocking_client().map(drop)
+            },
+        )
+    }
+
+    #[test]
+    fn test_resolve_compiler_avoiding_ccache_filters_path() {
+        use std::env;
+
+        // Create a PATH with ccache directories
+        let path_with_ccache = env::join_paths([
+            "/usr/lib64/ccache",
+            "/usr/lib/ccache",
+            "/usr/bin",
+            "/usr/local/bin",
+            "/home/user/bin",
+        ])
+        .unwrap();
+
+        let env_vars = vec![
+            (OsString::from("HOME"), OsString::from("/home/user")),
+            (OsString::from("PATH"), path_with_ccache),
+            (OsString::from("LANG"), OsString::from("en_US.UTF-8")),
+        ];
+
+        // When searching for "gcc", it should skip ccache directories
+        // and find gcc in /usr/bin (if it exists) or return original
+        let resolved = resolve_compiler_avoiding_wrapper(Path::new("gcc"), &env_vars);
+
+        // The resolved path should not contain "ccache" in its path
+        let resolved_str = resolved.to_string_lossy();
+        assert!(
+            !resolved_str.contains("ccache"),
+            "Resolved path should not contain ccache: {}",
+            resolved_str
+        );
+    }
+
+    #[test]
+    fn test_resolve_compiler_avoiding_ccache_no_path() {
+        // No PATH variable at all
+        let env_vars = vec![
+            (OsString::from("HOME"), OsString::from("/home/user")),
+            (OsString::from("LANG"), OsString::from("en_US.UTF-8")),
+        ];
+
+        let resolved = resolve_compiler_avoiding_wrapper(Path::new("/usr/bin/gcc"), &env_vars);
+
+        // Should return original when no PATH
+        assert_eq!(resolved, Path::new("/usr/bin/gcc"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_resolve_compiler_avoiding_ccache_skips_symlink_to_ccache() {
+        use std::env;
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let ccache_dir = temp_dir.path().join("ccache_bin");
+        let real_dir = temp_dir.path().join("real_bin");
+        std::fs::create_dir_all(&ccache_dir).unwrap();
+        std::fs::create_dir_all(&real_dir).unwrap();
+
+        // Create a fake "ccache" binary
+        let ccache_bin = ccache_dir.join("ccache");
+        std::fs::write(&ccache_bin, "fake ccache").unwrap();
+
+        // Create a symlink "gcc" -> "ccache" in ccache_dir
+        let gcc_symlink = ccache_dir.join("gcc");
+        symlink(&ccache_bin, &gcc_symlink).unwrap();
+
+        // Create a real "gcc" binary in real_dir
+        let real_gcc = real_dir.join("gcc");
+        std::fs::write(&real_gcc, "real gcc").unwrap();
+
+        // Set up PATH with ccache_dir first, then real_dir
+        let path = env::join_paths([&ccache_dir, &real_dir]).unwrap();
+        let env_vars = vec![(OsString::from("PATH"), path)];
+
+        let resolved = resolve_compiler_avoiding_wrapper(Path::new("gcc"), &env_vars);
+
+        // Should skip the symlink to ccache and find the real gcc
+        assert_eq!(resolved, real_gcc);
+    }
+
+    #[test]
+    fn test_resolve_compiler_avoiding_ccache_absolute_path_unchanged() {
+        use std::env;
+
+        // Create a PATH with ccache directories first
+        let path_with_ccache =
+            env::join_paths(["/usr/lib64/ccache", "/usr/lib/ccache", "/usr/bin"]).unwrap();
+
+        let env_vars = vec![(OsString::from("PATH"), path_with_ccache)];
+
+        // When given an absolute path, it should be returned as-is without searching PATH
+        let absolute_path = Path::new("/some/specific/path/to/gcc");
+        let resolved = resolve_compiler_avoiding_wrapper(absolute_path, &env_vars);
+
+        assert_eq!(resolved, absolute_path);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_resolve_compiler_avoiding_ccache_absolute_symlink_to_sccache() {
+        use std::env;
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let wrapper_dir = temp_dir.path().join("sccache");
+        let real_dir = temp_dir.path().join("real_bin");
+        std::fs::create_dir_all(&wrapper_dir).unwrap();
+        std::fs::create_dir_all(&real_dir).unwrap();
+
+        // Create a fake "sccache" binary and a symlink wrapper "gcc" -> "sccache".
+        let sccache_bin = wrapper_dir.join("sccache");
+        std::fs::write(&sccache_bin, "fake sccache").unwrap();
+        let wrapped_gcc = wrapper_dir.join("gcc");
+        symlink(&sccache_bin, &wrapped_gcc).unwrap();
+
+        // Real compiler in PATH outside wrapper directories.
+        let real_gcc = real_dir.join("gcc");
+        std::fs::write(&real_gcc, "real gcc").unwrap();
+
+        let path = env::join_paths([&wrapper_dir, &real_dir]).unwrap();
+        let env_vars = vec![(OsString::from("PATH"), path)];
+
+        // Absolute wrapper path should be replaced by real compiler via PATH lookup.
+        let resolved = resolve_compiler_avoiding_wrapper(&wrapped_gcc, &env_vars);
+        assert_eq!(resolved, real_gcc);
+    }
 
     #[test]
     fn simple_starts_with() {
@@ -1062,7 +1890,7 @@ mod tests {
         assert!(!a.starts_with("b"));
 
         let a: &OsStr = "".as_ref();
-        assert!(!a.starts_with("a"))
+        assert!(!a.starts_with("a"));
     }
 
     #[test]
@@ -1196,5 +2024,493 @@ mod tests {
         assert_eq!(tested_cases, (alphabet.len() + 1).pow(3) - 1);
         let empty_result = super::ascii_unescape_default(&[]).unwrap();
         assert!(empty_result.is_empty(), "{:?}", empty_result);
+    }
+
+    #[test]
+    fn test_strip_basedirs_from_arg() {
+        let basedir = b"/home/user/project/".to_vec();
+        let strip = |arg: &[u8]| {
+            super::strip_basedirs_from_arg(arg, std::slice::from_ref(&basedir)).into_owned()
+        };
+
+        // The flag that ties an object file to one checkout: the tree is named
+        // without a trailing slash, so the path component ends at the `=`.
+        assert_eq!(
+            strip(b"-ffile-prefix-map=/home/user/project=."),
+            b"-ffile-prefix-map==."
+        );
+        assert_eq!(
+            strip(b"-ffile-prefix-map=/home/user/project/build=."),
+            b"-ffile-prefix-map=build=."
+        );
+        assert_eq!(
+            strip(b"-ffile-prefix-map=/home/user/project/build/=build/"),
+            b"-ffile-prefix-map=build/=build/"
+        );
+
+        // Paths with no boundary before them.
+        assert_eq!(strip(b"-I/home/user/project/include"), b"-Iinclude");
+        assert_eq!(strip(b"/home/user/project/src/main.c"), b"src/main.c");
+
+        // A sibling directory that merely starts with the same bytes is not a
+        // match, in either spelling.
+        assert_eq!(
+            strip(b"-I/home/user/project-docs/include"),
+            b"-I/home/user/project-docs/include"
+        );
+        assert_eq!(
+            strip(b"-ffile-prefix-map=/home/user/project-docs=."),
+            b"-ffile-prefix-map=/home/user/project-docs=."
+        );
+
+        // Untouched without basedirs, and when nothing matches.
+        assert_eq!(
+            &*super::strip_basedirs_from_arg(b"-ffile-prefix-map=/home/user/project=.", &[]),
+            b"-ffile-prefix-map=/home/user/project=."
+        );
+        assert_eq!(strip(b"-O2"), b"-O2");
+        assert_eq!(strip(b""), b"");
+    }
+
+    #[test]
+    fn test_strip_basedirs_from_arg_only_at_pathname_positions() {
+        let basedir = b"/home/user/project/".to_vec();
+        let strip = |arg: &[u8]| {
+            super::strip_basedirs_from_arg(arg, std::slice::from_ref(&basedir)).into_owned()
+        };
+
+        // A macro definition the compiler bakes into the output verbatim: the
+        // path is inside a string literal, not where a pathname is expected.
+        assert_eq!(
+            strip(b"-DROOT=\"/home/user/project\""),
+            b"-DROOT=\"/home/user/project\""
+        );
+
+        // Not the value of an option, just a path further along in one.
+        assert_eq!(
+            strip(b"-Wl,-rpath,/home/user/project/lib"),
+            b"-Wl,-rpath,/home/user/project/lib"
+        );
+        assert_eq!(
+            strip(b"-fplugin-arg-p=x/home/user/project/y"),
+            b"-fplugin-arg-p=x/home/user/project/y"
+        );
+
+        // The value glued to a short option, however long its name.
+        assert_eq!(
+            strip(b"-isystem/home/user/project/abseil"),
+            b"-isystemabseil"
+        );
+        assert_eq!(strip(b"-L/home/user/project/lib"), b"-Llib");
+        assert_eq!(
+            strip(b"-external:I/home/user/project/include"),
+            b"-external:Iinclude"
+        );
+
+        // The value of an =-separated option, and both halves of a prefix map.
+        assert_eq!(strip(b"--sysroot=/home/user/project/sys"), b"--sysroot=sys");
+        assert_eq!(
+            strip(b"-ffile-prefix-map=/home/user/project/build=/home/user/project"),
+            b"-ffile-prefix-map=build="
+        );
+    }
+
+    #[test]
+    fn test_strip_basedirs_from_arg_drive_letter() {
+        // The basedir and arguments in the form normalize_win_path gives them
+        // on Windows, lowercase with forward slashes, so this runs anywhere.
+        let basedir = b"c:/users/user/project/".to_vec();
+        let strip = |arg: &[u8]| {
+            super::strip_basedirs_from_arg(arg, std::slice::from_ref(&basedir)).into_owned()
+        };
+
+        // `-external:I` and `/I` are MSVC spellings.
+        assert_eq!(strip(b"-ic:/users/user/project/include"), b"-iinclude");
+        assert_eq!(
+            strip(b"-external:ic:/users/user/project/third_party/include"),
+            b"-external:ithird_party/include"
+        );
+        assert_eq!(strip(b"/ic:/users/user/project/include"), b"/iinclude");
+
+        // A quoted definition and a sibling directory are left alone.
+        assert_eq!(
+            strip(b"-droot=\"c:/users/user/project\""),
+            b"-droot=\"c:/users/user/project\""
+        );
+        assert_eq!(
+            strip(b"-ic:/users/user/project-docs/include"),
+            b"-ic:/users/user/project-docs/include"
+        );
+    }
+
+    #[test]
+    fn test_strip_basedirs_from_arg_skips_positions_inside_a_match() {
+        // A directory whose name contains an `=` is legal, and it puts one of
+        // the positions where an option value could start inside the basedir
+        // itself. If a second basedir then matches at that position, the two
+        // matches overlap, and the tail of the first directory name must not
+        // be stripped a second time.
+        let basedirs = vec![b"/home/user/a=/b/".to_vec(), b"/b/".to_vec()];
+        let strip = |arg: &[u8]| super::strip_basedirs_from_arg(arg, &basedirs).into_owned();
+
+        assert_eq!(strip(b"-I/home/user/a=/b/include"), b"-Iinclude");
+        assert_eq!(strip(b"/home/user/a=/b/src/main.c"), b"src/main.c");
+        assert_eq!(strip(b"--sysroot=/home/user/a=/b/sys"), b"--sysroot=sys");
+    }
+
+    #[test]
+    fn test_strip_basedirs_from_arg_longest_match_wins() {
+        // A build directory nested inside the tree, both listed.
+        let basedirs = vec![
+            b"/home/user/project/".to_vec(),
+            b"/home/user/project/build/".to_vec(),
+        ];
+        assert_eq!(
+            &*super::strip_basedirs_from_arg(
+                b"-ffile-prefix-map=/home/user/project/build=.",
+                &basedirs
+            ),
+            b"-ffile-prefix-map==."
+        );
+        assert_eq!(
+            &*super::strip_basedirs_from_arg(b"-ffile-prefix-map=/home/user/project=.", &basedirs),
+            b"-ffile-prefix-map==."
+        );
+    }
+
+    #[test]
+    fn test_strip_basedir_simple() {
+        // Simple cases
+        let basedir = b"/home/user/project/".to_vec();
+        let input = b"# 1 \"/home/user/project/src/main.c\"\nint main() { return 0; }";
+        let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
+        let expected = b"# 1 \"src/main.c\"\nint main() { return 0; }";
+        assert_eq!(&*output, expected);
+
+        // Multiple occurrences
+        let input =
+            b"# 1 \"/home/user/project/src/main.c\"\n# 2 \"/home/user/project/include/header.h\"";
+        let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
+        let expected = b"# 1 \"src/main.c\"\n# 2 \"include/header.h\"";
+        assert_eq!(&*output, expected);
+
+        // No occurrences
+        let input = b"# 1 \"/other/path/main.c\"\nint main() { return 0; }";
+        let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
+        assert_eq!(&*output, input);
+    }
+
+    #[test]
+    fn test_strip_basedir_empty() {
+        // Empty basedir slice
+        let input = b"# 1 \"/home/user/project/src/main.c\"";
+        let output = super::strip_basedirs(input, &[]);
+        assert_eq!(&*output, input);
+
+        // Empty input
+        let basedir = b"/home/user/project/".to_vec();
+        let input = b"";
+        let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
+        assert_eq!(&*output, input);
+    }
+
+    #[test]
+    fn test_strip_basedir_not_at_boundary() {
+        // basedir should only match at word boundaries
+        let basedir = b"/home/user/".to_vec();
+        let input = b"text/home/user/file.c and \"/home/user/other.c\"";
+        let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
+        // Should only replace the second occurrence (after quote)
+        let expected = b"text/home/user/file.c and \"other.c\"";
+        assert_eq!(&*output, expected);
+    }
+
+    #[test]
+    fn test_strip_basedir_trailing_slashes() {
+        // Without trailing slash
+        let basedir = b"/home/user/project".to_vec();
+        let input = b"# 1 \"/home/user/project/src/main.c\"";
+        let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
+        let expected = b"# 1 \"/src/main.c\""; // Wrong, but expected
+        assert_eq!(&*output, expected);
+
+        // Trailing slashes aren't ignored, they must be cleaned in config reader
+        let basedir = b"/home/user/project/".to_vec();
+        let input = b"# 1 \"/home/user/project/src/main.c\"";
+        let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
+        let expected = b"# 1 \"src/main.c\"";
+        assert_eq!(&*output, expected);
+    }
+
+    #[test]
+    fn test_strip_basedirs_multiple() {
+        // Multiple basedirs - should match longest first
+        let basedirs = vec![
+            b"/home/user1/project/".to_vec(),
+            b"/home/user2/workspace/".to_vec(),
+        ];
+        let input =
+            b"# 1 \"/home/user1/project/src/main.c\"\n# 2 \"/home/user2/workspace/lib/util.c\"";
+        let output = super::strip_basedirs(input, &basedirs);
+        let expected = b"# 1 \"src/main.c\"\n# 2 \"lib/util.c\"";
+        assert_eq!(&*output, expected);
+
+        // Longest prefix wins
+        let basedirs = vec![b"/home/user/".to_vec(), b"/home/user/project/".to_vec()];
+        let input = b"# 1 \"/home/user/project/src/main.c\"";
+        let output = super::strip_basedirs(input, &basedirs);
+        let expected = b"# 1 \"src/main.c\"";
+        assert_eq!(&*output, expected);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_strip_basedir_windows_backslashes() {
+        // Without trailing backslash
+        let basedir = b"c:/users/test/project".to_vec();
+        let input = b"# 1 \"C:\\Users\\test\\project\\Src\\Main.c\"";
+        let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
+        // normalized backslash to slash
+        let expected = b"# 1 \"\\Src\\Main.c\""; // Wrong, but expected
+        assert_eq!(&*output, expected);
+
+        // Trailing slashes aren't ignored, they must be cleaned in config reader
+        let basedir = b"c:/users/test/project/".to_vec();
+        let input = b"# 1 \"C:\\Users\\test\\project\\src\\main.c\"";
+        let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
+        let expected = b"# 1 \"src\\main.c\"";
+        assert_eq!(&*output, expected);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_strip_basedir_windows_mixed_slashes() {
+        // The slashes may be mixed in preprocessor output, but the uncut output
+        // should remain untouched.
+        // Mixed forward and backslashes in input (common from certain build systems)
+        let basedir = b"c:/users/test/project/".to_vec();
+        let input = b"# 1 \"C:/Users\\test\\project\\src/main.c\"";
+        let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
+        let expected = b"# 1 \"src/main.c\"";
+        assert_eq!(&*output, expected, "Failed to strip mixed slash path");
+
+        // Also test the reverse case, it doesn't work, because basedir normalization must be done
+        // in advance
+        let input = b"# 1 \"C:\\Users/test/project/src\\main.c\"";
+        let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
+        let expected = b"# 1 \"src\\main.c\"";
+        assert_eq!(
+            &*output, expected,
+            "Failed to strip reverse mixed slash path"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_strip_basedir_windows_escaped_backslashes() {
+        // MSVC (cl -E) and clang on Windows quote paths in #line directives /
+        // GNU linemarkers as C string literals, escaping every backslash:
+        //     #line 1 "C:\\Users\\test\\project\\src\\main.c"
+        // normalize_win_path converts each '\' to '/', so each escaped
+        // separator becomes a DOUBLE forward slash ("c://users//...") and must
+        // still match the basedir (normalized with single slashes).
+        let basedir = b"c:/users/test/project/".to_vec();
+        let input = b"#line 1 \"C:\\\\Users\\\\test\\\\project\\\\src\\\\main.c\"";
+        let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
+        let expected = b"#line 1 \"src\\\\main.c\"";
+        assert_eq!(&*output, &expected[..]);
+
+        // GNU-style linemarker as emitted by clang on Windows
+        let input = b"# 1 \"C:\\\\Users\\\\test\\\\project\\\\include\\\\header.h\" 1\nint x;";
+        let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
+        let expected = b"# 1 \"include\\\\header.h\" 1\nint x;";
+        assert_eq!(&*output, &expected[..]);
+
+        // Multiple occurrences, plain and escaped forms mixed in one output
+        let input =
+            b"# 1 \"C:\\\\Users\\\\test\\\\project\\\\a.c\"\n# 2 \"C:/Users/test/project/b.h\"";
+        let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
+        let expected = b"# 1 \"a.c\"\n# 2 \"b.h\"";
+        assert_eq!(&*output, &expected[..]);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_strip_basedir_windows_escaped_unc() {
+        // UNC basedir: //server/share/dir/ appears as \\\\server\\share\\dir\\
+        // in escaped form
+        let basedir = b"//server/share/project/".to_vec();
+        let input = b"#line 1 \"\\\\\\\\server\\\\share\\\\project\\\\src\\\\main.c\"";
+        let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
+        let expected = b"#line 1 \"src\\\\main.c\"";
+        assert_eq!(&*output, &expected[..]);
+    }
+
+    #[test]
+    fn test_normalize_win_path_ascii() {
+        // Test basic ASCII normalization
+        let input = b"C:\\Users\\Test\\Project";
+        let normalized = super::normalize_win_path(input);
+        assert_eq!(normalized, b"c:/users/test/project");
+
+        // Test mixed case
+        let input = b"C:\\USERS\\test\\PROJECT";
+        let normalized = super::normalize_win_path(input);
+        assert_eq!(normalized, b"c:/users/test/project");
+    }
+
+    #[test]
+    fn test_normalize_win_path_utf8() {
+        // Test with UTF-8 characters (e.g., German umlauts)
+        let input = "C:\\Users\\Müller\\Projekt".as_bytes();
+        let normalized = super::normalize_win_path(input);
+        let expected = "c:/users/müller/projekt".as_bytes();
+        assert_eq!(normalized, expected);
+
+        // Test with Cyrillic characters
+        let input = "C:\\Пользователь\\Проект".as_bytes();
+        let normalized = super::normalize_win_path(input);
+        let expected = "c:/пользователь/проект".as_bytes();
+        assert_eq!(normalized, expected);
+
+        // Test with Turkish İ (special case)
+        let input = "C:\\İstanbul\\DİREKTÖRY".as_bytes();
+        let normalized = super::normalize_win_path(input);
+        // Turkish İ lowercases to i with dot
+        let expected = "c:/i\u{307}stanbul/di\u{307}rektöry".as_bytes();
+        assert_eq!(normalized, expected);
+    }
+
+    #[test]
+    fn test_normalize_win_path_mixed_ascii_utf8() {
+        // Test mixed ASCII and UTF-8
+        let input = "C:\\Users\\Test\\Café\\Проект".as_bytes();
+        let normalized = super::normalize_win_path(input);
+        let expected = "c:/users/test/café/проект".as_bytes();
+        assert_eq!(normalized, expected);
+    }
+
+    #[test]
+    fn test_normalize_win_path_invalid_utf8() {
+        // Test with invalid UTF-8 sequence (should preserve as-is)
+        let mut input = b"C:\\Users\\".to_vec();
+        input.push(0xFF); // Invalid UTF-8
+        input.extend_from_slice(b"\\Test");
+
+        let normalized = super::normalize_win_path(&input);
+
+        // Should lowercase ASCII and convert backslashes, but preserve invalid byte
+        let mut expected = b"c:/users/".to_vec();
+        expected.push(0xFF);
+        expected.extend_from_slice(b"/test");
+        assert_eq!(normalized, expected);
+    }
+
+    #[test]
+    fn test_normalize_win_path_incomplete_utf8() {
+        // Test with incomplete UTF-8 sequence at the end
+        let mut input = b"C:\\Users\\Test".to_vec();
+        input.push(0xC3); // Start of 2-byte UTF-8 but incomplete
+
+        let normalized = super::normalize_win_path(&input);
+
+        // Should preserve incomplete byte as-is
+        let mut expected = b"c:/users/test".to_vec();
+        expected.push(0xC3);
+        assert_eq!(normalized, expected);
+    }
+
+    #[test]
+    fn test_normalize_win_path_empty() {
+        let input = b"";
+        let normalized = super::normalize_win_path(input);
+        assert_eq!(normalized, b"");
+    }
+
+    #[tokio::test]
+    async fn test_digest_reader_hashes_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("hello.txt");
+        std::fs::write(&path, b"hello, world").unwrap();
+        let pool = tokio::runtime::Handle::current();
+        let hash = Digest::reader(path, &pool).await.unwrap();
+        assert_eq!(hash.len(), 64, "blake3 hex digest is 64 chars");
+    }
+
+    // Regression for https://github.com/mozilla/sccache/issues/2653: rustc's
+    // dep-info may list a directory path (e.g. from a proc macro that calls
+    // `proc_macro::tracked_path::path()` on a directory). The four tests below
+    // exercise Digest::reader against directories.
+
+    #[tokio::test]
+    async fn test_digest_reader_hashes_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
+        std::fs::create_dir_all(dir.join("nested/deeper")).unwrap();
+        std::fs::write(dir.join("root.txt"), b"root").unwrap();
+        std::fs::write(dir.join("nested/inner.txt"), b"inner").unwrap();
+        std::fs::write(dir.join("nested/deeper/deep.txt"), b"deep").unwrap();
+
+        let pool = tokio::runtime::Handle::current();
+        let hash = Digest::reader(dir.to_path_buf(), &pool).await.unwrap();
+        assert_eq!(hash.len(), 64);
+    }
+
+    #[tokio::test]
+    async fn test_digest_reader_directory_is_deterministic() {
+        fn populate(dir: &std::path::Path) {
+            std::fs::create_dir_all(dir.join("a/b")).unwrap();
+            std::fs::create_dir_all(dir.join("c")).unwrap();
+            std::fs::write(dir.join("a/b/one.txt"), b"one").unwrap();
+            std::fs::write(dir.join("a/two.txt"), b"two").unwrap();
+            std::fs::write(dir.join("c/three.txt"), b"three").unwrap();
+            std::fs::write(dir.join("four.txt"), b"four").unwrap();
+        }
+        let t1 = tempfile::tempdir().unwrap();
+        let t2 = tempfile::tempdir().unwrap();
+        populate(t1.path());
+        populate(t2.path());
+        let pool = tokio::runtime::Handle::current();
+        let h1 = Digest::reader(t1.path().to_path_buf(), &pool)
+            .await
+            .unwrap();
+        let h2 = Digest::reader(t2.path().to_path_buf(), &pool)
+            .await
+            .unwrap();
+        assert_eq!(h1, h2);
+    }
+
+    #[tokio::test]
+    async fn test_digest_reader_directory_detects_content_change() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub/data.txt"), b"before").unwrap();
+        let pool = tokio::runtime::Handle::current();
+        let before = Digest::reader(dir.to_path_buf(), &pool).await.unwrap();
+        std::fs::write(dir.join("sub/data.txt"), b"after").unwrap();
+        let after = Digest::reader(dir.to_path_buf(), &pool).await.unwrap();
+        assert_ne!(before, after);
+    }
+
+    #[tokio::test]
+    async fn test_digest_reader_directory_detects_path_change() {
+        // Two dirs with identical file *contents* but different file *names*
+        // must hash to different values, because collect_dir_entries mixes
+        // the relative path into the digest as a delimiter.
+        let t1 = tempfile::tempdir().unwrap();
+        let t2 = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(t1.path().join("sub")).unwrap();
+        std::fs::create_dir_all(t2.path().join("sub")).unwrap();
+        std::fs::write(t1.path().join("sub/a.txt"), b"x").unwrap();
+        std::fs::write(t2.path().join("sub/b.txt"), b"x").unwrap();
+        let pool = tokio::runtime::Handle::current();
+        let h1 = Digest::reader(t1.path().to_path_buf(), &pool)
+            .await
+            .unwrap();
+        let h2 = Digest::reader(t2.path().to_path_buf(), &pool)
+            .await
+            .unwrap();
+        assert_ne!(h1, h2);
     }
 }

@@ -12,14 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use opendal::layers::LoggingLayer;
-use opendal::services::Ghac;
+use opendal::OperationContext;
 use opendal::Operator;
+use opendal::services::Ghac;
+use opendal_layer_logging::LoggingLayer;
 
-use crate::errors::*;
 use crate::VERSION;
+use crate::errors::*;
 
-use super::http_client::set_user_agent;
+use super::http_client::new_http_transport;
 
 /// A cache that stores entries in GHA Cache Services.
 pub struct GHACache;
@@ -32,8 +33,7 @@ impl GHACache {
             //
             // User customization is theoretically supported, but I decided
             // to see the community feedback first.
-            .root("/sccache")
-            .http_client(set_user_agent());
+            .root("/sccache");
 
         builder = if version.is_empty() {
             builder.version(&format!("sccache-v{VERSION}"))
@@ -42,8 +42,8 @@ impl GHACache {
         };
 
         let op = Operator::new(builder)?
-            .layer(LoggingLayer::default())
-            .finish();
+            .with_context(OperationContext::new().with_http_transport(new_http_transport()?))
+            .layer(LoggingLayer::default());
         Ok(op)
     }
 }

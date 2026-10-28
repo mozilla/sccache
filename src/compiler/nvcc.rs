@@ -19,13 +19,15 @@ use crate::compiler::args::*;
 use crate::compiler::c::{ArtifactDescriptor, CCompilerImpl, CCompilerKind, ParsedArguments};
 use crate::compiler::gcc::ArgData::*;
 use crate::compiler::{
-    self, gcc, get_compiler_info, write_temp_file, CCompileCommand, Cacheable, CompileCommand,
-    CompileCommandImpl, CompilerArguments, Language,
+    self, CCompileCommand, Cacheable, CompileCommand, CompileCommandImpl, CompilerArguments,
+    Language, cicc, gcc, get_compiler_info, write_temp_file,
 };
 use crate::mock_command::{
-    exit_status, CommandChild, CommandCreator, CommandCreatorSync, ExitStatusValue, RunCommand,
+    CommandChild, CommandCreator, CommandCreatorSync, ExitStatusValue, RunCommand, exit_status,
 };
-use crate::util::{run_input_output, OsStrExt};
+use crate::util::{
+    OsStrExt, exit_status_from_code, resolve_compiler_avoiding_wrapper, run_input_output,
+};
 use crate::{counted_array, dist, protocol, server};
 use async_trait::async_trait;
 use fs::File;
@@ -38,13 +40,26 @@ use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::future::{Future, IntoFuture};
 use std::io::{self, BufRead, Read, Write};
-#[cfg(unix)]
-use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process;
 use which::which_in;
 
 use crate::errors::*;
+
+const NVCC_GENERATED_FILENAME_SUFFIXES: &[&str] = &[
+    cicc::CICC_INPUT_SUFFIX,
+    ".cpp4.ii",
+    ".cudafe1.c",
+    ".cudafe1.cpp",
+    ".cudafe1.stub.c",
+];
+
+fn nvcc_generated_filename_suffix(arg: &str) -> Option<&'static str> {
+    NVCC_GENERATED_FILENAME_SUFFIXES
+        .iter()
+        .find(|ext| arg.ends_with(*ext))
+        .copied()
+}
 
 /// A unit struct on which to implement `CCompilerImpl`.
 #[derive(Clone, Debug)]
@@ -181,8 +196,11 @@ impl CCompilerImpl for Nvcc {
             _ => Err(anyhow!("PCH not supported by nvcc")),
         }?;
 
+        // Resolve compiler avoiding ccache wrappers to prevent double-caching.
+        let resolved_executable = resolve_compiler_avoiding_wrapper(executable, &env_vars);
+
         let initialize_cmd_and_args = || {
-            let mut command = creator.clone().new_command_sync(executable);
+            let mut command = creator.clone().new_command_sync(&resolved_executable);
             command
                 .current_dir(cwd)
                 .env_clear()
@@ -328,7 +346,7 @@ pub fn generate_compile_commands(
                 keep = true;
                 unhashed_args.splice(idx..(idx + 1), []);
                 if keep_dir.is_none() {
-                    keep_dir = Some(cwd.to_path_buf())
+                    keep_dir = Some(cwd.to_path_buf());
                 }
                 continue;
             }
@@ -363,10 +381,10 @@ pub fn generate_compile_commands(
             }
             if let Some(idx) = unhashed_args.iter().position(|x| x == "--threads") {
                 let arg = unhashed_args.get(idx + 1);
-                if let Some(arg) = arg.and_then(|arg| arg.to_str()) {
-                    if let Ok(arg) = arg.parse::<usize>() {
-                        num_parallel = arg;
-                    }
+                if let Some(arg) = arg.and_then(|arg| arg.to_str())
+                    && let Ok(arg) = arg.parse::<usize>()
+                {
+                    num_parallel = arg;
                 }
                 unhashed_args.splice(idx..(idx + 2), []);
                 continue;
@@ -391,7 +409,7 @@ pub fn generate_compile_commands(
     let mut arguments = vec![];
 
     if let Some(lang) = gcc::language_to_gcc_arg(parsed_args.language) {
-        arguments.extend(vec!["-x".into(), lang.into()])
+        arguments.extend(vec!["-x".into(), lang.into()]);
     }
 
     let output = &parsed_args
@@ -756,15 +774,21 @@ where
                     }
                     _ => {}
                 }
-                let group = device_compile_groups.get_mut(&args[args.len() - 3]);
+                let group = args
+                    .iter()
+                    .find(|arg| cicc::is_cicc_input(OsStr::new(arg)))
+                    .and_then(|input| device_compile_groups.get_mut(input));
                 (env_vars.clone(), Cacheable::Yes, group)
             }
             Some("ptxas") => {
                 let group = device_compile_groups.values_mut().find(|cmds| {
-                    if let Some(cicc) = cmds.last() {
-                        if let Some(cicc_out) = cicc.args.last() {
-                            return cicc_out == &args[args.len() - 3];
-                        }
+                    if let Some(cicc) = cmds.last()
+                        && let Some(cicc_out) = cicc.args.last()
+                    {
+                        return args
+                            .iter()
+                            .find(|arg| cicc::is_ptxas_input(OsStr::new(arg)))
+                            .is_some_and(|input| cicc_out == input);
                     }
                     false
                 });
@@ -774,11 +798,11 @@ where
             Some("cudafe++") => {
                 // Fix for CTK < 12.0:
                 // Add `--gen_module_id_file` if the cudafe++ args include `--module_id_file_name`
-                if !args.contains(&gen_module_id_file_flag) {
-                    if let Some(idx) = args.iter().position(|x| x == "--module_id_file_name") {
-                        // Insert `--gen_module_id_file` just before `--module_id_file_name` to match nvcc behavior
-                        args.splice(idx..idx, [gen_module_id_file_flag.clone()]);
-                    }
+                if !args.contains(&gen_module_id_file_flag)
+                    && let Some(idx) = args.iter().position(|x| x == "--module_id_file_name")
+                {
+                    // Insert `--gen_module_id_file` just before `--module_id_file_name` to match nvcc behavior
+                    args.splice(idx..idx, [gen_module_id_file_flag.clone()]);
                 }
                 (
                     env_vars.clone(),
@@ -821,8 +845,8 @@ where
                         // If the output file ends with...
                         // * .cpp1.ii - cicc/ptxas input
                         // * .cpp4.ii - cudafe++ input
-                        if out_name.ends_with(".cpp1.ii") {
-                            Some(out_name.to_owned())
+                        if cicc::is_cicc_input(OsStr::new(&out_name)) {
+                            Some(out_name.clone())
                         } else {
                             None
                         }
@@ -938,13 +962,16 @@ where
         );
     }
 
-    let mut nvcc_dryrun_cmd = creator.clone().new_command_sync(executable);
+    // Resolve compiler avoiding ccache wrappers to prevent double-caching.
+    let resolved_executable = resolve_compiler_avoiding_wrapper(executable, env_vars);
+
+    let mut nvcc_dryrun_cmd = creator.clone().new_command_sync(&resolved_executable);
 
     nvcc_dryrun_cmd
         .args(&[arguments, &["--dryrun".into(), "--keep".into()][..]].concat())
         .env_clear()
         .current_dir(cwd)
-        .envs(env_vars.to_vec());
+        .envs(env_vars.clone());
 
     let nvcc_dryrun_output = run_input_output(nvcc_dryrun_cmd, None).await?;
 
@@ -1070,10 +1097,12 @@ fn fold_env_vars_or_split_into_exe_and_args(
 
     let mut line = if cfg!(target_os = "windows") {
         let line = line
+            .replace("\\\"", "\u{1}")
             .replace("\"\"", "\"")
             .replace(r"\\?\", "")
             .replace('\\', "/")
-            .replace(r"//?/", "");
+            .replace(r"//?/", "")
+            .replace('\u{1}', "\\\"");
         match host_compiler {
             NvccHostCompiler::Msvc => line.replace(" -E ", " -P ").replace(" > ", " -Fi"),
             _ => line,
@@ -1085,10 +1114,10 @@ fn fold_env_vars_or_split_into_exe_and_args(
     // Expand envvars in nvcc subcommands, i.e. "$CICC_PATH/cicc ..." or "%CICC_PATH%/cicc"
     if let Some(env_vars) = dist::osstring_tuples_to_strings(env_vars) {
         for (var, val) in env_vars {
-            if let Some(re) = env_var_re_map.get(&var) {
-                if re.is_match(&line) {
-                    line = line.replace(&envvar_in_shell_format(&var), &val);
-                }
+            if let Some(re) = env_var_re_map.get(&var)
+                && re.is_match(&line)
+            {
+                line = line.replace(&envvar_in_shell_format(&var), &val);
             }
         }
     }
@@ -1134,19 +1163,8 @@ fn remap_generated_filenames(
             // ends in one of the below extensions, rename the file to an
             // auto-incrementing stable name
             let maybe_extension = (!arg.starts_with('-'))
-                .then(|| {
-                    [
-                        ".cpp1.ii",
-                        ".cpp4.ii",
-                        ".cudafe1.c",
-                        ".cudafe1.cpp",
-                        ".cudafe1.stub.c",
-                    ]
-                    .iter()
-                    .find(|ext| arg.ends_with(*ext))
-                    .copied()
-                })
-                .unwrap_or(None);
+                .then(|| nvcc_generated_filename_suffix(&arg))
+                .flatten();
 
             // If the argument is a file that ends in one of the above extensions:
             // * If it's our first time seeing this file, create a unique name for it
@@ -1248,21 +1266,24 @@ where
                 cwd,
                 [
                     vec![exe.clone().into_os_string().into_string().unwrap()],
-                    args.to_vec()
+                    args.clone()
                 ]
                 .concat()
                 .join(" ")
             );
         }
 
+        // Resolve compiler avoiding ccache wrappers to prevent double-caching.
+        let resolved_exe = resolve_compiler_avoiding_wrapper(exe, env_vars);
+
         let out = match cacheable {
             Cacheable::No => {
-                let mut cmd = creator.clone().new_command_sync(exe);
+                let mut cmd = creator.clone().new_command_sync(&resolved_exe);
 
                 cmd.args(args)
                     .current_dir(cwd)
                     .env_clear()
-                    .envs(env_vars.to_vec());
+                    .envs(env_vars.clone());
 
                 run_input_output(cmd, None)
                     .await
@@ -1273,7 +1294,7 @@ where
                 let args = dist::strings_to_osstrings(args);
 
                 match srvc
-                    .compiler_info(exe.clone(), cwd.to_owned(), &args, env_vars)
+                    .compiler_info(resolved_exe.clone(), cwd.to_owned(), &args, env_vars)
                     .await
                 {
                     Err(err) => error_to_output(err),
@@ -1281,9 +1302,15 @@ where
                         CompilerArguments::NotCompilation => Err(anyhow!("Not compilation")),
                         CompilerArguments::CannotCache(why, extra_info) => Err(extra_info
                             .map_or_else(
-                                || anyhow!("Cannot cache({}): {:?} {:?}", why, exe, args),
+                                || anyhow!("Cannot cache({}): {:?} {:?}", why, resolved_exe, args),
                                 |desc| {
-                                    anyhow!("Cannot cache({}, {}): {:?} {:?}", why, desc, exe, args)
+                                    anyhow!(
+                                        "Cannot cache({}, {}): {:?} {:?}",
+                                        why,
+                                        desc,
+                                        resolved_exe,
+                                        args
+                                    )
                                 },
                             )),
                         CompilerArguments::Ok(hasher) => {
@@ -1318,10 +1345,13 @@ where
 
 fn aggregate_output(lhs: process::Output, rhs: process::Output) -> process::Output {
     process::Output {
-        status: exit_status(
-            std::cmp::max(status_to_code(lhs.status), status_to_code(rhs.status))
-                as ExitStatusValue,
-        ),
+        // The first failure is kept as it is, so a signal stays a signal and an exit code stays
+        // an exit code.
+        status: if lhs.status.success() {
+            rhs.status
+        } else {
+            lhs.status
+        },
         stdout: [lhs.stdout, rhs.stdout].concat(),
         stderr: [lhs.stderr, rhs.stderr].concat(),
     }
@@ -1331,7 +1361,7 @@ fn error_to_output(err: Error) -> process::Output {
     match err.downcast::<ProcessError>() {
         Ok(ProcessError(out)) => out,
         Err(err) => process::Output {
-            status: exit_status(1 as ExitStatusValue),
+            status: exit_status_from_code(1),
             stdout: vec![],
             stderr: err.to_string().into_bytes(),
         },
@@ -1356,83 +1386,72 @@ fn compile_result_to_output(exe: &Path, res: protocol::CompileFinished) -> proce
         };
     }
     process::Output {
-        status: exit_status(res.retcode.unwrap_or(0) as ExitStatusValue),
+        status: exit_status_from_code(res.retcode.unwrap_or(0)),
         stdout: res.stdout,
         stderr: res.stderr,
     }
 }
 
-#[cfg(unix)]
-fn status_to_code(res: process::ExitStatus) -> ExitStatusValue {
-    if res.success() {
-        0 as ExitStatusValue
-    } else {
-        res.signal().or(res.code()).unwrap_or(1) as ExitStatusValue
-    }
-}
-
-#[cfg(windows)]
-fn status_to_code(res: process::ExitStatus) -> ExitStatusValue {
-    if res.success() {
-        0 as ExitStatusValue
-    } else {
-        res.code().unwrap_or(1) as ExitStatusValue
-    }
-}
-
 counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     //todo: refactor show_includes into dependency_args
-    take_arg!("--Werror", OsString, CanBeSeparated('='), PreprocessorArgument),
-    take_arg!("--archive-options options", OsString, CanBeSeparated('='), PassThrough),
+    take_arg!("--Werror", OsString, CanBeSeparated(b'='), PreprocessorArgument),
+    take_arg!("--archive-options options", OsString, CanBeSeparated(b'='), PassThrough),
     flag!("--compile", DoCompilation),
-    take_arg!("--compiler-bindir", OsString, CanBeSeparated('='), PassThrough),
-    take_arg!("--compiler-options", OsString, CanBeSeparated('='), PreprocessorArgument),
+    take_arg!("--compiler-bindir", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("--compiler-options", OsString, CanBeSeparated(b'='), PreprocessorArgument),
     flag!("--cubin", DoCompilation),
-    take_arg!("--default-stream", OsString, CanBeSeparated('='), PassThrough),
+    take_arg!("--default-stream", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("--dependency-output", PathBuf, Separated, DepArgumentPath),
     flag!("--device-c", DoCompilation),
     flag!("--device-w", DoCompilation),
+    take_arg!("--diag-error", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("--diag-suppress", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("--diag-warn", OsString, CanBeSeparated(b'='), PassThrough),
     flag!("--expt-extended-lambda", PreprocessorArgumentFlag),
     flag!("--expt-relaxed-constexpr", PreprocessorArgumentFlag),
     flag!("--extended-lambda", PreprocessorArgumentFlag),
     flag!("--fatbin", DoCompilation),
     take_arg!("--fdevice-time-trace", OsString, CanBeSeparated, TooHard),
     take_arg!("--fdevice-time-trace=", OsString, Concatenated, TooHard),
-    take_arg!("--generate-code", OsString, CanBeSeparated('='), PassThrough),
+    take_arg!("--generate-code", OsString, CanBeSeparated(b'='), PassThrough),
     flag!("--generate-dependencies-with-compile", NeedDepTarget),
     flag!("--generate-nonsystem-dependencies-with-compile", NeedDepTarget),
-    take_arg!("--gpu-architecture", OsString, CanBeSeparated('='), PassThrough),
-    take_arg!("--gpu-code", OsString, CanBeSeparated('='), PassThrough),
-    take_arg!("--include-path", PathBuf, CanBeSeparated('='), PreprocessorArgumentPath),
+    take_arg!("--gpu-architecture", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("--gpu-code", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("--include-path", PathBuf, CanBeSeparated(b'='), PreprocessorArgumentPath),
     flag!("--keep", UnhashedFlag),
-    take_arg!("--keep-dir", OsString, CanBeSeparated('='), Unhashed),
-    take_arg!("--linker-options", OsString, CanBeSeparated('='), PassThrough),
-    take_arg!("--maxrregcount", OsString, CanBeSeparated('='), PassThrough),
+    take_arg!("--keep-dir", OsString, CanBeSeparated(b'='), Unhashed),
+    take_arg!("--linker-options", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("--maxrregcount", OsString, CanBeSeparated(b'='), PassThrough),
     flag!("--no-host-device-initializer-list", PreprocessorArgumentFlag),
-    take_arg!("--nvlink-options", OsString, CanBeSeparated('='), PassThrough),
-    take_arg!("--options-file", PathBuf, CanBeSeparated('='), ExtraHashFile),
+    take_arg!("--nvlink-options", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("--options-file", PathBuf, CanBeSeparated(b'='), ExtraHashFile),
     flag!("--optix-ir", DoCompilation),
     flag!("--ptx", DoCompilation),
-    take_arg!("--ptxas-options", OsString, CanBeSeparated('='), PassThrough),
-    take_arg!("--relocatable-device-code", OsString, CanBeSeparated('='), PreprocessorArgument),
+    take_arg!("--ptxas-options", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("--relocatable-device-code", OsString, CanBeSeparated(b'='), PreprocessorArgument),
     flag!("--save-temps", UnhashedFlag),
-    take_arg!("--system-include", PathBuf, CanBeSeparated('='), PreprocessorArgumentPath),
-    take_arg!("--threads", OsString, CanBeSeparated('='), Unhashed),
+    take_arg!("--system-include", PathBuf, CanBeSeparated(b'='), PreprocessorArgumentPath),
+    take_arg!("--threads", OsString, CanBeSeparated(b'='), Unhashed),
     take_arg!("--time", OsString, CanBeSeparated, TooHard),
     take_arg!("--time=", OsString, Concatenated, TooHard),
-    take_arg!("--x", OsString, CanBeSeparated('='), Language),
+    take_arg!("--x", OsString, CanBeSeparated(b'='), Language),
 
-    take_arg!("-Werror", OsString, CanBeSeparated('='), PreprocessorArgument),
-    take_arg!("-Xarchive", OsString, CanBeSeparated('='), PassThrough),
-    take_arg!("-Xcompiler", OsString, CanBeSeparated('='), PreprocessorArgument),
-    take_arg!("-Xlinker", OsString, CanBeSeparated('='), PassThrough),
-    take_arg!("-Xnvlink", OsString, CanBeSeparated('='), PassThrough),
-    take_arg!("-Xptxas", OsString, CanBeSeparated('='), PassThrough),
-    take_arg!("-arch", OsString, CanBeSeparated('='), PassThrough),
-    take_arg!("-ccbin", OsString, CanBeSeparated('='), PassThrough),
-    take_arg!("-code", OsString, CanBeSeparated('='), PassThrough),
+    take_arg!("-Werror", OsString, CanBeSeparated(b'='), PreprocessorArgument),
+    take_arg!("-Xarchive", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("-Xcompiler", OsString, CanBeSeparated(b'='), PreprocessorArgument),
+    take_arg!("-Xlinker", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("-Xnvlink", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("-Xptxas", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("-arch", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("-ccbin", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("-code", OsString, CanBeSeparated(b'='), PassThrough),
     flag!("-cubin", DoCompilation),
     flag!("-dc", DoCompilation),
-    take_arg!("-default-stream", OsString, CanBeSeparated('='), PassThrough),
+    take_arg!("-default-stream", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("-diag-error", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("-diag-suppress", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("-diag-warn", OsString, CanBeSeparated(b'='), PassThrough),
     flag!("-dw", DoCompilation),
     flag!("-expt-extended-lambda", PreprocessorArgumentFlag),
     flag!("-expt-relaxed-constexpr", PreprocessorArgumentFlag),
@@ -1440,21 +1459,21 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     flag!("-fatbin", DoCompilation),
     take_arg!("-fdevice-time-trace", OsString, CanBeSeparated, TooHard),
     take_arg!("-fdevice-time-trace=", OsString, Concatenated, TooHard),
-    take_arg!("-gencode", OsString, CanBeSeparated('='), PassThrough),
-    take_arg!("-isystem", PathBuf, CanBeSeparated('='), PreprocessorArgumentPath),
+    take_arg!("-gencode", OsString, CanBeSeparated(b'='), PassThrough),
+    take_arg!("-isystem", PathBuf, CanBeSeparated(b'='), PreprocessorArgumentPath),
     flag!("-keep", UnhashedFlag),
-    take_arg!("-keep-dir", OsString, CanBeSeparated('='), Unhashed),
-    take_arg!("-maxrregcount", OsString, CanBeSeparated('='), PassThrough),
+    take_arg!("-keep-dir", OsString, CanBeSeparated(b'='), Unhashed),
+    take_arg!("-maxrregcount", OsString, CanBeSeparated(b'='), PassThrough),
     flag!("-nohdinitlist", PreprocessorArgumentFlag),
     flag!("-optix-ir", DoCompilation),
     flag!("-ptx", DoCompilation),
-    take_arg!("-rdc", OsString, CanBeSeparated('='), PreprocessorArgument),
+    take_arg!("-rdc", OsString, CanBeSeparated(b'='), PreprocessorArgument),
     flag!("-save-temps", UnhashedFlag),
     take_arg!("-t", OsString, CanBeSeparated, Unhashed),
     take_arg!("-t=", OsString, Concatenated, Unhashed),
     take_arg!("-time", OsString, CanBeSeparated, TooHard),
     take_arg!("-time=", OsString, Concatenated, TooHard),
-    take_arg!("-x", OsString, CanBeSeparated('='), Language),
+    take_arg!("-x", OsString, CanBeSeparated(b'='), Language),
 ]);
 
 #[cfg(test)]
@@ -1465,6 +1484,10 @@ mod test {
     use crate::mock_command::*;
     use crate::test::utils::*;
     use std::collections::HashMap;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+    #[cfg(unix)]
+    use std::os::unix::process::ExitStatusExt;
     use std::path::PathBuf;
 
     fn parse_arguments_gcc(arguments: Vec<String>) -> CompilerArguments<ParsedArguments> {
@@ -1518,6 +1541,215 @@ mod test {
                 o => panic!("Got unexpected parse result: {:?}", o),
             }
         }
+    }
+
+    fn fake_executable(dir: &Path, name: &str) {
+        #[cfg(windows)]
+        let path = dir.join(format!("{name}.exe"));
+        #[cfg(not(windows))]
+        let path = dir.join(name);
+        fs::write(&path, "").unwrap();
+        #[cfg(unix)]
+        {
+            let mut permissions = fs::metadata(&path).unwrap().permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&path, permissions).unwrap();
+        }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_group_nvcc_subcommands_preserves_escaped_quotes_in_defines() {
+        let bin_dir = tempfile::tempdir().unwrap();
+
+        for exe in ["nvcc", "cl", "cudafe++", "cicc", "ptxas", "fatbinary"] {
+            fake_executable(bin_dir.path(), exe);
+        }
+
+        let path = bin_dir.path().to_string_lossy();
+        let dryrun = format!(
+            r#"#$ PATH={path}
+#$ cl -D__CUDACC__ -D "FILE_NAME=\"kernel.dll\"" -D "USE_CUDA=1" -DGUARDED_AFTER=1 -E -x c++ "kernel.cu" > "kernel.cpp4.ii"
+#$ cudafe++ --gen_c_file_name "kernel.cudafe1.cpp" --stub_file_name "kernel.cudafe1.stub.c" --module_id_file_name "kernel.module_id" --simt-only "kernel.cpp4.ii"
+#$ cl -D__CUDA_ARCH__=800 -D__CUDACC__ -D "FILE_NAME=\"kernel.dll\"" -D "USE_CUDA=1" -DGUARDED_AFTER=1 -E -x c++ "kernel.cu" > "kernel.cpp1.ii"
+#$ cicc --device-c -arch compute_80 --module_id_file_name "kernel.module_id" --gen_c_file_name "kernel.cudafe1.c" --stub_file_name "kernel.cudafe1.stub.c" --gen_device_file_name "kernel.cudafe1.gpu" "kernel.cpp1.ii" --simt-only -o "kernel.ptx"
+#$ ptxas -arch=sm_80 --compile-only "kernel.ptx" -o "kernel.cubin"
+#$ fatbinary --create="kernel.fatbin" "--image3=kind=elf,sm=80,file=kernel.cubin" --embedded-fatbin="kernel.fatbin.c" --device-c
+#$ cl -D__CUDA_ARCH__=800 -D__CUDACC__ -c -x c++ "kernel.cudafe1.cpp" -Fo"kernel.o"
+"#
+        );
+
+        let creator = new_creator();
+        next_command(
+            &creator,
+            Ok(MockChild::new(
+                exit_status(0),
+                dryrun.as_bytes(),
+                dryrun.as_bytes(),
+            )),
+        );
+        next_command(
+            &creator,
+            Ok(MockChild::new(
+                exit_status(0),
+                dryrun.as_bytes(),
+                dryrun.as_bytes(),
+            )),
+        );
+
+        let groups = group_nvcc_subcommands_by_compilation_stage(
+            &creator,
+            &bin_dir.path().join("nvcc"),
+            &["-c", "kernel.cu", "-o", "kernel.o"].map(OsString::from),
+            OsStr::new("-c"),
+            bin_dir.path(),
+            bin_dir.path(),
+            None,
+            &[],
+            &NvccHostCompiler::Msvc,
+            OsStr::new("kernel.o"),
+        )
+        .wait()
+        .unwrap();
+
+        let all_cmds = groups.iter().flatten().collect::<Vec<_>>();
+        let preprocess_cmds = all_cmds
+            .iter()
+            .filter(|cmd| {
+                cmd.exe.file_stem().and_then(|s| s.to_str()) == Some("cl")
+                    && cmd.args.iter().any(|a| a.starts_with("-Fi"))
+            })
+            .collect::<Vec<_>>();
+        assert!(!preprocess_cmds.is_empty(), "no preprocess steps found");
+
+        for cmd in preprocess_cmds {
+            // The giant-token fingerprint of the collapse: several " -D "
+            // pairs packed into a single argument.
+            assert!(
+                cmd.args.iter().all(|a| !a.contains(" -D ")),
+                "quote collapse: multiple -D pairs packed into one token: {:?}",
+                cmd.args
+            );
+            // Every define survives as its own token, escaped quotes intact.
+            assert!(
+                cmd.args.iter().any(|a| a == "USE_CUDA=1"),
+                "USE_CUDA=1 lost: {:?}",
+                cmd.args
+            );
+            assert!(
+                cmd.args.iter().any(|a| a == "-DGUARDED_AFTER=1"),
+                "-DGUARDED_AFTER=1 lost: {:?}",
+                cmd.args
+            );
+            assert!(
+                cmd.args.iter().any(|a| a == "FILE_NAME=\"kernel.dll\""),
+                "string-valued define mangled: {:?}",
+                cmd.args
+            );
+        }
+    }
+
+    #[test]
+    fn test_group_nvcc_subcommands_with_simt_only_cicc_input() {
+        let bin_dir = tempfile::tempdir().unwrap();
+
+        #[cfg(windows)]
+        let (host_exe, host_compiler) = ("cl", NvccHostCompiler::Msvc);
+        #[cfg(not(windows))]
+        let (host_exe, host_compiler) = ("gcc", NvccHostCompiler::Gcc);
+
+        for exe in ["nvcc", host_exe, "cudafe++", "cicc", "ptxas", "fatbinary"] {
+            fake_executable(bin_dir.path(), exe);
+        }
+
+        let path = bin_dir.path().to_string_lossy();
+        #[cfg(windows)]
+        let dryrun = format!(
+            r#"#$ PATH={path}
+#$ cl -D__CUDACC__ -E -x c++ "kernel.cu" > "kernel.cpp4.ii"
+#$ cudafe++ --gen_c_file_name "kernel.cudafe1.cpp" --stub_file_name "kernel.cudafe1.stub.c" --module_id_file_name "kernel.module_id" --simt-only "kernel.cpp4.ii"
+#$ cl -D__CUDA_ARCH__=800 -D__CUDACC__ -E -x c++ "kernel.cu" > "kernel.cpp1.ii"
+#$ cicc --device-c -arch compute_80 --module_id_file_name "kernel.module_id" --gen_c_file_name "kernel.cudafe1.c" --stub_file_name "kernel.cudafe1.stub.c" --gen_device_file_name "kernel.cudafe1.gpu" "kernel.cpp1.ii" --simt-only -o "kernel.ptx"
+#$ ptxas -arch=sm_80 --compile-only "kernel.ptx" -o "kernel.cubin"
+#$ fatbinary --create="kernel.fatbin" "--image3=kind=elf,sm=80,file=kernel.cubin" --embedded-fatbin="kernel.fatbin.c" --device-c
+#$ cl -D__CUDA_ARCH__=800 -D__CUDACC__ -c -x c++ "kernel.cudafe1.cpp" -Fo"kernel.o"
+"#
+        );
+        #[cfg(not(windows))]
+        let dryrun = format!(
+            r#"#$ PATH={path}
+#$ gcc -D__CUDACC__ -E -x c++ "kernel.cu" -o "kernel.cpp4.ii"
+#$ cudafe++ --gen_c_file_name "kernel.cudafe1.cpp" --stub_file_name "kernel.cudafe1.stub.c" --module_id_file_name "kernel.module_id" --simt-only "kernel.cpp4.ii"
+#$ gcc -D__CUDA_ARCH__=800 -D__CUDACC__ -E -x c++ "kernel.cu" -o "kernel.cpp1.ii"
+#$ cicc --device-c -arch compute_80 --module_id_file_name "kernel.module_id" --gen_c_file_name "kernel.cudafe1.c" --stub_file_name "kernel.cudafe1.stub.c" --gen_device_file_name "kernel.cudafe1.gpu" "kernel.cpp1.ii" --simt-only -o "kernel.ptx"
+#$ ptxas -arch=sm_80 --compile-only "kernel.ptx" -o "kernel.cubin"
+#$ fatbinary --create="kernel.fatbin" "--image3=kind=elf,sm=80,file=kernel.cubin" --embedded-fatbin="kernel.fatbin.c" --device-c
+#$ gcc -D__CUDA_ARCH__=800 -D__CUDACC__ -c -x c++ "kernel.cudafe1.cpp" -o "kernel.o"
+"#
+        );
+
+        let creator = new_creator();
+        next_command(
+            &creator,
+            Ok(MockChild::new(
+                exit_status(0),
+                dryrun.as_bytes(),
+                dryrun.as_bytes(),
+            )),
+        );
+        next_command(
+            &creator,
+            Ok(MockChild::new(
+                exit_status(0),
+                dryrun.as_bytes(),
+                dryrun.as_bytes(),
+            )),
+        );
+
+        let groups = group_nvcc_subcommands_by_compilation_stage(
+            &creator,
+            &bin_dir.path().join("nvcc"),
+            &["-c", "kernel.cu", "-o", "kernel.o"].map(OsString::from),
+            OsStr::new("-c"),
+            bin_dir.path(),
+            bin_dir.path(),
+            None,
+            &[],
+            &host_compiler,
+            OsStr::new("kernel.o"),
+        )
+        .wait()
+        .unwrap();
+
+        let device_group = groups
+            .iter()
+            .find(|group| {
+                group
+                    .iter()
+                    .any(|cmd| cmd.exe.file_stem().and_then(|stem| stem.to_str()) == Some("cicc"))
+            })
+            .expect("missing device compile group");
+
+        assert_eq!(
+            vec![host_exe, "cicc", "ptxas"],
+            device_group
+                .iter()
+                .map(|cmd| cmd.exe.file_stem().unwrap().to_str().unwrap())
+                .collect::<Vec<_>>()
+        );
+
+        let cicc = device_group
+            .iter()
+            .find(|cmd| cmd.exe.file_stem().and_then(|stem| stem.to_str()) == Some("cicc"))
+            .unwrap();
+        assert!(cicc.args.iter().any(cicc::is_cicc_input));
+        assert!(cicc.args.iter().any(|arg| arg == "--simt-only"));
+
+        let ptxas = device_group
+            .iter()
+            .find(|cmd| cmd.exe.file_stem().and_then(|stem| stem.to_str()) == Some("ptxas"))
+            .unwrap();
+        assert!(ptxas.args.iter().any(cicc::is_ptxas_input));
     }
 
     #[test]
@@ -1631,6 +1863,13 @@ mod test {
         );
         assert!(a.preprocessor_args.is_empty());
         assert_eq!(ovec!["-ccbin", "/usr/bin/", "-c"], a.common_args);
+    }
+
+    #[test]
+    fn test_parse_arguments_dependency_output() {
+        let a = parses!("--dependency-output", "foo.o.d", "-c", "foo.cu");
+        assert_eq!(Some("foo.cu"), a.input.to_str());
+        assert_eq!(ovec!["--dependency-output", "foo.o.d"], a.dependency_args);
     }
 
     #[test]
@@ -1809,6 +2048,13 @@ mod test {
                     path: "foo.o".into(),
                     optional: false
                 }
+            ),
+            (
+                "d",
+                ArtifactDescriptor {
+                    path: "foo.o.d".into(),
+                    optional: false
+                }
             )
         );
         assert_eq!(
@@ -1896,6 +2142,38 @@ mod test {
                 "--suppress-stack-size-warning",
                 "-Xcudafe",
                 "--display_error_number",
+                "-c"
+            ],
+            a.common_args
+        );
+    }
+
+    #[test]
+    fn test_parse_diag_suppress_separated() {
+        // The separated form (`--diag-suppress 1394,1388`, as OpenCV emits
+        // it) must not be mistaken for a second input file.
+        let a = parses!(
+            "-x=cu",
+            "-Xcudafe",
+            "--display_error_number",
+            "--diag-suppress",
+            "1394,1388",
+            "-diag-warn=68",
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o"
+        );
+        assert_eq!(Some("foo.c"), a.input.to_str());
+        assert_eq!(Language::Cuda, a.language);
+        assert_eq!(
+            ovec![
+                "-Xcudafe",
+                "--display_error_number",
+                "--diag-suppress",
+                "1394,1388",
+                "-diag-warn",
+                "68",
                 "-c"
             ],
             a.common_args
@@ -2038,5 +2316,98 @@ mod test {
                 parse_arguments_nvc(stringvec![format!("{arg_with_separator}flamegraph.json")])
             );
         }
+    }
+
+    fn compile_finished(retcode: Option<i32>, signal: Option<i32>) -> protocol::CompileFinished {
+        protocol::CompileFinished {
+            retcode,
+            signal,
+            stdout: b"out".to_vec(),
+            stderr: b"err".to_vec(),
+            ..Default::default()
+        }
+    }
+
+    fn output_with(status: process::ExitStatus, text: &str) -> process::Output {
+        process::Output {
+            status,
+            stdout: text.into(),
+            stderr: text.into(),
+        }
+    }
+
+    #[test]
+    fn test_compile_result_to_output_exit_codes() {
+        let ok = compile_result_to_output(Path::new("ptxas"), compile_finished(Some(0), None));
+        assert!(ok.status.success());
+
+        let failed = compile_result_to_output(Path::new("ptxas"), compile_finished(Some(1), None));
+        assert_eq!(failed.status.code(), Some(1));
+        assert_eq!(failed.stdout, b"out");
+        assert_eq!(failed.stderr, b"err");
+    }
+
+    // The server answers a subcommand that failed inside sccache (e.g. `Missing "cubin" file
+    // output`) with -2, which used to reach the user as "Compiler killed by signal 126".
+    #[cfg(unix)]
+    #[test]
+    fn test_compile_result_to_output_fatal_error_is_not_a_signal() {
+        let output = compile_result_to_output(Path::new("ptxas"), compile_finished(Some(-2), None));
+        assert!(!output.status.success());
+        assert_eq!(output.status.signal(), None);
+        assert_eq!(output.status.code(), Some(254));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_compile_result_to_output_signal() {
+        let output =
+            compile_result_to_output(Path::new("/usr/bin/ptxas"), compile_finished(None, Some(9)));
+        assert_eq!(output.status.signal(), Some(9));
+        assert_eq!(output.status.code(), None);
+        assert!(output.stderr.starts_with(b"ptxas terminated (signal: 9)"));
+    }
+
+    #[test]
+    fn test_error_to_output_exit_code() {
+        let output = error_to_output(anyhow!("no such compiler"));
+        assert_eq!(output.status.code(), Some(1));
+        assert_eq!(output.stderr, b"no such compiler");
+        #[cfg(unix)]
+        assert_eq!(output.status.signal(), None);
+    }
+
+    #[test]
+    fn test_aggregate_output_keeps_first_failure() {
+        let ok = exit_status_from_code(0);
+
+        let all_ok = aggregate_output(output_with(ok, "a"), output_with(ok, "b"));
+        assert!(all_ok.status.success());
+        assert_eq!(all_ok.stdout, b"ab");
+        assert_eq!(all_ok.stderr, b"ab");
+
+        let failed = aggregate_output(
+            output_with(ok, "a"),
+            output_with(exit_status_from_code(2), "b"),
+        );
+        assert_eq!(failed.status.code(), Some(2));
+
+        let first = aggregate_output(
+            output_with(exit_status_from_code(3), "a"),
+            output_with(exit_status_from_code(5), "b"),
+        );
+        assert_eq!(first.status.code(), Some(3));
+        assert_eq!(first.stdout, b"ab");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_aggregate_output_keeps_signal() {
+        let killed = aggregate_output(
+            output_with(exit_status_from_code(0), "a"),
+            output_with(exit_status(9), "b"),
+        );
+        assert_eq!(killed.status.signal(), Some(9));
+        assert_eq!(killed.status.code(), None);
     }
 }

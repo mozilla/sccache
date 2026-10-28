@@ -2,7 +2,6 @@
 [![Crates.io](https://img.shields.io/crates/v/sccache.svg)](https://crates.io/crates/sccache)
 [![Matrix](https://img.shields.io/matrix/sccache:mozilla.org)](https://chat.mozilla.org/#/room/#sccache:mozilla.org)
 ![Crates.io](https://img.shields.io/crates/l/sccache)
-[![dependency status](https://deps.rs/repo/github/mozilla/sccache/status.svg)](https://deps.rs/repo/github/mozilla/sccache)
 
 [![CodeCov](https://codecov.io/gh/mozilla/sccache/branch/main/graph/badge.svg)](https://codecov.io/gh/mozilla/sccache)
 
@@ -10,9 +9,9 @@
 sccache - Shared Compilation Cache
 ==================================
 
-sccache is a [ccache](https://ccache.dev/)-like compiler caching tool. It is used as a compiler wrapper and avoids compilation when possible, storing cached results either on [local disk](docs/Local.md) or in one of [several cloud storage backends](#storage-options).
+sccache is a [ccache](https://ccache.dev/)-like compiler caching tool. It is used as a compiler wrapper and avoids compilation when possible, storing cached results either on [local disk](docs/Local.md) or in one of [several cloud storage backends](#storage-options). Multi-level caching with automatic backfill is supported for hierarchical cache architectures (see [Multi-Level Cache](docs/MultiLevel.md)).
 
-sccache includes support for caching the compilation of C/C++ code, [Rust](docs/Rust.md), as well as NVIDIA's CUDA using [nvcc](https://docs.nvidia.com/cuda/cuda-compiler-driver-nvcc/index.html), and [clang](https://llvm.org/docs/CompileCudaWithLLVM.html).
+sccache includes support for caching the compilation of Assembler, C/C++ code, [Rust](docs/Rust.md), as well as NVIDIA's CUDA using [nvcc](https://docs.nvidia.com/cuda/cuda-compiler-driver-nvcc/index.html), and [clang](https://llvm.org/docs/CompileCudaWithLLVM.html), [AMD's ROCm HIP](https://rocm.docs.amd.com/projects/HIP/en/latest/index.html).
 
 sccache also provides [icecream](https://github.com/icecc/icecream)-style distributed compilation (automatic packaging of local toolchains) for all supported compilers (including Rust). The distributed compilation system includes several security features that icecream lacks such as authentication, transport layer encryption, and sandboxed compiler execution on build servers. See [the distributed quickstart](docs/DistributedQuickstart.md) guide for more information.
 
@@ -33,6 +32,7 @@ Table of Contents (ToC)
 * [Interaction with GNU `make` jobserver](#interaction-with-gnu-make-jobserver)
 * [Known Caveats](#known-caveats)
 * [Storage Options](#storage-options)
+  * [Multi-Level (Hierarchical Caching)](docs/MultiLevel.md)
   * [Local](docs/Local.md)
   * [S3](docs/S3.md)
   * [R2](docs/S3.md#R2)
@@ -43,6 +43,7 @@ Table of Contents (ToC)
   * [GitHub Actions](docs/GHA.md)
   * [WebDAV (Ccache/Bazel/Gradle compatible)](docs/Webdav.md)
   * [Alibaba OSS](docs/OSS.md)
+  * [Tencent Cloud Object Storage](docs/COS.md)
 
 ---
 
@@ -71,14 +72,66 @@ On Windows, sccache can be installed via [scoop](https://scoop.sh/):
 ```
 scoop install sccache
 ```
+or `winget`:
+
+```
+winget install Mozilla.sccache
+```
 
 ### Via cargo
 
 If you have a Rust toolchain installed you can install sccache using cargo. **Note that this will compile sccache from source which is fairly resource-intensive. For CI purposes you should use prebuilt binary packages.**
 
-
 ```bash
 cargo install sccache --locked
+```
+
+Or, using [cargo-binstall](https://github.com/cargo-bins/cargo-binstall) to install a prebuilt binary:
+
+```bash
+cargo binstall sccache
+```
+
+### With Nix
+
+Sccache is available in nixpkgs, so if you don't need the latest version you can use that:
+
+```nix
+buildInputs = [ pkgs.sccache ];
+```
+
+We also provide a flake with an overlay for getting the latest version:
+
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    sccache = {
+      url = "github:mozilla/sccache";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+  };
+
+  outputs = { self, nixpkgs, sccache, ... }:
+    let
+      system = "x86_64-linux";
+      pkgs = import nixpkgs {
+        inherit system;
+        overlays = [ sccache.overlays.default ];
+      };
+    in {
+      devShells.${system}.default = pkgs.mkShell {
+        buildInputs = [ pkgs.sccache ];
+      };
+    };
+}
+```
+
+Or use it directly from the flake without the overlay:
+
+```bash
+nix run github:mozilla/sccache -- --help
+nix shell github:mozilla/sccache
 ```
 
 ---
@@ -110,7 +163,7 @@ export RUSTC_WRAPPER=/path/to/sccache
 cargo build
 ```
 
-sccache supports gcc, clang, MSVC, rustc, [NVCC](https://docs.nvidia.com/cuda/cuda-compiler-driver-nvcc/index.html), [NVC++](https://docs.nvidia.com/hpc-sdk//compilers/hpc-compilers-user-guide/index.html), and [Wind River's diab compiler](https://www.windriver.com/products/development-tools/#diab_compiler). Both gcc and msvc support Response Files, read more about their implementation [here](docs/ResponseFiles.md).
+sccache supports gcc, clang, MSVC, rustc, [NVCC](https://docs.nvidia.com/cuda/cuda-compiler-driver-nvcc/index.html), [NVC++](https://docs.nvidia.com/hpc-sdk//compilers/hpc-compilers-user-guide/index.html), [hipcc](https://rocm.docs.amd.com/projects/HIP/en/latest/index.html), and [Wind River's diab compiler](https://www.windriver.com/products/development-tools/#diab_compiler). Both gcc and msvc support Response Files, read more about their implementation [here](docs/ResponseFiles.md).
 
 If you don't [specify otherwise](#storage-options), sccache will use a local disk cache.
 
@@ -155,7 +208,7 @@ By default, sccache will fail your build if it fails to successfully communicate
 
 **For versions of cmake 3.25 and later**, to compile with MSVC, you have to use the new `CMAKE_MSVC_DEBUG_INFORMATION_FORMAT` option, meant to configure the `-Z7` flag.  Additionally, you must set the cmake policy number 0141 to the NEW setting:
 ```cmake
-set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT Embedded)
+set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<$<CONFIG:Debug,RelWithDebInfo>:Embedded>")
 cmake_policy(SET CMP0141 NEW)
 ```
 
@@ -165,7 +218,7 @@ find_program(SCCACHE sccache REQUIRED)
 
 set(CMAKE_C_COMPILER_LAUNCHER ${SCCACHE})
 set(CMAKE_CXX_COMPILER_LAUNCHER ${SCCACHE})
-set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT Embedded)
+set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<$<CONFIG:Debug,RelWithDebInfo>:Embedded>")
 cmake_policy(SET CMP0141 NEW)
 ```
 
@@ -183,7 +236,7 @@ And you can build code as usual without any additional flags in the command line
 Build Requirements
 ------------------
 
-sccache is a [Rust](https://www.rust-lang.org/) program. Building it requires `cargo` (and thus`rustc`). sccache currently requires **Rust 1.75.0**. We recommend you install Rust via [Rustup](https://rustup.rs/).
+sccache is a [Rust](https://www.rust-lang.org/) program. Building it requires `cargo` (and thus`rustc`). sccache currently requires **Rust 1.91.0**. We recommend you install Rust via [Rustup](https://rustup.rs/).
 
 Build
 -----
@@ -191,7 +244,7 @@ Build
 If you are building sccache for non-development purposes make sure you use `cargo build --release` to get optimized binaries:
 
 ```bash
-cargo build --release [--no-default-features --features=s3|redis|gcs|memcached|azure|gha|webdav|oss]
+cargo build --release [--no-default-features --features=s3|redis|gcs|memcached|azure|gha|webdav|oss|cos]
 ```
 
 The list of features can be found in the `Cargo.toml` file, `[features]` section.
@@ -200,7 +253,7 @@ By default, `sccache` builds with support for all storage backends, but individu
 
 ### Building portable binaries
 
-When building with the `dist-server` feature, `sccache` will depend on OpenSSL, which can be an annoyance if you want to distribute portable binaries. It is possible to statically link against OpenSSL using the `openssl/vendored` feature.
+`sccache` uses Rust-based TLS and cryptography, including with the `dist-server` feature, and does not depend on OpenSSL. The `vendored-openssl` feature is retained as a no-op for backwards compatibility.
 
 #### Linux
 
@@ -273,12 +326,53 @@ This is most useful when using sccache for Rust compilation, as rustc supports u
 
 ---
 
+Normalizing Paths with `SCCACHE_BASEDIRS`
+-----------------------------------------
+
+By default, sccache requires absolute paths to match for cache hits. To enable cache sharing across different build directories, you can set `SCCACHE_BASEDIRS` to strip a base directory from paths before hashing:
+
+```bash
+export SCCACHE_BASEDIRS=/home/user/project
+```
+
+You can also specify multiple base directories by separating them by `;` on Windows hosts and by `:` on any other operating system. When multiple directories are provided, the longest matching prefix is used:
+
+```bash
+export SCCACHE_BASEDIRS="/home/user/project:/home/user/workspace"
+```
+
+Path matching is **case-insensitive** on Windows and **case-sensitive** on other operating systems.
+
+Base directories are stripped from the preprocessed source and from the compiler arguments alike. The arguments matter because a flag can name the tree it is building: `-ffile-prefix-map=/home/user/project=.` makes the object file independent of where the tree is checked out, but the flag itself is not, and it is hashed verbatim.
+
+In an argument only the places that are expected to spell a pathname are considered: the whole argument, the value of an option written with an `=` (either half of a prefix map), and the value glued to a short option such as `-I`. A base directory appearing anywhere else is left alone, so a definition the compiler bakes into the output verbatim, `-DROOT="/home/user/project"`, still counts. A match also has to end where a path component ends, so a sibling `/home/user/project-docs` is not one.
+
+This is similar to ccache's `CCACHE_BASEDIR` and helps when:
+* Building the same project from different directories
+* Sharing cache between CI jobs with different checkout paths
+* Multiple developers working with different username paths
+* Working with multiple project checkouts simultaneously
+
+**Note:** Only absolute paths are supported. Relative paths will prevent server from starting.
+
+You can also configure this in the sccache config file:
+
+```toml
+# Single directory
+basedirs = ["/home/user/project"]
+
+# Or multiple directories
+basedirs = ["/home/user/project", "/home/user/workspace"]
+```
+
+---
+
 Known Caveats
 -------------
 
 ### General
 
-* Absolute paths to files must match to get a cache hit. This means that even if you are using a shared cache, everyone will have to build at the same absolute path (i.e. not in `$HOME`) in order to benefit each other. In Rust this includes the source for third party crates which are stored in `$HOME/.cargo/registry/cache` by default.
+* By default, absolute paths to files must match to get a cache hit. To work around this, use `SCCACHE_BASEDIRS` (see above) to normalize paths before hashing.
 
 ### Rust
 
@@ -287,9 +381,23 @@ Known Caveats
 
 [More details on Rust caveats](/docs/Rust.md)
 
-### Symbolic links
+### C++20 Modules
 
-* Symbolic links to sccache won't work. Use hardlinks: `ln sccache /usr/local/bin/cc`
+sccache has partial support for C++20 named modules when using **Clang**. The following flags are supported:
+
+* `-fmodule-file=<path>` and `-fmodule-file=<name>=<path>` - importing precompiled module interfaces
+* `-fmodule-output=<path>` - generating module interface output alongside object files
+* `--precompile` - compiling module interface units
+* `-fmodules-reduced-bmi` - generating reduced BMI files
+
+The following module-related flags are **not supported** and will bypass the cache:
+
+* `-fmodules` and `-fcxx-modules` - Clang header modules (not C++20 named modules)
+* `-fprebuilt-implicit-modules` and `-fprebuilt-module-path` - implicit module discovery
+
+With **clang-cl**, `-fmodule-file=[<name>=]<path>` and `-x c++-module` together with `-fmodule-output=<path>` are supported, but not through `-Xclang` or `-clang:`.
+
+**GCC** and **MSVC** C++20 modules are not yet supported. Compilations using `-fmodules-ts` (GCC) or `/interface`, `/ifcOutput`, etc. (MSVC) will bypass the cache.
 
 ### User Agent
 
@@ -308,3 +416,4 @@ Storage Options
 * [GitHub Actions](docs/GHA.md)
 * [WebDAV (Ccache/Bazel/Gradle compatible)](docs/Webdav.md)
 * [Alibaba OSS](docs/OSS.md)
+* [Tencent Cloud Object Storage](docs/COS.md)

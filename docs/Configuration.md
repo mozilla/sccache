@@ -6,6 +6,33 @@
 # If specified, wait this long for the server to start up.
 server_startup_timeout_ms = 10000
 
+# Base directories to strip from source paths during cache key
+# computation.
+#
+# Similar to ccache's CCACHE_BASEDIR, but supports multiple paths.
+#
+# 'basedirs' enables cache hits across different absolute root
+# paths when compiling the same source code, such as between
+# parallel checkouts of the same project, Git worktrees, or different
+# users in a shared environment.
+# When multiple matching paths are provided, the longest prefix
+# is used.
+#
+# Path matching is case-insensitive on Windows and case-sensitive on other OSes.
+#
+# Applies to the preprocessed source and to the compiler arguments
+# alike, so that a flag naming the tree, such as
+# -ffile-prefix-map=/home/user/project=., does not tie the cache
+# entry to one checkout. In an argument only the places expected to
+# spell a pathname are considered: the whole argument, the value of
+# an =-separated option, and the value glued to a short option.
+#
+# Example:
+#   basedir = ["/home/user/project"] results in the path prefix rewrite:
+#   "/home/user/project/src/main.c" -> "src/main.c"
+basedirs = ["/home/user/project"]
+# basedirs = ["/home/user/project", "/home/user/workspace"]
+
 [dist]
 # where to find the scheduler
 scheduler_url = "http://1.2.3.4:10600"
@@ -19,9 +46,29 @@ cache_dir = "/home/user/.cache/sccache-dist-client"
 type = "token"
 token = "secrettoken"
 
+# Multi-level cache configuration
+# Define cache levels in order (fast to slow).
+# Each level must be separately configured below.
+# See docs/MultiLevel.md for details.
+[cache.multilevel]
+chain = ["disk", "redis", "s3"]
+write_error_policy = "l0"  # Optional: ignore, l0 (default), or all
 
 #[cache.azure]
-# does not work as it appears
+# Name of container (required)
+container = "my_container_name"
+# Optional string to prepend to each blob storage key
+key_prefix = ""
+# Shared-key auth: Azure Storage connection string (see
+# <https://docs.azure.cn/en-us/storage/common/storage-configure-connection-string>).
+# Mutually exclusive with the Microsoft Entra ID (passwordless) fields below.
+connection_string = "BlobEndpoint=https://example.blob.core.windows.net/;SharedAccessSignature=..."
+# Microsoft Entra ID (passwordless) auth — set ONE of these instead of a
+# connection string; credentials are read from the ambient AZURE_* environment.
+# See docs/Azure.md.
+# storage_account = "mystorageacct"                         # endpoint synthesized as https://{account}.blob.core.windows.net
+# endpoint = "https://mystorageacct.blob.core.usgovcloudapi.net"  # full endpoint (sovereign clouds / custom DNS); https only (http for loopback)
+# NOTE: an [cache.azure] block with a container but no auth source errors at startup.
 
 [cache.disk]
 dir = "/tmp/.cache/sccache"
@@ -91,7 +138,12 @@ bucket = "name"
 endpoint = "s3-us-east-1.amazonaws.com"
 use_ssl = true
 key_prefix = "s3prefix"
+# SSE-S3 with an S3-managed key (AES256).
 server_side_encryption = false
+# SSE-KMS with the AWS-managed KMS key (aws/s3).
+server_side_encryption_aws_kms = false
+# SSE-KMS with a customer-managed KMS key (takes precedence when set).
+# server_side_encryption_kms_key_id = "arn:aws:kms:us-east-1:111:key/abc"
 
 [cache.webdav]
 endpoint = "http://192.168.10.42:80/some/webdav.php"
@@ -101,12 +153,19 @@ username = "alice"
 password = "secret12"
 # Mutually exclusive with username & password. Bearer token value
 token = "token123"
+# Skip PROPFIND/MKCOL calls before writes, for servers that don't support them
+disable_create_dir = false
 
 [cache.oss]
 bucket = "name"
 endpoint = "oss-us-east-1.aliyuncs.com"
 key_prefix = "ossprefix"
 no_credentials = true
+
+[cache.cos]
+bucket = "name"
+endpoint = "cos.na-siliconvalley.myqcloud.com"
+key_prefix = "cosprefix"
 ```
 
 sccache looks for its configuration file at the path indicated by env variable `SCCACHE_CONF`.
@@ -123,22 +182,67 @@ The latest `cache.XXX` entries may be found here: https://github.com/mozilla/scc
 Whatever is set by a file based configuration, it is overruled by the env
 configuration variables
 
+Note that some env variables may need sccache server restart to take effect.
+
 ### misc
 
 * `SCCACHE_ALLOW_CORE_DUMPS` to enable core dumps by the server
 * `SCCACHE_CONF` configuration file path
+* `SCCACHE_BASEDIRS` base directory (or directories) to strip from paths for cache key computation. This is similar to ccache's `CCACHE_BASEDIR` and enables cache hits across different absolute paths when compiling the same source code. Multiple directories can be separated by `;` on Windows hosts and by `:` on any other operating system. When multiple directories are specified, the longest matching prefix is used. Path matching is **case-insensitive** on Windows and **case-sensitive** on other operating systems. Environment variable takes precedence over file configuration. Only absolute paths are supported; relative paths will cause an error and prevent the server from start.
 * `SCCACHE_CACHED_CONF`
+* `SCCACHE_DIST_CLIENT_CACHE_DIR` distributed toolchain cache directory; overrides `[dist].cache_dir` from the configuration file.
 * `SCCACHE_IDLE_TIMEOUT` how long the local daemon process waits for more client requests before exiting, in seconds. Set to `0` to run sccache permanently
 * `SCCACHE_STARTUP_NOTIFY` specify a path to a socket which will be used for server completion notification
 * `SCCACHE_MAX_FRAME_LENGTH` how much data can be transferred between client and server
 * `SCCACHE_NO_DAEMON` set to `1` to disable putting the server to the background
-* `SCCACHE_CACHE_MULTIARCH` to disable caching of multi architecture builds.
+* `SCCACHE_CLIENT_SIDE` set to `1` to run the compile in the client process and use the daemon only as a gateway to the cache storage (see [the architecture doc](Architecture.md#client-side-mode-sccache_client_side)). This is the recommended mode and is expected to become the only supported configuration in the future. Ignored when `SCCACHE_ERROR_LOG` or distributed compilation is in use.
+* `SCCACHE_CACHE_READ_TIMEOUT_SECS` how long, in seconds, a cache lookup may take before sccache gives up on it and compiles locally. Defaults to `60`. A lower value helps when the storage backend is slow or unresponsive rather than failing outright, for example in CI.
+* `SCCACHE_SKIP_CACHE_CHECK` set to `true`, `on`, or `1` to skip remote cache capability checks. The configured backend `rw_mode` is used without reading or writing `.sccache_check`. The user is responsible for ensuring that the cache is reachable and grants the configured access.
+* `SCCACHE_CACHE_MULTIARCH` set (to any value, even `0`) to enable caching of builds with several different `-arch` flags, which are not cached by default. See [the caching doc](Caching.md#cc-compiler).
 * `SCCACHE_CACHE_ZSTD_LEVEL` to set zstd compression level of cache. the range is `1-22` and default is `3`.
   - For example, in `10`, it have about 0.9x size with about 1.6x time than default `3` (tested with compiling sccache code)
   - This option will only applied to newly compressed cache and don't affect existing cache.
   - If you want to be apply to all cache, you should reset cache and make new cache.
+* `SCCACHE_LOG_MILLIS` when set (to any value), enables millisecond precision timestamps in log output instead of the default second precision.
+* `SCCACHE_ERROR_LOG` path to a file where sccache will log errors
+* `SCCACHE_LOG` log level, accepting standard env_logger values, see [env_logger documentation](https://docs.rs/env_logger/latest/env_logger/#enabling-logging) for details
 
 ### cache configs
+
+#### multi-level cache
+
+Multi-level caching enables hierarchical cache storage with automatic backfill. See the [Multi-Level Cache documentation](MultiLevel.md) for detailed information.
+
+* `SCCACHE_MULTILEVEL_CHAIN` comma-separated list of cache backend names to use in hierarchy (e.g., `disk,redis,s3`)
+  - Order matters: left-to-right is fast-to-slow (L0, L1, L2, ...)
+  - Valid names: `disk`, `redis`, `memcached`, `s3`, `gcs`, `azure`, `gha`, `webdav`, `oss`, `cos`
+  - Each level must be separately configured with its own environment variables
+  - If not set, sccache uses single-level mode (legacy behavior)
+* `SCCACHE_MULTILEVEL_WRITE_ERROR_POLICY` controls error handling on cache writes (default: `l0`)
+  - `ignore` - never fail on write errors, log warnings only (most permissive)
+  - `l0` - fail only if L0 (first level) write fails (default, balances reliability and performance)
+  - `all` - fail if any read-write level fails (most strict)
+  - Read-only levels are always skipped and never cause failures
+
+**Basic example**:
+```bash
+export SCCACHE_MULTILEVEL_CHAIN="disk,redis,s3"
+export SCCACHE_DIR="/tmp/cache"              # for disk level
+export SCCACHE_REDIS_ENDPOINT="redis://..."  # for redis level
+export SCCACHE_BUCKET="my-bucket"            # for s3 level
+```
+
+**Write policy examples**:
+```bash
+# Default: Fail only if disk write fails
+export SCCACHE_MULTILEVEL_WRITE_ERROR_POLICY="l0"
+
+# Best effort: Never fail on cache writes
+export SCCACHE_MULTILEVEL_WRITE_ERROR_POLICY="ignore"
+
+# Strict: Fail if any level write fails
+export SCCACHE_MULTILEVEL_WRITE_ERROR_POLICY="all"
+```
 
 #### disk (local)
 
@@ -154,6 +258,7 @@ configuration variables
 * `SCCACHE_REGION` s3 region, required if using AWS S3
 * `SCCACHE_S3_USE_SSL` s3 endpoint requires TLS, set this to `true`
 * `SCCACHE_S3_KEY_PREFIX` s3 key prefix (optional)
+* `SCCACHE_S3_RW_MODE` allows to use s3 backend in read-only mode if set to `READ_ONLY`
 
 The endpoint used then becomes `${SCCACHE_BUCKET}.s3-{SCCACHE_REGION}.amazonaws.com`.
 If you are not using the default endpoint and `SCCACHE_REGION` is undefined, it
@@ -176,6 +281,7 @@ will default to `us-east-1`.
 * `SCCACHE_REDIS_DB` redis database (optional, default is 0).
 * `SCCACHE_REDIS_EXPIRATION` / `SCCACHE_REDIS_TTL` ttl for redis cache, don't set for default behavior.
 * `SCCACHE_REDIS_KEY_PREFIX` key prefix (optional).
+* `SCCACHE_REDIS_RW_MODE` allows to use redis backend in read-only mode if set to `READ_ONLY`
 
 The full url appears then as `redis://user:passwd@1.2.3.4:6379/?db=1`.
 
@@ -187,6 +293,7 @@ The full url appears then as `redis://user:passwd@1.2.3.4:6379/?db=1`.
 * `SCCACHE_MEMCACHED_PASSWORD` memcached password (optional).
 * `SCCACHE_MEMCACHED_EXPIRATION` ttl for memcached cache, don't set for default behavior.
 * `SCCACHE_MEMCACHED_KEY_PREFIX` key prefix (optional).
+* `SCCACHE_MEMCACHED_RW_MODE` allows to use memcached backend in read-only mode if set to `READ_ONLY`
 
 #### gcs
 
@@ -197,7 +304,14 @@ The full url appears then as `redis://user:passwd@1.2.3.4:6379/?db=1`.
 
 #### azure
 
-* `SCCACHE_AZURE_CONNECTION_STRING`
+* `SCCACHE_AZURE_BLOB_CONTAINER`
+* `SCCACHE_AZURE_CONNECTION_STRING` shared-key connection string. Mutually exclusive with the Entra ID variables below.
+* `SCCACHE_AZURE_STORAGE_ACCOUNT` storage account name for Microsoft Entra ID (passwordless) auth; the endpoint `https://{account}.blob.core.windows.net` is synthesized.
+* `SCCACHE_AZURE_ENDPOINT` full blob endpoint override for Entra ID auth (sovereign clouds, custom DNS); must be `https` (plain `http` only for a loopback host); takes precedence over `SCCACHE_AZURE_STORAGE_ACCOUNT`.
+* `SCCACHE_AZURE_KEY_PREFIX`
+* `SCCACHE_AZURE_RW_MODE`
+
+When using Entra ID, credentials are read from the ambient `AZURE_*` environment (`AZURE_TENANT_ID` / `AZURE_CLIENT_ID` / `AZURE_CLIENT_SECRET` for a service principal, `AZURE_FEDERATED_TOKEN_FILE` for workload identity, or IMDS for a managed identity). See [Azure.md](Azure.md).
 
 #### gha
 
@@ -205,6 +319,7 @@ The full url appears then as `redis://user:passwd@1.2.3.4:6379/?db=1`.
 * `SCCACHE_GHA_RUNTIME_TOKEN` / `ACTIONS_RUNTIME_TOKEN` GitHub Actions access token
 * `SCCACHE_GHA_CACHE_TO` cache key to write
 * `SCCACHE_GHA_CACHE_FROM` comma separated list of cache keys to read from
+* `SCCACHE_GHA_RW_MODE` allows to use GHA cache backend in read-only mode if set to `READ_ONLY`
 
 #### webdav
 
@@ -213,6 +328,8 @@ The full url appears then as `redis://user:passwd@1.2.3.4:6379/?db=1`.
 * `SCCACHE_WEBDAV_USERNAME` a username to authenticate with webdav service (optional).
 * `SCCACHE_WEBDAV_PASSWORD` a password to authenticate with webdav service (optional).
 * `SCCACHE_WEBDAV_TOKEN` a token to authenticate with webdav service (optional) - may be used instead of login & password.
+* `SCCACHE_WEBDAV_RW_MODE` allows to use webdav backend in read-only mode if set to `READ_ONLY`
+* `SCCACHE_WEBDAV_DISABLE_CREATE_DIR` skip PROPFIND/MKCOL calls before writes, for servers that don't support them (optional).
 
 #### OSS
 
@@ -222,3 +339,13 @@ The full url appears then as `redis://user:passwd@1.2.3.4:6379/?db=1`.
 * `ALIBABA_CLOUD_ACCESS_KEY_ID`
 * `ALIBABA_CLOUD_ACCESS_KEY_SECRET`
 * `SCCACHE_OSS_NO_CREDENTIALS`
+* `SCCACHE_OSS_RW_MODE`
+
+#### Tencent Cloud Object Storage (COS)
+
+* `SCCACHE_COS_BUCKET`
+* `SCCACHE_COS_ENDPOINT`
+* `SCCACHE_COS_KEY_PREFIX`
+* `TENCENTCLOUD_SECRET_ID`
+* `TENCENTCLOUD_SECRET_KEY`
+* `SCCACHE_COS_RW_MODE`

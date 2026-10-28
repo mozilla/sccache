@@ -392,11 +392,10 @@ impl<K: Eq + Hash, V, S: BuildHasher, M: CountableMeter<K, V>> LruCache<K, V, S,
     where
         K: Borrow<Q>,
     {
-        self.map.remove(k).map(|v| {
+        self.map.remove(k).inspect(|v| {
             self.current_measure = self
                 .meter
-                .sub(self.current_measure, self.meter.measure(k, &v));
-            v
+                .sub(self.current_measure, self.meter.measure(k, v));
         })
     }
 

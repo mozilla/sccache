@@ -17,18 +17,16 @@ pub use self::client::Client;
 pub use self::server::Server;
 #[cfg(feature = "dist-server")]
 pub use self::server::{
-    ClientAuthCheck, ClientVisibleMsg, Scheduler, ServerAuthCheck, HEARTBEAT_TIMEOUT,
+    ClientAuthCheck, ClientVisibleMsg, HEARTBEAT_TIMEOUT, Scheduler, ServerAuthCheck,
 };
 
 mod common {
     use reqwest::header;
     use serde::{Deserialize, Serialize};
     #[cfg(feature = "dist-server")]
-    use std::collections::HashMap;
-    use std::fmt;
+    use {crate::util::BASE64_URL_SAFE_ENGINE, base64::Engine, std::collections::HashMap};
 
     use crate::dist;
-
     use crate::errors::*;
 
     // Note that content-length is necessary due to https://github.com/tiny-http/tiny-http/issues/147
@@ -93,13 +91,6 @@ mod common {
         }
     }
 
-    #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
-    #[serde(deny_unknown_fields)]
-    pub struct JobJwt {
-        pub exp: u64,
-        pub job_id: dist::JobId,
-    }
-
     #[derive(Clone, Debug, Serialize, Deserialize)]
     #[serde(deny_unknown_fields)]
     pub enum AllocJobHttpResponse {
@@ -150,6 +141,7 @@ mod common {
         pub cert_pem: Vec<u8>,
     }
 
+    #[cfg(feature = "dist-server")]
     #[derive(Clone, Serialize, Deserialize)]
     #[serde(deny_unknown_fields)]
     pub struct HeartbeatServerHttpRequest {
@@ -159,17 +151,19 @@ mod common {
         pub cert_digest: Vec<u8>,
         pub cert_pem: Vec<u8>,
     }
-    // cert_pem is quite long so elide it (you can retrieve it by hitting the server url anyway)
-    impl fmt::Debug for HeartbeatServerHttpRequest {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            let HeartbeatServerHttpRequest {
-                jwt_key,
-                num_cpus,
-                server_nonce,
-                cert_digest,
-                cert_pem,
-            } = self;
-            write!(f, "HeartbeatServerHttpRequest {{ jwt_key: {:?}, num_cpus: {:?}, server_nonce: {:?}, cert_digest: {:?}, cert_pem: [...{} bytes...] }}", jwt_key, num_cpus, server_nonce, cert_digest, cert_pem.len())
+
+    #[cfg(feature = "dist-server")]
+    impl std::fmt::Debug for HeartbeatServerHttpRequest {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("HeartbeatServerHttpRequest")
+                .field("jwt_key", &BASE64_URL_SAFE_ENGINE.encode(&self.jwt_key))
+                .field("num_cpus", &self.num_cpus)
+                .field("server_nonce", &self.server_nonce)
+                .field(
+                    "cert_digest",
+                    &BASE64_URL_SAFE_ENGINE.encode(&self.cert_digest),
+                )
+                .finish()
         }
     }
     #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -243,11 +237,10 @@ pub mod urls {
 
 #[cfg(feature = "dist-server")]
 pub(crate) mod server {
-    use crate::util::{new_reqwest_blocking_client, num_cpus};
+    use crate::util::{new_reqwest_blocking_builder, new_reqwest_blocking_client, num_cpus};
     use byteorder::{BigEndian, ReadBytesExt};
     use chrono::{Datelike, Timelike};
     use flate2::read::ZlibDecoder as ZlibReadDecoder;
-    use once_cell::sync::Lazy;
     use picky::{
         hash::HashAlgorithm,
         key::{PrivateKey, PublicKey},
@@ -259,9 +252,9 @@ pub(crate) mod server {
             name::{DirectoryName, GeneralNames},
         },
     };
-    use rand::{rngs::OsRng, RngCore};
+    use rand::{RngCore, rngs::OsRng};
     use rouille::accept;
-    use serde::Serialize;
+    use serde::{Deserialize, Serialize};
     use sha2::Digest;
     use std::collections::HashMap;
     use std::convert::Infallible;
@@ -269,12 +262,12 @@ pub(crate) mod server {
     use std::net::{IpAddr, SocketAddr};
     use std::result::Result as StdResult;
     use std::sync::atomic;
-    use std::sync::Mutex;
+    use std::sync::{LazyLock, Mutex};
     use std::thread;
     use std::time::Duration;
 
     use super::common::{
-        AllocJobHttpResponse, HeartbeatServerHttpRequest, JobJwt, ReqwestRequestBuilderExt,
+        AllocJobHttpResponse, HeartbeatServerHttpRequest, ReqwestRequestBuilderExt,
         RunJobHttpRequest, ServerCertificateHttpResponse,
     };
     use super::urls;
@@ -426,8 +419,9 @@ pub(crate) mod server {
     pub type ServerAuthCheck = Box<dyn Fn(&str) -> Option<ServerId> + Send + Sync>;
 
     const JWT_KEY_LENGTH: usize = 256 / 8;
-    static JWT_HEADER: Lazy<jwt::Header> = Lazy::new(|| jwt::Header::new(jwt::Algorithm::HS256));
-    static JWT_VALIDATION: Lazy<jwt::Validation> = Lazy::new(|| {
+    static JWT_HEADER: LazyLock<jwt::Header> =
+        LazyLock::new(|| jwt::Header::new(jwt::Algorithm::HS256));
+    static JWT_VALIDATION: LazyLock<jwt::Validation> = LazyLock::new(|| {
         let mut validation = jwt::Validation::new(jwt::Algorithm::HS256);
         validation.leeway = 0;
         validation.validate_exp = false;
@@ -623,6 +617,14 @@ pub(crate) mod server {
             }
         }};
     }
+
+    #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
+    #[serde(deny_unknown_fields)]
+    struct JobJwt {
+        pub exp: u64,
+        pub job_id: dist::JobId,
+    }
+
     // Generation and verification of job auth
     struct JWTJobAuthorizer {
         server_key: Vec<u8>,
@@ -712,7 +714,10 @@ pub(crate) mod server {
                 check_server_auth,
             } = self;
             let requester = SchedulerRequester {
-                client: Mutex::new(new_reqwest_blocking_client()),
+                client: Mutex::new(
+                    new_reqwest_blocking_client()
+                        .context("failed to build scheduler HTTP client")?,
+                ),
             };
 
             macro_rules! check_server_auth_or_err {
@@ -763,7 +768,7 @@ pub(crate) mod server {
                     "Adding new certificate for {} to scheduler",
                     server_id.addr()
                 );
-                let mut client_builder = reqwest::blocking::ClientBuilder::new();
+                let mut client_builder = new_reqwest_blocking_builder()?;
                 // Add all the certificates we know about
                 client_builder = client_builder.add_root_certificate(
                     reqwest::Certificate::from_pem(&cert_pem)
@@ -967,18 +972,20 @@ pub(crate) mod server {
             let job_authorizer = JWTJobAuthorizer::new(jwt_key);
             let heartbeat_url = urls::scheduler_heartbeat_server(&scheduler_url);
             let requester = ServerRequester {
-                client: new_reqwest_blocking_client(),
+                client: new_reqwest_blocking_client()
+                    .context("failed to build scheduler requester HTTP client")?,
                 scheduler_url,
                 scheduler_auth: scheduler_auth.clone(),
             };
+            let heartbeat_client =
+                new_reqwest_blocking_client().context("failed to build heartbeat HTTP client")?;
 
             // TODO: detect if this panics
             thread::spawn(move || {
-                let client = new_reqwest_blocking_client();
                 loop {
                     trace!(target: "sccache_heartbeat", "Performing heartbeat");
                     match bincode_req(
-                        client
+                        heartbeat_client
                             .post(heartbeat_url.clone())
                             .bearer_auth(scheduler_auth.clone())
                             .bincode(&heartbeat_req)
@@ -1099,8 +1106,8 @@ mod client {
 
     use async_trait::async_trait;
     use byteorder::{BigEndian, WriteBytesExt};
-    use flate2::write::ZlibEncoder as ZlibWriteEncoder;
     use flate2::Compression;
+    use flate2::write::ZlibEncoder as ZlibWriteEncoder;
     use futures::TryFutureExt;
     use reqwest::Body;
     use std::collections::HashMap;
@@ -1110,11 +1117,12 @@ mod client {
     use std::time::Duration;
 
     use super::common::{
-        bincode_req_fut, AllocJobHttpResponse, ReqwestRequestBuilderExt, RunJobHttpRequest,
-        ServerCertificateHttpResponse,
+        AllocJobHttpResponse, ReqwestRequestBuilderExt, RunJobHttpRequest,
+        ServerCertificateHttpResponse, bincode_req_fut,
     };
     use super::urls;
     use crate::errors::*;
+    use crate::util::new_reqwest_client_builder;
 
     const REQUEST_TIMEOUT_SECS: u64 = 1200;
     const CONNECT_TIMEOUT_SECS: u64 = 5;
@@ -1142,7 +1150,7 @@ mod client {
         ) -> Result<Self> {
             let timeout = Duration::new(REQUEST_TIMEOUT_SECS, 0);
             let connect_timeout = Duration::new(CONNECT_TIMEOUT_SECS, 0);
-            let client = reqwest::ClientBuilder::new()
+            let client = new_reqwest_client_builder()?
                 .timeout(timeout)
                 .connect_timeout(connect_timeout)
                 // Disable connection pool to avoid broken connection
@@ -1171,7 +1179,7 @@ mod client {
             cert_digest: Vec<u8>,
             cert_pem: Vec<u8>,
         ) -> Result<()> {
-            let mut client_async_builder = reqwest::ClientBuilder::new();
+            let mut client_async_builder = new_reqwest_client_builder()?;
             // Add all the certificates we know about
             client_async_builder = client_async_builder.add_root_certificate(
                 reqwest::Certificate::from_pem(&cert_pem)
@@ -1338,8 +1346,8 @@ mod client {
             weak_key: String,
             toolchain_packager: Box<dyn ToolchainPackager>,
         ) -> Result<(Toolchain, Option<(String, PathBuf)>)> {
-            let compiler_path = compiler_path.to_owned();
-            let weak_key = weak_key.to_owned();
+            let compiler_path = compiler_path.clone();
+            let weak_key = weak_key.clone();
             let tc_cache = self.tc_cache.clone();
 
             self.pool

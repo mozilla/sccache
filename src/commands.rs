@@ -12,16 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cache::storage_from_config;
-use crate::client::{connect_to_server, connect_with_retry, ServerConnection};
+use crate::cache::{CacheMode, IpcStorage, Storage, storage_from_config};
+use crate::client::{ServerConnection, connect_to_server, connect_with_retry};
 use crate::cmdline::{Command, StatsFormat};
-use crate::compiler::ColorMode;
-use crate::config::{default_disk_cache_dir, Config};
+use crate::compiler::{ColorMode, is_rmeta_artifact_notification};
+use crate::config::Config;
 use crate::jobserver::Client;
 use crate::mock_command::{CommandChild, CommandCreatorSync, ProcessCommandCreator, RunCommand};
 use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
 use crate::server::{self, DistInfo, ServerInfo, ServerStartup, ServerStats};
-use crate::util::daemonize;
+use crate::util::{daemonize, new_client_runtime, run_input_output};
 use byteorder::{BigEndian, ByteOrder};
 use fs::{File, OpenOptions};
 use fs_err as fs;
@@ -29,14 +29,19 @@ use log::Level::Trace;
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::io::{self, IsTerminal, Write};
+#[cfg(not(windows))]
+use std::os::fd::AsRawFd;
 #[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
+#[cfg(windows)]
+use std::os::windows::io::AsRawHandle;
 use std::path::Path;
 use std::process;
+use std::sync::Arc;
 use std::time::Duration;
 use strip_ansi_escapes::Writer;
 use tokio::io::AsyncReadExt;
-use tokio::runtime::Runtime;
+use tokio::runtime::{Builder, Runtime};
 use walkdir::WalkDir;
 use which::which_in;
 
@@ -51,10 +56,10 @@ const SERVER_STARTUP_TIMEOUT: Duration = Duration::from_millis(10000);
 /// Get the port on which the server should listen.
 fn get_addr() -> crate::net::SocketAddr {
     #[cfg(unix)]
-    if let Ok(addr) = env::var("SCCACHE_SERVER_UDS") {
-        if let Ok(uds) = crate::net::SocketAddr::parse_uds(&addr) {
-            return uds;
-        }
+    if let Ok(addr) = env::var("SCCACHE_SERVER_UDS")
+        && let Ok(uds) = crate::net::SocketAddr::parse_uds(&addr)
+    {
+        return uds;
     }
     let port = env::var("SCCACHE_SERVER_PORT")
         .ok()
@@ -92,7 +97,7 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
     trace!("run_server_process");
     let tempdir = tempfile::Builder::new().prefix("sccache").tempdir()?;
     let socket_path = tempdir.path().join("sock");
-    let runtime = Runtime::new()?;
+    let runtime = new_client_runtime()?;
     let exe_path = env::current_exe()?;
     let workdir = exe_path.parent().expect("executable path has no parent?!");
 
@@ -109,6 +114,10 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
         .env("SCCACHE_START_SERVER", "1")
         .env("SCCACHE_STARTUP_NOTIFY", &socket_path)
         .env("RUST_BACKTRACE", "1")
+        // The daemon is always a storage proxy; it never runs in client-side
+        // mode itself.  Strip the variable so an inherited value cannot
+        // accidentally influence daemon behaviour in the future.
+        .env_remove("SCCACHE_CLIENT_SIDE")
         .spawn()?;
 
     let startup = async move {
@@ -139,7 +148,7 @@ fn redirect_stderr(f: File) {
 #[cfg(windows)]
 fn redirect_stderr(f: File) {
     use std::os::windows::io::IntoRawHandle;
-    use windows_sys::Win32::System::Console::{SetStdHandle, STD_ERROR_HANDLE};
+    use windows_sys::Win32::System::Console::{STD_ERROR_HANDLE, SetStdHandle};
     // Ignore errors here.
     unsafe {
         SetStdHandle(STD_ERROR_HANDLE, f.into_raw_handle() as _);
@@ -159,7 +168,7 @@ fn create_error_log() -> Result<File> {
     let f = match OpenOptions::new().create(true).append(true).open(&name) {
         Ok(f) => f,
         Err(_) => {
-            bail!("Cannot open/write log file '{}'", &name);
+            bail!("Cannot open/write log file '{}'", name);
         }
     };
     Ok(f)
@@ -183,14 +192,14 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
     use uuid::Uuid;
     use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::System::Threading::{
-        CreateProcessW, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT,
+        CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
         PROCESS_INFORMATION, STARTUPINFOW,
     };
 
     trace!("run_server_process");
 
     // Create a mini event loop and register our named pipe server
-    let runtime = Runtime::new()?;
+    let runtime = new_client_runtime()?;
     let pipe_name = &format!(r"\\.\pipe\{}", Uuid::new_v4().as_simple());
 
     // Spawn a server which should come back and connect to us
@@ -209,7 +218,10 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
             ),
             (OsString::from("RUST_BACKTRACE"), OsString::from("1")),
         ];
-        for (key, val) in env::vars_os().chain(extra_vars) {
+        for (key, val) in env::vars_os()
+            .filter(|(k, _)| k != "SCCACHE_CLIENT_SIDE")
+            .chain(extra_vars)
+        {
             v.extend(
                 key.encode_wide()
                     .chain(Some('=' as u16))
@@ -318,16 +330,19 @@ fn connect_or_start_server(
                 ServerStartup::Ok { addr: actual_addr } => {
                     if addr.to_string() != actual_addr {
                         // bail as the next connect_with_retry will fail
-                        bail!(
-                            "sccache: Listening on address {actual_addr} instead of {addr}"
-                        );
+                        bail!("sccache: Listening on address {actual_addr} instead of {addr}");
                     }
                 }
                 ServerStartup::AddrInUse => {
-                    debug!("AddrInUse: possible parallel server bootstraps, retrying..")
+                    debug!("AddrInUse: possible parallel server bootstraps, retrying..");
                 }
-                ServerStartup::TimedOut => bail!("Timed out waiting for server startup. Maybe the remote service is unreachable?\nRun with SCCACHE_LOG=debug SCCACHE_NO_DAEMON=1 to get more information"),
-                ServerStartup::Err { reason } => bail!("Server startup failed: {}\nRun with SCCACHE_LOG=debug SCCACHE_NO_DAEMON=1 to get more information", reason),
+                ServerStartup::TimedOut => bail!(
+                    "Timed out waiting for server startup. Maybe the remote service is unreachable?\nRun with SCCACHE_LOG=debug SCCACHE_NO_DAEMON=1 to get more information"
+                ),
+                ServerStartup::Err { reason } => bail!(
+                    "Server startup failed: {}\nRun with SCCACHE_LOG=debug SCCACHE_NO_DAEMON=1 to get more information",
+                    reason
+                ),
             }
             let server = connect_with_retry(addr)?;
             Ok(server)
@@ -349,17 +364,27 @@ pub fn request_zero_stats(mut conn: ServerConnection) -> Result<()> {
     }
 }
 
-/// Send a `GetStats` request to the server, and return the `ServerInfo` request if successful.
-pub fn request_stats(mut conn: ServerConnection) -> Result<ServerInfo> {
-    debug!("request_stats");
+pub(crate) fn request_stats_with_cache_mode(
+    mut conn: ServerConnection,
+) -> Result<(ServerInfo, CacheMode)> {
+    debug!("request_stats_with_cache_mode");
     let response = conn.request(Request::GetStats).context(
         "Failed to send data to or receive data from server. Mismatch of client/server versions?",
     )?;
-    if let Response::Stats(stats) = response {
-        Ok(*stats)
+    let stats = if let Response::Stats(stats) = response {
+        *stats
     } else {
         bail!("Unexpected server response!")
-    }
+    };
+
+    let response = conn
+        .request(Request::StorageHandshake)
+        .context("failed to get effective cache mode from server")?;
+    let cache_mode = match response {
+        Response::StorageHandshake(info) => info.cache_mode,
+        _ => bail!("Unexpected server response!"),
+    };
+    Ok((stats, cache_mode))
 }
 
 /// Send a `DistStatus` request to the server, and return `DistStatus` if successful.
@@ -493,16 +518,14 @@ fn handle_compile_finished(
     }
 }
 
-/// Handle `response`, the response from sending a `Compile` request to the server. Return the compiler exit status.
+/// Handle `response`, the response from sending a `Compile` request to the server.
 ///
-/// If the server returned `CompileStarted`, wait for a `CompileFinished` and
-/// print the results.
-///
-/// If the server returned `UnhandledCompile`, run the compilation command
-/// locally using `creator` and return the result.
+/// If the server returned `CompileStarted`, reads the follow-up `CompileFinished`
+/// from `conn`, falling back to local execution if the server disconnects
+/// unexpectedly.  Delegates to `handle_compile_result` for the final dispatch.
 #[allow(clippy::too_many_arguments)]
 fn handle_compile_response<T>(
-    mut creator: T,
+    creator: T,
     runtime: &mut Runtime,
     conn: &mut ServerConnection,
     response: CompileResponse,
@@ -515,38 +538,93 @@ fn handle_compile_response<T>(
 where
     T: CommandCreatorSync,
 {
-    match response {
+    let mut forwarded_notification = false;
+    let result = match &response {
         CompileResponse::CompileStarted => {
             debug!("Server sent CompileStarted");
-            // Wait for CompileFinished.
-            match conn.read_one_response() {
-                Ok(Response::CompileFinished(result)) => {
-                    return handle_compile_finished(result, stdout, stderr)
-                }
-                Ok(_) => bail!("unexpected response from server"),
-                Err(e) => {
-                    match e.downcast_ref::<io::Error>() {
-                        Some(io_e) if io_e.kind() == io::ErrorKind::UnexpectedEof => {
-                            eprintln!(
-                                "sccache: warning: The server looks like it shut down \
-                                 unexpectedly, compiling locally instead"
-                            );
-                        }
-                        _ => {
-                            //TODO: something better here?
-                            if ignore_all_server_io_errors() {
+            loop {
+                match conn.read_one_response() {
+                    Ok(Response::ArtifactNotification(chunk)) => {
+                        stderr.write_all(&chunk)?;
+                        stderr.flush()?;
+                        forwarded_notification = true;
+                    }
+                    Ok(Response::CompileFinished(result)) => break Some(result),
+                    Ok(_) => bail!("unexpected response from server"),
+                    Err(e) => {
+                        match e.downcast_ref::<io::Error>() {
+                            Some(io_e) if io_e.kind() == io::ErrorKind::UnexpectedEof => {
                                 eprintln!(
-                                    "sccache: warning: error reading compile response from server \
-                                     compiling locally instead"
+                                    "sccache: warning: The server looks like it shut down \
+                                     unexpectedly, compiling locally instead"
                                 );
-                            } else {
-                                return Err(e)
-                                    .context("error reading compile response from server");
+                            }
+                            _ => {
+                                //TODO: something better here?
+                                if ignore_all_server_io_errors() {
+                                    eprintln!(
+                                        "sccache: warning: error reading compile response from server \
+                                         compiling locally instead"
+                                    );
+                                } else {
+                                    return Err(e)
+                                        .context("error reading compile response from server");
+                                }
                             }
                         }
+                        break None;
                     }
                 }
             }
+        }
+        _ => None,
+    };
+
+    handle_compile_result(
+        creator,
+        runtime,
+        response,
+        result,
+        forwarded_notification,
+        exe,
+        cmdline,
+        cwd,
+        stdout,
+        stderr,
+    )
+}
+
+/// Dispatch the outcome of a compile, whether received from the daemon over IPC
+/// or produced by a local `SccacheService` in client-side mode.
+///
+/// * `forwarded_notification`
+///   is whether a [`Response::ArtifactNotification`] already reached `stderr`,
+///   in which case its copy in compiler's stderr is dropped.
+#[allow(clippy::too_many_arguments)]
+fn handle_compile_result<T>(
+    mut creator: T,
+    runtime: &mut Runtime,
+    response: CompileResponse,
+    finished: Option<CompileFinished>,
+    forwarded_notification: bool,
+    exe: &Path,
+    cmdline: Vec<OsString>,
+    cwd: &Path,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<i32>
+where
+    T: CommandCreatorSync,
+{
+    match response {
+        CompileResponse::CompileStarted => {
+            if let Some(mut finished) = finished {
+                if forwarded_notification {
+                    finished.stderr = without_rmeta_artifact_notifications(&finished.stderr);
+                }
+                return handle_compile_finished(finished, stdout, stderr);
+            }
+            // Server disconnected before sending CompileFinished; fall back to local compilation.
         }
         CompileResponse::UnsupportedCompiler(s) => {
             debug!("Server sent UnsupportedCompiler: {:?}", s);
@@ -555,7 +633,7 @@ where
         CompileResponse::UnhandledCompile => {
             debug!("Server sent UnhandledCompile");
         }
-    };
+    }
 
     let mut cmd = creator.new_command_sync(exe);
     cmd.args(&cmdline).current_dir(cwd);
@@ -563,13 +641,30 @@ where
         trace!("running command: {:?}", cmd);
     }
 
-    let status = runtime.block_on(async move {
-        let child = cmd.spawn().await?;
-        child
-            .wait()
-            .await
-            .with_context(|| "failed to wait for a child")
-    })?;
+    let status = if !forwarded_notification {
+        runtime.block_on(async move {
+            let child = cmd.spawn().await?;
+            child
+                .wait()
+                .await
+                .with_context(|| "failed to wait for a child")
+        })?
+    } else {
+        // The `.rmeta` notification was already forwarded so drop them from local rustc's copy.
+        // Assumption: this rewrites artifacts which callers may be reading,
+        // which is safe only while rustc output is deterministic (it is as of 1.98.1)
+        let output = match runtime.block_on(run_input_output(cmd, None)) {
+            Ok(output) => output,
+            Err(e) => match e.downcast::<ProcessError>() {
+                Ok(ProcessError(output)) => output,
+                Err(e) => return Err(e).context("failed to wait for a child"),
+            },
+        };
+        stdout.write_all(&output.stdout)?;
+        stderr.write_all(&without_rmeta_artifact_notifications(&output.stderr))?;
+        stderr.flush()?;
+        output.status
+    };
 
     Ok(status.code().unwrap_or_else(|| {
         if let Some(sig) = status_signal(status) {
@@ -578,6 +673,16 @@ where
         // Arbitrary.
         2
     }))
+}
+
+/// Drop `.rmeta` artifact notification lines from `stderr`
+/// when they have already been forwarded to the caller.
+fn without_rmeta_artifact_notifications(stderr: &[u8]) -> Vec<u8> {
+    stderr
+        .split_inclusive(|&b| b == b'\n')
+        .filter(|line| !is_rmeta_artifact_notification(line))
+        .collect::<Vec<_>>()
+        .concat()
 }
 
 /// Send a `Compile` request to the sccache server `conn`, and handle the response.
@@ -609,6 +714,85 @@ where
     )
 }
 
+/// Run a compile in client-side mode: the compile pipeline executes in this
+/// process, and only cache I/O is forwarded to the daemon via `conn`.
+///
+/// Shares `handle_compile_result` with the daemon-IPC path so local-fallback
+/// execution is not duplicated.
+#[allow(clippy::too_many_arguments)]
+pub fn do_compile_client_side<C>(
+    jobserver: &Client,
+    runtime: &mut Runtime,
+    conn: ServerConnection,
+    exe: &Path,
+    cmdline: Vec<OsString>,
+    cwd: &Path,
+    path: Option<OsString>,
+    env_vars: Vec<(OsString, OsString)>,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<i32>
+where
+    C: CommandCreatorSync + Clone + Send + Sync + 'static,
+{
+    trace!("do_compile_client_side");
+    let exe_path = which_in(exe, path, cwd)?;
+    let storage = IpcStorage::connect(conn)?;
+    let cache_mode = runtime.block_on(storage.check())?;
+    let conn_arc = storage.conn();
+    let (tx, _rx) = futures::channel::mpsc::channel(1);
+    let (_, info) = server::WaitUntilZero::new();
+    let service = server::SccacheService::<C>::new(
+        server::DistClientContainer::new_disabled(),
+        Arc::new(storage),
+        cache_mode,
+        jobserver,
+        runtime.handle().clone(),
+        tx,
+        info,
+    );
+    let compile = Compile {
+        exe: exe_path.as_os_str().to_owned(),
+        cwd: cwd.as_os_str().to_owned(),
+        args: cmdline.clone(),
+        env_vars,
+    };
+    let (compile_resp, finished, forwarded_notification) =
+        runtime.block_on(service.compile_direct(compile, &mut *stderr))?;
+    let creator = C::new(jobserver);
+    let exit_code = handle_compile_result(
+        creator,
+        runtime,
+        compile_resp,
+        finished,
+        forwarded_notification,
+        &exe_path,
+        cmdline,
+        cwd,
+        stdout,
+        stderr,
+    )?;
+    // Ship accumulated stats back to the daemon (best-effort; don't fail the build on error).
+    let delta: ServerStats = runtime.block_on(service.take_stats());
+    if let Ok(mut conn) = conn_arc.lock() {
+        let _ = conn.request(Request::RecordStats(Box::new(delta)));
+    }
+    Ok(exit_code)
+}
+
+#[derive(serde::Serialize)]
+struct StatsOutput<'a> {
+    #[serde(flatten)]
+    info: &'a ServerInfo,
+    effective_cache_mode: Option<CacheMode>,
+}
+
+fn empty_server_info(config: &Config) -> Result<ServerInfo> {
+    let runtime = new_client_runtime()?;
+    let storage = storage_from_config(config, runtime.handle()).ok();
+    runtime.block_on(ServerInfo::new(ServerStats::default(), storage.as_deref()))
+}
+
 /// Run `cmd` and return the process exit status.
 pub fn run_command(cmd: Command) -> Result<i32> {
     // Config isn't required for all commands, but if it's broken then we should flag
@@ -619,32 +803,38 @@ pub fn run_command(cmd: Command) -> Result<i32> {
     match cmd {
         Command::ShowStats(fmt, advanced) => {
             trace!("Command::ShowStats({:?})", fmt);
-            let stats = match connect_to_server(&get_addr()) {
-                Ok(srv) => request_stats(srv).context("failed to get stats from server")?,
+            let (stats, effective_cache_mode) = match connect_to_server(&get_addr()) {
+                Ok(srv) => {
+                    let (info, cache_mode) = request_stats_with_cache_mode(srv)
+                        .context("failed to get stats from server")?;
+                    (info, Some(cache_mode))
+                }
                 // If there is no server, spawning a new server would start with zero stats
                 // anyways, so we can just return (mostly) empty stats directly.
-                Err(_) => {
-                    let runtime = Runtime::new()?;
-                    let storage = storage_from_config(config, runtime.handle()).ok();
-                    runtime.block_on(ServerInfo::new(ServerStats::default(), storage.as_deref()))?
-                }
+                Err(_) => (empty_server_info(config)?, None),
             };
             match fmt {
-                StatsFormat::Text => stats.print(advanced),
-                StatsFormat::Json => serde_json::to_writer(&mut io::stdout(), &stats)?,
+                StatsFormat::Text => stats.print(advanced, effective_cache_mode),
+                StatsFormat::Json => serde_json::to_writer(
+                    &mut io::stdout(),
+                    &StatsOutput {
+                        info: &stats,
+                        effective_cache_mode,
+                    },
+                )?,
             }
         }
         Command::DebugPreprocessorCacheEntries => {
             trace!("Command::DebugPreprocessorCacheEntries");
-            let entries_dir = default_disk_cache_dir().join("preprocessor");
-            for entry in WalkDir::new(entries_dir).sort_by_file_name().into_iter() {
+            let entries_dir = config.fallback_cache.dir.join("preprocessor");
+            for entry in WalkDir::new(entries_dir).sort_by_file_name() {
                 let preprocessor_cache_entry_file = entry?;
                 let path = preprocessor_cache_entry_file.path();
                 if !path.is_file() {
                     continue;
                 }
                 println!("=========================");
-                println!("Showing preprocessor entry file {}", &path.display());
+                println!("Showing preprocessor entry file {}", path.display());
                 let contents = std::fs::read(path)?;
                 let preprocessor_cache_entry =
                     crate::compiler::PreprocessorCacheEntry::read(&contents)?;
@@ -656,12 +846,16 @@ pub fn run_command(cmd: Command) -> Result<i32> {
             trace!("Command::InternalStartServer");
             if env::var("SCCACHE_ERROR_LOG").is_ok() {
                 let f = create_error_log()?;
+                #[cfg(not(windows))]
+                let preserve = [f.as_raw_fd()];
+                #[cfg(windows)]
+                let preserve = [f.as_raw_handle()];
                 // Can't report failure here, we're already daemonized.
-                daemonize()?;
+                daemonize(&preserve)?;
                 redirect_error_log(f)?;
             } else {
                 // We aren't asking for a log file
-                daemonize()?;
+                daemonize(&[])?;
             }
             server::start_server(config, &get_addr())?;
         }
@@ -684,7 +878,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
             println!("Stopping sccache server...");
             let server = connect_to_server(&get_addr()).context("couldn't connect to server")?;
             let stats = request_shutdown(server)?;
-            stats.print(false);
+            stats.print(false, None);
         }
         Command::ZeroStats => {
             trace!("Command::ZeroStats");
@@ -700,7 +894,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 
             match &config.dist.auth {
                 config::DistAuth::Token { .. } => {
-                    info!("No authentication needed for type 'token'")
+                    info!("No authentication needed for type 'token'");
                 }
                 config::DistAuth::Oauth2CodeGrantPKCE {
                     client_id,
@@ -722,7 +916,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                             c.dist.auth_tokens.insert(auth_url.to_owned(), token);
                         })
                         .context("Unable to save auth token")?;
-                    println!("Saved token")
+                    println!("Saved token");
                 }
                 config::DistAuth::Oauth2Implicit {
                     client_id,
@@ -740,9 +934,9 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                             c.dist.auth_tokens.insert(auth_url.to_owned(), token);
                         })
                         .context("Unable to save auth token")?;
-                    println!("Saved token")
+                    println!("Saved token");
                 }
-            };
+            }
         }
         #[cfg(not(feature = "dist-client"))]
         Command::DistAuth => bail!(
@@ -754,13 +948,14 @@ pub fn run_command(cmd: Command) -> Result<i32> {
             let status =
                 request_dist_status(srv).context("failed to get dist-status from server")?;
             serde_json::to_writer(&mut io::stdout(), &status)?;
+            println!();
         }
         #[cfg(feature = "dist-client")]
         Command::PackageToolchain(executable, out) => {
             use crate::compiler;
 
             trace!("Command::PackageToolchain({})", executable.display());
-            let runtime = Runtime::new()?;
+            let runtime = new_client_runtime()?;
             let jobserver = Client::new();
             let creator = ProcessCommandCreator::new(&jobserver);
             let args: Vec<_> = env::args_os().collect();
@@ -774,7 +969,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                     .await
                     .map(|compiler| compiler.0.get_toolchain_packager())
                     .and_then(|packager| packager.write_pkg(out_file))
-            })?
+            })?;
         }
         #[cfg(not(feature = "dist-client"))]
         Command::PackageToolchain(_executable, _out) => bail!(
@@ -804,7 +999,29 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 
             let jobserver = Client::new();
             let conn = connect_or_start_server(&get_addr(), startup_timeout)?;
-            let mut runtime = Runtime::new()?;
+            if config.client_side_mode {
+                // Under make -jN each CLI process gets only 2 worker threads;
+                // one for preprocessing/compilation and one for IPC.  The
+                // blocking thread pool absorbs zstd/zip work.
+                let mut runtime = Builder::new_multi_thread()
+                    .worker_threads(2)
+                    .enable_all()
+                    .build()?;
+                let res = do_compile_client_side::<ProcessCommandCreator>(
+                    &jobserver,
+                    &mut runtime,
+                    conn,
+                    exe.as_ref(),
+                    cmdline,
+                    &cwd,
+                    env::var_os("PATH"),
+                    env_vars,
+                    &mut io::stdout(),
+                    &mut io::stderr(),
+                );
+                return res.context("failed to execute compile");
+            }
+            let mut runtime = new_client_runtime()?;
             let res = do_compile(
                 ProcessCommandCreator::new(&jobserver),
                 &mut runtime,
@@ -822,4 +1039,108 @@ pub fn run_command(cmd: Command) -> Result<i32> {
     }
 
     Ok(0)
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::jobserver::Client;
+    use crate::mock_command::{
+        CommandCreator, ExitStatusValue, MockChild, MockCommandCreator, exit_status,
+    };
+    use crate::net::Connection;
+    use std::sync::{Arc, Mutex};
+
+    fn make_runtime() -> Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn stats_output_serializes_effective_cache_mode() {
+        let runtime = make_runtime();
+        let info = runtime
+            .block_on(ServerInfo::new(ServerStats::default(), None))
+            .unwrap();
+        let output = serde_json::to_value(StatsOutput {
+            info: &info,
+            effective_cache_mode: Some(CacheMode::ReadOnly),
+        })
+        .unwrap();
+
+        assert_eq!(
+            output.get("effective_cache_mode"),
+            Some(&serde_json::Value::String("ReadOnly".to_owned()))
+        );
+    }
+
+    /// A `Connection` that immediately returns EOF on reads and discards writes.
+    /// Used to simulate a server that disconnects before sending `CompileFinished`.
+    struct DisconnectedConnection;
+
+    impl io::Read for DisconnectedConnection {
+        fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+            Ok(0)
+        }
+    }
+
+    impl io::Write for DisconnectedConnection {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Connection for DisconnectedConnection {
+        fn try_clone(&self) -> io::Result<Box<dyn Connection>> {
+            Ok(Box::new(DisconnectedConnection))
+        }
+    }
+
+    /// A mid-compile server disconnect: the server sends CompileStarted then drops the
+    /// connection before CompileFinished.  handle_compile_response must fall back to
+    /// local compilation rather than panic.
+    #[test]
+    fn test_handle_compile_response_disconnect_falls_back_to_local() {
+        let mut runtime = make_runtime();
+        let client = Client::new_num(1);
+        let creator = Arc::new(Mutex::new(MockCommandCreator::new(&client)));
+        // exit_status takes a raw platform value: on Unix the wait(2) encoding
+        // puts the exit code in bits 15:8, so exit code 1 is `1 << 8`.
+        // On Windows the raw value is the exit code directly.
+        #[cfg(unix)]
+        let exit_val: ExitStatusValue = 1 << 8;
+        #[cfg(windows)]
+        let exit_val: ExitStatusValue = 1;
+        creator
+            .lock()
+            .unwrap()
+            .next_command_spawns(Ok(MockChild::new(exit_status(exit_val), "", "")));
+
+        let mut conn = ServerConnection::new(Box::new(DisconnectedConnection)).unwrap();
+        let exe = Path::new("cc");
+        let cmdline = vec![OsString::from("foo.c")];
+        let cwd = Path::new("/");
+        let mut stdout = vec![];
+        let mut stderr = vec![];
+
+        let code = handle_compile_response(
+            creator,
+            &mut runtime,
+            &mut conn,
+            CompileResponse::CompileStarted,
+            exe,
+            cmdline,
+            cwd,
+            &mut stdout,
+            &mut stderr,
+        )
+        .unwrap();
+
+        assert_eq!(code, 1);
+    }
 }

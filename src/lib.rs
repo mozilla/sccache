@@ -33,7 +33,7 @@ mod test;
 #[macro_use]
 pub mod errors;
 
-mod cache;
+pub mod cache;
 mod client;
 mod cmdline;
 mod commands;
@@ -48,6 +48,10 @@ mod protocol;
 pub mod server;
 #[doc(hidden)]
 pub mod util;
+
+// For benches/sccache_bench.rs.
+#[doc(hidden)]
+pub use compiler::PreprocessorCacheEntry;
 
 use std::env;
 
@@ -93,7 +97,14 @@ pub fn main() {
 
 fn init_logging() {
     if env::var(LOGGING_ENV).is_ok() {
-        match env_logger::Builder::from_env(LOGGING_ENV).try_init() {
+        let mut builder = env_logger::Builder::from_env(LOGGING_ENV);
+
+        // Enable millisecond precision timestamps if SCCACHE_LOG_MILLIS is set
+        if env::var("SCCACHE_LOG_MILLIS").is_ok() {
+            builder.format_timestamp_millis();
+        }
+
+        match builder.try_init() {
             Ok(_) => (),
             Err(e) => panic!("Failed to initialize logging: {:?}", e),
         }

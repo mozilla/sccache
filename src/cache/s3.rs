@@ -10,13 +10,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use opendal::layers::LoggingLayer;
-use opendal::services::S3;
+use opendal::OperationContext;
 use opendal::Operator;
+use opendal::services::S3;
+use opendal_layer_logging::LoggingLayer;
 
 use crate::errors::*;
 
-use super::http_client::set_user_agent;
+use super::http_client::new_http_transport;
 
 pub struct S3Cache {
     bucket: String,
@@ -26,6 +27,8 @@ pub struct S3Cache {
     endpoint: Option<String>,
     use_ssl: Option<bool>,
     server_side_encryption: Option<bool>,
+    server_side_encryption_aws_kms: Option<bool>,
+    server_side_encryption_kms_key_id: Option<String>,
     enable_virtual_host_style: Option<bool>,
 }
 
@@ -39,6 +42,8 @@ impl S3Cache {
             endpoint: None,
             use_ssl: None,
             server_side_encryption: None,
+            server_side_encryption_aws_kms: None,
+            server_side_encryption_kms_key_id: None,
             enable_virtual_host_style: None,
         }
     }
@@ -58,6 +63,20 @@ impl S3Cache {
         self.server_side_encryption = server_side_encryption;
         self
     }
+    pub fn with_server_side_encryption_aws_kms(
+        mut self,
+        server_side_encryption_aws_kms: Option<bool>,
+    ) -> Self {
+        self.server_side_encryption_aws_kms = server_side_encryption_aws_kms;
+        self
+    }
+    pub fn with_server_side_encryption_kms_key_id(
+        mut self,
+        server_side_encryption_kms_key_id: Option<String>,
+    ) -> Self {
+        self.server_side_encryption_kms_key_id = server_side_encryption_kms_key_id;
+        self
+    }
     pub fn with_enable_virtual_host_style(
         mut self,
         enable_virtual_host_style: Option<bool>,
@@ -66,10 +85,7 @@ impl S3Cache {
         self
     }
     pub fn build(self) -> Result<Operator> {
-        let mut builder = S3::default()
-            .http_client(set_user_agent())
-            .bucket(&self.bucket)
-            .root(&self.key_prefix);
+        let mut builder = S3::default().bucket(&self.bucket).root(&self.key_prefix);
 
         if let Some(region) = &self.region {
             builder = builder.region(region);
@@ -89,20 +105,27 @@ impl S3Cache {
                 .disable_ec2_metadata()
                 // Allow anonymous access to S3 so that OpenDAL will not
                 // throw error when no credentials are provided.
-                .allow_anonymous();
+                .skip_signature();
         }
 
         if let Some(endpoint) = &self.endpoint {
             builder = builder.endpoint(&endpoint_resolver(endpoint, self.use_ssl)?);
         }
 
-        if self.server_side_encryption.unwrap_or_default() {
+        if let Some(kms_key_id) = &self.server_side_encryption_kms_key_id {
+            // SSE-KMS with a customer-managed KMS key.
+            builder = builder.server_side_encryption_with_customer_managed_kms_key(kms_key_id);
+        } else if self.server_side_encryption_aws_kms.unwrap_or_default() {
+            // SSE-KMS with the AWS-managed KMS key (aws/s3).
+            builder = builder.server_side_encryption_with_aws_managed_kms_key();
+        } else if self.server_side_encryption.unwrap_or_default() {
+            // SSE-S3 with an S3-managed key (AES256).
             builder = builder.server_side_encryption_with_s3_key();
         }
 
         let op = Operator::new(builder)?
-            .layer(LoggingLayer::default())
-            .finish();
+            .with_context(OperationContext::new().with_http_transport(new_http_transport()?))
+            .layer(LoggingLayer::default());
         Ok(op)
     }
 }

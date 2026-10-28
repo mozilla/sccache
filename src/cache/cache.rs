@@ -12,8 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use super::cache_io::*;
 #[cfg(feature = "azure")]
 use crate::cache::azure::AzureBlobCache;
+#[cfg(feature = "cos")]
+use crate::cache::cos::COSCache;
 use crate::cache::disk::DiskCache;
 #[cfg(feature = "gcs")]
 use crate::cache::gcs::GCSCache;
@@ -21,316 +24,40 @@ use crate::cache::gcs::GCSCache;
 use crate::cache::gha::GHACache;
 #[cfg(feature = "memcached")]
 use crate::cache::memcached::MemcachedCache;
+use crate::cache::multilevel::{MultiLevelStats, MultiLevelStorage};
 #[cfg(feature = "oss")]
 use crate::cache::oss::OSSCache;
 #[cfg(feature = "redis")]
 use crate::cache::redis::RedisCache;
 #[cfg(feature = "s3")]
 use crate::cache::s3::S3Cache;
+#[cfg(any_cache_remote)]
+use crate::cache::utils::normalize_key;
 #[cfg(feature = "webdav")]
 use crate::cache::webdav::WebdavCache;
 use crate::compiler::PreprocessorCacheEntry;
 use crate::config::Config;
-#[cfg(any(
-    feature = "azure",
-    feature = "gcs",
-    feature = "gha",
-    feature = "memcached",
-    feature = "redis",
-    feature = "s3",
-    feature = "webdav",
-    feature = "oss"
-))]
-use crate::config::{self, CacheType};
+use crate::config::{self, CacheType, PreprocessorCacheModeConfig};
 use async_trait::async_trait;
-use fs_err as fs;
-
+use bytes::Bytes;
 use serde::{Deserialize, Serialize};
-use std::fmt;
-use std::io::{self, Cursor, Read, Seek, Write};
-use std::path::{Path, PathBuf};
+
+use std::io;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tempfile::NamedTempFile;
-use zip::write::FileOptions;
-use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 use crate::errors::*;
 
-#[cfg(unix)]
-fn get_file_mode(file: &fs::File) -> Result<Option<u32>> {
-    use std::os::unix::fs::MetadataExt;
-    Ok(Some(file.metadata()?.mode()))
-}
-
-#[cfg(windows)]
-#[allow(clippy::unnecessary_wraps)]
-fn get_file_mode(_file: &fs::File) -> Result<Option<u32>> {
-    Ok(None)
-}
-
-#[cfg(unix)]
-fn set_file_mode(path: &Path, mode: u32) -> Result<()> {
-    use std::fs::Permissions;
-    use std::os::unix::fs::PermissionsExt;
-    let p = Permissions::from_mode(mode);
-    fs::set_permissions(path, p)?;
-    Ok(())
-}
-
-#[cfg(windows)]
-#[allow(clippy::unnecessary_wraps)]
-fn set_file_mode(_path: &Path, _mode: u32) -> Result<()> {
-    Ok(())
-}
-
-/// Cache object sourced by a file.
-#[derive(Clone)]
-pub struct FileObjectSource {
-    /// Identifier for this object. Should be unique within a compilation unit.
-    /// Note that a compilation unit is a single source file in C/C++ and a crate in Rust.
-    pub key: String,
-    /// Absolute path to the file.
-    pub path: PathBuf,
-    /// Whether the file must be present on disk and is essential for the compilation.
-    pub optional: bool,
-}
-
-/// Result of a cache lookup.
-pub enum Cache {
-    /// Result was found in cache.
-    Hit(CacheRead),
-    /// Result was not found in cache.
+/// Result of [`Storage::get_path`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum GetPathResult {
+    /// Cache hit: the entry lives at this filesystem path.
+    Found(PathBuf),
+    /// Cache miss: the key is not in the cache.
     Miss,
-    /// Do not cache the results of the compilation.
-    None,
-    /// Cache entry should be ignored, force compilation.
-    Recache,
-}
-
-impl fmt::Debug for Cache {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match *self {
-            Cache::Hit(_) => write!(f, "Cache::Hit(...)"),
-            Cache::Miss => write!(f, "Cache::Miss"),
-            Cache::None => write!(f, "Cache::None"),
-            Cache::Recache => write!(f, "Cache::Recache"),
-        }
-    }
-}
-
-/// CacheMode is used to represent which mode we are using.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum CacheMode {
-    /// Only read cache from storage.
-    ReadOnly,
-    /// Full support of cache storage: read and write.
-    ReadWrite,
-}
-
-/// Trait objects can't be bounded by more than one non-builtin trait.
-pub trait ReadSeek: Read + Seek + Send {}
-
-impl<T: Read + Seek + Send> ReadSeek for T {}
-
-/// Data stored in the compiler cache.
-pub struct CacheRead {
-    zip: ZipArchive<Box<dyn ReadSeek>>,
-}
-
-/// Represents a failure to decompress stored object data.
-#[derive(Debug)]
-pub struct DecompressionFailure;
-
-impl std::fmt::Display for DecompressionFailure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "failed to decompress content")
-    }
-}
-
-impl std::error::Error for DecompressionFailure {}
-
-impl CacheRead {
-    /// Create a cache entry from `reader`.
-    pub fn from<R>(reader: R) -> Result<CacheRead>
-    where
-        R: ReadSeek + 'static,
-    {
-        let z = ZipArchive::new(Box::new(reader) as Box<dyn ReadSeek>)
-            .context("Failed to parse cache entry")?;
-        Ok(CacheRead { zip: z })
-    }
-
-    /// Get an object from this cache entry at `name` and write it to `to`.
-    /// If the file has stored permissions, return them.
-    pub fn get_object<T>(&mut self, name: &str, to: &mut T) -> Result<Option<u32>>
-    where
-        T: Write,
-    {
-        let file = self.zip.by_name(name).or(Err(DecompressionFailure))?;
-        if file.compression() != CompressionMethod::Stored {
-            bail!(DecompressionFailure);
-        }
-        let mode = file.unix_mode();
-        zstd::stream::copy_decode(file, to).or(Err(DecompressionFailure))?;
-        Ok(mode)
-    }
-
-    /// Get the stdout from this cache entry, if it exists.
-    pub fn get_stdout(&mut self) -> Vec<u8> {
-        self.get_bytes("stdout")
-    }
-
-    /// Get the stderr from this cache entry, if it exists.
-    pub fn get_stderr(&mut self) -> Vec<u8> {
-        self.get_bytes("stderr")
-    }
-
-    fn get_bytes(&mut self, name: &str) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        drop(self.get_object(name, &mut bytes));
-        bytes
-    }
-
-    pub async fn extract_objects<T>(
-        mut self,
-        objects: T,
-        pool: &tokio::runtime::Handle,
-    ) -> Result<()>
-    where
-        T: IntoIterator<Item = FileObjectSource> + Send + Sync + 'static,
-    {
-        pool.spawn_blocking(move || {
-            for FileObjectSource {
-                key,
-                path,
-                optional,
-            } in objects
-            {
-                let dir = match path.parent() {
-                    Some(d) => d,
-                    None => bail!("Output file without a parent directory!"),
-                };
-                // Write the cache entry to a tempfile and then atomically
-                // move it to its final location so that other rustc invocations
-                // happening in parallel don't see a partially-written file.
-                let mut tmp = NamedTempFile::new_in(dir)?;
-                match (self.get_object(&key, &mut tmp), optional) {
-                    (Ok(mode), _) => {
-                        tmp.persist(&path)?;
-                        if let Some(mode) = mode {
-                            set_file_mode(&path, mode)?;
-                        }
-                    }
-                    (Err(e), false) => return Err(e),
-                    // skip if no object found and it's optional
-                    (Err(_), true) => continue,
-                }
-            }
-            Ok(())
-        })
-        .await?
-    }
-}
-
-/// Data to be stored in the compiler cache.
-pub struct CacheWrite {
-    zip: ZipWriter<io::Cursor<Vec<u8>>>,
-}
-
-impl CacheWrite {
-    /// Create a new, empty cache entry.
-    pub fn new() -> CacheWrite {
-        CacheWrite {
-            zip: ZipWriter::new(io::Cursor::new(vec![])),
-        }
-    }
-
-    /// Create a new cache entry populated with the contents of `objects`.
-    pub async fn from_objects<T>(objects: T, pool: &tokio::runtime::Handle) -> Result<CacheWrite>
-    where
-        T: IntoIterator<Item = FileObjectSource> + Send + Sync + 'static,
-    {
-        pool.spawn_blocking(move || {
-            let mut entry = CacheWrite::new();
-            for FileObjectSource {
-                key,
-                path,
-                optional,
-            } in objects
-            {
-                let f = fs::File::open(&path)
-                    .with_context(|| format!("failed to open file `{:?}`", path));
-                match (f, optional) {
-                    (Ok(mut f), _) => {
-                        let mode = get_file_mode(&f)?;
-                        entry.put_object(&key, &mut f, mode).with_context(|| {
-                            format!("failed to put object `{:?}` in cache entry", path)
-                        })?;
-                    }
-                    (Err(e), false) => return Err(e),
-                    (Err(_), true) => continue,
-                }
-            }
-            Ok(entry)
-        })
-        .await?
-    }
-
-    /// Add an object containing the contents of `from` to this cache entry at `name`.
-    /// If `mode` is `Some`, store the file entry with that mode.
-    pub fn put_object<T>(&mut self, name: &str, from: &mut T, mode: Option<u32>) -> Result<()>
-    where
-        T: Read,
-    {
-        // We're going to declare the compression method as "stored",
-        // but we're actually going to store zstd-compressed blobs.
-        let opts = FileOptions::default().compression_method(CompressionMethod::Stored);
-        let opts = if let Some(mode) = mode {
-            opts.unix_permissions(mode)
-        } else {
-            opts
-        };
-        self.zip
-            .start_file(name, opts)
-            .context("Failed to start cache entry object")?;
-
-        let compression_level = std::env::var("SCCACHE_CACHE_ZSTD_LEVEL")
-            .ok()
-            .and_then(|value| value.parse::<i32>().ok())
-            .unwrap_or(3);
-        zstd::stream::copy_encode(from, &mut self.zip, compression_level)?;
-        Ok(())
-    }
-
-    pub fn put_stdout(&mut self, bytes: &[u8]) -> Result<()> {
-        self.put_bytes("stdout", bytes)
-    }
-
-    pub fn put_stderr(&mut self, bytes: &[u8]) -> Result<()> {
-        self.put_bytes("stderr", bytes)
-    }
-
-    fn put_bytes(&mut self, name: &str, bytes: &[u8]) -> Result<()> {
-        if !bytes.is_empty() {
-            let mut cursor = Cursor::new(bytes);
-            return self.put_object(name, &mut cursor, None);
-        }
-        Ok(())
-    }
-
-    /// Finish writing data to the cache entry writer, and return the data.
-    pub fn finish(self) -> Result<Vec<u8>> {
-        let CacheWrite { mut zip } = self;
-        let cur = zip.finish().context("Failed to finish cache entry zip")?;
-        Ok(cur.into_inner())
-    }
-}
-
-impl Default for CacheWrite {
-    fn default() -> Self {
-        Self::new()
-    }
+    /// This backend does not support direct file access; use `get`/`get_raw` instead.
+    Unsupported,
 }
 
 /// An interface to cache storage.
@@ -345,11 +72,47 @@ pub trait Storage: Send + Sync {
     /// return a `Cache::Hit`.
     async fn get(&self, key: &str) -> Result<Cache>;
 
+    /// Get a parsed cache entry and, when supported, the same entry's raw bytes.
+    ///
+    /// Multi-level caches use the raw bytes to backfill faster levels. The
+    /// default preserves compatibility with existing backends by retaining
+    /// the historical second `get_raw()` call; raw-capable backends can
+    /// override this to avoid reading a hit twice.
+    async fn get_with_raw(&self, key: &str) -> Result<(Cache, Option<Bytes>)> {
+        let cache = self.get(key).await?;
+        let raw = if matches!(&cache, Cache::Hit(_)) {
+            match self.get_raw(key).await {
+                Ok(raw) => raw,
+                Err(error) => {
+                    debug!("Failed to get raw bytes for cache backfill: {}", error);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        Ok((cache, raw))
+    }
+
     /// Put `entry` in the cache under `key`.
     ///
     /// Returns a `Future` that will provide the result or error when the put is
     /// finished.
     async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration>;
+
+    /// Get raw serialized cache entry bytes by `key` (for multi-level backfill).
+    /// Returns `None` if the entry is not found, or if the implementation doesn't support raw access.
+    /// This is used by multi-level caches to backfill faster levels.
+    async fn get_raw(&self, _key: &str) -> Result<Option<Bytes>> {
+        Ok(None)
+    }
+
+    /// Put raw serialized cache entry bytes under `key` (for multi-level backfill).
+    /// Returns an error if the implementation doesn't support raw access.
+    /// This is used by multi-level caches to backfill faster levels.
+    async fn put_raw(&self, _key: &str, _data: Bytes) -> Result<Duration> {
+        Err(anyhow!("put_raw not implemented for this storage backend"))
+    }
 
     /// Check the cache capability.
     ///
@@ -370,17 +133,38 @@ pub trait Storage: Send + Sync {
     /// Get the storage location.
     fn location(&self) -> String;
 
+    /// Get the cache backend type name (e.g., "disk", "redis", "s3").
+    /// Used for statistics and display purposes.
+    fn cache_type_name(&self) -> &'static str {
+        "unknown"
+    }
+
     /// Get the current storage usage, if applicable.
     async fn current_size(&self) -> Result<Option<u64>>;
 
     /// Get the maximum storage size, if applicable.
     async fn max_size(&self) -> Result<Option<u64>>;
 
+    /// Get multi-level cache statistics, if this is a multi-level storage.
+    fn multilevel_stats(&self) -> Option<MultiLevelStats> {
+        None
+    }
+
     /// Return the config for preprocessor cache mode if applicable
     fn preprocessor_cache_mode_config(&self) -> PreprocessorCacheModeConfig {
         // Enable by default, only in local mode
         PreprocessorCacheModeConfig::default()
     }
+    /// Return the base directories for path normalization if configured
+    fn basedirs(&self) -> &[Vec<u8>] {
+        &[]
+    }
+    /// Return the filesystem path of the cached entry for `key`.
+    /// Default impl returns [`GetPathResult::Unsupported`].
+    async fn get_path(&self, _key: &str) -> GetPathResult {
+        GetPathResult::Unsupported
+    }
+
     /// Return the preprocessor cache entry for a given preprocessor key,
     /// if it exists.
     /// Only applicable when using preprocessor cache mode.
@@ -402,98 +186,81 @@ pub trait Storage: Send + Sync {
     }
 }
 
-/// Configuration switches for preprocessor cache mode.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-#[serde(default)]
-pub struct PreprocessorCacheModeConfig {
-    /// Whether to use preprocessor cache mode entirely
-    pub use_preprocessor_cache_mode: bool,
-    /// If false (default), only compare header files by hashing their contents.
-    /// If true, will use size + ctime + mtime to check whether a file has changed.
-    /// See other flags below for more control over this behavior.
-    pub file_stat_matches: bool,
-    /// If true (default), uses the ctime (file status change on UNIX,
-    /// creation time on Windows) to check that a file has/hasn't changed.
-    /// Can be useful to disable when backdating modification times
-    /// in a controlled manner.
-    pub use_ctime_for_stat: bool,
-    /// If true, ignore `__DATE__`, `__TIME__` and `__TIMESTAMP__` being present
-    /// in the source code. Will speed up preprocessor cache mode,
-    /// but can result in false positives.
-    pub ignore_time_macros: bool,
-    /// If true, preprocessor cache mode will not cache system headers, only
-    /// add them to the hash.
-    pub skip_system_headers: bool,
-    /// If true (default), will add the current working directory in the hash to
-    /// distinguish two compilations from different directories.
-    pub hash_working_directory: bool,
+/// Wrapper for opendal::Operator that adds basedirs support
+#[cfg(any_cache_remote)]
+pub struct RemoteStorage {
+    operator: opendal::Operator,
+    basedirs: Vec<Vec<u8>>,
+    rw_mode: CacheMode,
+    skip_cache_check: bool,
 }
 
-impl Default for PreprocessorCacheModeConfig {
-    fn default() -> Self {
+#[cfg(any_cache_remote)]
+impl RemoteStorage {
+    pub fn new(operator: opendal::Operator, basedirs: Vec<Vec<u8>>, rw_mode: CacheMode) -> Self {
         Self {
-            use_preprocessor_cache_mode: false,
-            file_stat_matches: false,
-            use_ctime_for_stat: true,
-            ignore_time_macros: false,
-            skip_system_headers: false,
-            hash_working_directory: true,
+            operator,
+            basedirs,
+            rw_mode,
+            skip_cache_check: false,
         }
+    }
+
+    pub fn with_skip_cache_check(mut self, skip_cache_check: bool) -> Self {
+        self.skip_cache_check = skip_cache_check;
+        self
     }
 }
 
-impl PreprocessorCacheModeConfig {
-    /// Return a default [`Self`], but with the cache active.
-    pub fn activated() -> Self {
-        Self {
-            use_preprocessor_cache_mode: true,
-            ..Default::default()
+#[cfg(any_cache_remote)]
+fn decode_remote_cache_read(
+    result: opendal::Result<opendal::Buffer>,
+) -> Result<(Cache, Option<Bytes>)> {
+    match result {
+        Ok(res) => {
+            let data = res.to_bytes();
+            let hit = CacheRead::from(io::Cursor::new(data.clone()))?;
+            Ok((Cache::Hit(hit), Some(data)))
         }
+        Err(e) if e.kind() == opendal::ErrorKind::NotFound => Ok((Cache::Miss, None)),
+        Err(e) => Err(e).context("failed to read remote cache entry"),
     }
 }
 
 /// Implement storage for operator.
-#[cfg(any(
-    feature = "azure",
-    feature = "gcs",
-    feature = "gha",
-    feature = "memcached",
-    feature = "redis",
-    feature = "s3",
-    feature = "webdav",
-))]
+#[cfg(any_cache_remote)]
 #[async_trait]
-impl Storage for opendal::Operator {
+impl Storage for RemoteStorage {
     async fn get(&self, key: &str) -> Result<Cache> {
-        match self.read(&normalize_key(key)).await {
-            Ok(res) => {
-                let hit = CacheRead::from(io::Cursor::new(res.to_bytes()))?;
-                Ok(Cache::Hit(hit))
-            }
-            Err(e) if e.kind() == opendal::ErrorKind::NotFound => Ok(Cache::Miss),
-            Err(e) => {
-                warn!("Got unexpected error: {:?}", e);
-                Ok(Cache::Miss)
-            }
-        }
+        Ok(self.get_with_raw(key).await?.0)
+    }
+
+    async fn get_with_raw(&self, key: &str) -> Result<(Cache, Option<Bytes>)> {
+        decode_remote_cache_read(self.operator.read(&normalize_key(key)).await)
     }
 
     async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration> {
-        let start = std::time::Instant::now();
-
-        self.write(&normalize_key(key), entry.finish()?).await?;
-
-        Ok(start.elapsed())
+        trace!("RemoteStorage::put({})", key);
+        // Delegate to put_raw after serializing the entry
+        let data = entry.finish()?;
+        self.put_raw(key, data.into()).await
     }
 
     async fn check(&self) -> Result<CacheMode> {
         use opendal::ErrorKind;
 
+        if self.skip_cache_check {
+            debug!(
+                "storage check skipped; using configured cache mode: {:?}",
+                self.rw_mode
+            );
+            return Ok(self.rw_mode);
+        }
+
         let path = ".sccache_check";
 
         // Read is required, return error directly if we can't read .
-        match self.read(path).await {
+        match self.operator.read(path).await {
             Ok(_) => (),
             // Read not exist file with not found is ok.
             Err(err) if err.kind() == ErrorKind::NotFound => (),
@@ -507,12 +274,19 @@ impl Storage for opendal::Operator {
             // can do, so we will print our the error here to make users know
             // about it.
             Err(err) if err.kind() == ErrorKind::RateLimited => {
-                eprintln!("cache storage read check: {err:?}, but we decide to keep running")
+                eprintln!("cache storage read check: {err:?}, but we decide to keep running");
             }
             Err(err) => bail!("cache storage failed to read: {:?}", err),
-        };
+        }
 
-        let can_write = match self.write(path, "Hello, World!").await {
+        // No need to check write if we are in manually-set read-only mode
+        if self.rw_mode == CacheMode::ReadOnly {
+            let mode = CacheMode::ReadOnly;
+            debug!("storage check result: {mode:?} (manually set)");
+            return Ok(mode);
+        }
+
+        let can_write = match self.operator.write(path, "Hello, World!").await {
             Ok(_) => true,
             Err(err) if err.kind() == ErrorKind::AlreadyExists => true,
             // Tolerate all other write errors because we can do read at least.
@@ -534,13 +308,19 @@ impl Storage for opendal::Operator {
     }
 
     fn location(&self) -> String {
-        let meta = self.info();
+        let meta = self.operator.info();
         format!(
             "{}, name: {}, prefix: {}",
             meta.scheme(),
             meta.name(),
             meta.root()
         )
+    }
+
+    fn cache_type_name(&self) -> &'static str {
+        // Use opendal's scheme as the cache type name
+        // This returns "s3", "redis", "azure", "gcs", etc.
+        self.operator.info().scheme()
     }
 
     async fn current_size(&self) -> Result<Option<u64>> {
@@ -550,188 +330,299 @@ impl Storage for opendal::Operator {
     async fn max_size(&self) -> Result<Option<u64>> {
         Ok(None)
     }
+
+    fn basedirs(&self) -> &[Vec<u8>] {
+        &self.basedirs
+    }
+
+    /// Get raw bytes from remote storage for multi-level backfill.
+    ///
+    /// Unlike `get()` which parses bytes into `CacheRead` (a `ZipArchive<Box<dyn ReadSeek>>`),
+    /// this returns the raw bytes without parsing. `CacheRead` is a one-way transformation —
+    /// there is no way to extract the original bytes back from the parsed ZIP archive.
+    /// For backfill we need the raw bytes to write directly to another cache level.
+    async fn get_raw(&self, key: &str) -> Result<Option<Bytes>> {
+        trace!("opendal::Operator::get_raw({})", key);
+        match self.operator.read(&normalize_key(key)).await {
+            Ok(res) => {
+                let data = res.to_bytes();
+                trace!(
+                    "opendal::Operator::get_raw({}): Found {} bytes",
+                    key,
+                    data.len()
+                );
+                Ok(Some(data))
+            }
+            Err(e) if e.kind() == opendal::ErrorKind::NotFound => {
+                trace!("opendal::Operator::get_raw({}): NotFound", key);
+                Ok(None)
+            }
+            Err(e) => {
+                warn!("opendal::Operator::get_raw({}): Error: {:?}", key, e);
+                // Return error instead of silently returning None
+                Err(anyhow!("Failed to read raw bytes: {:?}", e))
+            }
+        }
+    }
+
+    /// Write raw bytes to remote storage for multi-level backfill.
+    ///
+    /// Unlike `put()` which takes a `CacheWrite` and serializes it, this writes
+    /// pre-serialized bytes directly. Paired with `get_raw()` for efficient
+    /// level-to-level data transfer without a deserialize/reserialize round-trip.
+    async fn put_raw(&self, key: &str, data: Bytes) -> Result<Duration> {
+        trace!("opendal::Operator::put_raw({}, {} bytes)", key, data.len());
+        let start = std::time::Instant::now();
+
+        if self.rw_mode == CacheMode::ReadOnly {
+            bail!("storage is read-only");
+        }
+
+        self.operator.write(&normalize_key(key), data).await?;
+
+        Ok(start.elapsed())
+    }
 }
 
-/// Normalize key `abcdef` into `a/b/c/abcdef`
-pub(in crate::cache) fn normalize_key(key: &str) -> String {
-    format!("{}/{}/{}/{}", &key[0..1], &key[1..2], &key[2..3], &key)
+/// Build a single cache storage from CacheType
+/// Helper function used by storage_from_config for both single and multi-level caches
+pub fn build_single_cache(
+    cache_type: &CacheType,
+    basedirs: &[Vec<u8>],
+    skip_cache_check: bool,
+) -> Result<Arc<dyn Storage>> {
+    match cache_type {
+        #[cfg(feature = "azure")]
+        CacheType::Azure(config::AzureCacheConfig {
+            connection_string,
+            container,
+            key_prefix,
+            storage_account,
+            endpoint,
+            rw_mode,
+        }) => {
+            debug!("Init azure cache with container {container}, key_prefix {key_prefix}");
+            let operator = AzureBlobCache::build(
+                connection_string.as_deref(),
+                container,
+                key_prefix,
+                storage_account.as_deref(),
+                endpoint.as_deref(),
+            )
+            .map_err(|err| anyhow!("create azure cache failed: {err:?}"))?;
+            let storage = RemoteStorage::new(operator, basedirs.to_vec(), (*rw_mode).into())
+                .with_skip_cache_check(skip_cache_check);
+            Ok(Arc::new(storage))
+        }
+        #[cfg(feature = "gcs")]
+        CacheType::GCS(config::GCSCacheConfig {
+            bucket,
+            key_prefix,
+            cred_path,
+            rw_mode,
+            service_account,
+            credential_url,
+        }) => {
+            debug!("Init gcs cache with bucket {bucket}, key_prefix {key_prefix}");
+
+            let operator = GCSCache::build(
+                bucket,
+                key_prefix,
+                cred_path.as_deref(),
+                service_account.as_deref(),
+                (*rw_mode).into(),
+                credential_url.as_deref(),
+            )
+            .map_err(|err| anyhow!("create gcs cache failed: {err:?}"))?;
+            let storage = RemoteStorage::new(operator, basedirs.to_vec(), (*rw_mode).into())
+                .with_skip_cache_check(skip_cache_check);
+            Ok(Arc::new(storage))
+        }
+        #[cfg(feature = "gha")]
+        CacheType::GHA(config::GHACacheConfig {
+            version, rw_mode, ..
+        }) => {
+            debug!("Init gha cache with version {version}");
+
+            let operator = GHACache::build(version)
+                .map_err(|err| anyhow!("create gha cache failed: {err:?}"))?;
+            let storage = RemoteStorage::new(operator, basedirs.to_vec(), (*rw_mode).into())
+                .with_skip_cache_check(skip_cache_check);
+            Ok(Arc::new(storage))
+        }
+        #[cfg(feature = "memcached")]
+        CacheType::Memcached(config::MemcachedCacheConfig {
+            url,
+            username,
+            password,
+            expiration,
+            key_prefix,
+            rw_mode,
+        }) => {
+            debug!("Init memcached cache with url {url}");
+
+            let operator = MemcachedCache::build(
+                url,
+                username.as_deref(),
+                password.as_deref(),
+                key_prefix,
+                *expiration,
+            )
+            .map_err(|err| anyhow!("create memcached cache failed: {err:?}"))?;
+            let storage = RemoteStorage::new(operator, basedirs.to_vec(), (*rw_mode).into())
+                .with_skip_cache_check(skip_cache_check);
+            Ok(Arc::new(storage))
+        }
+        #[cfg(feature = "redis")]
+        CacheType::Redis(config::RedisCacheConfig {
+            endpoint,
+            cluster_endpoints,
+            username,
+            password,
+            db,
+            url,
+            ttl,
+            key_prefix,
+            rw_mode,
+        }) => {
+            let storage = match (endpoint, cluster_endpoints, url) {
+                (Some(url), None, None) => {
+                    debug!("Init redis single-node cache with url {url}");
+                    RedisCache::build_single(
+                        url,
+                        username.as_deref(),
+                        password.as_deref(),
+                        *db,
+                        key_prefix,
+                        *ttl,
+                    )
+                }
+                (None, Some(urls), None) => {
+                    debug!("Init redis cluster cache with urls {urls}");
+                    RedisCache::build_cluster(
+                        urls,
+                        username.as_deref(),
+                        password.as_deref(),
+                        *db,
+                        key_prefix,
+                        *ttl,
+                    )
+                }
+                (None, None, Some(url)) => {
+                    warn!("Init redis single-node cache from deprecated API with url {url}");
+                    if username.is_some() || password.is_some() || *db != crate::config::DEFAULT_REDIS_DB {
+                        bail!("`username`, `password` and `db` has no effect when `url` is set. Please use `endpoint` or `cluster_endpoints` for new API accessing");
+                    }
+
+                    RedisCache::build_from_url(url, key_prefix, *ttl)
+                }
+                _ => bail!("Only one of `endpoint`, `cluster_endpoints`, `url` must be set"),
+            }
+            .map_err(|err| anyhow!("create redis cache failed: {err:?}"))?;
+            let storage = RemoteStorage::new(storage, basedirs.to_vec(), (*rw_mode).into())
+                .with_skip_cache_check(skip_cache_check);
+            Ok(Arc::new(storage))
+        }
+        #[cfg(feature = "s3")]
+        CacheType::S3(c) => {
+            debug!(
+                "Init s3 cache with bucket {}, endpoint {:?}",
+                c.bucket, c.endpoint
+            );
+            let storage_builder =
+                S3Cache::new(c.bucket.clone(), c.key_prefix.clone(), c.no_credentials);
+            let operator = storage_builder
+                .with_region(c.region.clone())
+                .with_endpoint(c.endpoint.clone())
+                .with_use_ssl(c.use_ssl)
+                .with_server_side_encryption(c.server_side_encryption)
+                .with_server_side_encryption_aws_kms(c.server_side_encryption_aws_kms)
+                .with_server_side_encryption_kms_key_id(c.server_side_encryption_kms_key_id.clone())
+                .with_enable_virtual_host_style(c.enable_virtual_host_style)
+                .build()
+                .map_err(|err| anyhow!("create s3 cache failed: {err:?}"))?;
+
+            let storage = RemoteStorage::new(operator, basedirs.to_vec(), c.rw_mode.into())
+                .with_skip_cache_check(skip_cache_check);
+            Ok(Arc::new(storage))
+        }
+        #[cfg(feature = "webdav")]
+        CacheType::Webdav(c) => {
+            debug!("Init webdav cache with endpoint {}", c.endpoint);
+
+            let operator = WebdavCache::build(
+                &c.endpoint,
+                &c.key_prefix,
+                c.username.as_deref(),
+                c.password.as_deref(),
+                c.token.as_deref(),
+                c.disable_create_dir,
+            )
+            .map_err(|err| anyhow!("create webdav cache failed: {err:?}"))?;
+
+            let storage = RemoteStorage::new(operator, basedirs.to_vec(), c.rw_mode.into())
+                .with_skip_cache_check(skip_cache_check);
+            Ok(Arc::new(storage))
+        }
+        #[cfg(feature = "oss")]
+        CacheType::OSS(c) => {
+            debug!(
+                "Init oss cache with bucket {}, endpoint {:?}",
+                c.bucket, c.endpoint
+            );
+
+            let operator = OSSCache::build(
+                &c.bucket,
+                &c.key_prefix,
+                c.endpoint.as_deref(),
+                c.no_credentials,
+            )
+            .map_err(|err| anyhow!("create oss cache failed: {err:?}"))?;
+
+            let storage = RemoteStorage::new(operator, basedirs.to_vec(), c.rw_mode.into())
+                .with_skip_cache_check(skip_cache_check);
+            Ok(Arc::new(storage))
+        }
+        #[cfg(feature = "cos")]
+        CacheType::COS(c) => {
+            debug!(
+                "Init cos cache with bucket {}, endpoint {:?}",
+                c.bucket, c.endpoint
+            );
+
+            let operator = COSCache::build(&c.bucket, &c.key_prefix, c.endpoint.as_deref())
+                .map_err(|err| anyhow!("create cos cache failed: {err:?}"))?;
+
+            let storage = RemoteStorage::new(operator, basedirs.to_vec(), c.rw_mode.into())
+                .with_skip_cache_check(skip_cache_check);
+            Ok(Arc::new(storage))
+        }
+        #[allow(unreachable_patterns)]
+        _ => {
+            bail!("Cache type not supported with current feature configuration")
+        }
+    }
 }
 
 /// Get a suitable `Storage` implementation from configuration.
-#[allow(clippy::cognitive_complexity)] // TODO simplify!
+/// Supports both single-cache (backward compatible) and multi-level cache configurations.
 pub fn storage_from_config(
     config: &Config,
     pool: &tokio::runtime::Handle,
 ) -> Result<Arc<dyn Storage>> {
-    if let Some(cache_type) = &config.cache {
-        match cache_type {
-            #[cfg(feature = "azure")]
-            CacheType::Azure(config::AzureCacheConfig {
-                ref connection_string,
-                ref container,
-                ref key_prefix,
-            }) => {
-                debug!("Init azure cache with container {container}, key_prefix {key_prefix}");
-                let storage = AzureBlobCache::build(connection_string, container, key_prefix)
-                    .map_err(|err| anyhow!("create azure cache failed: {err:?}"))?;
-                return Ok(Arc::new(storage));
-            }
-            #[cfg(feature = "gcs")]
-            CacheType::GCS(config::GCSCacheConfig {
-                ref bucket,
-                ref key_prefix,
-                ref cred_path,
-                rw_mode,
-                ref service_account,
-                ref credential_url,
-            }) => {
-                debug!("Init gcs cache with bucket {bucket}, key_prefix {key_prefix}");
-
-                let storage = GCSCache::build(
-                    bucket,
-                    key_prefix,
-                    cred_path.as_deref(),
-                    service_account.as_deref(),
-                    (*rw_mode).into(),
-                    credential_url.as_deref(),
-                )
-                .map_err(|err| anyhow!("create gcs cache failed: {err:?}"))?;
-
-                return Ok(Arc::new(storage));
-            }
-            #[cfg(feature = "gha")]
-            CacheType::GHA(config::GHACacheConfig { ref version, .. }) => {
-                debug!("Init gha cache with version {version}");
-
-                let storage = GHACache::build(version)
-                    .map_err(|err| anyhow!("create gha cache failed: {err:?}"))?;
-                return Ok(Arc::new(storage));
-            }
-            #[cfg(feature = "memcached")]
-            CacheType::Memcached(config::MemcachedCacheConfig {
-                ref url,
-                ref username,
-                ref password,
-                ref expiration,
-                ref key_prefix,
-            }) => {
-                debug!("Init memcached cache with url {url}");
-
-                let storage = MemcachedCache::build(
-                    url,
-                    username.as_deref(),
-                    password.as_deref(),
-                    key_prefix,
-                    *expiration,
-                )
-                .map_err(|err| anyhow!("create memcached cache failed: {err:?}"))?;
-                return Ok(Arc::new(storage));
-            }
-            #[cfg(feature = "redis")]
-            CacheType::Redis(config::RedisCacheConfig {
-                ref endpoint,
-                ref cluster_endpoints,
-                ref username,
-                ref password,
-                ref db,
-                ref url,
-                ref ttl,
-                ref key_prefix,
-            }) => {
-                let storage = match (endpoint, cluster_endpoints, url) {
-                    (Some(url), None, None) => {
-                        debug!("Init redis single-node cache with url {url}");
-                        RedisCache::build_single(
-                            url,
-                            username.as_deref(),
-                            password.as_deref(),
-                            *db,
-                            key_prefix,
-                            *ttl,
-                        )
-                    }
-                    (None, Some(urls), None) => {
-                        debug!("Init redis cluster cache with urls {urls}");
-                        RedisCache::build_cluster(
-                            urls,
-                            username.as_deref(),
-                            password.as_deref(),
-                            *db,
-                            key_prefix,
-                            *ttl,
-                        )
-                    }
-                    (None, None, Some(url)) => {
-                        warn!("Init redis single-node cache from deprecated API with url {url}");
-                        if username.is_some() || password.is_some() || *db != crate::config::DEFAULT_REDIS_DB {
-                            bail!("`username`, `password` and `db` has no effect when `url` is set. Please use `endpoint` or `cluster_endpoints` for new API accessing");
-                        }
-
-                        RedisCache::build_from_url(url, key_prefix, *ttl)
-                    }
-                    _ => bail!("Only one of `endpoint`, `cluster_endpoints`, `url` must be set"),
-                }
-                .map_err(|err| anyhow!("create redis cache failed: {err:?}"))?;
-                return Ok(Arc::new(storage));
-            }
-            #[cfg(feature = "s3")]
-            CacheType::S3(ref c) => {
-                debug!(
-                    "Init s3 cache with bucket {}, endpoint {:?}",
-                    c.bucket, c.endpoint
-                );
-                let storage_builder =
-                    S3Cache::new(c.bucket.clone(), c.key_prefix.clone(), c.no_credentials);
-                let storage = storage_builder
-                    .with_region(c.region.clone())
-                    .with_endpoint(c.endpoint.clone())
-                    .with_use_ssl(c.use_ssl)
-                    .with_server_side_encryption(c.server_side_encryption)
-                    .with_enable_virtual_host_style(c.enable_virtual_host_style)
-                    .build()
-                    .map_err(|err| anyhow!("create s3 cache failed: {err:?}"))?;
-
-                return Ok(Arc::new(storage));
-            }
-            #[cfg(feature = "webdav")]
-            CacheType::Webdav(ref c) => {
-                debug!("Init webdav cache with endpoint {}", c.endpoint);
-
-                let storage = WebdavCache::build(
-                    &c.endpoint,
-                    &c.key_prefix,
-                    c.username.as_deref(),
-                    c.password.as_deref(),
-                    c.token.as_deref(),
-                )
-                .map_err(|err| anyhow!("create webdav cache failed: {err:?}"))?;
-
-                return Ok(Arc::new(storage));
-            }
-            #[cfg(feature = "oss")]
-            CacheType::OSS(ref c) => {
-                debug!(
-                    "Init oss cache with bucket {}, endpoint {:?}",
-                    c.bucket, c.endpoint
-                );
-
-                let storage = OSSCache::build(
-                    &c.bucket,
-                    &c.key_prefix,
-                    c.endpoint.as_deref(),
-                    c.no_credentials,
-                )
-                .map_err(|err| anyhow!("create oss cache failed: {err:?}"))?;
-
-                return Ok(Arc::new(storage));
-            }
-            #[allow(unreachable_patterns)]
-            // if we build only with `cargo build --no-default-features`
-            // we only want to use sccache with a local cache (no remote storage)
-            _ => {}
-        }
+    // Check for multi-level cache configuration
+    if let Some(multilevel) = MultiLevelStorage::from_config(config, pool)? {
+        return Ok(Arc::new(multilevel));
     }
 
+    // Single cache or fallback to disk (backward compatible path)
+    #[cfg(any_cache_remote)]
+    if let Some(cache_type) = &config.cache {
+        debug!("Configuring single cache from CacheType");
+        return build_single_cache(cache_type, &config.basedirs, config.skip_cache_check);
+    }
+
+    // No remote cache configured - use disk cache only
     let (dir, size) = (&config.fallback_cache.dir, config.fallback_cache.size);
     let preprocessor_cache_mode_config = config.fallback_cache.preprocessor_cache_mode;
     let rw_mode = config.fallback_cache.rw_mode.into();
@@ -742,6 +633,7 @@ pub fn storage_from_config(
         pool,
         preprocessor_cache_mode_config,
         rw_mode,
+        config.basedirs.clone(),
     )))
 }
 
@@ -749,12 +641,48 @@ pub fn storage_from_config(
 mod test {
     use super::*;
     use crate::config::CacheModeConfig;
+    use fs_err as fs;
+
+    #[cfg(any_cache_remote)]
+    mod remote_storage {
+        use super::*;
+        use opendal::{Error, ErrorKind};
+
+        #[test]
+        fn get_returns_miss_for_not_found() {
+            let (cache, raw) =
+                decode_remote_cache_read(Err(Error::new(ErrorKind::NotFound, "entry not found")))
+                    .unwrap();
+
+            assert!(matches!(cache, Cache::Miss));
+            assert!(raw.is_none());
+        }
+
+        #[test]
+        fn get_propagates_unexpected_backend_errors() {
+            let error = decode_remote_cache_read(Err(Error::new(
+                ErrorKind::Unexpected,
+                "injected read failure",
+            )))
+            .unwrap_err();
+
+            assert_eq!(
+                error.downcast_ref::<Error>().map(Error::kind),
+                Some(ErrorKind::Unexpected)
+            );
+        }
+    }
 
     #[test]
-    fn test_normalize_key() {
+    #[cfg(not(feature = "redis"))]
+    fn test_build_single_cache_feature_disabled() {
+        let cache_type = CacheType::Redis(Default::default());
+        let err = build_single_cache(&cache_type, &[], false)
+            .err()
+            .expect("disabled backend must be rejected");
         assert_eq!(
-            normalize_key("0123456789abcdef0123456789abcdef"),
-            "0/1/2/0123456789abcdef0123456789abcdef"
+            err.to_string(),
+            "Cache type not supported with current feature configuration"
         );
     }
 
@@ -821,6 +749,134 @@ mod test {
                     "Cannot write to a read-only cache"
                 );
             });
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "s3")]
+    fn test_operator_storage_s3_with_basedirs() {
+        // Create S3 operator (doesn't need real credentials for this test)
+        let operator = crate::cache::s3::S3Cache::new(
+            "test-bucket".to_string(),
+            "test-prefix".to_string(),
+            true, // no_credentials = true
+        )
+        .with_region(Some("us-east-1".to_string()))
+        .build()
+        .expect("Failed to create S3 cache operator");
+
+        let basedirs = vec![b"/home/user/project".to_vec(), b"/opt/build".to_vec()];
+
+        // Wrap with OperatorStorage
+        let storage = RemoteStorage::new(operator, basedirs.clone(), CacheMode::ReadWrite);
+
+        // Verify basedirs are stored and retrieved correctly
+        assert_eq!(storage.basedirs(), basedirs.as_slice());
+        assert_eq!(storage.basedirs().len(), 2);
+        assert_eq!(storage.basedirs()[0], b"/home/user/project".to_vec());
+        assert_eq!(storage.basedirs()[1], b"/opt/build".to_vec());
+    }
+
+    #[test]
+    #[cfg(feature = "s3")]
+    fn test_skip_remote_cache_check_uses_configured_mode() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        for (configured_mode, expected_mode) in [
+            (CacheModeConfig::ReadOnly, CacheMode::ReadOnly),
+            (CacheModeConfig::ReadWrite, CacheMode::ReadWrite),
+        ] {
+            let cache_config = config::S3CacheConfig {
+                bucket: "test-bucket".to_owned(),
+                region: Some("us-east-1".to_owned()),
+                key_prefix: String::new(),
+                no_credentials: true,
+                endpoint: Some("http://127.0.0.1:1".to_owned()),
+                use_ssl: Some(false),
+                server_side_encryption: None,
+                server_side_encryption_aws_kms: None,
+                server_side_encryption_kms_key_id: None,
+                enable_virtual_host_style: None,
+                rw_mode: configured_mode,
+            };
+            let single_cache_config = Config {
+                cache: Some(CacheType::S3(cache_config.clone())),
+                skip_cache_check: true,
+                ..Default::default()
+            };
+
+            let storage = storage_from_config(&single_cache_config, runtime.handle()).unwrap();
+            assert_eq!(runtime.block_on(storage.check()).unwrap(), expected_mode);
+
+            let multilevel_config = Config {
+                cache_configs: config::CacheConfigs {
+                    s3: Some(cache_config),
+                    multilevel: Some(config::MultiLevelConfig {
+                        chain: vec!["s3".to_owned()],
+                        write_error_policy: config::WriteErrorPolicy::default(),
+                    }),
+                    ..Default::default()
+                },
+                skip_cache_check: true,
+                ..Default::default()
+            };
+
+            let storage = storage_from_config(&multilevel_config, runtime.handle()).unwrap();
+            assert_eq!(runtime.block_on(storage.check()).unwrap(), expected_mode);
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "redis")]
+    fn test_operator_storage_redis_with_basedirs() {
+        // Create Redis operator
+        let operator = crate::cache::redis::RedisCache::build_single(
+            "redis://localhost:6379",
+            None,
+            None,
+            0,
+            "test-prefix",
+            0,
+        )
+        .expect("Failed to create Redis cache operator");
+
+        let basedirs = vec![b"/workspace".to_vec()];
+
+        // Wrap with OperatorStorage
+        let storage = RemoteStorage::new(operator, basedirs.clone(), CacheMode::ReadWrite);
+
+        // Verify basedirs work
+        assert_eq!(storage.basedirs(), basedirs.as_slice());
+        assert_eq!(storage.basedirs().len(), 1);
+    }
+
+    #[test]
+    #[cfg(feature = "redis")]
+    fn test_operator_storage_redis_with_read_only() {
+        // Create Redis operator
+
+        use crate::test::utils::Waiter;
+        let operator = crate::cache::redis::RedisCache::build_single(
+            "redis://localhost:6379",
+            None,
+            None,
+            0,
+            "test-prefix",
+            0,
+        )
+        .expect("Failed to create Redis cache operator");
+
+        // Wrap with OperatorStorage
+        let storage = RemoteStorage::new(operator, vec![], CacheMode::ReadOnly);
+
+        // Verify put fails
+        let result = storage.put("test", CacheWrite::default()).wait();
+        match result {
+            Ok(_) => panic!("expected error, got success {result:?}"),
+            Err(err) => assert_eq!(err.to_string(), "storage is read-only"),
         }
     }
 }

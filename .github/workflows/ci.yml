@@ -19,14 +19,14 @@ jobs:
             cargo_cmd: clippy --locked --all-targets -- -D warnings -A unknown-lints -A clippy::type_complexity -A clippy::new-without-default
     steps:
       - name: Clone repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install rust
         uses: ./.github/actions/rust-toolchain
         with:
           components: ${{ matrix.component }}
           # Oldest supported version, keep in sync with README.md
-          toolchain: "1.75.0"
+          toolchain: "1.91.0"
 
       - name: clippy version
         run: cargo clippy --version
@@ -42,7 +42,7 @@ jobs:
         feature: [ azure, gcs, gha, memcached, redis, s3, webdav ]
     steps:
       - name: Clone repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Check feature ${{ matrix.feature }}
         run: cargo check --no-default-features --features ${{ matrix.feature }}
@@ -51,7 +51,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Clone repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Check
         run: npx --yes @taplo/cli fmt --check
@@ -69,7 +69,7 @@ jobs:
         include:
           - os: ubuntu-22.04
             # Oldest supported version, keep in sync with README.md
-            rustc: "1.75.0"
+            rustc: "1.91.0"
             extra_desc: dist-tests
             extra_args: --no-default-features --features=dist-tests test_dist_ -- --test-threads 1
           - os: ubuntu-22.04
@@ -94,44 +94,29 @@ jobs:
           - os: ubuntu-24.04
             cuda: "12.8"
             # Oldest supported version, keep in sync with README.md
-            rustc: "1.75.0"
+            rustc: "1.91.0"
             extra_desc: cuda12.8
-          - os: macos-13
-            no_coverage: true
           # # M1 CPU
           - os: macos-14
-          - os: windows-2019
-            cuda: "11.1"
-            # Oldest supported version, keep in sync with README.md
-            rustc: "1.75.0"
-            extra_args: --no-fail-fast
-            extra_desc: cuda11.1
-          - os: windows-2019
-            cuda: "11.8"
-            rustc: nightly
-            allow_failure: true
-            extra_args: --features=unstable
-            extra_desc: cuda11.8
-            no_coverage: true
-          - os: windows-2019
-            cuda: "11.8"
-            rustc: beta
-            extra_desc: cuda11.8
+          - os: macos-15-intel
           - os: windows-2022
             cuda: "12.8"
             # Oldest supported version, keep in sync with README.md
-            rustc: "1.75.0"
+            rustc: "1.91.0"
             extra_args: --no-fail-fast
+            notest_cuda_compilers: clang++
             extra_desc: cuda12.8
           - os: windows-2022
             cuda: "12.8"
             rustc: nightly
             allow_failure: true
             extra_args: --features=unstable
+            notest_cuda_compilers: clang++
             extra_desc: cuda12.8
           - os: windows-2022
             cuda: "12.8"
             rustc: beta
+            notest_cuda_compilers: clang++
             extra_desc: cuda12.8
             no_coverage: true
     env:
@@ -141,11 +126,14 @@ jobs:
       BINARY_DIR: "target/debug"
       GRCOV_IGNORE_OPTION: '--ignore build.rs --ignore "/*" --ignore "[a-zA-Z]:/*"'
       GRCOV_EXCLUDE_OPTION: '--excl-br-line "^\s*((debug_)?assert(_eq|_ne)?!|#\[derive\()"'
+      NOTEST_CUDA_COMPILERS: ${{ matrix.notest_cuda_compilers || '' }}
+      CARGO_PROFILE_DEV_DEBUG: '0' # save disk space
     steps:
-      - uses: ilammy/msvc-dev-cmd@v1
+      - if: ${{ contains(matrix.os, 'windows') }}
+        uses: ilammy/msvc-dev-cmd@v1
 
       - name: Clone repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install rust
         uses: ./.github/actions/rust-toolchain
@@ -170,7 +158,7 @@ jobs:
           echo 'clang version:'
           clang --version
 
-      - if: matrix.cuda != '' && contains(fromJSON('["Linux", "Windows"]'), runner.os)
+      - if: ${{ matrix.cuda != '' && (runner.os == 'Linux' || runner.os == 'Windows') }}
         name: Install nvcc
         uses: ./.github/actions/nvcc-toolchain
         with:
@@ -178,7 +166,29 @@ jobs:
 
       - name: "`grcov` ~ install"
         if: ${{ ! matrix.no_coverage }}
-        run: cargo install --locked grcov
+        shell: bash
+        run: |
+          GRCOV_VERSION="0.10.8"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            TARGET="x86_64-pc-windows-msvc"
+            EXT="zip"
+          elif [[ "$RUNNER_OS" == "macOS" && "$RUNNER_ARCH" == "ARM64" ]]; then
+            TARGET="aarch64-apple-darwin"
+            EXT="tar.bz2"
+          elif [[ "$RUNNER_OS" == "macOS" ]]; then
+            TARGET="x86_64-apple-darwin"
+            EXT="tar.bz2"
+          else
+            TARGET="x86_64-unknown-linux-musl"
+            EXT="tar.bz2"
+          fi
+          URL="https://github.com/mozilla/grcov/releases/download/v${GRCOV_VERSION}/grcov-${TARGET}.${EXT}"
+          curl -sL "$URL" -o "grcov.${EXT}"
+          if [[ "$EXT" == "zip" ]]; then
+            unzip -q "grcov.${EXT}" -d "$HOME/.cargo/bin/"
+          else
+            tar -xjf "grcov.${EXT}" -C "$HOME/.cargo/bin/"
+          fi
 
       - name: Create config for testing
         if: ${{ ! matrix.no_coverage }}
@@ -187,9 +197,14 @@ jobs:
           echo '[env]
           LLVM_PROFILE_FILE = { value = "target/debug/coverage/default-%p-%8m.profraw", relative = true }' >> .cargo/config.toml
 
+      - if: ${{ matrix.cuda != '' && runner.os == 'Linux' }}
+        name: Free disk space for CUDA tests
+        run: |
+          sudo apt clean
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/share/boost /usr/share/swift /var/lib/apt/lists/*
 
       - name: Execute tests
-        run: cargo test --locked --all-targets ${{ matrix.extra_args }}
+        run: cargo test --locked --lib --bins --tests ${{ matrix.extra_args }}
         env:
           CARGO_INCREMENTAL: "0"
           RUSTC_WRAPPER: ""
@@ -245,6 +260,20 @@ jobs:
             target: x86_64-unknown-linux-musl
             container: '{"image": "messense/rust-musl-cross:x86_64-musl"}'
           - os: ubuntu-22.04
+            target: s390x-unknown-linux-musl
+            container: '{"image": "messense/rust-musl-cross:s390x-musl"}'
+            lto: "false"
+          - os: ubuntu-22.04
+            target: s390x-unknown-linux-gnu
+          - os: ubuntu-22.04
+            target: riscv64gc-unknown-linux-musl
+            container: '{"image": "messense/rust-musl-cross:riscv64gc-musl"}'
+            rustflags: -Ctarget-feature=+crt-static
+          - os: ubuntu-22.04
+            target: loongarch64-unknown-linux-musl
+            container: '{"image": "messense/rust-musl-cross:loongarch64-musl"}'
+            rustflags: -Ctarget-feature=+crt-static
+          - os: ubuntu-22.04
             binary: sccache-dist
             extra_args: --no-default-features --features="dist-server"
             target: x86_64-unknown-linux-musl
@@ -253,26 +282,31 @@ jobs:
             target: aarch64-unknown-linux-musl
             container: '{"image": "messense/rust-musl-cross:aarch64-musl"}'
           - os: ubuntu-22.04
+            binary: sccache-dist
+            extra_args: --no-default-features --features="dist-server"
+            target: aarch64-unknown-linux-musl
+            container: '{"image": "messense/rust-musl-cross:aarch64-musl"}'
+          - os: ubuntu-22.04
             target: armv7-unknown-linux-musleabi
             container: '{"image": "messense/rust-musl-cross:armv7-musleabi"}'
           - os: ubuntu-22.04
             target: i686-unknown-linux-musl
             container: '{"image": "messense/rust-musl-cross:i686-musl"}'
-          - os: macos-13
-            target: x86_64-apple-darwin
-            macosx_deployment_target: 10.13
           - os: macos-14
             target: aarch64-apple-darwin
             macosx_deployment_target: 11.0
-          - os: windows-2019
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            macosx_deployment_target: 11.0
+          - os: windows-2022
             target: x86_64-pc-windows-msvc
             rustflags: -Ctarget-feature=+crt-static
-          - os: windows-2019
+          - os: windows-2022
             target: aarch64-pc-windows-msvc
             rustflags: -Ctarget-feature=+crt-static
     steps:
       - name: Clone repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install rust
         uses: ./.github/actions/rust-toolchain
@@ -281,13 +315,47 @@ jobs:
           target: ${{ matrix.target }}
         if: ${{ !matrix.container }}
 
+      - name: Install s390x cross-compilation toolchain
+        if: ${{ matrix.target == 's390x-unknown-linux-gnu' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-s390x-linux-gnu g++-s390x-linux-gnu
+          mkdir -p .cargo
+          cat >> .cargo/config.toml <<EOF
+          [target.s390x-unknown-linux-gnu]
+          linker = "s390x-linux-gnu-gcc"
+          EOF
+
+      - name: Install rust-src for s390x-musl
+        if: ${{ matrix.target == 's390x-unknown-linux-musl' }}
+        run: |
+          # Remove corrupted nightly toolchain if it exists
+          rustup toolchain uninstall nightly || true
+          # Clean up any leftover files
+          rm -rf ~/.rustup/toolchains/nightly-* || true
+          # Install fresh nightly with minimal profile
+          rustup toolchain install nightly --profile minimal
+          rustup component add rust-src --toolchain nightly
+
+      - name: Build (s390x-musl with build-std)
+        if: ${{ matrix.target == 's390x-unknown-linux-musl' }}
+        run: cargo +nightly build --locked --release --bin ${{ matrix.binary || 'sccache' }} --target ${{ matrix.target }} ${{ matrix.extra_args }} -Zbuild-std
+        env:
+          MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macosx_deployment_target }}
+          DEVELOPER_DIR: ${{ matrix.developer_dir }}
+          SDKROOT: ${{ matrix.sdkroot }}
+          RUSTFLAGS: ${{ env.RUSTFLAGS || matrix.rustflags }}
+          CARGO_PROFILE_RELEASE_LTO: ${{ matrix.lto || 'true' }}
+
       - name: Build
+        if: ${{ matrix.target != 's390x-unknown-linux-musl' }}
         run: cargo build --locked --release --bin ${{ matrix.binary || 'sccache' }} --target ${{ matrix.target }} ${{ matrix.extra_args }}
         env:
           MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macosx_deployment_target }}
           DEVELOPER_DIR: ${{ matrix.developer_dir }}
           SDKROOT: ${{ matrix.sdkroot }}
-          RUSTFLAGS: ${{ matrix.rustflags }}
+          RUSTFLAGS: ${{ env.RUSTFLAGS || matrix.rustflags }}
+          CARGO_PROFILE_RELEASE_LTO: ${{ matrix.lto || 'true' }}
 
       # Workaround for the lack of substring() function in github actions expressions.
       - name: Id
@@ -298,7 +366,7 @@ jobs:
           ID: ${{ startsWith(github.ref, 'refs/tags/') && github.ref || github.sha }}
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.binary || 'sccache' }}-${{ steps.id.outputs.id }}-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/${{ matrix.binary || 'sccache' }}${{ endsWith(matrix.target, '-msvc') && '.exe' || '' }}
@@ -306,7 +374,7 @@ jobs:
 
 
   test_freebsd:
-    name: test freebsd-14.1 rust stable
+    name: test freebsd-15.0 rust stable
     runs-on: ${{ matrix.job.os }}
     timeout-minutes: 70
     strategy:
@@ -315,7 +383,7 @@ jobs:
         job:
           - { os: ubuntu-22.04 }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Prepare, build and test
         uses: vmactions/freebsd-vm@v1
         with:
@@ -365,7 +433,7 @@ jobs:
         if: failure()
         uses: ./.github/actions/artifact_failure
         with:
-          name: test-freebsd-14.1-stable
+          name: test-freebsd-15.0-stable
 
   release:
     name: release
@@ -374,7 +442,7 @@ jobs:
     if: ${{ startsWith(github.ref, 'refs/tags/') }}
     steps:
       - name: Clone repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Check versions
         run: |
@@ -387,7 +455,7 @@ jobs:
           fi
 
       - name: Get artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
 
       - name: Create release assets
         run: |
@@ -396,7 +464,7 @@ jobs:
             cp README.md LICENSE "$d/"
             tar -zcvf "$d.tar.gz" "$d"
             echo -n "$(shasum -ba 256 "$d.tar.gz" | cut -d " " -f 1)" > "$d.tar.gz.sha256"
-            if [[ $d =~ (sccache-)(.*)?(x86_64-pc-windows)(.*)? ]]; then
+            if [[ $d =~ sccache-.*-pc-windows-.* ]]; then
               zip -r "$d.zip" "$d"
               echo -n "$(shasum -ba 256 "$d.zip" | cut -d " " -f 1)" > "$d.zip.sha256"
             fi
@@ -411,6 +479,6 @@ jobs:
                 files="$files -a $f";
               fi
           done
-          hub release create -m $tag_name $tag_name $files
+          hub release create -d -m $tag_name $tag_name $files
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

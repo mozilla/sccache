@@ -1,0 +1,8 @@
+address: 0.0.0.0
+port: 8080
+prefix: /
+
+users:
+  - username: bar
+    password: baz
+    permissions: CRUD

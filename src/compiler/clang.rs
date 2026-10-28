@@ -18,10 +18,10 @@ use crate::compiler::args::*;
 use crate::compiler::c::{ArtifactDescriptor, CCompilerImpl, CCompilerKind, ParsedArguments};
 use crate::compiler::gcc::ArgData::*;
 use crate::compiler::{
-    gcc, write_temp_file, CCompileCommand, Cacheable, CompileCommand, CompilerArguments, Language,
+    CCompileCommand, Cacheable, CompileCommand, CompilerArguments, Language, gcc, write_temp_file,
 };
 use crate::mock_command::{CommandCreator, CommandCreatorSync, RunCommand};
-use crate::util::{run_input_output, OsStrExt};
+use crate::util::{OsStrExt, run_input_output};
 use crate::{counted_array, dist};
 use async_trait::async_trait;
 use fs::File;
@@ -44,6 +44,8 @@ pub struct Clang {
     pub is_appleclang: bool,
     /// String from __VERSION__ macro.
     pub version: Option<String>,
+    /// Identity of the assembler used with -fno-integrated-as.
+    pub assembler_digest: Option<String>,
 }
 
 impl Clang {
@@ -90,6 +92,9 @@ impl CCompilerImpl for Clang {
     fn version(&self) -> Option<String> {
         self.version.clone()
     }
+    fn assembler_digest(&self) -> Option<String> {
+        self.assembler_digest.clone()
+    }
     fn parse_arguments(
         &self,
         arguments: &[OsString],
@@ -127,8 +132,9 @@ impl CCompilerImpl for Clang {
         };
 
         // Clang 14 and later support -fminimize-whitespace, which normalizes away non-semantic whitespace which in turn increases cache hit rate.
-        if self.is_minversion(14) {
-            ignorable_whitespace_flags.push("-fminimize-whitespace".to_string())
+        // '-fminimize-whitespace' invalid for input of type assembler-with-cpp
+        if self.is_minversion(14) && parsed_args.language != Language::AssemblerToPreprocess {
+            ignorable_whitespace_flags.push("-fminimize-whitespace".to_string());
         }
 
         gcc::preprocess(
@@ -179,72 +185,114 @@ impl CCompilerImpl for Clang {
 }
 
 pub fn language_to_clang_arg(lang: Language) -> Option<&'static str> {
-    match lang {
-        Language::C => Some("c"),
-        Language::CHeader => Some("c-header"),
-        Language::Cxx => Some("c++"),
-        Language::CxxHeader => Some("c++-header"),
-        Language::ObjectiveC => Some("objective-c"),
-        Language::ObjectiveCxx => Some("objective-c++"),
-        Language::ObjectiveCxxHeader => Some("objective-c++-header"),
-        Language::Cuda => Some("cuda"),
-        Language::CudaFE => None,
-        Language::Ptx => None,
-        Language::Cubin => None,
-        Language::Rust => None, // Let the compiler decide
-        Language::Hip => Some("hip"),
-        Language::GenericHeader => None, // Let the compiler decide
-    }
+    lang.to_clang_arg()
 }
 
 counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
-    take_arg!("--dependent-lib", OsString, Concatenated('='), PassThrough),
-    take_arg!("--hip-device-lib-path", PathBuf, Concatenated('='), PassThroughPath),
-    take_arg!("--hip-path", PathBuf, Concatenated('='), PassThroughPath),
-    take_arg!("--rocm-path", PathBuf, Concatenated('='), PassThroughPath),
+    flag!("--analyze", TooHardFlag),
+    take_arg!("--analyzer-output", OsString, Separated, TooHard),
+    // Config files can include other files; refuse rather than hashing one layer.
+    take_arg!("--config", OsString, CanBeSeparated(b'='), TooHard),
+    take_arg!("--dependent-lib", OsString, Concatenated(b'='), PassThrough),
+    take_arg!("--embed-dir", OsString, Concatenated(b'='), TooHard),
+    take_arg!("--extract-api-ignores", PathBuf, Concatenated(b'='), ExtraHashFile),
+    take_arg!("--hip-device-lib-path", PathBuf, Concatenated(b'='), PassThroughPath),
+    take_arg!("--hip-path", PathBuf, Concatenated(b'='), PassThroughPath),
+    flag!("--precompile", ModuleOnlyFlag),
+    flag!("--precompile-reduced-bmi", ModuleOnlyFlag),
+    take_arg!("--rocm-path", PathBuf, Concatenated(b'='), PassThroughPath),
+    take_arg!("--save-stats", OsString, Concatenated(b'='), TooHard),
     take_arg!("--serialize-diagnostics", OsString, Separated, PassThrough),
+    take_arg!("--symbol-graph-dir", OsString, Concatenated(b'='), TooHard),
     take_arg!("--target", OsString, Separated, PassThrough),
+    take_arg!("--vfsoverlay", PathBuf, CanBeSeparated, PreprocessorArgumentPath), // same as -ivfsoverlay
+    take_arg!("--warning-suppression-mappings", PathBuf, Concatenated(b'='), ExtraHashFile),
     // Note: for clang we must override the dep options from gcc.rs with `CanBeSeparated`.
     take_arg!("-MF", PathBuf, CanBeSeparated, DepArgumentPath),
+    take_arg!("-MJ", OsString, CanBeSeparated, TooHard),
     take_arg!("-MQ", OsString, CanBeSeparated, DepTarget),
     take_arg!("-MT", OsString, CanBeSeparated, DepTarget),
     flag!("-Wno-unknown-cuda-version", PassThroughFlag),
     flag!("-Wno-unused-parameter", PassThroughFlag),
     take_arg!("-Xclang", OsString, Separated, XClang),
     take_arg!("-add-plugin", OsString, Separated, PassThrough),
-    take_arg!("-debug-info-kind", OsString, Concatenated('='), PassThrough),
+    take_arg!("-debug-info-kind", OsString, Concatenated(b'='), PassThrough),
+    take_arg!("-dependency-dot", OsString, Separated, TooHard),
     take_arg!("-dependency-file", PathBuf, Separated, DepArgumentPath),
+    take_arg!("-dsym-dir", OsString, CanBeSeparated, TooHard),
+    take_arg!("-dumpdir", OsString, CanBeSeparated, TooHard),
     flag!("-emit-pch", PassThroughFlag),
+    flag!("-fbuiltin-module-map", TooHardFlag),
+    take_arg!("-fcodegen-data-generate", OsString, Concatenated(b'='), TooHard),
     flag!("-fcolor-diagnostics", DiagnosticsColorFlag),
     flag!("-fcuda-allow-variadic-functions", PassThroughFlag),
     flag!("-fcxx-modules", TooHardFlag),
     take_arg!("-fdebug-compilation-dir", OsString, Separated, PassThrough),
-    take_arg!("-fembed-offload-object", PathBuf, Concatenated('='), ExtraHashFile),
-    flag!("-fmodules", TooHardFlag),
+    take_arg!("-fembed-offload-object", PathBuf, Concatenated(b'='), ExtraHashFile),
+    take_arg!("-fexperimental-assignment-tracking", OsString, Concatenated(b'='), PassThrough),
+    flag!("-fimplicit-modules", TooHardFlag),
+    flag!("-fintegrated-as", IntegratedAs),
+    flag!("-fmemory-profile", TooHardFlag),
+    take_arg!("-fmemory-profile-use", PathBuf, Concatenated(b'='), ExtraHashFile),
+    take_arg!("-fmemory-profile=", OsString, Concatenated, TooHard),
+    take_arg!("-fmodule-file", OsString, Concatenated(b'='), ExtraHashFileClangModuleFile),
+    take_arg!("-fmodule-header", OsString, Concatenated(b'='), TooHard),
+    take_arg!("-fmodule-map-file", PathBuf, Concatenated(b'='), ExtraHashFile),
+    take_arg!("-fmodule-output", OsString, Concatenated, ClangModuleOutput),
+    take_arg!("-fmodules-cache-path", OsString, Concatenated(b'='), TooHard),
+    flag!("-fmodules-reduced-bmi", PassThroughFlag),
+    take_arg!("-fmodules-user-build-path", OsString, Separated, TooHard),
+    take_arg!("-fms-secure-hotpatch-functions-file", PathBuf, Concatenated(b'='), ExtraHashFile),
     flag!("-fno-color-diagnostics", NoDiagnosticsColorFlag),
+    flag!("-fno-integrated-as", NoIntegratedAs),
     flag!("-fno-pch-timestamp", PassThroughFlag),
     flag!("-fno-profile-instr-generate", TooHardFlag),
     flag!("-fno-profile-instr-use", TooHardFlag),
-    take_arg!("-fplugin", PathBuf, CanBeConcatenated('='), ExtraHashFile),
+    take_arg!("-foptimization-record-file", OsString, Concatenated(b'='), TooHard),
+    take_arg!("-foptimization-record-passes", OsString, Concatenated(b'='), PassThrough),
+    take_arg!("-fpass-plugin", PathBuf, Concatenated(b'='), ExtraHashFile),
+    take_arg!("-fplugin", PathBuf, CanBeConcatenated(b'='), ExtraHashFile),
+    flag!("-fprebuilt-implicit-modules", TooHardFlag),
+    take_arg!("-fprebuilt-module-path", OsString, Concatenated, TooHard),
     flag!("-fprofile-instr-generate", ProfileGenerate),
     // Note: the PathBuf argument is optional
-    take_arg!("-fprofile-instr-use", PathBuf, Concatenated('='), ClangProfileUse),
+    take_arg!("-fprofile-instr-use", PathBuf, Concatenated(b'='), ClangProfileUse),
+    take_arg!("-fprofile-remapping-file", PathBuf, Concatenated(b'='), ExtraHashFile),
     // Note: this overrides the -fprofile-use option in gcc.rs.
-    take_arg!("-fprofile-use", PathBuf, Concatenated('='), ClangProfileUse),
-    take_arg!("-fsanitize-blacklist", PathBuf, Concatenated('='), ExtraHashFile),
-    take_arg!("-fsanitize-ignorelist", PathBuf, Concatenated('='), ExtraHashFile),
+    take_arg!("-fprofile-use", PathBuf, Concatenated(b'='), ClangProfileUse),
+    take_arg!("-frandomize-layout-seed-file", PathBuf, Concatenated(b'='), ExtraHashFile),
+    take_arg!("-fsanitize-blacklist", PathBuf, Concatenated(b'='), ExtraHashFile),
+    take_arg!("-fsanitize-ignorelist", PathBuf, Concatenated(b'='), ExtraHashFile),
+    take_arg!("-fsanitize-system-ignorelist", PathBuf, Concatenated(b'='), ExtraHashFile),
+    take_arg!("-fsave-optimization-record", OsString, Concatenated(b'='), TooHard),
+    take_arg!("-fthin-link-bitcode", OsString, Concatenated(b'='), TooHard),
+    take_arg!("-ftime-trace", OsString, Concatenated(b'='), TooHard),
     flag!("-fuse-ctor-homing", PassThroughFlag),
+    take_arg!("-fxray-always-instrument", PathBuf, Concatenated(b'='), ExtraHashFile),
+    take_arg!("-fxray-attr-list", PathBuf, Concatenated(b'='), ExtraHashFile),
+    take_arg!("-fxray-never-instrument", PathBuf, Concatenated(b'='), ExtraHashFile),
     take_arg!("-gcc-toolchain", OsString, Separated, PassThrough),
     flag!("-gcodeview", PassThroughFlag),
     take_arg!("-include-pch", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
+    flag!("-integrated-as", IntegratedAs),
+    take_arg!("-ivfsoverlay", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
     take_arg!("-load", PathBuf, Separated, ExtraHashFile),
     flag!("-mconstructor-aliases", PassThroughFlag),
     take_arg!("-mllvm", OsString, Separated, PassThrough),
+    take_arg!("-mmlir", OsString, Separated, PassThrough),
+    take_arg!("-module-dependency-dir", OsString, Separated, TooHard),
     flag!("-mrelax-all", PassThroughFlag),
+    flag!("-no-integrated-as", NoIntegratedAs),
     flag!("-no-opaque-pointers", PreprocessorArgumentFlag),
-    take_arg!("-plugin-arg", OsString, Concatenated('-'), PassThrough),
+    // Note: this is ROCm clang specific. Parallelism level shouldn't affect output.
+    take_arg!("-parallel-jobs", OsString, Concatenated(b'='), Unhashed),
+    take_arg!("-plugin-arg", OsString, Concatenated(b'-'), PassThrough),
+    take_arg!("-save-stats", OsString, Concatenated(b'='), TooHard),
     take_arg!("-target", OsString, Separated, PassThrough),
     flag!("-verify", PreprocessorArgumentFlag),
+    flag!("-verify-pch", PassThroughFlag),
+    take_arg!("-vfsoverlay", PathBuf, CanBeSeparated, PreprocessorArgumentPath), // same as -ivfsoverlay
+    take_arg!("-working-directory", OsString, CanBeSeparated(b'='), TooHard),
     take_arg!("/winsysroot", PathBuf, CanBeSeparated, PassThroughPath),
 ]);
 
@@ -288,6 +336,7 @@ mod test {
             clangplusplus: false,
             is_appleclang: false,
             version: None,
+            assembler_digest: None,
         }
         .parse_arguments(&arguments, &std::env::current_dir().unwrap(), &[])
     }
@@ -303,33 +352,42 @@ mod test {
 
     #[test]
     fn test_is_minversion() {
-        assert!(Clang {
-            clangplusplus: false,
-            is_appleclang: false,
-            version: Some("\"Ubuntu Clang 14.0.0\"".to_string()),
-        }
-        .is_minversion(14));
-        assert!(!Clang {
-            clangplusplus: false,
-            is_appleclang: false,
-            version: Some("\"Ubuntu Clang 13.0.0\"".to_string()),
-        }
-        .is_minversion(14));
+        assert!(
+            Clang {
+                clangplusplus: false,
+                is_appleclang: false,
+                version: Some("\"Ubuntu Clang 14.0.0\"".to_string()),
+                assembler_digest: None,
+            }
+            .is_minversion(14)
+        );
+        assert!(
+            !Clang {
+                clangplusplus: false,
+                is_appleclang: false,
+                version: Some("\"Ubuntu Clang 13.0.0\"".to_string()),
+                assembler_digest: None,
+            }
+            .is_minversion(14)
+        );
         assert!(Clang {
             clangplusplus: false,
             is_appleclang: false,
             version: Some("\"FreeBSD Clang 14.0.5 (https://github.com/llvm/llvm-project.git llvmorg-14.0.5-0-gc12386ae247c)\"".to_string()),
+            assembler_digest: None,
         }.is_minversion(14));
         assert!(!Clang {
             clangplusplus: false,
             is_appleclang: false,
             version: Some("\"FreeBSD Clang 13.0.0 (git@github.com:llvm/llvm-project.git llvmorg-13.0.0-0-gd7b669b3a303)\"".to_string()),
+            assembler_digest: None,
         }.is_minversion(14));
 
         assert!(!Clang {
             clangplusplus: false,
             is_appleclang: true,
             version: Some("\"FreeBSD Clang 14.0.5 (https://github.com/llvm/llvm-project.git llvmorg-14.0.5-0-gc12386ae247c)\"".to_string()),
+            assembler_digest: None,
         }.is_minversion(14)); // is_appleclang wins
     }
 
@@ -592,6 +650,28 @@ mod test {
     }
 
     #[test]
+    fn test_parse_arguments_hip_unhash_parallel_jobs() {
+        let a = parses!(
+            "-c",
+            "foo.cpp",
+            "-x",
+            "hip",
+            "--offload-arch=gfx900",
+            "-parallel-jobs=5",
+            "-o",
+            "foo.o",
+            "--hip-path=/usr"
+        );
+        assert_eq!(Language::Hip, a.language);
+        assert!(a.preprocessor_args.is_empty());
+        assert_eq!(
+            ovec!["--offload-arch=gfx900", "--hip-path=/usr"],
+            a.common_args
+        );
+        assert_eq!(ovec!["-parallel-jobs=5"], a.unhashed_args,);
+    }
+
+    #[test]
     fn test_dependent_lib() {
         let a = parses!(
             "-c",
@@ -636,6 +716,25 @@ mod test {
     }
 
     #[test]
+    fn test_ivfsoverlay() {
+        let a = parses!(
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "-Xclang",
+            "-ivfsoverlay",
+            "-Xclang",
+            "/some/overlay.yaml"
+        );
+        assert!(a.common_args.is_empty());
+        assert_eq!(
+            ovec!["-Xclang", "-ivfsoverlay", "-Xclang", "/some/overlay.yaml"],
+            a.preprocessor_args
+        );
+    }
+
+    #[test]
     fn test_emit_pch() {
         let a = parses!(
             "-Xclang",
@@ -668,7 +767,7 @@ mod test {
             ovec!["-Xclang", "-include", "-Xclang", "pch.hxx"],
             a.preprocessor_args
         );
-        assert_eq!(ovec!["-Xclang", "-emit-pch"], a.common_args)
+        assert_eq!(ovec!["-Xclang", "-emit-pch"], a.common_args);
     }
 
     #[test]
@@ -689,6 +788,33 @@ mod test {
                 assert_eq!(parsed.dependency_args, parsed_separated.dependency_args);
             }
         }
+    }
+
+    #[test]
+    fn test_parse_arguments_integrated_as() {
+        assert!(!parses!("-c", "foo.c", "-o", "foo.o").uses_external_assembler);
+        for flag in ["-fno-integrated-as", "-no-integrated-as"] {
+            let a = parses!("-c", "foo.c", "-o", "foo.o", flag);
+            assert!(a.uses_external_assembler);
+            assert_eq!(ovec![flag], a.common_args);
+        }
+        for flag in ["-fintegrated-as", "-integrated-as"] {
+            let a = parses!("-c", "foo.c", "-o", "foo.o", "-fno-integrated-as", flag);
+            assert!(!a.uses_external_assembler);
+            assert_eq!(ovec!["-fno-integrated-as", flag], a.common_args);
+        }
+        // We don't track what the flag does when it comes through -Xclang.
+        assert_eq!(
+            CompilerArguments::CannotCache("-no-integrated-as", None),
+            parse_arguments_(stringvec![
+                "-c",
+                "foo.c",
+                "-o",
+                "foo.o",
+                "-Xclang",
+                "-no-integrated-as"
+            ])
+        );
     }
 
     #[test]
@@ -797,6 +923,36 @@ mod test {
                 "-debug-info-kind=constructor"
             ],
             a.common_args
+        );
+    }
+
+    #[test]
+    fn test_parse_xclang_fexperimental_assignment_tracking() {
+        // Test via -Xclang (internal clang flag)
+        let a = parses!(
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "-Xclang",
+            "-fexperimental-assignment-tracking=disabled"
+        );
+        assert_eq!(
+            ovec!["-Xclang", "-fexperimental-assignment-tracking=disabled"],
+            a.common_args
+        );
+
+        // Also works as a direct flag
+        let b = parses!(
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "-fexperimental-assignment-tracking=disabled"
+        );
+        assert_eq!(
+            ovec!["-fexperimental-assignment-tracking=disabled"],
+            b.common_args
         );
     }
 
@@ -922,6 +1078,17 @@ mod test {
     #[test]
     fn test_parse_fplugin() {
         let a = parses!("-c", "foo.c", "-o", "foo.o", "-fplugin", "plugin.so");
+        println!("A {:#?}", a);
+        assert_eq!(ovec!["-fplugin", "plugin.so"], a.common_args);
+        assert_eq!(
+            ovec![std::env::current_dir().unwrap().join("plugin.so")],
+            a.extra_hash_files
+        );
+    }
+
+    #[test]
+    fn test_parse_fplugin_concatenated() {
+        let a = parses!("-c", "foo.c", "-o", "foo.o", "-fplugin=plugin.so");
         println!("A {:#?}", a);
         assert_eq!(ovec!["-fplugin", "plugin.so"], a.common_args);
         assert_eq!(
@@ -1075,6 +1242,385 @@ mod test {
     }
 
     #[test]
+    fn test_parse_arguments_cxx20_modules_unsupported() {
+        // -fprebuilt-implicit-modules is not supported (implicit module discovery)
+        assert_eq!(
+            CompilerArguments::CannotCache("-fprebuilt-implicit-modules", None),
+            parse_arguments_(stringvec![
+                "-c",
+                "foo.c",
+                "-fprebuilt-implicit-modules",
+                "-o",
+                "foo.o"
+            ])
+        );
+
+        // -fprebuilt-module-path is not supported (implicit module path discovery)
+        assert_eq!(
+            CompilerArguments::CannotCache("-fprebuilt-module-path", None),
+            parse_arguments_(stringvec![
+                "-c",
+                "foo.c",
+                "-fprebuilt-module-path=/path/to/modules",
+                "-o",
+                "foo.o"
+            ])
+        );
+    }
+
+    #[test]
+    fn test_parse_arguments_too_hard() {
+        for (extra, reason) in [
+            (&["--analyze"][..], "--analyze"),
+            (&["--analyzer-output", "html"], "--analyzer-output"),
+            (&["--config", "clang.cfg"], "--config"),
+            (&["--config=clang.cfg"], "--config"),
+            (&["--embed-dir=/tmp/embed"], "--embed-dir"),
+            (&["--save-stats"], "--save-stats"),
+            (&["--save-stats=obj"], "--save-stats"),
+            (&["--symbol-graph-dir=/tmp/sg"], "--symbol-graph-dir"),
+            (&["-MJ", "compile_commands.json"], "-MJ"),
+            (&["-dependency-dot", "deps.dot"], "-dependency-dot"),
+            (&["-dsym-dir", "/tmp/dsym"], "-dsym-dir"),
+            (&["-dumpdir", "/tmp/dumps"], "-dumpdir"),
+            (&["-fbuiltin-module-map"], "-fbuiltin-module-map"),
+            (&["-fcodegen-data-generate"], "-fcodegen-data-generate"),
+            (
+                &["-fcodegen-data-generate=/tmp/cg"],
+                "-fcodegen-data-generate",
+            ),
+            (&["-fimplicit-modules"], "-fimplicit-modules"),
+            (&["-fmemory-profile"], "-fmemory-profile"),
+            (&["-fmemory-profile=/tmp/memprof"], "-fmemory-profile="),
+            (&["-fmodule-header"], "-fmodule-header"),
+            (&["-fmodule-header=user"], "-fmodule-header"),
+            (
+                &["-fmodules-cache-path=/tmp/modules"],
+                "-fmodules-cache-path",
+            ),
+            (
+                &["-fmodules-user-build-path", "/tmp/mods"],
+                "-fmodules-user-build-path",
+            ),
+            (
+                &["-foptimization-record-file=opt.yaml"],
+                "-foptimization-record-file",
+            ),
+            (
+                &["-fsave-optimization-record"],
+                "-fsave-optimization-record",
+            ),
+            (
+                &["-fsave-optimization-record=yaml"],
+                "-fsave-optimization-record",
+            ),
+            (&["-fthin-link-bitcode"], "-fthin-link-bitcode"),
+            (&["-fthin-link-bitcode=foo.bc"], "-fthin-link-bitcode"),
+            (&["-ftime-trace"], "-ftime-trace"),
+            (&["-ftime-trace=trace.json"], "-ftime-trace"),
+            (
+                &["-module-dependency-dir", "/tmp/moddeps"],
+                "-module-dependency-dir",
+            ),
+            (&["-save-stats"], "-save-stats"),
+            (&["-save-stats=cwd"], "-save-stats"),
+            (&["-working-directory", "/tmp"], "-working-directory"),
+            (&["-working-directory=/tmp"], "-working-directory"),
+        ] {
+            let mut args = stringvec!["-c", "foo.c", "-o", "foo.o"];
+            args.extend(extra.iter().copied().map(str::to_string));
+            assert_eq!(
+                CompilerArguments::CannotCache(reason, None),
+                parse_arguments_(args),
+                "{extra:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_arguments_extra_hash_files() {
+        let cwd = std::env::current_dir().unwrap();
+        let a = parses!(
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "--extract-api-ignores=ignores.txt",
+            "--warning-suppression-mappings=map.txt",
+            "-fmemory-profile-use=memprof.prof",
+            "-fmodule-map-file=module.modulemap",
+            "-fms-secure-hotpatch-functions-file=hotpatch.txt",
+            "-fpass-plugin=plugin.so",
+            "-fprofile-remapping-file=remap.txt",
+            "-frandomize-layout-seed-file=seed.txt",
+            "-fsanitize-system-ignorelist=list.txt",
+            "-fxray-always-instrument=always.txt",
+            "-fxray-attr-list=xray.txt",
+            "-fxray-never-instrument=never.txt"
+        );
+        assert_eq!(
+            ovec![
+                "--extract-api-ignores=ignores.txt",
+                "--warning-suppression-mappings=map.txt",
+                "-fmemory-profile-use=memprof.prof",
+                "-fmodule-map-file=module.modulemap",
+                "-fms-secure-hotpatch-functions-file=hotpatch.txt",
+                "-fpass-plugin=plugin.so",
+                "-fprofile-remapping-file=remap.txt",
+                "-frandomize-layout-seed-file=seed.txt",
+                "-fsanitize-system-ignorelist=list.txt",
+                "-fxray-always-instrument=always.txt",
+                "-fxray-attr-list=xray.txt",
+                "-fxray-never-instrument=never.txt"
+            ],
+            a.common_args
+        );
+        assert_eq!(
+            ovec![
+                cwd.join("ignores.txt"),
+                cwd.join("map.txt"),
+                cwd.join("memprof.prof"),
+                cwd.join("module.modulemap"),
+                cwd.join("hotpatch.txt"),
+                cwd.join("plugin.so"),
+                cwd.join("remap.txt"),
+                cwd.join("seed.txt"),
+                cwd.join("list.txt"),
+                cwd.join("always.txt"),
+                cwd.join("xray.txt"),
+                cwd.join("never.txt")
+            ],
+            a.extra_hash_files
+        );
+    }
+
+    #[test]
+    fn test_parse_arguments_passthrough() {
+        let a = parses!(
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "-foptimization-record-passes=inline",
+            "-mmlir",
+            "-allow-unregistered-dialect",
+            "-verify-pch"
+        );
+        assert_eq!(
+            ovec![
+                "-foptimization-record-passes=inline",
+                "-mmlir",
+                "-allow-unregistered-dialect",
+                "-verify-pch"
+            ],
+            a.common_args
+        );
+    }
+
+    #[test]
+    fn test_parse_arguments_vfsoverlay() {
+        let a = parses!(
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "-vfsoverlay",
+            "overlay.yaml",
+            "--vfsoverlay",
+            "overlay2.yaml"
+        );
+        assert_eq!(
+            ovec![
+                "-vfsoverlay",
+                "overlay.yaml",
+                "--vfsoverlay",
+                "overlay2.yaml"
+            ],
+            a.preprocessor_args
+        );
+    }
+
+    #[test]
+    fn test_parse_arguments_precompile_reduced_bmi() {
+        let a = parses!(
+            "-c",
+            "module.cppm",
+            "-o",
+            "module.pcm",
+            "--precompile-reduced-bmi",
+            "-x",
+            "c++-module"
+        );
+        assert_eq!(Some("module.cppm"), a.input.to_str());
+        assert_eq!(Language::CxxModule, a.language);
+        assert_eq!(ovec!["--precompile-reduced-bmi"], a.common_args);
+    }
+
+    #[test]
+    fn test_parse_arguments_cxx20_module_precompile() {
+        // Test --precompile flag for creating module interface units
+        let a = parses!(
+            "-c",
+            "module.cppm",
+            "-o",
+            "module.pcm",
+            "--precompile",
+            "-x",
+            "c++-module"
+        );
+        assert_eq!(Some("module.cppm"), a.input.to_str());
+        assert_eq!(Language::CxxModule, a.language);
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("module.pcm"),
+                    optional: false
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn test_parse_arguments_cxx20_module_fmodule_file() {
+        // Test -fmodule-file= for importing precompiled modules
+        let a = parses!("-c", "foo.cpp", "-o", "foo.o", "-fmodule-file=mymodule.pcm");
+        assert_eq!(Some("foo.cpp"), a.input.to_str());
+        assert_eq!(ovec!["-fmodule-file=mymodule.pcm"], a.common_args);
+        assert_eq!(
+            ovec![std::env::current_dir().unwrap().join("mymodule.pcm")],
+            a.extra_hash_files
+        );
+    }
+
+    #[test]
+    fn test_parse_arguments_cxx20_module_fmodule_file_with_name() {
+        // Test -fmodule-file=name=path syntax
+        let a = parses!(
+            "-c",
+            "foo.cpp",
+            "-o",
+            "foo.o",
+            "-fmodule-file=mymodule=path/to/mymodule.pcm"
+        );
+        assert_eq!(Some("foo.cpp"), a.input.to_str());
+        assert_eq!(
+            ovec!["-fmodule-file=mymodule=path/to/mymodule.pcm"],
+            a.common_args
+        );
+        assert_eq!(
+            ovec![
+                std::env::current_dir()
+                    .unwrap()
+                    .join("path/to/mymodule.pcm")
+            ],
+            a.extra_hash_files
+        );
+    }
+
+    #[test]
+    fn test_parse_arguments_cxx20_module_fmodule_output() {
+        // Test -fmodule-output= for generating module output alongside object file
+        let a = parses!(
+            "-c",
+            "module.cppm",
+            "-o",
+            "module.o",
+            "-fmodule-output=module.pcm"
+        );
+        assert_eq!(Some("module.cppm"), a.input.to_str());
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("module.o"),
+                    optional: false
+                }
+            ),
+            (
+                "module",
+                ArtifactDescriptor {
+                    path: PathBuf::from("module.pcm"),
+                    optional: false
+                }
+            )
+        );
+        assert_eq!(ovec!["-fmodule-output=module.pcm"], a.common_args);
+    }
+
+    #[test]
+    fn test_parse_arguments_cxx20_module_fmodule_output_implicit_path() {
+        // Test -fmodule-output without explicit path (uses input name + .pcm)
+        let a = parses!("-c", "mymodule.cppm", "-o", "mymodule.o", "-fmodule-output");
+        assert_eq!(Some("mymodule.cppm"), a.input.to_str());
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("mymodule.o"),
+                    optional: false
+                }
+            ),
+            (
+                "module",
+                ArtifactDescriptor {
+                    path: PathBuf::from("mymodule.cppm.pcm"),
+                    optional: false
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn test_parse_arguments_cxx20_module_fmodules_reduced_bmi() {
+        // Test -fmodules-reduced-bmi flag (Clang 18+)
+        let a = parses!(
+            "-c",
+            "module.cppm",
+            "-o",
+            "module.o",
+            "-fmodule-output=module.pcm",
+            "-fmodules-reduced-bmi"
+        );
+        assert_eq!(Some("module.cppm"), a.input.to_str());
+        assert_eq!(
+            ovec!["-fmodule-output=module.pcm", "-fmodules-reduced-bmi"],
+            a.common_args
+        );
+    }
+
+    #[test]
+    fn test_parse_arguments_cxx20_module_combined_flags() {
+        // Test combination of module flags as typically used in practice
+        let a = parses!(
+            "-c",
+            "consumer.cpp",
+            "-o",
+            "consumer.o",
+            "-fmodule-file=mymodule=mymodule.pcm",
+            "-fmodule-file=othermodule=other.pcm"
+        );
+        assert_eq!(Some("consumer.cpp"), a.input.to_str());
+        assert_eq!(
+            ovec![
+                "-fmodule-file=mymodule=mymodule.pcm",
+                "-fmodule-file=othermodule=other.pcm"
+            ],
+            a.common_args
+        );
+        assert_eq!(
+            vec![
+                std::env::current_dir().unwrap().join("mymodule.pcm"),
+                std::env::current_dir().unwrap().join("other.pcm"),
+            ],
+            a.extra_hash_files
+        );
+    }
+
+    #[test]
     fn test_compile_clang_cuda_does_not_dist_compile() {
         let creator = new_creator();
         let f = TestFixture::new();
@@ -1100,7 +1646,9 @@ mod test {
             unhashed_args: vec![],
             extra_dist_files: vec![],
             extra_hash_files: vec![],
+            uses_external_assembler: false,
             msvc_show_includes: false,
+            msvc_explicit_language: false,
             profile_generate: false,
             color_mode: ColorMode::Auto,
             suppress_rewrite_includes_only: false,

@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::errors::*;
-use clap::{error::ErrorKind, Arg, ArgAction, ArgGroup, ValueEnum};
+use clap::{Arg, ArgAction, ArgGroup, ValueEnum, error::ErrorKind};
 use std::env;
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -22,8 +22,9 @@ use which::which_in;
 
 const ENV_VAR_INTERNAL_START_SERVER: &str = "SCCACHE_START_SERVER";
 
-#[derive(Debug, Clone, ValueEnum)]
+#[derive(Debug, Clone, ValueEnum, Default)]
 pub enum StatsFormat {
+    #[default]
     Text,
     Json,
 }
@@ -46,12 +47,6 @@ impl FromStr for StatsFormat {
             "json" => Ok(Self::Json),
             _ => bail!("Unrecognized stats format: {:?}", s),
         }
-    }
-}
-
-impl Default for StatsFormat {
-    fn default() -> Self {
-        Self::Text
     }
 }
 
@@ -125,6 +120,9 @@ fn get_clap_command() -> clap::Command {
             "\n",
             "    OSS:       ",
             cfg!(feature = "oss"),
+            "\n",
+            "    COS:       ",
+            cfg!(feature = "cos"),
             "\n"
         ))
         .args(&[
@@ -197,7 +195,11 @@ pub fn try_parse() -> Result<Command> {
     let mut args: Vec<_> = env::args_os().collect();
 
     if !internal_start_server {
-        if let Ok(exe) = env::current_exe() {
+        // current_exe() follows symlinks on some OSes, so try argv[0] to get the original invocation
+        if let Ok(exe) = match env::args().next() {
+            Some(s) if !s.is_empty() => Ok(PathBuf::from(s)),
+            _ => env::current_exe(),
+        } {
             match exe
                 .file_stem()
                 .and_then(|s| s.to_str())
@@ -205,7 +207,7 @@ pub fn try_parse() -> Result<Command> {
             {
                 // If the executable has its standard name, do nothing.
                 Some(ref e) if e == env!("CARGO_PKG_NAME") => {}
-                // Otherwise, if it was copied/hardlinked under a different $name, act
+                // Otherwise, if it was copied/linked under a different $name, act
                 // as if it were invoked with `sccache $name`, but avoid $name resolving
                 // to ourselves again if it's in the PATH.
                 _ => {
@@ -213,7 +215,8 @@ pub fn try_parse() -> Result<Command> {
                     {
                         match which_in(exe_filename, Some(&path), &cwd) {
                             Ok(ref full_path)
-                                if full_path.canonicalize()? == exe.canonicalize()? =>
+                                if full_path.canonicalize()?
+                                    == env::current_exe()?.canonicalize()? =>
                             {
                                 if let Some(dir) = full_path.parent() {
                                     let path = env::join_paths(

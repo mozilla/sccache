@@ -20,7 +20,10 @@ use std::str;
 
 use crate::errors::*;
 
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 pub use self::toolchain_imp::*;
 
 pub trait ToolchainPackager: Send {
@@ -33,10 +36,13 @@ pub trait InputsPackager: Send {
 
 pub trait OutputsRepackager {
     fn repackage_outputs(self: Box<Self>, wtr: &mut dyn io::Write)
-        -> Result<dist::PathTransformer>;
+    -> Result<dist::PathTransformer>;
 }
 
-#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+#[cfg(not(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+)))]
 mod toolchain_imp {
     use super::ToolchainPackager;
     use fs_err as fs;
@@ -52,7 +58,10 @@ mod toolchain_imp {
     }
 }
 
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 mod toolchain_imp {
     use super::SimplifyPath;
     use fs_err as fs;
@@ -164,7 +173,7 @@ mod toolchain_imp {
                 }
                 trace!("walkdir add_file {}", entry.path().display());
                 // It's either a file, or a symlink pointing to a file
-                self.add_file(entry.path().to_owned())?
+                self.add_file(entry.path().to_owned())?;
             }
             Ok(())
         }
@@ -180,17 +189,18 @@ mod toolchain_imp {
                 file_set,
                 symlinks,
             } = self;
-            let par: ParCompress<Gzip> = ParCompressBuilder::new()
+            let par: ParCompress<'_, Gzip, W> = ParCompressBuilder::new()
                 .compression_level(Compression::default())
                 .from_writer(writer);
             let mut builder = tar::Builder::new(par);
+            builder.mode(tar::HeaderMode::Deterministic);
 
             for (tar_path, dir_path) in dir_set {
-                builder.append_dir(tar_path, dir_path)?
+                builder.append_dir(tar_path, dir_path)?;
             }
             for (tar_path, file_path) in file_set {
                 let file = &mut fs::File::open(file_path)?;
-                builder.append_file(tar_path, file.file_mut())?
+                builder.append_file(tar_path, file.file_mut())?;
             }
             for (from_path, to_path) in symlinks {
                 let mut header = tar::Header::new_gnu();
@@ -198,7 +208,7 @@ mod toolchain_imp {
                 header.set_size(0);
                 // Leave `to_path` as absolute, assuming the tar will be used in a chroot-like
                 // environment.
-                builder.append_link(&mut header, tar_safe_path(from_path), to_path)?
+                builder.append_link(&mut header, tar_safe_path(from_path), to_path)?;
             }
             builder.finish().map_err(Into::into)
         }
@@ -265,9 +275,9 @@ mod toolchain_imp {
                 _ => bail!("Invalid endianness in elf header"),
             };
             let e_type = if little_endian {
-                (elf_bytes[0x11] as u16) << 8 | elf_bytes[0x10] as u16
+                ((elf_bytes[0x11] as u16) << 8) | elf_bytes[0x10] as u16
             } else {
-                (elf_bytes[0x10] as u16) << 8 | elf_bytes[0x11] as u16
+                ((elf_bytes[0x10] as u16) << 8) | elf_bytes[0x11] as u16
             };
             if e_type != 0x02 {
                 bail!("ldd failed on a non-ET_EXEC elf")
@@ -280,7 +290,7 @@ mod toolchain_imp {
             trace!(
                 "ldd stderr non-empty: {:?}",
                 String::from_utf8_lossy(&stderr)
-            )
+            );
         }
 
         let stdout = str::from_utf8(&stdout).context("ldd output not utf8")?;
@@ -317,10 +327,10 @@ mod toolchain_imp {
                     // We need to add /lib64/ld-linux-x86-64.so.2 to deps, else we'll get error "No
                     // such file or directory".
                     //
-                    // Workaround: add libname to deps if it's abusolute and exists.
+                    // Workaround: add libname to deps if it's absolute and exists.
                     let libname_path = PathBuf::from(libname);
-                    if libname_path.is_absolute() && libname_path.exists() {
-                        libs.push(libname_path)
+                    if libname_path.is_absolute() {
+                        libs.push(libname_path);
                     }
 
                     PathBuf::from(libpath)
@@ -334,7 +344,7 @@ mod toolchain_imp {
                 continue;
             }
 
-            libs.push(libpath)
+            libs.push(libpath);
         }
 
         libs
@@ -363,7 +373,7 @@ mod toolchain_imp {
                 "/lib64/ld-linux-x86-64.so.2",
                 "/lib/x86_64-linux-gnu/libpthread.so.0",
             ]
-        )
+        );
     }
 
     #[test]
@@ -373,7 +383,7 @@ mod toolchain_imp {
             "\tldd (0x7f79ef662000)", // musl ldd output
         ];
         for static_output in static_outputs {
-            assert_eq!(parse_ldd_output(static_output).len(), 0)
+            assert_eq!(parse_ldd_output(static_output).len(), 0);
         }
     }
 
@@ -397,7 +407,7 @@ mod toolchain_imp {
                 "/lib64/ld-linux-x86-64.so.2",
                 "/usr/lib64/ld-linux-x86-64.so.2",
             ]
-        )
+        );
     }
 }
 

@@ -12,14 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use anyhow::{bail, Context, Error, Result};
+use anyhow::{Context, Error, Result, bail};
 use flate2::read::GzDecoder;
 use sccache::dist::{
     BuildResult, BuilderIncoming, CompileCommand, InputsReader, OutputData, ProcessOutput, TcCache,
     Toolchain,
 };
 use sccache::lru_disk_cache::Error as LruError;
-use std::collections::{hash_map, HashMap};
+use std::collections::{HashMap, hash_map};
 use std::path::{Path, PathBuf};
 use std::process::{ChildStdin, Command, Output, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -312,8 +312,7 @@ impl PotBuilder {
         trace!("Compile environment: {:?}", compile_command.env_vars);
         trace!(
             "Compile command: {:?} {:?}",
-            compile_command.executable,
-            compile_command.arguments
+            compile_command.executable, compile_command.arguments
         );
 
         trace!("copying in inputs");
@@ -374,7 +373,7 @@ impl PotBuilder {
         trace!("retrieving {:?}", output_paths);
         for path in output_paths {
             let abspath = cwd.join(&path); // Resolve in case it's relative since we copy it from the root level
-                                           // TODO: this isn't great, but cp gives it out as a tar
+            // TODO: this isn't great, but cp gives it out as a tar
             let output = Command::new("jexec")
                 .args(&[cid, "cat"])
                 .arg(abspath)

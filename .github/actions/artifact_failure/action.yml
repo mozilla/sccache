@@ -18,6 +18,7 @@ runs:
         killall sccache-dist || true
         # possible temp dirs for either linux or windows
         cp "${TMP:-${TEMP:-${TMPDIR:-/tmp}}}"/sccache_*.txt . 2>/dev/null || true
+        mkdir -p target
         tar --exclude='target' \
             --exclude='docs' \
             --exclude='bins' \

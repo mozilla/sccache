@@ -1,14 +1,13 @@
 #![cfg(all(feature = "dist-client", feature = "dist-server"))]
 
 extern crate assert_cmd;
-#[macro_use]
 extern crate log;
 extern crate sccache;
 extern crate serde_json;
 
 use crate::harness::{
-    cargo_command, get_stats, init_cargo, sccache_command, start_local_daemon, stop_local_daemon,
-    write_json_cfg, write_source,
+    cargo_command, clear_cache_local_daemon, get_stats, init_cargo, sccache_command,
+    start_local_daemon, stop_local_daemon, write_json_cfg, write_source,
 };
 use assert_cmd::prelude::*;
 use sccache::config::HTTPUrl;
@@ -33,7 +32,11 @@ fn basic_compile(tmpdir: &Path, sccache_cfg_path: &Path, sccache_cached_cfg_path
     ];
     let source_file = "x.c";
     let obj_file = "x.o";
-    write_source(tmpdir, source_file, "#if !defined(SCCACHE_TEST_DEFINE)\n#error SCCACHE_TEST_DEFINE is not defined\n#endif\nint x() { return 5; }");
+    write_source(
+        tmpdir,
+        source_file,
+        "#if !defined(SCCACHE_TEST_DEFINE)\n#error SCCACHE_TEST_DEFINE is not defined\n#endif\nint x() { return 5; }",
+    );
     sccache_command()
         .args([
             std::env::var("CC")
@@ -51,7 +54,7 @@ fn basic_compile(tmpdir: &Path, sccache_cfg_path: &Path, sccache_cached_cfg_path
 }
 
 fn rust_compile(tmpdir: &Path, sccache_cfg_path: &Path, sccache_cached_cfg_path: &Path) -> Output {
-    let sccache_path = assert_cmd::cargo::cargo_bin("sccache").into_os_string();
+    let sccache_path = env!("CARGO_BIN_EXE_sccache");
     let envs: Vec<(_, &OsStr)> = vec![
         ("RUSTC_WRAPPER", sccache_path.as_ref()),
         ("CARGO_TARGET_DIR", "target".as_ref()),
@@ -74,7 +77,9 @@ fn rust_compile(tmpdir: &Path, sccache_cfg_path: &Path, sccache_cached_cfg_path:
         version = "0.1.0"
         edition = "2021"
         [dependencies]
-        libc = "0.2.169""#,
+        # Pinned: the point of this test is that distributed compilation works,
+        # not that it keeps up with whatever libc published most recently.
+        libc = "=0.2.169""#,
     );
     write_source(
         &cargo_path,
@@ -133,6 +138,75 @@ fn test_dist_basic() {
         assert_eq!(1, info.stats.requests_executed);
         assert_eq!(0, info.stats.cache_hits.all());
         assert_eq!(1, info.stats.cache_misses.all());
+    });
+}
+
+// A compile error on the build server reached the client as "Compiler killed by signal 1" with exit
+// code 254 instead of the compiler's exit code.
+#[serial_test::serial]
+#[test]
+#[cfg_attr(not(feature = "dist-tests"), ignore)]
+fn test_dist_failed_compile() {
+    let tmpdir = tempfile::Builder::new()
+        .prefix("sccache_dist_test")
+        .tempdir()
+        .unwrap();
+    let tmpdir = tmpdir.path();
+    let sccache_dist = harness::sccache_dist_path();
+
+    let mut system = harness::DistSystem::new(&sccache_dist, tmpdir);
+    system.add_scheduler();
+    system.add_server();
+
+    let sccache_cfg = dist_test_sccache_client_cfg(tmpdir, system.scheduler_url());
+    let sccache_cfg_path = tmpdir.join("sccache-cfg.json");
+    write_json_cfg(tmpdir, "sccache-cfg.json", &sccache_cfg);
+    let sccache_cached_cfg_path = tmpdir.join("sccache-cached-cfg");
+
+    stop_local_daemon();
+    start_local_daemon(&sccache_cfg_path, &sccache_cached_cfg_path);
+
+    // An error the compiler finds, not the preprocessor: preprocessing runs locally, so an
+    // `#error` would fail before anything is sent to the build server.
+    write_source(
+        tmpdir,
+        "fail.c",
+        "int x() { return sccache_dist_test_undeclared; }",
+    );
+    let output = sccache_command()
+        .args([
+            std::env::var("CC")
+                .unwrap_or_else(|_| "gcc".to_string())
+                .as_str(),
+            "-c",
+        ])
+        .arg(tmpdir.join("fail.c"))
+        .arg("-o")
+        .arg(tmpdir.join("fail.o"))
+        .envs(vec![
+            ("RUST_BACKTRACE", OsStr::new("1")),
+            ("SCCACHE_CONF", sccache_cfg_path.as_os_str()),
+            ("SCCACHE_CACHED_CONF", sccache_cached_cfg_path.as_os_str()),
+        ])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(!stdout.contains("killed by signal"), "stdout: {stdout}");
+    assert!(
+        stderr.contains("sccache_dist_test_undeclared"),
+        "stderr: {stderr}"
+    );
+
+    get_stats(|info| {
+        assert_eq!(1, info.stats.dist_compiles.values().sum::<usize>());
+        assert_eq!(0, info.stats.dist_errors);
+        assert_eq!(1, info.stats.compile_fails);
     });
 }
 
@@ -300,7 +374,7 @@ fn test_dist_cargo_build() {
     get_stats(|info| {
         assert_eq!(1, info.stats.dist_compiles.values().sum::<usize>());
         assert_eq!(0, info.stats.dist_errors);
-        assert_eq!(5, info.stats.compile_requests);
+        assert_eq!(8, info.stats.compile_requests);
         assert_eq!(1, info.stats.requests_executed);
         assert_eq!(0, info.stats.cache_hits.all());
         assert_eq!(1, info.stats.cache_misses.all());
@@ -330,13 +404,115 @@ fn test_dist_cargo_makeflags() {
     start_local_daemon(&sccache_cfg_path, &sccache_cached_cfg_path);
     let compile_output = rust_compile(tmpdir, &sccache_cfg_path, &sccache_cached_cfg_path);
 
-    assert!(!String::from_utf8_lossy(&compile_output.stderr)
-        .contains("warning: failed to connect to jobserver from environment variable"));
+    assert!(
+        !String::from_utf8_lossy(&compile_output.stderr)
+            .contains("warning: failed to connect to jobserver from environment variable")
+    );
 
     get_stats(|info| {
         assert_eq!(1, info.stats.dist_compiles.values().sum::<usize>());
         assert_eq!(0, info.stats.dist_errors);
-        assert_eq!(5, info.stats.compile_requests);
+        assert_eq!(8, info.stats.compile_requests);
+        assert_eq!(1, info.stats.requests_executed);
+        assert_eq!(0, info.stats.cache_hits.all());
+        assert_eq!(1, info.stats.cache_misses.all());
+    });
+}
+
+#[test]
+#[cfg_attr(not(feature = "dist-tests"), ignore)]
+fn test_dist_preprocesspr_cache_bug_2173() {
+    // Bug 2173: preprocessor cache hit but main cache miss - because using the preprocessor cache
+    // means not doing regular preprocessing, there was no preprocessed translation unit to send
+    // out for distributed compilation, so an empty u8 array was compiled - which "worked", but
+    // the object file *was* the result of compiling an empty file.
+    let tmpdir = tempfile::Builder::new()
+        .prefix("sccache_dist_test")
+        .tempdir()
+        .unwrap();
+    let tmpdir = tmpdir.path();
+    let sccache_dist = harness::sccache_dist_path();
+
+    let mut system = harness::DistSystem::new(&sccache_dist, tmpdir);
+    system.add_scheduler();
+    let _server_handle = system.add_server();
+
+    let mut sccache_cfg = dist_test_sccache_client_cfg(tmpdir, system.scheduler_url());
+    let disk_cache = sccache_cfg.cache.disk.as_mut().unwrap();
+    disk_cache
+        .preprocessor_cache_mode
+        .use_preprocessor_cache_mode = true;
+    disk_cache.size = 10_000_000; // enough for one tiny object file
+    let sccache_cfg_path = tmpdir.join("sccache-cfg.json");
+    write_json_cfg(tmpdir, "sccache-cfg.json", &sccache_cfg);
+    let sccache_cached_cfg_path = tmpdir.join("sccache-cached-cfg");
+
+    stop_local_daemon();
+    start_local_daemon(&sccache_cfg_path, &sccache_cached_cfg_path);
+
+    basic_compile(tmpdir, &sccache_cfg_path, &sccache_cached_cfg_path);
+    let obj_file = "x.o";
+    let obj_path = tmpdir.join(obj_file);
+    let data_a = std::fs::read(&obj_path).unwrap();
+
+    let cache_path = sccache_cfg.cache.disk.unwrap().dir;
+
+    // Don't touch the preprocessor cache - and check that it exists
+    assert!(
+        cache_path.join("preprocessor").is_dir(),
+        "The preprocessor cache should exist"
+    );
+
+    // Delete the main cache to ensure a cache miss - potential dirs are "0".."f".
+    let main_cache_dirs = "0123456789abcdef";
+    let delete_count = main_cache_dirs.chars().fold(0, |res, dir| {
+        res + (std::fs::remove_dir_all(cache_path.join(String::from(dir))).is_ok() as u32)
+    });
+    assert_eq!(delete_count, 1, "Did the disk cache format change?");
+
+    basic_compile(tmpdir, &sccache_cfg_path, &sccache_cached_cfg_path);
+
+    // Check that this gave the same result (i.e. that it didn't compile a completely empty file).
+    // It would be nice to check directly that the object file contains the symbol for the x() function
+    // from basic_compile(), but that seems pretty involved and this happens to work...
+    let data_b = std::fs::read(&obj_path).unwrap();
+
+    assert_eq!(data_a, data_b);
+}
+
+#[test]
+#[cfg_attr(not(feature = "dist-tests"), ignore)]
+fn test_dist_toolchain() {
+    let tmpdir = tempfile::Builder::new()
+        .prefix("sccache_dist_test")
+        .tempdir()
+        .unwrap();
+    let tmpdir = tmpdir.path();
+    let sccache_dist = harness::sccache_dist_path();
+
+    let mut system = harness::DistSystem::new(&sccache_dist, tmpdir);
+    system.add_scheduler();
+    let server_handle = system.add_server();
+    let sccache_cfg = dist_test_sccache_client_cfg(tmpdir, system.scheduler_url());
+    let sccache_cfg_path = tmpdir.join("sccache-cfg.json");
+    write_json_cfg(tmpdir, "sccache-cfg.json", &sccache_cfg);
+    let sccache_cached_cfg_path = tmpdir.join("sccache-cached-cfg");
+    stop_local_daemon();
+    start_local_daemon(&sccache_cfg_path, &sccache_cached_cfg_path);
+    basic_compile(tmpdir, &sccache_cfg_path, &sccache_cached_cfg_path);
+
+    stop_local_daemon();
+    clear_cache_local_daemon(tmpdir);
+
+    start_local_daemon(&sccache_cfg_path, &sccache_cached_cfg_path);
+    basic_compile(tmpdir, &sccache_cfg_path, &sccache_cached_cfg_path);
+
+    assert_eq!(system.count_toolchains_on_server(&server_handle), 1);
+
+    get_stats(|info| {
+        assert_eq!(1, info.stats.dist_compiles.values().sum::<usize>());
+        assert_eq!(0, info.stats.dist_errors);
+        assert_eq!(1, info.stats.compile_requests);
         assert_eq!(1, info.stats.requests_executed);
         assert_eq!(0, info.stats.cache_hits.all());
         assert_eq!(1, info.stats.cache_misses.all());

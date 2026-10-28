@@ -24,7 +24,7 @@ use crate::compiler::{
 };
 use crate::errors::*;
 use crate::mock_command::{CommandCreatorSync, RunCommand};
-use crate::util::{run_input_output, OsStrExt};
+use crate::util::{OsStrExt, run_input_output};
 use crate::{counted_array, dist};
 use async_trait::async_trait;
 use fs::File;
@@ -141,13 +141,13 @@ counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     take_arg!(
         "-Xmake-dependency-savefile",
         PathBuf,
-        Concatenated('='),
+        Concatenated(b'='),
         DepArgumentPath
     ),
     take_arg!(
         "-Xmake-dependency-target",
         OsString,
-        Concatenated('='),
+        Concatenated(b'='),
         DepArgument
     ),
     flag!("-c", DoCompilation),
@@ -285,9 +285,7 @@ where
         None => cannot_cache!("unknown source language"),
     };
 
-    let output = output_arg
-        .map(PathBuf::from)
-        .unwrap_or_else(|| Path::new(&input).with_extension("o"));
+    let output = output_arg.unwrap_or_else(|| Path::new(&input).with_extension("o"));
 
     let mut outputs = HashMap::new();
     outputs.insert(
@@ -312,7 +310,9 @@ where
         unhashed_args: vec![],
         extra_dist_files: vec![],
         extra_hash_files: vec![],
+        uses_external_assembler: false,
         msvc_show_includes: false,
+        msvc_explicit_language: false,
         profile_generate: false,
         // FIXME: Implement me.
         color_mode: ColorMode::Auto,
@@ -380,6 +380,7 @@ pub fn generate_compile_commands(
         arguments,
         env_vars: env_vars.to_owned(),
         cwd: cwd.to_owned(),
+        share_jobserver: false,
     };
 
     Ok((command, None, Cacheable::Yes))
@@ -458,8 +459,8 @@ impl Iterator for ExpandAtArgs<'_> {
 #[cfg(test)]
 mod test {
     use super::{
-        dist, fs, generate_compile_commands, parse_arguments, Language, OsString, ParsedArguments,
-        ARGS,
+        ARGS, Language, OsString, ParsedArguments, dist, fs, generate_compile_commands,
+        parse_arguments,
     };
     use crate::compiler::c::ArtifactDescriptor;
     use crate::compiler::*;
@@ -787,7 +788,9 @@ mod test {
             unhashed_args: vec![],
             extra_dist_files: vec![],
             extra_hash_files: vec![],
+            uses_external_assembler: false,
             msvc_show_includes: false,
+            msvc_explicit_language: false,
             profile_generate: false,
             color_mode: ColorMode::Auto,
             suppress_rewrite_includes_only: false,

@@ -125,7 +125,7 @@ leak from anywhere allows any attacker to participate as a server.
 
 *To use it*:
 
-Choose a 'secure token' you can share between your scheduler and all servers.
+Choose a 'secure token' you can share between your scheduler and all servers. The token must be a valid HTTP header value.
 
 Put the following in your scheduler config file:
 
@@ -230,7 +230,7 @@ leak from anywhere allows any attacker to participate as a client.
 
 *To use it*:
 
-Choose a 'secure token' you can share between your scheduler and all clients.
+Choose a 'secure token' you can share between your scheduler and all clients. The token must be a valid HTTP header value.
 
 Put the following in your scheduler config file:
 

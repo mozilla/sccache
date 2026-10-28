@@ -13,7 +13,7 @@ use std::io;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
 
-use filetime::{set_file_times, FileTime};
+use filetime::{FileTime, set_file_times};
 pub use lru_cache::{LruCache, Meter};
 use tempfile::NamedTempFile;
 use walkdir::WalkDir;
@@ -85,7 +85,7 @@ impl fmt::Display for Error {
         match self {
             Error::FileTooLarge => write!(f, "File too large"),
             Error::FileNotInCache => write!(f, "File not in cache"),
-            Error::Io(ref e) => write!(f, "{}", e),
+            Error::Io(e) => write!(f, "{}", e),
         }
     }
 }
@@ -95,7 +95,7 @@ impl StdError for Error {
         match self {
             Error::FileTooLarge => None,
             Error::FileNotInCache => None,
-            Error::Io(ref e) => Some(e),
+            Error::Io(e) => Some(e),
         }
     }
 }
@@ -192,14 +192,14 @@ impl LruDiskCache {
                 .starts_with(TEMPFILE_PREFIX)
             {
                 fs::remove_file(&file).unwrap_or_else(|e| {
-                    error!("Error removing temporary file `{}`: {}", file.display(), e)
+                    error!("Error removing temporary file `{}`: {}", file.display(), e);
                 });
             } else if !self.can_store(size) {
                 fs::remove_file(file).unwrap_or_else(|e| {
                     error!(
                         "Error removing file `{}` which is too large for the cache ({} bytes)",
                         e, size
-                    )
+                    );
                 });
             } else {
                 self.add_file(AddFile::AbsPath(file), size)
@@ -263,10 +263,10 @@ impl LruDiskCache {
         size: Option<u64>,
         by: F,
     ) -> Result<()> {
-        if let Some(size) = size {
-            if !self.can_store(size) {
-                return Err(Error::FileTooLarge);
-            }
+        if let Some(size) = size
+            && !self.can_store(size)
+        {
+            return Err(Error::FileTooLarge);
         }
         let rel_path = key.as_ref();
         let path = self.rel_to_abs_path(rel_path);
@@ -315,7 +315,7 @@ impl LruDiskCache {
                 warn!("fs::rename failed, falling back to copy!");
                 fs::copy(path.as_ref(), new_path)?;
                 fs::remove_file(path.as_ref()).unwrap_or_else(|e| {
-                    error!("Failed to remove original file in insert_file: {}", e)
+                    error!("Failed to remove original file in insert_file: {}", e);
                 });
                 Ok(())
             })
@@ -397,6 +397,14 @@ impl LruDiskCache {
         self.get_file(key).map(|f| Box::new(f) as Box<dyn ReadSeek>)
     }
 
+    /// Return the absolute path for `key` if it is present in the cache, without opening the
+    /// file. Updates the LRU eviction order. Returns `None` if the key is absent.
+    pub fn get_abs_path<K: AsRef<OsStr>>(&mut self, key: K) -> Option<PathBuf> {
+        let rel_path = key.as_ref();
+        let path = self.rel_to_abs_path(rel_path);
+        self.lru.get(rel_path).map(|_| path)
+    }
+
     /// Remove the given key from the cache.
     pub fn remove<K: AsRef<OsStr>>(&mut self, key: K) -> Result<()> {
         match self.lru.remove(key.as_ref()) {
@@ -415,9 +423,9 @@ impl LruDiskCache {
 #[cfg(test)]
 mod tests {
     use super::fs::{self, File};
-    use super::{get_all_files, Error, LruDiskCache, LruDiskCacheAddEntry};
+    use super::{Error, LruDiskCache, LruDiskCacheAddEntry, get_all_files};
 
-    use filetime::{set_file_times, FileTime};
+    use filetime::{FileTime, set_file_times};
     use std::io::{self, Read, Write};
     use std::path::{Path, PathBuf};
     use tempfile::TempDir;

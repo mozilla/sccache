@@ -10,13 +10,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use opendal::layers::LoggingLayer;
-use opendal::services::Oss;
+use opendal::OperationContext;
 use opendal::Operator;
+use opendal::services::Oss;
+use opendal_layer_logging::LoggingLayer;
 
 use crate::errors::*;
 
-use super::http_client::set_user_agent;
+use super::http_client::new_http_transport;
 
 pub struct OSSCache;
 
@@ -28,10 +29,7 @@ impl OSSCache {
         endpoint: Option<&str>,
         no_credentials: bool,
     ) -> Result<Operator> {
-        let mut builder = Oss::default()
-            .bucket(bucket)
-            .root(key_prefix)
-            .http_client(set_user_agent());
+        let mut builder = Oss::default().bucket(bucket).root(key_prefix);
 
         if let Some(endpoint) = endpoint {
             builder = builder.endpoint(endpoint);
@@ -40,12 +38,12 @@ impl OSSCache {
         if no_credentials {
             // Allow anonymous access to OSS so that OpenDAL will not
             // throw error when no credentials are provided.
-            builder = builder.allow_anonymous();
+            builder = builder.skip_signature();
         }
 
         let op = Operator::new(builder)?
-            .layer(LoggingLayer::default())
-            .finish();
+            .with_context(OperationContext::new().with_http_transport(new_http_transport()?))
+            .layer(LoggingLayer::default());
         Ok(op)
     }
 }

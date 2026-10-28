@@ -1,11 +1,11 @@
 #[macro_use]
 extern crate log;
 
-use anyhow::{bail, Context, Error, Result};
+use anyhow::{Context, Result, bail};
 use base64::Engine;
-use rand::{rngs::OsRng, RngCore};
+use rand::{RngCore, rngs::OsRng};
 use sccache::config::{
-    scheduler as scheduler_config, server as server_config, INSECURE_DIST_CLIENT_TOKEN,
+    INSECURE_DIST_CLIENT_TOKEN, scheduler as scheduler_config, server as server_config,
 };
 use sccache::dist::{
     self, AllocJobResult, AssignJobResult, BuilderIncoming, CompileCommand, HeartbeatServerResult,
@@ -14,10 +14,10 @@ use sccache::dist::{
     ServerNonce, ServerOutgoing, SubmitToolchainResult, TcCache, Toolchain, ToolchainReader,
     UpdateJobStateResult,
 };
-use sccache::util::daemonize;
 use sccache::util::BASE64_URL_SAFE_ENGINE;
+use sccache::util::daemonize;
 use serde::{Deserialize, Serialize};
-use std::collections::{btree_map, BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, btree_map};
 use std::env;
 use std::io;
 use std::path::Path;
@@ -35,9 +35,19 @@ use cmdline::{AuthSubcommand, Command};
 
 pub const INSECURE_DIST_SERVER_TOKEN: &str = "dangerously_insecure_server";
 
+#[cfg(not(any(
+    all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "linux", target_arch = "aarch64"),
+    target_os = "freebsd"
+)))]
+fn main() {
+    compile_error!("Distributed compilation is only supported on Linux/x86_64 and FreeBSD!");
+}
+
 // Only supported on x86_64 Linux machines and on FreeBSD
 #[cfg(any(
     all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "linux", target_arch = "aarch64"),
     target_os = "freebsd"
 ))]
 fn main() {
@@ -175,12 +185,10 @@ fn run(command: Command) -> Result<i32> {
                     token_check::ValidJWTCheck::new(audience, issuer, &jwks_url)
                         .context("Failed to create a checker for valid JWTs")?,
                 ),
-                scheduler_config::ClientAuth::Mozilla { required_groups } => {
-                    Box::new(token_check::MozillaCheck::new(required_groups))
-                }
-                scheduler_config::ClientAuth::ProxyToken { url, cache_secs } => {
-                    Box::new(token_check::ProxyTokenCheck::new(url, cache_secs))
-                }
+                scheduler_config::ClientAuth::ProxyToken { url, cache_secs } => Box::new(
+                    token_check::ProxyTokenCheck::new(url, cache_secs)
+                        .context("failed to create proxy token checker")?,
+                ),
             };
 
             let check_server_auth: dist::http::ServerAuthCheck = match server_auth {
@@ -212,7 +220,7 @@ fn run(command: Command) -> Result<i32> {
                 }
             };
 
-            daemonize()?;
+            daemonize(&[])?;
             let scheduler = Scheduler::new();
             let http_scheduler = dist::http::Scheduler::new(
                 public_addr,
@@ -307,7 +315,14 @@ fn run(command: Command) -> Result<i32> {
 
 fn init_logging() {
     if env::var(sccache::LOGGING_ENV).is_ok() {
-        match env_logger::Builder::from_env(sccache::LOGGING_ENV).try_init() {
+        let mut builder = env_logger::Builder::from_env(sccache::LOGGING_ENV);
+
+        // Enable millisecond precision timestamps if SCCACHE_LOG_MILLIS is set
+        if env::var("SCCACHE_LOG_MILLIS").is_ok() {
+            builder.format_timestamp_millis();
+        }
+
+        match builder.try_init() {
             Ok(_) => (),
             Err(e) => panic!("Failed to initialize logging: {:?}", e),
         }
@@ -329,6 +344,10 @@ struct JobDetail {
 // To avoid deadlicking, make sure to do all locking at once (i.e. no further locking in a downward scope),
 // in alphabetical order
 pub struct Scheduler {
+    // Build servers may survive a scheduler restart and retain pending job IDs.
+    // Start each scheduler instance in a different ID range so a restarted
+    // scheduler does not immediately reuse IDs still known to surviving servers.
+    job_id_base: u64,
     job_count: AtomicUsize,
 
     // Currently running jobs, can never be Complete
@@ -351,11 +370,21 @@ struct ServerDetails {
 
 impl Scheduler {
     pub fn new() -> Self {
+        Self::with_job_id_base(OsRng.next_u64())
+    }
+
+    fn with_job_id_base(job_id_base: u64) -> Self {
         Scheduler {
+            job_id_base,
             job_count: AtomicUsize::new(0),
             jobs: Mutex::new(BTreeMap::new()),
             servers: Mutex::new(HashMap::new()),
         }
+    }
+
+    fn next_job_id(&self) -> JobId {
+        let job_count = self.job_count.fetch_add(1, Ordering::SeqCst) as u64;
+        JobId(self.job_id_base.wrapping_add(job_count))
     }
 
     fn prune_servers(
@@ -481,13 +510,14 @@ impl SchedulerIncoming for Scheduler {
 
                 // Assign the job to our best choice
                 if let Some((server_id, server_details)) = best.or(best_err) {
-                    let job_count = self.job_count.fetch_add(1, Ordering::SeqCst) as u64;
-                    let job_id = JobId(job_count);
+                    let job_id = self.next_job_id();
                     assert!(server_details.jobs_assigned.insert(job_id));
-                    assert!(server_details
-                        .jobs_unclaimed
-                        .insert(job_id, Instant::now())
-                        .is_none());
+                    assert!(
+                        server_details
+                            .jobs_unclaimed
+                            .insert(job_id, Instant::now())
+                            .is_none()
+                    );
 
                     info!(
                         "Job {} created and will be assigned to server {:?}",
@@ -496,7 +526,6 @@ impl SchedulerIncoming for Scheduler {
                     let auth = server_details
                         .job_authorizer
                         .generate_token(job_id)
-                        .map_err(Error::from)
                         .context("Could not create an auth token for this job")?;
                     Some((job_id, server_id, auth))
                 } else {
@@ -537,14 +566,28 @@ impl SchedulerIncoming for Scheduler {
         {
             // LOCKS
             let mut jobs = self.jobs.lock().unwrap();
+            let servers = self.servers.lock().unwrap();
+
+            if !servers
+                .get(&server_id)
+                .is_some_and(|details| details.jobs_assigned.contains(&job_id))
+            {
+                let msg = format!(
+                    "Job {} assignment was cleaned up before allocation completed",
+                    job_id
+                );
+                warn!("{}", msg);
+                return Ok(AllocJobResult::Fail { msg });
+            }
 
             info!(
                 "Job {} successfully assigned and saved with state {:?}",
                 job_id, state
             );
-            assert!(jobs
-                .insert(job_id, JobDetail { server_id, state })
-                .is_none());
+            assert!(
+                jobs.insert(job_id, JobDetail { server_id, state })
+                    .is_none()
+            );
         }
         let job_alloc = JobAlloc {
             auth,
@@ -759,12 +802,13 @@ impl Server {
 impl ServerIncoming for Server {
     fn handle_assign_job(&self, job_id: JobId, tc: Toolchain) -> Result<AssignJobResult> {
         let need_toolchain = !self.cache.lock().unwrap().contains_toolchain(&tc);
-        assert!(self
-            .job_toolchains
-            .lock()
-            .unwrap()
-            .insert(job_id, tc)
-            .is_none());
+        assert!(
+            self.job_toolchains
+                .lock()
+                .unwrap()
+                .insert(job_id, tc)
+                .is_none()
+        );
         let state = if need_toolchain {
             JobState::Pending
         } else {
@@ -834,5 +878,114 @@ impl ServerIncoming for Server {
             .do_update_job_state(job_id, JobState::Complete)
             .context("Updating job state failed")?;
         res
+    }
+}
+
+#[cfg(test)]
+mod scheduler_tests {
+    use super::*;
+
+    #[test]
+    fn scheduler_instances_namespace_job_ids() {
+        let scheduler0 = Scheduler::with_job_id_base(0x1000);
+        let scheduler1 = Scheduler::with_job_id_base(0x2000);
+
+        assert_eq!(scheduler0.next_job_id(), JobId(0x1000));
+        assert_eq!(scheduler0.next_job_id(), JobId(0x1001));
+        assert_eq!(scheduler1.next_job_id(), JobId(0x2000));
+
+        let wrapping = Scheduler::with_job_id_base(u64::MAX - 1);
+        assert_eq!(wrapping.next_job_id(), JobId(u64::MAX - 1));
+        assert_eq!(wrapping.next_job_id(), JobId(u64::MAX));
+        assert_eq!(wrapping.next_job_id(), JobId(0));
+    }
+
+    struct TestJobAuthorizer;
+
+    impl JobAuthorizer for TestJobAuthorizer {
+        fn generate_token(&self, _job_id: JobId) -> Result<String> {
+            Ok(String::new())
+        }
+
+        fn verify_token(&self, _job_id: JobId, _token: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    struct ReapDuringAssign<'a> {
+        scheduler: &'a Scheduler,
+        server_id: ServerId,
+        server_nonce: ServerNonce,
+    }
+
+    impl SchedulerOutgoing for ReapDuringAssign<'_> {
+        fn do_assign_job(
+            &self,
+            server_id: ServerId,
+            job_id: JobId,
+            _tc: Toolchain,
+            _auth: String,
+        ) -> Result<AssignJobResult> {
+            assert_eq!(server_id, self.server_id);
+
+            {
+                let mut servers = self.scheduler.servers.lock().unwrap();
+                let details = servers.get_mut(&server_id).unwrap();
+                *details.jobs_unclaimed.get_mut(&job_id).unwrap() = Instant::now()
+                    .checked_sub(UNCLAIMED_PENDING_TIMEOUT + Duration::from_secs(1))
+                    .unwrap();
+            }
+
+            let heartbeat = self.scheduler.handle_heartbeat_server(
+                server_id,
+                self.server_nonce.clone(),
+                1,
+                Box::new(TestJobAuthorizer),
+            )?;
+            assert!(!heartbeat.is_new);
+
+            Ok(AssignJobResult {
+                state: JobState::Pending,
+                need_toolchain: false,
+            })
+        }
+    }
+
+    #[test]
+    fn allocation_fails_if_assignment_is_cleaned_up() {
+        let scheduler = Scheduler::new();
+        let server_id: ServerId = "127.0.0.1:10501".parse().unwrap();
+        let server_nonce = ServerNonce::new();
+
+        scheduler
+            .handle_heartbeat_server(
+                server_id,
+                server_nonce.clone(),
+                1,
+                Box::new(TestJobAuthorizer),
+            )
+            .unwrap();
+
+        let requester = ReapDuringAssign {
+            scheduler: &scheduler,
+            server_id,
+            server_nonce,
+        };
+        let allocation = scheduler
+            .handle_alloc_job(
+                &requester,
+                Toolchain {
+                    archive_id: "test-toolchain".to_owned(),
+                },
+            )
+            .unwrap();
+
+        assert!(matches!(allocation, AllocJobResult::Fail { .. }));
+        assert!(scheduler.jobs.lock().unwrap().is_empty());
+
+        let servers = scheduler.servers.lock().unwrap();
+        let details = servers.get(&server_id).unwrap();
+        assert!(details.jobs_assigned.is_empty());
+        assert!(details.jobs_unclaimed.is_empty());
     }
 }

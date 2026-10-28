@@ -6,9 +6,8 @@ use std::io::{self, Read, Write};
 use std::net::TcpStream;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
-use std::thread;
 use std::time::{Duration, Instant};
-use thirtyfour_sync::prelude::*;
+use thirtyfour::prelude::*;
 
 const LOCAL_AUTH_BASE_URL: &str = "http://localhost:12731/";
 
@@ -60,11 +59,13 @@ fn config_with_dist_auth(
             rewrite_includes_only: true,
         },
         server_startup_timeout_ms: None,
+        basedirs: vec![],
+        client_side_mode: false,
     }
 }
 
 fn sccache_command() -> Command {
-    Command::new(assert_cmd::cargo::cargo_bin("sccache"))
+    Command::new(env!("CARGO_BIN_EXE_sccache"))
 }
 
 fn retry<F: FnMut() -> Option<T>, T>(interval: Duration, until: Duration, mut f: F) -> Option<T> {
@@ -73,54 +74,60 @@ fn retry<F: FnMut() -> Option<T>, T>(interval: Duration, until: Duration, mut f:
         if let Some(res) = f() {
             return Some(res);
         } else {
-            thread::sleep(interval)
+            std::thread::sleep(interval);
         }
     }
     None
 }
 
 trait DriverExt {
-    fn wait_for_element(&self, selector: &str) -> Result<(), ()>;
-    fn wait_on_url<F: Fn(&str) -> bool>(&self, condition: F) -> Result<(), ()>;
+    async fn wait_for_element(&self, selector: &str) -> WebDriverResult<()>;
+    async fn wait_on_url<F: Fn(&str) -> bool>(&self, condition: F) -> WebDriverResult<()>;
 }
 impl DriverExt for WebDriver {
-    fn wait_for_element(&self, selector: &str) -> Result<(), ()> {
-        retry(BROWSER_RETRY_WAIT, BROWSER_MAX_WAIT, || {
-            self.find_element(By::Css(selector)).ok()
-        })
-        .map(|_| ())
-        .ok_or(())
+    async fn wait_for_element(&self, selector: &str) -> WebDriverResult<()> {
+        self.query(By::Css(selector))
+            .wait(BROWSER_MAX_WAIT, BROWSER_RETRY_WAIT)
+            .first()
+            .await?;
+        Ok(())
     }
-    fn wait_on_url<F: Fn(&str) -> bool>(&self, condition: F) -> Result<(), ()> {
+    async fn wait_on_url<F: Fn(&str) -> bool>(&self, condition: F) -> WebDriverResult<()> {
         let start = Instant::now();
         while start.elapsed() < BROWSER_MAX_WAIT {
-            match self.current_url() {
-                Ok(ref url) if condition(url) => return Ok(()),
-                Ok(_) | Err(_) => thread::sleep(BROWSER_RETRY_WAIT),
+            match self.current_url().await {
+                Ok(ref url) if condition(url.as_str()) => return Ok(()),
+                Ok(_) | Err(_) => tokio::time::sleep(BROWSER_RETRY_WAIT).await,
             }
         }
-        Err(())
+        Err(WebDriverError::Timeout("wait on url".to_string()))
     }
 }
 
 // With reference to https://github.com/mozilla-iam/cis_tests/blob/ef7740b/pages/auth0.py
-fn auth0_login(driver: &WebDriver, email: &str, password: &str) {
-    driver.wait_for_element(USERNAME_SELECTOR).unwrap();
-    thread::sleep(Duration::from_secs(1)); // Give the element time to get ready
+async fn auth0_login(driver: &WebDriver, email: &str, password: &str) {
+    driver.wait_for_element(USERNAME_SELECTOR).await.unwrap();
+    tokio::time::sleep(Duration::from_secs(1)).await; // Give the element time to get ready
     driver
-        .find_element(By::Css(USERNAME_SELECTOR))
+        .find(By::Css(USERNAME_SELECTOR))
+        .await
         .unwrap()
         .send_keys(email)
+        .await
         .unwrap();
     driver
-        .find_element(By::Css(PASSWORD_SELECTOR))
+        .find(By::Css(PASSWORD_SELECTOR))
+        .await
         .unwrap()
         .send_keys(password)
+        .await
         .unwrap();
     driver
-        .find_element(By::Css(LOGIN_SELECTOR))
+        .find(By::Css(LOGIN_SELECTOR))
+        .await
         .unwrap()
         .click()
+        .await
         .unwrap();
 }
 
@@ -181,16 +188,16 @@ impl Drop for SeleniumContainer {
             String::from_utf8_lossy(&stdout),
             String::from_utf8_lossy(&stderr)
         );
-        check_output(&output)
+        check_output(&output);
     }
 }
 
-#[test]
+#[tokio::test]
 #[cfg_attr(
     not(all(target_os = "linux", target_arch = "x86_64", feature = "dist-tests")),
     ignore
 )]
-fn test_auth() {
+async fn test_auth() {
     // Make sure the client auth port isn't in use, as sccache will gracefully fall back
     let client_auth_port = sccache::dist::client_auth::VALID_PORTS[0];
     assert_eq!(
@@ -208,23 +215,24 @@ fn test_auth() {
         io::ErrorKind::ConnectionRefused
     );
     let _selenium = SeleniumContainer::new();
-    thread::sleep(Duration::from_secs(3));
+    tokio::time::sleep(Duration::from_secs(3)).await;
 
     // Code grant PKCE
     println!("Testing code grant pkce auth");
-    test_auth_with_config(generate_code_grant_pkce_auth_config());
+    test_auth_with_config(generate_code_grant_pkce_auth_config()).await;
 
     // Implicit
     println!("Testing implicit auth");
-    test_auth_with_config(generate_implicit_auth_config());
+    test_auth_with_config(generate_implicit_auth_config()).await;
 }
 
-fn test_auth_with_config(dist_auth: sccache::config::DistAuth) {
+async fn test_auth_with_config(dist_auth: sccache::config::DistAuth) {
     let conf_dir = tempfile::Builder::new()
         .prefix("sccache-test-conf")
         .tempdir()
         .unwrap();
     let sccache_config = config_with_dist_auth(conf_dir.path(), dist_auth);
+    assert!(sccache_config.basedirs.is_empty());
     let sccache_config_path = conf_dir.path().join("sccache-config.json");
     fs::File::create(&sccache_config_path)
         .unwrap()
@@ -247,9 +255,9 @@ fn test_auth_with_config(dist_auth: sccache::config::DistAuth) {
         .stdin(Stdio::null())
         .spawn()
         .unwrap();
-    thread::sleep(Duration::from_secs(1)); // let the http server start up
+    tokio::time::sleep(Duration::from_secs(1)).await; // let the http server start up
     println!("Beginning in-browser auth");
-    login();
+    login().await;
     let status = retry(Duration::from_secs(1), Duration::from_secs(10), || {
         sccache_process.try_wait().unwrap()
     });
@@ -271,21 +279,25 @@ fn test_auth_with_config(dist_auth: sccache::config::DistAuth) {
     assert_eq!(cached_config.dist.auth_tokens.len(), 1);
 }
 
-fn login() {
+async fn login() {
     let caps = DesiredCapabilities::chrome();
-    let driver = WebDriver::new("http://localhost:4444/wd/hub", &caps).unwrap();
+    let driver = WebDriver::new("http://localhost:4444/wd/hub", caps)
+        .await
+        .unwrap();
     println!("Started browser session");
 
-    driver.get(LOCAL_AUTH_BASE_URL).unwrap();
+    driver.get(LOCAL_AUTH_BASE_URL).await.unwrap();
     driver
         .wait_on_url(|url| url != LOCAL_AUTH_BASE_URL)
+        .await
         .unwrap();
-    auth0_login(&driver, TEST_USERNAME, TEST_PASSWORD);
+    auth0_login(&driver, TEST_USERNAME, TEST_PASSWORD).await;
     driver
         .wait_on_url(|url| url.starts_with(LOCAL_AUTH_BASE_URL))
+        .await
         .unwrap();
     // Let any final JS complete
-    thread::sleep(Duration::from_secs(1));
+    tokio::time::sleep(Duration::from_secs(1)).await;
 
-    let _ = driver.quit();
+    let _ = driver.quit().await;
 }

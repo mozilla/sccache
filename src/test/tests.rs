@@ -12,10 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::cache::CacheMode;
 use crate::cache::disk::DiskCache;
-use crate::cache::{CacheMode, PreprocessorCacheModeConfig};
 use crate::client::connect_to_server;
-use crate::commands::{do_compile, request_shutdown, request_stats};
+use crate::commands::{do_compile, request_shutdown, request_stats_with_cache_mode};
+use crate::config::PreprocessorCacheModeConfig;
 use crate::jobserver::Client;
 use crate::mock_command::*;
 use crate::server::{DistClientContainer, SccacheServer, ServerMessage};
@@ -23,15 +24,9 @@ use crate::test::utils::*;
 use fs::File;
 use fs_err as fs;
 use futures::channel::oneshot::{self, Sender};
-#[cfg(not(target_os = "macos"))]
-use serial_test::serial;
 use std::io::{Cursor, Write};
-#[cfg(not(target_os = "macos"))]
-use std::net::TcpListener;
 use std::path::Path;
-#[cfg(not(target_os = "macos"))]
-use std::process::Command;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
 use tokio::runtime::Runtime;
@@ -85,17 +80,26 @@ where
             runtime.handle(),
             PreprocessorCacheModeConfig::default(),
             CacheMode::ReadWrite,
+            vec![],
         ));
 
         let client = Client::new();
-        let srv = SccacheServer::new(0, runtime, client, dist_client, storage).unwrap();
+        let srv = SccacheServer::new(
+            0,
+            runtime,
+            client,
+            dist_client,
+            storage,
+            CacheMode::ReadWrite,
+        )
+        .unwrap();
         let mut srv: SccacheServer<_, Arc<Mutex<MockCommandCreator>>> = srv;
         let addr = srv.local_addr().unwrap();
         assert!(matches!(addr, crate::net::SocketAddr::Net(a) if a.port() > 0));
-        if let Some(options) = options {
-            if let Some(timeout) = options.idle_timeout {
-                srv.set_idle_timeout(Duration::from_millis(timeout));
-            }
+        if let Some(options) = options
+            && let Some(timeout) = options.idle_timeout
+        {
+            srv.set_idle_timeout(Duration::from_millis(timeout));
         }
         let creator = srv.command_creator().clone();
         tx.send((addr, creator)).unwrap();
@@ -160,7 +164,7 @@ fn test_server_stats() {
     // Connect to the server.
     let conn = connect_to_server(&addr).unwrap();
     // Ask it for stats.
-    let info = request_stats(conn).unwrap();
+    let (info, _cache_mode) = request_stats_with_cache_mode(conn).unwrap();
     assert_eq!(0, info.stats.compile_requests);
     // Include sccache ver (cli) to validate.
     assert_eq!(env!("CARGO_PKG_VERSION"), info.version);
@@ -238,6 +242,13 @@ fn test_server_compile() {
         let mut c = server_creator.lock().unwrap();
         // The server will check the compiler. Pretend it's GCC.
         c.next_command_spawns(Ok(MockChild::new(exit_status(0), "compiler_id=gcc", "")));
+        // The assembler version and path probes.
+        c.next_command_spawns(Ok(MockChild::new(
+            exit_status(0),
+            "GNU assembler (GNU Binutils) 2.42",
+            "",
+        )));
+        c.next_command_spawns(Ok(MockChild::new(exit_status(0), "as", "")));
         // Preprocessor invocation.
         c.next_command_spawns(Ok(MockChild::new(
             exit_status(0),
@@ -292,31 +303,200 @@ fn test_server_compile() {
     child.join().unwrap();
 }
 
+/// A [`Write`] sink shared with the fake server.
+///
+/// This is needed so it can observe how much the client has written
+/// at a given point in the protocol exchange.
+#[derive(Clone, Default)]
+struct SharedWriter(Arc<Mutex<Vec<u8>>>);
+
+impl Write for SharedWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+const RMETA_NOTIFICATION: &[u8] = b"{\"artifact\":\"/t/libdep.rmeta\",\"emit\":\"metadata\"}\n";
+const OTHER_STDERR: &[u8] = b"{\"artifact\":\"/t/libdep.rlib\",\"emit\":\"link\"}\n";
+
+/// Accepts one connection as a fake daemon.
+///
+/// The fake one replies to a compile request until a `.rmeta` notification comes.
+/// It leaves it for caller to continue working on it.
+fn fake_daemon_until_rmeta_notification(listener: std::net::TcpListener) -> std::net::TcpStream {
+    use crate::protocol::{CompileResponse, Request, Response};
+    use crate::util::write_length_prefixed_bincode;
+    use byteorder::{BigEndian, ByteOrder};
+    use std::io::Read;
+
+    let (mut sock, _) = listener.accept().unwrap();
+    let mut len = [0; 4];
+    sock.read_exact(&mut len).unwrap();
+    let mut req = vec![0; BigEndian::read_u32(&len) as usize];
+    sock.read_exact(&mut req).unwrap();
+    assert!(matches!(
+        bincode::deserialize::<Request>(&req).unwrap(),
+        Request::Compile(_)
+    ));
+
+    write_length_prefixed_bincode(
+        &mut sock,
+        Response::Compile(CompileResponse::CompileStarted),
+    )
+    .unwrap();
+    write_length_prefixed_bincode(
+        &mut sock,
+        Response::ArtifactNotification(RMETA_NOTIFICATION.to_vec()),
+    )
+    .unwrap();
+    sock
+}
+
+/// Runs a client compiling `dep` against daemon at `addr`.
+fn compile_dep(
+    creator: Arc<Mutex<MockCommandCreator>>,
+    f: &TestFixture,
+    addr: &crate::net::SocketAddr,
+    stderr: &SharedWriter,
+) -> crate::errors::Result<i32> {
+    let rustc = f.mk_bin("rustc").unwrap();
+    let conn = connect_to_server(addr).unwrap();
+    let cmdline = vec![
+        "--crate-name".into(),
+        "dep".into(),
+        "src/lib.rs".into(),
+        "--emit=dep-info,metadata,link".into(),
+    ];
+    let mut stdout = Cursor::new(Vec::new());
+    let mut runtime = Runtime::new().unwrap();
+    do_compile(
+        creator,
+        &mut runtime,
+        conn,
+        &rustc,
+        cmdline,
+        f.tempdir.path(),
+        Some(f.paths.clone()),
+        vec![],
+        &mut stdout,
+        &mut stderr.clone(),
+    )
+}
+
 #[test]
-#[serial]
-// test fails intermittently on macos:
-// https://github.com/mozilla/sccache/issues/234
-#[cfg(not(target_os = "macos"))]
-fn test_server_port_in_use() {
-    // Bind an arbitrary free port.
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let sccache = find_sccache_binary();
-    let output = Command::new(sccache)
-        .arg("--start-server")
-        .env(
-            "SCCACHE_SERVER_PORT",
-            listener.local_addr().unwrap().port().to_string(),
-        )
-        .env_remove("SCCACHE_SERVER_UDS")
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let s = String::from_utf8_lossy(&output.stderr);
-    const MSG: &str = "Server startup failed:";
-    assert!(
-        s.contains(MSG),
-        "Output did not contain '{}':\n========\n{}\n========",
-        MSG,
-        s
+fn test_cli_rmeta_notification_delivery_from_daemon() {
+    use crate::compiler::ColorMode;
+    use crate::protocol::{CompileFinished, Response};
+    use crate::util::write_length_prefixed_bincode;
+
+    let _ = env_logger::try_init();
+    let f = TestFixture::new();
+    let stderr = SharedWriter::default();
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = crate::net::SocketAddr::Net(listener.local_addr().unwrap());
+    let server_stderr = stderr.clone();
+    let server = thread::spawn(move || -> Vec<u8> {
+        let mut sock = fake_daemon_until_rmeta_notification(listener);
+
+        // This waits until the client writes what it has at this point,
+        // to ensure stderr gets the notification before we proceed to write more.
+        sock.set_read_timeout(Some(Duration::from_millis(5)))
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        while server_stderr.0.lock().unwrap().is_empty() {
+            match sock.peek(&mut [0]) {
+                Ok(0) => break,
+                Ok(_) => panic!("unexpected data from client"),
+                Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => break,
+                Err(_) => assert!(
+                    std::time::Instant::now() < deadline,
+                    "client neither wrote nor hung up"
+                ),
+            }
+        }
+
+        let written_before_finished = server_stderr.0.lock().unwrap().clone();
+
+        // The client may have given up on us by now.
+        // The stderr is rustc's as-is, so it carries the notification too;
+        // the client is expected to drop that copy.
+        let _ = write_length_prefixed_bincode(
+            &mut sock,
+            Response::CompileFinished(CompileFinished {
+                retcode: Some(0),
+                signal: None,
+                stdout: vec![],
+                stderr: [RMETA_NOTIFICATION, OTHER_STDERR].concat(),
+                color_mode: ColorMode::Off,
+            }),
+        );
+        written_before_finished
+    });
+
+    let retcode = compile_dep(new_creator(), &f, &addr, &stderr).unwrap();
+    let written_before_finished = server.join().unwrap();
+
+    assert_eq!(0, retcode);
+    assert_eq!(
+        RMETA_NOTIFICATION,
+        written_before_finished.as_slice(),
+        "stderr written before CompileFinished"
+    );
+    // The daemon leaves rustc's stderr intact.
+    // Client will dedup stderr if already forwarded.
+    assert_eq!(
+        [RMETA_NOTIFICATION, OTHER_STDERR].concat(),
+        *stderr.0.lock().unwrap(),
+        "stderr written in total"
+    );
+}
+
+/// This makes sure that if the daemon dies between the rmeta notification and codegen,
+/// sccache falls back to a normal compilation.
+#[test]
+fn test_cli_rmeta_notification_delivery_after_daemon_disconnect() {
+    let _ = env_logger::try_init();
+    let f = TestFixture::new();
+    let stderr = SharedWriter::default();
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = crate::net::SocketAddr::Net(listener.local_addr().unwrap());
+    let server = thread::spawn(move || {
+        let sock = fake_daemon_until_rmeta_notification(listener);
+        // The daemon dies mid-compile.
+        drop(sock);
+    });
+
+    // The fallback compile.
+    let creator = new_creator();
+    next_command(
+        &creator,
+        Ok(MockChild::new(
+            exit_status(0),
+            "",
+            [RMETA_NOTIFICATION, OTHER_STDERR].concat(),
+        )),
+    );
+
+    let retcode = compile_dep(creator.clone(), &f, &addr, &stderr).unwrap();
+    server.join().unwrap();
+
+    assert_eq!(0, retcode);
+    assert_eq!(
+        0,
+        creator.lock().unwrap().children.len(),
+        "fallback rustc ran"
+    );
+    // The fallback rustc emitted the notification the daemon had already streamed,
+    // and the client then dedups it.
+    assert_eq!(
+        [RMETA_NOTIFICATION, OTHER_STDERR].concat(),
+        *stderr.0.lock().unwrap(),
+        "stderr written in total"
     );
 }

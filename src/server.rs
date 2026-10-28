@@ -13,10 +13,11 @@
 // limitations under the License.SCCACHE_MAX_FRAME_LENGTH
 
 use crate::cache::readonly::ReadOnlyStorage;
-use crate::cache::{storage_from_config, CacheMode, Storage};
+use crate::cache::{CacheMode, Storage, storage_from_config};
+use crate::compiler::PreprocessorCacheEntry;
 use crate::compiler::{
-    get_compiler_info, CacheControl, CompileResult, Compiler, CompilerArguments, CompilerHasher,
-    CompilerKind, CompilerProxy, DistType, Language, MissType,
+    CacheControl, CompileResult, Compiler, CompilerArguments, CompilerHasher, CompilerKind,
+    CompilerProxy, DistType, Language, MissType, NO_CRATE_TYPE_PASSED, get_compiler_info,
 };
 #[cfg(feature = "dist-client")]
 use crate::config;
@@ -24,17 +25,19 @@ use crate::config::Config;
 use crate::dist;
 use crate::jobserver::Client;
 use crate::mock_command::{CommandCreatorSync, ProcessCommandCreator};
-use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
+use crate::protocol::{
+    Compile, CompileFinished, CompileResponse, Request, Response, StorageHandshakeInfo,
+};
 use crate::util;
 #[cfg(feature = "dist-client")]
 use anyhow::Context as _;
-use bytes::{buf::BufMut, Bytes, BytesMut};
+use bytes::{Bytes, BytesMut, buf::BufMut};
 use filetime::FileTime;
 use fs::metadata;
 use fs_err as fs;
 use futures::channel::mpsc;
 use futures::future::FutureExt;
-use futures::{future, stream, Sink, SinkExt, Stream, StreamExt, TryFutureExt};
+use futures::{Sink, SinkExt, Stream, StreamExt, TryFutureExt, future};
 use number_prefix::NumberPrefix;
 use serde::{Deserialize, Serialize};
 use std::cell::Cell;
@@ -46,7 +49,9 @@ use std::io::{self, Write};
 use std::marker::Unpin;
 #[cfg(feature = "dist-client")]
 use std::mem;
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(target_os = "android")]
+use std::os::android::net::SocketAddrExt;
+#[cfg(target_os = "linux")]
 use std::os::linux::net::SocketAddrExt;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -61,11 +66,11 @@ use tokio::sync::RwLock;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     runtime::Runtime,
-    time::{self, sleep, Sleep},
+    time::{self, Sleep, sleep},
 };
 use tokio_serde::Framed;
-use tokio_util::codec::{length_delimited, LengthDelimitedCodec};
-use tower::Service;
+use tokio_util::codec::{LengthDelimitedCodec, length_delimited};
+use tower_service::Service;
 
 use crate::errors::*;
 
@@ -104,10 +109,10 @@ fn notify_server_startup_internal<W: Write>(mut w: W, status: ServerStartup) -> 
 }
 
 #[cfg(unix)]
-fn notify_server_startup(name: &Option<OsString>, status: ServerStartup) -> Result<()> {
+fn notify_server_startup(name: Option<&OsString>, status: ServerStartup) -> Result<()> {
     use std::os::unix::net::UnixStream;
-    let name = match *name {
-        Some(ref s) => s,
+    let name = match name {
+        Some(s) => s,
         None => return Ok(()),
     };
     debug!("notify_server_startup({:?})", status);
@@ -116,11 +121,11 @@ fn notify_server_startup(name: &Option<OsString>, status: ServerStartup) -> Resu
 }
 
 #[cfg(windows)]
-fn notify_server_startup(name: &Option<OsString>, status: ServerStartup) -> Result<()> {
+fn notify_server_startup(name: Option<&OsString>, status: ServerStartup) -> Result<()> {
     use fs::OpenOptions;
 
-    let name = match *name {
-        Some(ref s) => s,
+    let name = match name {
+        Some(s) => s,
         None => return Ok(()),
     };
     let pipe = OpenOptions::new().write(true).read(true).open(name)?;
@@ -173,7 +178,9 @@ impl DistClientContainer {
     #[cfg(not(feature = "dist-client"))]
     fn new(config: &Config, _: &tokio::runtime::Handle) -> Self {
         if config.dist.scheduler_url.is_some() {
-            warn!("Scheduler address configured but dist feature disabled, disabling distributed sccache")
+            warn!(
+                "Scheduler address configured but dist feature disabled, disabling distributed sccache"
+            )
         }
         Self {}
     }
@@ -250,13 +257,14 @@ impl DistClientContainer {
     pub async fn get_status(&self) -> DistInfo {
         let mut guard = self.state.lock().await;
         let state = &mut *guard;
+        Self::maybe_recreate_state(state).await;
         let (client, scheduler_url) = match state {
             DistClientState::Disabled => return DistInfo::Disabled("disabled".to_string()),
             DistClientState::FailWithMessage(cfg, _) => {
                 return DistInfo::NotConnected(
                     cfg.scheduler_url.clone(),
                     "enabled, auth not configured".to_string(),
-                )
+                );
             }
             DistClientState::RetryCreateAt(cfg, time) => {
                 return DistInfo::NotConnected(
@@ -265,7 +273,7 @@ impl DistClientContainer {
                         "enabled, not connected, will retry in {:.1}s",
                         time.duration_since(Instant::now()).as_secs_f32()
                     ),
-                )
+                );
             }
             DistClientState::Some(cfg, client) => (Arc::clone(client), cfg.scheduler_url.clone()),
         };
@@ -313,7 +321,7 @@ impl DistClientContainer {
                 _ => unreachable!(),
             };
             info!("Attempting to recreate the dist client");
-            *state = Self::create_state(*config).await
+            *state = Self::create_state(*config).await;
         }
     }
 
@@ -362,8 +370,10 @@ impl DistClientContainer {
                         Self::get_cached_config_auth_token(auth_url)
                     }
                 };
-                let auth_token = try_or_fail_with_message!(auth_token
-                    .context("could not load client auth token, run |sccache --dist-auth|"));
+                let auth_token = try_or_fail_with_message!(
+                    auth_token
+                        .context("could not load client auth token, run |sccache --dist-auth|")
+                );
                 let dist_client = dist::http::Client::new(
                     &config.pool,
                     url,
@@ -385,7 +395,9 @@ impl DistClientContainer {
                         DistClientState::Some(Box::new(config), Arc::new(dist_client))
                     }
                     Err(_) => {
-                        warn!("Scheduler address configured, but could not communicate with scheduler");
+                        warn!(
+                            "Scheduler address configured, but could not communicate with scheduler"
+                        );
                         DistClientState::RetryCreateAt(
                             Box::new(config),
                             Instant::now() + DIST_CLIENT_RECREATE_TIMEOUT,
@@ -427,9 +439,9 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
             l.set(
                 info.location()
                     .map(|loc| (loc.file().to_string(), loc.line(), loc.column())),
-            )
+            );
         });
-        panic_hook(info)
+        panic_hook(info);
     }));
     let client = Client::new();
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -447,7 +459,7 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
             error!("storage init failed for: {err:?}");
 
             notify_server_startup(
-                &notify,
+                notify.as_ref(),
                 ServerStartup::Err {
                     reason: err.to_string(),
                 },
@@ -464,7 +476,7 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
                 error!("storage check failed for: {err:?}");
 
                 notify_server_startup(
-                    &notify,
+                    notify.as_ref(),
                     ServerStartup::Err {
                         reason: err.to_string(),
                     },
@@ -481,13 +493,19 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
         _ => raw_storage,
     };
 
-    let res = (|| -> io::Result<_> {
+    let res: io::Result<(crate::net::SocketAddr, Box<dyn FnOnce(_) -> io::Result<()>>)> = (|| {
         match addr {
             crate::net::SocketAddr::Net(addr) => {
                 trace!("binding TCP {addr}");
                 let l = runtime.block_on(tokio::net::TcpListener::bind(addr))?;
-                let srv =
-                    SccacheServer::<_>::with_listener(l, runtime, client, dist_client, storage);
+                let srv = SccacheServer::<_>::with_listener(
+                    l,
+                    runtime,
+                    client,
+                    dist_client,
+                    storage,
+                    cache_mode,
+                );
                 Ok((
                     srv.local_addr().unwrap(),
                     Box::new(move |f| srv.run(f)) as Box<dyn FnOnce(_) -> _>,
@@ -502,8 +520,14 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
                     let _guard = runtime.enter();
                     tokio::net::UnixListener::bind(path)?
                 };
-                let srv =
-                    SccacheServer::<_>::with_listener(l, runtime, client, dist_client, storage);
+                let srv = SccacheServer::<_>::with_listener(
+                    l,
+                    runtime,
+                    client,
+                    dist_client,
+                    storage,
+                    cache_mode,
+                );
                 Ok((
                     srv.local_addr().unwrap(),
                     Box::new(move |f| srv.run(f)) as Box<dyn FnOnce(_) -> _>,
@@ -519,11 +543,17 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
                     let _guard = runtime.enter();
                     tokio::net::UnixListener::from_std(l)?
                 };
-                let srv =
-                    SccacheServer::<_>::with_listener(l, runtime, client, dist_client, storage);
+                let srv = SccacheServer::<_>::with_listener(
+                    l,
+                    runtime,
+                    client,
+                    dist_client,
+                    storage,
+                    cache_mode,
+                );
                 Ok((
                     srv.local_addr()
-                        .unwrap_or_else(|| crate::net::SocketAddr::UnixAbstract(p.to_vec())),
+                        .unwrap_or_else(|| crate::net::SocketAddr::UnixAbstract(p.clone())),
                     Box::new(move |f| srv.run(f)) as Box<dyn FnOnce(_) -> _>,
                 ))
             }
@@ -533,28 +563,27 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
         Ok((addr, run)) => {
             info!("server started, listening on {addr}");
             notify_server_startup(
-                &notify,
+                notify.as_ref(),
                 ServerStartup::Ok {
                     addr: addr.to_string(),
                 },
             )?;
-            run(future::pending::<()>())?;
+            run(future::pending::<()>()).map_err(anyhow::Error::from)?;
             Ok(())
         }
         Err(e) => {
             error!("failed to start server: {}", e);
             if io::ErrorKind::AddrInUse == e.kind() {
-                notify_server_startup(&notify, ServerStartup::AddrInUse)?;
+                notify_server_startup(notify.as_ref(), ServerStartup::AddrInUse)?;
             } else if cfg!(windows) && Some(10013) == e.raw_os_error() {
                 // 10013 is the "WSAEACCES" error, which can occur if the requested port
                 // has been allocated for other purposes, such as winNAT or Hyper-V.
-                let windows_help_message =
-                    "A Windows port exclusion is blocking use of the configured port.\nTry setting SCCACHE_SERVER_PORT to a new value.";
+                let windows_help_message = "A Windows port exclusion is blocking use of the configured port.\nTry setting SCCACHE_SERVER_PORT to a new value.";
                 let reason: String = format!("{windows_help_message}\n{e}");
-                notify_server_startup(&notify, ServerStartup::Err { reason })?;
+                notify_server_startup(notify.as_ref(), ServerStartup::Err { reason })?;
             } else {
                 let reason = e.to_string();
-                notify_server_startup(&notify, ServerStartup::Err { reason })?;
+                notify_server_startup(notify.as_ref(), ServerStartup::Err { reason })?;
             }
             Err(e.into())
         }
@@ -577,6 +606,7 @@ impl<C: CommandCreatorSync> SccacheServer<tokio::net::TcpListener, C> {
         client: Client,
         dist_client: DistClientContainer,
         storage: Arc<dyn Storage>,
+        cache_mode: CacheMode,
     ) -> Result<Self> {
         let addr = crate::net::SocketAddr::with_port(port);
         let listener = runtime.block_on(tokio::net::TcpListener::bind(addr.as_net().unwrap()))?;
@@ -587,6 +617,7 @@ impl<C: CommandCreatorSync> SccacheServer<tokio::net::TcpListener, C> {
             client,
             dist_client,
             storage,
+            cache_mode,
         ))
     }
 }
@@ -598,13 +629,15 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
         client: Client,
         dist_client: DistClientContainer,
         storage: Arc<dyn Storage>,
+        cache_mode: CacheMode,
     ) -> Self {
         // Prepare the service which we'll use to service all incoming TCP
         // connections.
         let (tx, rx) = mpsc::channel(1);
         let (wait, info) = WaitUntilZero::new();
         let pool = runtime.handle().clone();
-        let service = SccacheService::new(dist_client, storage, &client, pool, tx, info);
+        let service =
+            SccacheService::new(dist_client, storage, cache_mode, &client, pool, tx, info);
 
         SccacheServer {
             runtime,
@@ -785,6 +818,9 @@ where
     /// Cache storage.
     storage: Arc<dyn Storage>,
 
+    /// Access mode selected when this service was constructed.
+    effective_cache_mode: CacheMode,
+
     /// A cache of known compiler info.
     compilers: Arc<RwLock<CompilerMap<C>>>,
 
@@ -816,10 +852,18 @@ where
     /// This field causes [WaitUntilZero] to wait until this struct drops.
     #[allow(dead_code)]
     info: ActiveInfo,
+
+    /// Notifications to deliver to the client while compiler is still running,
+    /// as [`Response::ArtifactNotification`], before [`CompileFinished`].
+    ///
+    /// * `Some` only on the clone [`SccacheService::check_compiler`] gives a
+    ///   rustc compile task.
+    /// * `None` on the shared service and every other clone.
+    notification_tx: Option<futures::channel::mpsc::UnboundedSender<Vec<u8>>>,
 }
 
 type SccacheRequest = Message<Request, Body<()>>;
-type SccacheResponse = Message<Response, Pin<Box<dyn Future<Output = Result<Response>> + Send>>>;
+type SccacheResponse = Message<Response, Pin<Box<dyn Stream<Item = Result<Response>> + Send>>>;
 
 /// Messages sent from all services to the main event loop indicating activity.
 ///
@@ -891,6 +935,84 @@ where
                         Message::WithoutBody(Response::ShuttingDown(Box::new(info)))
                     })
                 }
+                Request::StorageHandshake => {
+                    debug!("handle_client: storage_handshake");
+                    let info = StorageHandshakeInfo {
+                        location: me.storage.location(),
+                        cache_type_name: me.storage.cache_type_name().to_owned(),
+                        basedirs: me.storage.basedirs().to_vec(),
+                        preprocessor_cache_mode_config: me.storage.preprocessor_cache_mode_config(),
+                        cache_mode: me.effective_cache_mode,
+                        max_size: me.storage.max_size().await.unwrap_or(None),
+                    };
+                    Ok(Message::WithoutBody(Response::StorageHandshake(info)))
+                }
+                Request::StorageGetPath { key } => {
+                    debug!("handle_client: storage_get_path key={}", key);
+                    Ok(Message::WithoutBody(Response::StorageGetPath(
+                        me.storage.get_path(&key).await,
+                    )))
+                }
+                Request::StorageGetRaw { key } => {
+                    debug!("handle_client: storage_get_raw key={}", key);
+                    let resp = match me.storage.get_raw(&key).await {
+                        Ok(opt) => Response::StorageGetRaw(opt.map(|b| b.to_vec())),
+                        Err(e) => {
+                            warn!("storage_get_raw error: {e:#}");
+                            Response::StorageGetRaw(None)
+                        }
+                    };
+                    Ok(Message::WithoutBody(resp))
+                }
+                Request::StoragePutRaw { key, data } => {
+                    debug!("handle_client: storage_put_raw key={}", key);
+                    let result = me
+                        .storage
+                        .put_raw(&key, data.into())
+                        .await
+                        .map(|_| ())
+                        .map_err(|e| format!("{e:#}"));
+                    Ok(Message::WithoutBody(Response::StoragePutRaw(result)))
+                }
+                Request::StorageGetPreprocessorEntry { key } => {
+                    debug!("handle_client: storage_get_preprocessor_entry key={}", key);
+                    let result = me
+                        .storage
+                        .get_preprocessor_cache_entry(&key)
+                        .await
+                        .map(|opt| {
+                            opt.and_then(|mut seekable| {
+                                use std::io::Read;
+                                let mut buf = vec![];
+                                seekable.read_to_end(&mut buf).ok()?;
+                                Some(buf)
+                            })
+                        })
+                        .map_err(|e| format!("{e:#}"));
+                    Ok(Message::WithoutBody(Response::StorageGetPreprocessorEntry(
+                        result,
+                    )))
+                }
+                Request::StoragePutPreprocessorEntry { key, entry_bytes } => {
+                    debug!("handle_client: storage_put_preprocessor_entry key={}", key);
+                    let result = async {
+                        let entry = PreprocessorCacheEntry::read(&entry_bytes)
+                            .map_err(|e| format!("{e:#}"))?;
+                        me.storage
+                            .put_preprocessor_cache_entry(&key, entry)
+                            .await
+                            .map_err(|e| format!("{e:#}"))
+                    }
+                    .await;
+                    Ok(Message::WithoutBody(Response::StoragePutPreprocessorEntry(
+                        result,
+                    )))
+                }
+                Request::RecordStats(delta) => {
+                    debug!("handle_client: record_stats");
+                    me.merge_stats(*delta).await;
+                    Ok(Message::WithoutBody(Response::RecordStats))
+                }
             }
         })
     }
@@ -900,7 +1022,6 @@ where
     }
 }
 
-use futures::future::Either;
 use futures::TryStreamExt;
 
 impl<C> SccacheService<C>
@@ -910,6 +1031,7 @@ where
     pub fn new(
         dist_client: DistClientContainer,
         storage: Arc<dyn Storage>,
+        effective_cache_mode: CacheMode,
         client: &Client,
         rt: tokio::runtime::Handle,
         tx: mpsc::Sender<ServerMessage>,
@@ -919,12 +1041,14 @@ where
             stats: Arc::default(),
             dist_client: Arc::new(dist_client),
             storage,
+            effective_cache_mode,
             compilers: Arc::default(),
             compiler_proxies: Arc::default(),
             rt,
             creator: C::new(client),
             tx,
             info,
+            notification_tx: None,
         }
     }
 
@@ -940,12 +1064,14 @@ where
             stats: Arc::default(),
             dist_client: Arc::new(dist_client),
             storage,
+            effective_cache_mode: CacheMode::ReadWrite,
             compilers: Arc::default(),
             compiler_proxies: Arc::default(),
             rt,
             creator: C::new(&client),
             tx,
             info,
+            notification_tx: None,
         }
     }
 
@@ -964,7 +1090,9 @@ where
                 Box::new(DistClientConfig {
                     pool: rt.clone(),
                     scheduler_url: None,
-                    auth: config::DistAuth::Token { token: "".into() },
+                    auth: config::DistAuth::Token {
+                        token: String::new(),
+                    },
                     cache_dir: "".into(),
                     toolchain_cache_size: 0,
                     toolchains: vec![],
@@ -973,16 +1101,18 @@ where
                 dist_client,
             ))),
             storage,
+            effective_cache_mode: CacheMode::ReadWrite,
             compilers: Arc::default(),
             compiler_proxies: Arc::default(),
             rt: rt.clone(),
             creator: C::new(&client),
             tx,
             info,
+            notification_tx: None,
         }
     }
 
-    fn bind<T>(self, socket: T) -> impl Future<Output = Result<()>> + Send + Sized + 'static
+    async fn bind<T>(self, socket: T) -> Result<()>
     where
         T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
@@ -996,36 +1126,54 @@ where
         }
         let io = builder.new_framed(socket);
 
-        let (sink, stream) = SccacheTransport {
+        let (sink, mut stream) = SccacheTransport {
             inner: Framed::new(io.sink_err_into().err_into(), BincodeCodec),
         }
         .split();
-        let sink = sink.sink_err_into::<Error>();
+        let mut sink = sink.sink_err_into::<Error>();
+
+        let (reqs_tx, mut reqs_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let me = Arc::new(self);
-        stream
-            .err_into::<Error>()
-            .and_then(move |input| me.clone().call(input))
-            .and_then(move |response| async move {
-                let fut = match response {
+
+        // The reader loop below feeds requests into `reqs_tx`; this task drains
+        // them, calls the service, and writes responses back to the sink.
+        //
+        // `_handle` must stay bound for the lifetime of `bind` (not `let _ =`,
+        // which would drop it immediately): it is an `AbortOnDropHandle`, so
+        // dropping it aborts this task and its in-flight compile subtasks. That
+        // is the cancellation we want once the client disconnects and the reader
+        // loop below exits.
+        let _handle = util::spawn(async move {
+            while let Some(req) = reqs_rx.recv().await {
+                match util::spawn(me.clone().call(req)).await?? {
                     Message::WithoutBody(message) => {
-                        let stream = stream::once(async move { Ok(Frame::Message { message }) });
-                        Either::Left(stream)
+                        sink.send(Frame::Message { message }).await?;
                     }
-                    Message::WithBody(message, body) => {
-                        let stream = stream::once(async move { Ok(Frame::Message { message }) })
-                            .chain(
-                                body.into_stream()
-                                    .map_ok(|chunk| Frame::Body { chunk: Some(chunk) }),
-                            )
-                            .chain(stream::once(async move { Ok(Frame::Body { chunk: None }) }));
-                        Either::Right(stream)
+                    Message::WithBody(message, mut body) => {
+                        sink.send(Frame::Message { message }).await?;
+                        while let Some(chunk) = body.next().await {
+                            sink.send(Frame::Body {
+                                chunk: Some(chunk?),
+                            })
+                            .await?;
+                        }
+                        sink.send(Frame::Body { chunk: None }).await?;
                     }
-                };
-                Ok(Box::pin(fut))
-            })
-            .try_flatten()
-            .forward(sink)
+                }
+            }
+
+            Ok::<_, Error>(())
+        });
+
+        // Read requests until the client disconnects (stream ends) or the
+        // stream errors. A send error means the handler task above has ended,
+        // so we stop reading in that case too.
+        while let Some(req) = stream.next().await {
+            reqs_tx.send(req?)?;
+        }
+
+        Ok(())
     }
 
     /// Get dist status.
@@ -1044,6 +1192,24 @@ where
         *self.stats.lock().await = ServerStats::default();
     }
 
+    /// Snapshot and reset the current stats (used by client-side processes before exit).
+    pub async fn take_stats(&self) -> ServerStats {
+        let mut s = self.stats.lock().await;
+        std::mem::take(&mut *s)
+    }
+
+    /// Artifact notifications to deliver to the client while the compiler is
+    /// still running before [`CompileFinished`].
+    ///
+    /// See [`SccacheService::notification_tx`] for more.
+    pub fn notification_tx(&self) -> Option<&futures::channel::mpsc::UnboundedSender<Vec<u8>>> {
+        self.notification_tx.as_ref()
+    }
+
+    async fn merge_stats(&self, delta: ServerStats) {
+        *self.stats.lock().await += delta;
+    }
+
     /// Handle a compile request from a client.
     ///
     /// This will handle a compile request entirely, generating a response with
@@ -1060,6 +1226,42 @@ where
             .compiler_info(exe.into(), cwd.clone(), &cmd, &env_vars)
             .await;
         Ok(me.check_compiler(info, cmd, cwd, env_vars).await)
+    }
+
+    /// Run a compile entirely in the current process (used in client-side mode).
+    ///
+    /// Returns a tuple of
+    ///
+    /// * the `CompileResponse` variant, and
+    /// * when compilation started, the accompanying `CompileFinished` result, and
+    /// * whether a notification was written to `stderr` while the compiler was running.
+    pub async fn compile_direct(
+        &self,
+        compile: Compile,
+        stderr: &mut dyn Write,
+    ) -> Result<(CompileResponse, Option<CompileFinished>, bool)> {
+        match self.handle_compile(compile).await? {
+            Message::WithBody(Response::Compile(resp), mut body) => {
+                let mut finished = None;
+                let mut forwarded_notification = false;
+                while let Some(item) = body.next().await {
+                    match item? {
+                        Response::ArtifactNotification(chunk) => {
+                            stderr.write_all(&chunk)?;
+                            stderr.flush()?;
+                            forwarded_notification = true;
+                        }
+                        Response::CompileFinished(f) => finished = Some(f),
+                        _ => bail!("unexpected body response from compile_direct"),
+                    }
+                }
+                let finished = finished
+                    .ok_or_else(|| anyhow!("compile body ended without CompileFinished"))?;
+                Ok((resp, Some(finished), forwarded_notification))
+            }
+            Message::WithoutBody(Response::Compile(resp)) => Ok((resp, None, false)),
+            _ => bail!("unexpected response from handle_compile in compile_direct"),
+        }
     }
 
     /// Look up compiler info from the cache for the compiler `path`.
@@ -1179,7 +1381,7 @@ where
                 let (c, proxy) = match info {
                     Ok((c, proxy)) => (c.clone(), proxy.clone()),
                     Err(err) => {
-                        trace!("Inserting PLAIN cache map info for {:?}", &path);
+                        trace!("Inserting PLAIN cache map info for {:?}", path);
                         me.compilers.write().await.insert(path, None);
 
                         return Err(err);
@@ -1192,9 +1394,7 @@ where
                 if let Some(proxy) = proxy {
                     trace!(
                         "Inserting new path proxy {:?} @ {:?} -> {:?}",
-                        &path,
-                        &cwd,
-                        resolved_compiler_path
+                        path, cwd, resolved_compiler_path
                     );
                     me.compiler_proxies
                         .write()
@@ -1208,7 +1408,7 @@ where
                 let map_info = CompilerCacheEntry::new(c.clone(), mtime, dist_info);
                 trace!(
                     "Inserting POSSIBLY PROXIED cache map info for {:?}",
-                    &resolved_compiler_path
+                    resolved_compiler_path
                 );
                 me.compilers
                     .write()
@@ -1232,7 +1432,7 @@ where
     ) -> SccacheResponse {
         match compiler {
             Err(e) => {
-                debug!("check_compiler: Unsupported compiler: {}", e.to_string());
+                debug!("check_compiler: Unsupported compiler: {e}");
                 self.stats.lock().await.requests_unsupported_compiler += 1;
                 return Message::WithoutBody(Response::Compile(
                     CompileResponse::UnsupportedCompiler(OsString::from(e.to_string())),
@@ -1246,11 +1446,29 @@ where
                     CompilerArguments::Ok(hasher) => {
                         debug!("parse_arguments: Ok: {:?}", cmd);
 
-                        let body = self
-                            .clone()
-                            .start_compile_task(c, hasher, cmd, cwd, env_vars)
-                            .and_then(|res| async { Ok(Response::CompileFinished(res)) })
-                            .boxed();
+                        let body = if c.kind() == CompilerKind::Rust {
+                            // Only rustc emits artifact notifications,
+                            // for `.rmeta` pipelining.
+                            let (tx, rx) = futures::channel::mpsc::unbounded();
+                            let mut me = self.clone();
+                            me.notification_tx = Some(tx);
+                            let finished = util::spawn_on(
+                                &self.rt,
+                                me.start_compile_task(c, hasher, cmd, cwd, env_vars),
+                            );
+                            rx.map(|chunk| Ok(Response::ArtifactNotification(chunk)))
+                                .chain(futures::stream::once(async move {
+                                    finished.await?.map(Response::CompileFinished)
+                                }))
+                                .boxed()
+                        } else {
+                            futures::stream::once(
+                                self.clone()
+                                    .start_compile_task(c, hasher, cmd, cwd, env_vars)
+                                    .map_ok(Response::CompileFinished),
+                            )
+                            .boxed()
+                        };
 
                         return Message::WithBody(
                             Response::Compile(CompileResponse::CompileStarted),
@@ -1258,17 +1476,18 @@ where
                         );
                     }
                     CompilerArguments::CannotCache(why, extra_info) => {
-                        if let Some(extra_info) = extra_info {
+                        if let Some(extra_info) = extra_info.as_deref() {
                             debug!(
                                 "parse_arguments: CannotCache({}, {}): {:?}",
                                 why, extra_info, cmd
-                            )
+                            );
                         } else {
-                            debug!("parse_arguments: CannotCache({}): {:?}", why, cmd)
+                            debug!("parse_arguments: CannotCache({}): {:?}", why, cmd);
                         }
-                        let mut stats = self.stats.lock().await;
-                        stats.requests_not_cacheable += 1;
-                        *stats.not_cached.entry(why.to_string()).or_insert(0) += 1;
+                        self.stats
+                            .lock()
+                            .await
+                            .record_not_cacheable(why, extra_info.as_deref());
                     }
                     CompilerArguments::NotCompilation => {
                         debug!("parse_arguments: NotCompilation: {:?}", cmd);
@@ -1288,7 +1507,7 @@ where
     pub async fn start_compile_task(
         self,
         compiler: Box<dyn Compiler<C>>,
-        hasher: Box<dyn CompilerHasher<C>>,
+        mut hasher: Box<dyn CompilerHasher<C>>,
         arguments: Vec<OsString>,
         cwd: PathBuf,
         env_vars: Vec<(OsString, OsString)>,
@@ -1326,217 +1545,207 @@ where
 
         let me = self.clone();
 
-        self.rt
-            .spawn(async move {
-
-                let result = match me.dist_client.get_client().await {
-                    Ok(client) => {
-                        std::panic::AssertUnwindSafe(hasher
-                            .get_cached_or_compile(
-                                &me,
-                                client,
-                                me.creator.clone(),
-                                me.storage.clone(),
-                                arguments,
-                                cwd,
-                                env_vars,
-                                cache_control,
-                                me.rt.clone(),
-                            )
+        util::spawn_on(&self.rt, async move {
+            let result = match me.dist_client.get_client().await {
+                Ok(client) => std::panic::AssertUnwindSafe(hasher.get_cached_or_compile(
+                    &me,
+                    client,
+                    me.creator.clone(),
+                    me.storage.clone(),
+                    arguments,
+                    cwd,
+                    env_vars,
+                    cache_control,
+                    me.rt.clone(),
+                ))
+                .catch_unwind()
+                .await
+                .map_err(|e| {
+                    let panic = e
+                        .downcast_ref::<&str>()
+                        .map(|s| &**s)
+                        .or_else(|| e.downcast_ref::<String>().map(|s| &**s))
+                        .unwrap_or("An unknown panic was caught.");
+                    let thread = std::thread::current();
+                    let thread_name = thread.name().unwrap_or("unnamed");
+                    if let Some((file, line, column)) = PANIC_LOCATION.with(|l| l.take()) {
+                        anyhow!(
+                            "thread '{thread_name}' panicked at {file}:{line}:{column}: {panic}"
                         )
-                        .catch_unwind()
-                        .await
-                        .map_err(|e| {
-                            let panic = e
-                                .downcast_ref::<&str>()
-                                .map(|s| &**s)
-                                .or_else(|| e.downcast_ref::<String>().map(|s| &**s))
-                                .unwrap_or("An unknown panic was caught.");
-                            let thread = std::thread::current();
-                            let thread_name = thread.name().unwrap_or("unnamed");
-                            if let Some((file, line, column)) = PANIC_LOCATION.with(|l| l.take()) {
-                                anyhow!("thread '{thread_name}' panicked at {file}:{line}:{column}: {panic}")
-                            } else {
-                                anyhow!("thread '{thread_name}' panicked: {panic}")
-                            }
-                        })
-                        .and_then(std::convert::identity)
+                    } else {
+                        anyhow!("thread '{thread_name}' panicked: {panic}")
                     }
-                    Err(e) => Err(e),
-                };
+                })
+                .and_then(std::convert::identity),
+                Err(e) => Err(e),
+            };
 
-                let mut cache_write = None;
-                let mut res = CompileFinished {
-                    color_mode,
-                    ..Default::default()
-                };
+            let mut cache_write = None;
+            let mut res = CompileFinished {
+                color_mode,
+                ..Default::default()
+            };
 
-                let mut stats = me.stats.lock().await;
+            let mut stats = me.stats.lock().await;
 
-                match result {
-                    Ok((compiled, out)) => {
+            match result {
+                Ok((compiled, out)) => {
+                    let mut dist_type = DistType::NoDist;
 
-                        let mut dist_type = DistType::NoDist;
+                    match compiled {
+                        CompileResult::Error => {
+                            debug!("[{}]: compile result: cache error", out_pretty);
 
-                        match compiled {
-                            CompileResult::Error => {
-                                debug!("compile result: cache error");
-
-                                stats.cache_errors.increment(&kind, &lang);
-                            }
-                            CompileResult::CacheHit(duration) => {
-                                debug!("compile result: cache hit");
-
-                                stats.cache_hits.increment(&kind, &lang);
-                                stats.cache_read_hit_duration += duration;
-                            }
-                            CompileResult::CacheMiss(miss_type, dt, duration, future) => {
-                                debug!("[{}]: compile result: cache miss", out_pretty);
-                                dist_type = dt;
-
-                                match miss_type {
-                                    MissType::Normal => {}
-                                    MissType::ForcedNoCache => {}
-                                    MissType::ForcedRecache => {
-                                        stats.forced_recaches += 1;
-                                    }
-                                    MissType::TimedOut => {
-                                        stats.cache_timeouts += 1;
-                                    }
-                                    MissType::CacheReadError => {
-                                        stats.cache_errors.increment(&kind, &lang);
-                                    }
-                                }
-                                stats.compilations += 1;
-                                stats.cache_misses.increment(&kind, &lang);
-                                stats.compiler_write_duration += duration;
-                                debug!("stats after compile result: {stats:?}");
-                                cache_write = Some(future);
-                            }
-                            CompileResult::NotCached(dt, duration) => {
-                                debug!("[{}]: compile result: not cached", out_pretty);
-                                dist_type = dt;
-                                stats.compilations += 1;
-                                stats.compiler_write_duration += duration;
-                            }
-                            CompileResult::NotCacheable(dt, duration) => {
-                                debug!("[{}]: compile result: not cacheable", out_pretty);
-                                dist_type = dt;
-                                stats.compilations += 1;
-                                stats.compiler_write_duration += duration;
-                                stats.non_cacheable_compilations += 1;
-                            }
-                            CompileResult::CompileFailed(dt, duration) => {
-                                debug!("[{}]: compile result: compile failed", out_pretty);
-                                dist_type = dt;
-                                stats.compilations += 1;
-                                stats.compiler_write_duration += duration;
-                                stats.compile_fails += 1;
-                            }
-                        };
-
-                        match dist_type {
-                            DistType::NoDist => {}
-                            DistType::Ok(id) => {
-                                let server = id.addr().to_string();
-                                let server_count = stats.dist_compiles.entry(server).or_insert(0);
-                                *server_count += 1;
-                            }
-                            DistType::Error => stats.dist_errors += 1,
+                            stats.cache_errors.increment(&kind, &lang);
                         }
+                        CompileResult::CacheHit(duration) => {
+                            debug!("[{}]: compile result: cache hit", out_pretty);
 
-                        // Make sure the write guard has been dropped ASAP.
-                        drop(stats);
+                            stats.cache_hits.increment(&kind, &lang);
+                            stats.cache_read_hit_duration += duration;
+                        }
+                        CompileResult::CacheMiss(miss_type, dt, duration, future) => {
+                            debug!("[{}]: compile result: cache miss", out_pretty);
+                            dist_type = dt;
 
-                        let Output {
-                            status,
-                            stdout,
-                            stderr,
-                        } = out;
-
-                        trace!("CompileFinished retcode: {}", status);
-
-                        match status.code() {
-                            Some(code) => res.retcode = Some(code),
-                            None => res.signal = Some(get_signal(status)),
-                        };
-
-                        res.stdout = stdout;
-                        res.stderr = stderr;
+                            match miss_type {
+                                MissType::Normal => {}
+                                MissType::ForcedNoCache => {}
+                                MissType::ForcedRecache => {
+                                    stats.forced_recaches += 1;
+                                }
+                                MissType::TimedOut => {
+                                    stats.cache_timeouts += 1;
+                                }
+                                MissType::CacheReadError => {
+                                    stats.cache_errors.increment(&kind, &lang);
+                                }
+                            }
+                            stats.compilations += 1;
+                            stats.cache_misses.increment(&kind, &lang);
+                            stats.compiler_write_duration += duration;
+                            debug!("stats after compile result: {stats:?}");
+                            cache_write = Some(future);
+                        }
+                        CompileResult::NotCached(dt, duration) => {
+                            debug!("[{}]: compile result: not cached", out_pretty);
+                            dist_type = dt;
+                            stats.compilations += 1;
+                            stats.compiler_write_duration += duration;
+                        }
+                        CompileResult::NotCacheable(dt, duration) => {
+                            debug!("[{}]: compile result: not cacheable", out_pretty);
+                            dist_type = dt;
+                            stats.compilations += 1;
+                            stats.compiler_write_duration += duration;
+                            stats.non_cacheable_compilations += 1;
+                        }
+                        CompileResult::CompileFailed(dt, duration) => {
+                            debug!("[{}]: compile result: compile failed", out_pretty);
+                            dist_type = dt;
+                            stats.compilations += 1;
+                            stats.compiler_write_duration += duration;
+                            stats.compile_fails += 1;
+                        }
                     }
-                    Err(err) => {
-                        match err.downcast::<ProcessError>() {
-                            Ok(ProcessError(output)) => {
-                                debug!("Compilation failed: {:?}", output);
-                                stats.compile_fails += 1;
+
+                    match dist_type {
+                        DistType::NoDist => {}
+                        DistType::Ok(id) => {
+                            let server = id.addr().to_string();
+                            let server_count = stats.dist_compiles.entry(server).or_insert(0);
+                            *server_count += 1;
+                        }
+                        DistType::Error => stats.dist_errors += 1,
+                    }
+
+                    // Make sure the write guard has been dropped ASAP.
+                    drop(stats);
+
+                    let Output {
+                        status,
+                        stdout,
+                        stderr,
+                    } = out;
+
+                    trace!("CompileFinished retcode: {}", status);
+
+                    match status.code() {
+                        Some(code) => res.retcode = Some(code),
+                        None => res.signal = Some(get_signal(status)),
+                    }
+
+                    res.stdout = stdout;
+                    res.stderr = stderr;
+                }
+                Err(err) => {
+                    match err.downcast::<ProcessError>() {
+                        Ok(ProcessError(output)) => {
+                            debug!("Compilation failed: {:?}", output);
+                            stats.compile_fails += 1;
+                            // Make sure the write guard has been dropped ASAP.
+                            drop(stats);
+
+                            match output.status.code() {
+                                Some(code) => res.retcode = Some(code),
+                                None => res.signal = Some(get_signal(output.status)),
+                            }
+                            res.stdout = output.stdout;
+                            res.stderr = output.stderr;
+                        }
+                        Err(err) => match err.downcast::<HttpClientError>() {
+                            Ok(HttpClientError(msg)) => {
+                                // Make sure the write guard has been dropped ASAP.
+                                drop(stats);
+                                me.dist_client.reset_state().await;
+                                let errmsg =
+                                    format!("[{:?}] http error status: {}", out_pretty, msg);
+                                error!("{}", errmsg);
+                                res.retcode = Some(1);
+                                res.stderr = errmsg.as_bytes().to_vec();
+                            }
+                            Err(err) => {
+                                stats.cache_errors.increment(&kind, &lang);
                                 // Make sure the write guard has been dropped ASAP.
                                 drop(stats);
 
-                                match output.status.code() {
-                                    Some(code) => res.retcode = Some(code),
-                                    None => res.signal = Some(get_signal(output.status)),
-                                };
-                                res.stdout = output.stdout;
-                                res.stderr = output.stderr;
+                                error!("[{:?}] fatal error: {}", out_pretty, err);
+                                for e in err.chain().skip(1) {
+                                    error!("[{:?}] \t{}", out_pretty, e);
+                                }
+                                //TODO: figure out a better way to communicate this?
+                                res.retcode = Some(-2);
+                                res.stderr = fatal_error_message(&err).into_bytes();
                             }
-                            Err(err) => match err.downcast::<HttpClientError>() {
-                                Ok(HttpClientError(msg)) => {
-                                    // Make sure the write guard has been dropped ASAP.
-                                    drop(stats);
-                                    me.dist_client.reset_state().await;
-                                    let errmsg = format!("[{:?}] http error status: {}", out_pretty, msg);
-                                    error!("{}", errmsg);
-                                    res.retcode = Some(1);
-                                    res.stderr = errmsg.as_bytes().to_vec();
-                                }
-                                Err(err) => {
-                                    stats.cache_errors.increment(&kind, &lang);
-                                    // Make sure the write guard has been dropped ASAP.
-                                    drop(stats);
-
-                                    use std::fmt::Write;
-
-                                    error!("[{:?}] fatal error: {}", out_pretty, err);
-
-                                    let mut error = "sccache: encountered fatal error\n".to_string();
-                                    let _ = writeln!(error, "sccache: error: {}", err);
-                                    for e in err.chain() {
-                                        error!("[{:?}] \t{}", out_pretty, e);
-                                        let _ = writeln!(error, "sccache: caused by: {}", e);
-                                    }
-                                    //TODO: figure out a better way to communicate this?
-                                    res.retcode = Some(-2);
-                                    res.stderr = error.into_bytes();
-                                }
-                            },
-                        }
-                    }
-                };
-
-                if let Some(cache_write) = cache_write {
-                    match cache_write.await {
-                        Err(e) => {
-                            debug!("Error executing cache write: {}", e);
-                            me.stats.lock().await.cache_write_errors += 1;
-                        }
-                        //TODO: save cache stats!
-                        Ok(info) => {
-                            debug!(
-                                "[{}]: Cache write finished in {}",
-                                info.object_file_pretty,
-                                util::fmt_duration_as_secs(&info.duration)
-                            );
-                            let mut stats = me.stats.lock().await;
-                            stats.cache_writes += 1;
-                            stats.cache_write_duration += info.duration;
-                        }
+                        },
                     }
                 }
+            }
 
-                Ok(res)
-            })
-            .map_err(anyhow::Error::new)
-            .await?
+            if let Some(cache_write) = cache_write {
+                match cache_write.await {
+                    Err(e) => {
+                        debug!("Error executing cache write: {}", e);
+                        me.stats.lock().await.cache_write_errors += 1;
+                    }
+                    //TODO: save cache stats!
+                    Ok(info) => {
+                        debug!(
+                            "[{}]: Cache write finished in {}",
+                            info.object_file_pretty,
+                            util::fmt_duration_as_secs(&info.duration)
+                        );
+                        let mut stats = me.stats.lock().await;
+                        stats.cache_writes += 1;
+                        stats.cache_write_duration += info.duration;
+                    }
+                }
+            }
+
+            Ok(res)
+        })
+        .map_err(anyhow::Error::new)
+        .await?
     }
 }
 
@@ -1571,6 +1780,17 @@ impl PerLanguageCount {
 
     pub fn new() -> PerLanguageCount {
         Self::default()
+    }
+}
+
+impl std::ops::AddAssign for PerLanguageCount {
+    fn add_assign(&mut self, rhs: Self) {
+        for (k, v) in rhs.counts {
+            *self.counts.entry(k).or_default() += v;
+        }
+        for (k, v) in rhs.adv_counts {
+            *self.adv_counts.entry(k).or_default() += v;
+        }
     }
 }
 
@@ -1622,6 +1842,47 @@ pub struct ServerStats {
     pub dist_compiles: HashMap<String, usize>,
     /// The count of compilations that were distributed but failed and had to be re-run locally
     pub dist_errors: u64,
+    /// Multi-level cache statistics (if multi-level caching is enabled)
+    pub multi_level: Option<crate::cache::multilevel::MultiLevelStats>,
+}
+
+impl std::ops::AddAssign for ServerStats {
+    fn add_assign(&mut self, rhs: Self) {
+        self.compile_requests += rhs.compile_requests;
+        self.requests_unsupported_compiler += rhs.requests_unsupported_compiler;
+        self.requests_not_compile += rhs.requests_not_compile;
+        self.requests_not_cacheable += rhs.requests_not_cacheable;
+        self.requests_executed += rhs.requests_executed;
+        self.cache_errors += rhs.cache_errors;
+        self.cache_hits += rhs.cache_hits;
+        self.cache_misses += rhs.cache_misses;
+        self.cache_timeouts += rhs.cache_timeouts;
+        self.cache_read_errors += rhs.cache_read_errors;
+        self.non_cacheable_compilations += rhs.non_cacheable_compilations;
+        self.forced_recaches += rhs.forced_recaches;
+        self.cache_write_errors += rhs.cache_write_errors;
+        self.cache_writes += rhs.cache_writes;
+        self.cache_write_duration += rhs.cache_write_duration;
+        self.cache_read_hit_duration += rhs.cache_read_hit_duration;
+        self.compilations += rhs.compilations;
+        self.compiler_write_duration += rhs.compiler_write_duration;
+        self.compile_fails += rhs.compile_fails;
+        for (k, v) in rhs.not_cached {
+            *self.not_cached.entry(k).or_default() += v;
+        }
+        for (k, v) in rhs.dist_compiles {
+            *self.dist_compiles.entry(k).or_default() += v;
+        }
+        self.dist_errors += rhs.dist_errors;
+        self.multi_level = match (self.multi_level.take(), rhs.multi_level) {
+            (Some(mut a), Some(b)) => {
+                a += b;
+                Some(a)
+            }
+            (a, None) => a,
+            (None, b) => b,
+        };
+    }
 }
 
 /// Info and stats about the server.
@@ -1633,6 +1894,7 @@ pub struct ServerInfo {
     pub max_cache_size: Option<u64>,
     pub use_preprocessor_cache_mode: bool,
     pub version: String,
+    pub basedirs: Vec<String>,
 }
 
 /// Status of the dist client.
@@ -1670,6 +1932,7 @@ impl Default for ServerStats {
             not_cached: HashMap::new(),
             dist_compiles: HashMap::new(),
             dist_errors: u64::default(),
+            multi_level: None,
         }
     }
 }
@@ -1687,6 +1950,17 @@ impl ServerStatsWriter for StdoutServerStatsWriter {
 }
 
 impl ServerStats {
+    fn record_not_cacheable(&mut self, why: &str, extra_info: Option<&str>) {
+        self.requests_not_cacheable += 1;
+        let reason = match (why, extra_info) {
+            ("crate-type", Some(crate_type)) if crate_type != NO_CRATE_TYPE_PASSED => {
+                format!("crate-type ({crate_type})")
+            }
+            _ => why.to_string(),
+        };
+        *self.not_cached.entry(reason).or_insert(0) += 1;
+    }
+
     /// Print stats in a human-readable format.
     ///
     /// Return the formatted width of each of the (name, value) columns.
@@ -1805,6 +2079,14 @@ impl ServerStats {
             self.dist_errors,
             "Failed distributed compilations"
         );
+
+        // Add multi-level cache statistics if available
+        if let Some(ref ml_stats) = self.multi_level {
+            for (name, value, suffix_type) in ml_stats.format_stats() {
+                stats_vec.push((name, value, suffix_type));
+            }
+        }
+
         let name_width = stats_vec.iter().map(|(n, _, _)| n.len()).max().unwrap();
         let stat_width = stats_vec.iter().map(|(_, s, _)| s.len()).max().unwrap();
         for (name, stat, suffix_len) in stats_vec {
@@ -1816,10 +2098,19 @@ impl ServerStats {
                 stat_width = stat_width + suffix_len
             ));
         }
+
+        // Compare values. If equal, compare keys to have a fully deterministic order.
+        let sort_func =
+            |(k1, v1): &(&String, &usize), (k2, v2): &(&String, &usize)| match v1.cmp(v2).reverse()
+            {
+                std::cmp::Ordering::Equal => k1.cmp(k2),
+                other => other,
+            };
+
         if !self.dist_compiles.is_empty() {
             writer.write("\nSuccessful distributed compiles");
             let mut counts: Vec<_> = self.dist_compiles.iter().collect();
-            counts.sort_by(|(_, c1), (_, c2)| c1.cmp(c2).reverse());
+            counts.sort_by(sort_func);
             for (reason, count) in counts {
                 writer.write(&format!(
                     "  {:<name_width$} {:>stat_width$}",
@@ -1833,7 +2124,7 @@ impl ServerStats {
         if !self.not_cached.is_empty() {
             writer.write("\nNon-cacheable reasons:");
             let mut counts: Vec<_> = self.not_cached.iter().collect();
-            counts.sort_by(|(_, c1), (_, c2)| c1.cmp(c2).reverse());
+            counts.sort_by(sort_func);
             for (reason, count) in counts {
                 writer.write(&format!(
                     "{:<name_width$} {:>stat_width$}",
@@ -1920,6 +2211,8 @@ impl ServerInfo {
         let use_preprocessor_cache_mode;
         let cache_size;
         let max_cache_size;
+        let basedirs;
+        let multi_level;
         if let Some(storage) = storage {
             cache_location = storage.location();
             use_preprocessor_cache_mode = storage
@@ -1927,30 +2220,70 @@ impl ServerInfo {
                 .use_preprocessor_cache_mode;
             (cache_size, max_cache_size) =
                 futures::try_join!(storage.current_size(), storage.max_size())?;
+            basedirs = storage
+                .basedirs()
+                .iter()
+                .map(|p| String::from_utf8_lossy(p).to_string())
+                .collect();
+            multi_level = storage.multilevel_stats();
         } else {
             cache_location = String::new();
             use_preprocessor_cache_mode = false;
             cache_size = None;
             max_cache_size = None;
+            basedirs = Vec::new();
+            multi_level = None;
         }
         let version = env!("CARGO_PKG_VERSION").to_string();
         Ok(ServerInfo {
-            stats,
+            stats: ServerStats {
+                multi_level,
+                ..stats
+            },
             cache_location,
             cache_size,
             max_cache_size,
             use_preprocessor_cache_mode,
             version,
+            basedirs,
         })
     }
 
     /// Print info to stdout in a human-readable format.
-    pub fn print(&self, advanced: bool) {
+    pub fn print(&self, advanced: bool, effective_cache_mode: Option<CacheMode>) {
         let (name_width, stat_width) = self.stats.print(&mut StdoutServerStatsWriter, advanced);
         println!(
             "{:<name_width$} {}",
             "Cache location",
             self.cache_location,
+            name_width = name_width
+        );
+        if let Some(ref ml_stats) = self.stats.multi_level {
+            for level in &ml_stats.0 {
+                println!(
+                    "{:<name_width$} {}",
+                    format!("  {}", level.name),
+                    level.location,
+                    name_width = name_width
+                );
+            }
+        }
+        if advanced && let Some(cache_mode) = effective_cache_mode {
+            println!(
+                "{:<name_width$} {:?}",
+                "Effective cache mode",
+                cache_mode,
+                name_width = name_width
+            );
+        }
+        println!(
+            "{:<name_width$} {}",
+            "Base directories",
+            if self.basedirs.is_empty() {
+                "(none)".to_string()
+            } else {
+                self.basedirs.join(", ")
+            },
             name_width = name_width
         );
         if self.cache_location.starts_with("Local disk") {
@@ -2152,7 +2485,7 @@ impl Future for ShutdownOrInactive {
 
 /// Helper future which tracks the `ActiveInfo` below. This future will resolve
 /// once all instances of `ActiveInfo` have been dropped.
-struct WaitUntilZero {
+pub(crate) struct WaitUntilZero {
     info: std::sync::Weak<std::sync::Mutex<Info>>,
 }
 
@@ -2176,7 +2509,7 @@ impl Drop for Info {
 
 impl WaitUntilZero {
     #[rustfmt::skip]
-    fn new() -> (WaitUntilZero, ActiveInfo) {
+    pub(crate) fn new() -> (WaitUntilZero, ActiveInfo) {
         let info = Arc::new(std::sync::Mutex::new(Info { waker: None }));
 
         (WaitUntilZero { info: Arc::downgrade(&info) }, ActiveInfo { info })
@@ -2218,9 +2551,22 @@ fn waits_until_zero() {
     assert_eq!(wait.now_or_never(), Some(()));
 }
 
+fn fatal_error_message(err: &anyhow::Error) -> String {
+    use std::fmt::Write;
+
+    let mut message = "sccache: encountered fatal error\n".to_string();
+    let _ = writeln!(message, "sccache: error: {}", err);
+    for e in err.chain().skip(1) {
+        let _ = writeln!(message, "sccache: caused by: {}", e);
+    }
+    message
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mock_command::{MockChild, MockCommandCreator, exit_status};
+    use crate::test::utils::{TestFixture, next_command, next_command_calls};
 
     struct StringWriter {
         buffer: String,
@@ -2242,6 +2588,34 @@ mod tests {
         fn write(&mut self, text: &str) {
             self.buffer.push_str(&format!("{}\n", text));
         }
+    }
+
+    #[test]
+    #[cfg(feature = "dist-client")]
+    fn test_dist_status_retries_expired_client_state() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let config = DistClientConfig {
+            pool: runtime.handle().clone(),
+            scheduler_url: None,
+            auth: config::DistAuth::Token {
+                token: String::new(),
+            },
+            cache_dir: PathBuf::new(),
+            toolchain_cache_size: 0,
+            toolchains: vec![],
+            rewrite_includes_only: false,
+        };
+        let container = DistClientContainer::new_with_state(DistClientState::RetryCreateAt(
+            Box::new(config),
+            Instant::now().checked_sub(Duration::from_secs(1)).unwrap(),
+        ));
+
+        let status = runtime.block_on(container.get_status());
+
+        assert!(matches!(status, DistInfo::Disabled(_)));
     }
 
     #[test]
@@ -2320,5 +2694,279 @@ mod tests {
         assert!(output.contains("Cache hits rate (c/c++ [clang])   100.00 %"));
         assert!(output.contains("Cache hits rate (cuda)              0.00 %"));
         assert!(output.contains("Cache hits rate (rust)             33.33 %"));
+    }
+
+    // Test that 2 servers with the same hits will always be printed in the same order.
+    // This test will **randomly** (not consistently) fail in case of a regression, due to HashMap iteration behaviour.
+    #[test]
+    fn test_print_deterministic_hits() {
+        // Test a bunch of time to make the test fail often enough
+        for _ in 0..5 {
+            let mut stats = ServerStats::default();
+            stats.dist_compiles.insert("server1".to_string(), 10);
+            stats.dist_compiles.insert("server2".to_string(), 10);
+
+            let mut writer = StringWriter::new();
+            stats.print(&mut writer, false);
+
+            // Check that the order is deterministic
+            let output = writer.get_output();
+            let lines: Vec<&str> = output.lines().collect();
+            let find_s1 = lines
+                .iter()
+                .position(|line| line.contains("server1"))
+                .unwrap();
+            let find_s2 = lines
+                .iter()
+                .position(|line| line.contains("server2"))
+                .unwrap();
+            assert!(find_s1 < find_s2);
+        }
+    }
+
+    const RMETA_NOTIFICATION: &[u8] = b"{\"artifact\":\"/t/libdep.rmeta\",\"emit\":\"metadata\"}\n";
+    const OTHER_STDERR: &[u8] = b"{\"artifact\":\"/t/libdep.rlib\",\"emit\":\"link\"}\n";
+
+    type MockCreator = Arc<std::sync::Mutex<MockCommandCreator>>;
+
+    #[test]
+    fn storage_handshake_reports_installed_cache_mode() {
+        use crate::cache::disk::DiskCache;
+        use crate::config::PreprocessorCacheModeConfig;
+
+        let fixture = TestFixture::new();
+        let runtime = Runtime::new().unwrap();
+        let storage = Arc::new(DiskCache::new(
+            fixture.tempdir.path().join("cache-mode"),
+            u64::MAX,
+            runtime.handle(),
+            PreprocessorCacheModeConfig::default(),
+            CacheMode::ReadWrite,
+            vec![],
+        ));
+        let client = Client::new_num(1);
+        let (tx, _rx) = mpsc::channel(1);
+        let (_wait, info) = WaitUntilZero::new();
+        let service = SccacheService::<MockCreator>::new(
+            DistClientContainer::new_disabled(),
+            storage,
+            CacheMode::ReadOnly,
+            &client,
+            runtime.handle().clone(),
+            tx,
+            info,
+        );
+        let request: SccacheRequest = Message::WithoutBody(Request::StorageHandshake);
+        let response = runtime
+            .block_on(Arc::new(service).call(request))
+            .unwrap()
+            .into_inner();
+
+        let Response::StorageHandshake(handshake) = response else {
+            panic!("unexpected response: {response:?}");
+        };
+        assert_eq!(handshake.cache_mode, CacheMode::ReadOnly);
+    }
+
+    fn mock_rustc_cache_miss(creator: &MockCreator, f: &TestFixture) {
+        // rustc -vV
+        next_command(
+            creator,
+            Ok(MockChild::new(
+                exit_status(0),
+                "rustc 1.90.0 (0000000 2026-01-01)\nhost: x86_64-unknown-linux-gnu\n",
+                "",
+            )),
+        );
+        // rustc +stable: not a rustup proxy
+        next_command(creator, Ok(MockChild::new(exit_status(1), "", "")));
+        // rustc --print=sysroot --print=target-libdir
+        let sysroot = f.tempdir.path().to_str().unwrap();
+        let sysroot_and_target_libdir =
+            format!("{sysroot}\n{sysroot}/lib/rustlib/x86_64-unknown-linux-gnu/lib");
+        next_command(
+            creator,
+            Ok(MockChild::new(
+                exit_status(0),
+                sysroot_and_target_libdir,
+                "",
+            )),
+        );
+        mock_rustc_hash_inputs(creator);
+        // The compile itself.
+        let out_dir = f.tempdir.path().to_path_buf();
+        next_command_calls(creator, move |_| {
+            std::fs::write(out_dir.join("libdep.rlib"), "rlib")?;
+            std::fs::write(out_dir.join("libdep.rmeta"), "rmeta")?;
+            Ok(MockChild::new(
+                exit_status(0),
+                "",
+                [RMETA_NOTIFICATION, OTHER_STDERR].concat(),
+            ))
+        });
+    }
+
+    fn mock_rustc_hash_inputs(creator: &MockCreator) {
+        // rustc --emit dep-info -o <file>
+        next_command_calls(creator, |args| {
+            let dep_file = args.iter().skip_while(|a| *a != "-o").nth(1).unwrap();
+            std::fs::write(dep_file, "libdep.rlib: lib.rs\nlib.rs:\n")?;
+            Ok(MockChild::new(exit_status(0), "", ""))
+        });
+        // rustc --print file-names
+        next_command(
+            creator,
+            Ok(MockChild::new(exit_status(0), "libdep.rlib\n", "")),
+        );
+    }
+
+    type MockService = SccacheService<MockCreator>;
+
+    /// A service whose mocked rustc is queued for one cache-miss compile of `dep`,
+    /// and then a request for that compile.
+    fn rustc_miss_fixture() -> (TestFixture, Runtime, MockService, Compile) {
+        use crate::cache::disk::DiskCache;
+        use crate::config::PreprocessorCacheModeConfig;
+
+        let _ = env_logger::try_init();
+        let f = TestFixture::new();
+        let rustc = f.mk_bin("rustc").unwrap();
+        // Windows uses bin, everything else uses lib. Just create both.
+        std::fs::create_dir(f.tempdir.path().join("lib")).unwrap();
+        std::fs::create_dir(f.tempdir.path().join("bin")).unwrap();
+        f.touch("lib.rs").unwrap();
+
+        let runtime = Runtime::new().unwrap();
+        let storage = Arc::new(DiskCache::new(
+            f.tempdir.path().join("cache"),
+            u64::MAX,
+            runtime.handle(),
+            PreprocessorCacheModeConfig::default(),
+            CacheMode::ReadWrite,
+            vec![],
+        ));
+        let service = MockService::mock_with_storage(storage, runtime.handle().clone());
+        mock_rustc_cache_miss(&service.creator, &f);
+
+        let compile = dep_compile(&f, &rustc);
+        (f, runtime, service, compile)
+    }
+
+    /// The request for compiling `dep`.
+    fn dep_compile(f: &TestFixture, rustc: &std::path::Path) -> Compile {
+        Compile {
+            exe: rustc.into(),
+            cwd: f.tempdir.path().into(),
+            args: [
+                "--crate-name",
+                "dep",
+                "lib.rs",
+                "--crate-type",
+                "lib",
+                "--emit=link,metadata",
+                "--out-dir",
+                f.tempdir.path().to_str().unwrap(),
+            ]
+            .into_iter()
+            .map(Into::into)
+            .collect(),
+            env_vars: vec![],
+        }
+    }
+
+    fn compile_body(
+        runtime: &Runtime,
+        service: &MockService,
+        compile: Compile,
+    ) -> (Vec<Response>, CompileFinished) {
+        let (resp, body) = match runtime.block_on(service.handle_compile(compile)).unwrap() {
+            Message::WithBody(Response::Compile(resp), body) => (resp, body),
+            other => panic!("unexpected response: {:?}", other.into_inner()),
+        };
+        assert!(matches!(resp, CompileResponse::CompileStarted));
+
+        let mut body = runtime.block_on(body.try_collect::<Vec<_>>()).unwrap();
+        let finished = match body.pop() {
+            Some(Response::CompileFinished(finished)) => finished,
+            other => panic!("body must end with CompileFinished, got {other:?}"),
+        };
+        (body, finished)
+    }
+
+    #[test]
+    fn records_non_cacheable_crate_type_detail_in_existing_stats_map() {
+        let mut stats = ServerStats::default();
+        stats.record_not_cacheable("crate-type", Some("bin"));
+        stats.record_not_cacheable("crate-type", Some("proc-macro"));
+        stats.record_not_cacheable("crate-type", Some(NO_CRATE_TYPE_PASSED));
+        stats.record_not_cacheable("missing input", None);
+
+        assert_eq!(stats.requests_not_cacheable, 4);
+        assert_eq!(stats.not_cached.get("crate-type (bin)"), Some(&1));
+        assert_eq!(stats.not_cached.get("crate-type (proc-macro)"), Some(&1));
+        assert_eq!(stats.not_cached.get("crate-type"), Some(&1));
+        assert_eq!(stats.not_cached.get("missing input"), Some(&1));
+    }
+
+    #[test]
+    fn daemon_mode_rmeta_notification_delivery_on_rustc_miss() {
+        let (_f, runtime, service, compile) = rustc_miss_fixture();
+
+        let (before_finished, finished) = compile_body(&runtime, &service, compile);
+
+        assert_eq!(Some(0), finished.retcode);
+        assert!(
+            matches!(
+                before_finished.as_slice(),
+                [Response::ArtifactNotification(chunk)] if chunk == RMETA_NOTIFICATION
+            ),
+            "delivered while the compiler runs: {before_finished:?}"
+        );
+        // The daemon leaves rustc's stderr intact.
+        // Client will dedup stderr if already forwarded.
+        assert_eq!(
+            [RMETA_NOTIFICATION, OTHER_STDERR].concat(),
+            finished.stderr,
+            "stderr delivered with CompileFinished"
+        );
+        assert_eq!(0, service.creator.lock().unwrap().children.len());
+    }
+
+    #[test]
+    fn client_side_mode_rmeta_notification_delivery_on_rustc_miss() {
+        let (_f, runtime, service, compile) = rustc_miss_fixture();
+
+        let mut stderr = Vec::new();
+        let (resp, finished, forwarded) = runtime
+            .block_on(service.compile_direct(compile, &mut stderr))
+            .unwrap();
+        let finished = finished.expect("compile started");
+
+        assert!(matches!(resp, CompileResponse::CompileStarted));
+        assert_eq!(Some(0), finished.retcode);
+        assert!(forwarded);
+        assert_eq!(
+            RMETA_NOTIFICATION,
+            stderr.as_slice(),
+            "forwarded while the compiler runs"
+        );
+        // The caller drops the copy in `CompileFinished`.
+        assert_eq!(
+            [RMETA_NOTIFICATION, OTHER_STDERR].concat(),
+            finished.stderr,
+            "stderr delivered with CompileFinished"
+        );
+        assert_eq!(0, service.creator.lock().unwrap().children.len());
+    }
+
+    #[test]
+    fn test_fatal_error_message_does_not_repeat_the_error() {
+        let err = anyhow::anyhow!("inner").context("outer");
+        assert_eq!(
+            fatal_error_message(&err),
+            "sccache: encountered fatal error\n\
+             sccache: error: outer\n\
+             sccache: caused by: inner\n"
+        );
     }
 }

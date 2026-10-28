@@ -17,9 +17,9 @@ use async_trait::async_trait;
 
 use crate::cache::{Cache, CacheMode, CacheWrite, Storage};
 use crate::compiler::PreprocessorCacheEntry;
+use crate::config::PreprocessorCacheModeConfig;
 use crate::errors::*;
-
-use super::PreprocessorCacheModeConfig;
+use bytes::Bytes;
 
 pub struct ReadOnlyStorage(pub Arc<dyn Storage>);
 
@@ -27,6 +27,10 @@ pub struct ReadOnlyStorage(pub Arc<dyn Storage>);
 impl Storage for ReadOnlyStorage {
     async fn get(&self, key: &str) -> Result<Cache> {
         self.0.get(key).await
+    }
+
+    async fn get_with_raw(&self, key: &str) -> Result<(Cache, Option<Bytes>)> {
+        self.0.get_with_raw(key).await
     }
 
     /// Put `entry` in the cache under `key`.
@@ -49,6 +53,11 @@ impl Storage for ReadOnlyStorage {
         self.0.location()
     }
 
+    /// Get the cache backend type name.
+    fn cache_type_name(&self) -> &'static str {
+        self.0.cache_type_name()
+    }
+
     /// Get the current storage usage, if applicable.
     async fn current_size(&self) -> Result<Option<u64>> {
         self.0.current_size().await
@@ -62,6 +71,11 @@ impl Storage for ReadOnlyStorage {
     /// Return the config for preprocessor cache mode if applicable
     fn preprocessor_cache_mode_config(&self) -> PreprocessorCacheModeConfig {
         self.0.preprocessor_cache_mode_config()
+    }
+
+    /// Return the base directories for path normalization if configured
+    fn basedirs(&self) -> &[Vec<u8>] {
+        self.0.basedirs()
     }
 
     /// Return the preprocessor cache entry for a given preprocessor key,
@@ -83,6 +97,11 @@ impl Storage for ReadOnlyStorage {
         _preprocessor_cache_entry: PreprocessorCacheEntry,
     ) -> Result<()> {
         Err(anyhow!("Cannot write to read-only storage"))
+    }
+
+    /// Get raw serialized cache entry bytes (forwarded to inner storage)
+    async fn get_raw(&self, key: &str) -> Result<Option<Bytes>> {
+        self.0.get_raw(key).await
     }
 }
 
@@ -122,6 +141,40 @@ mod test {
     }
 
     #[test]
+    fn readonly_storage_forwards_basedirs() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .worker_threads(1)
+            .build()
+            .unwrap();
+
+        let tempdir = tempfile::Builder::new()
+            .prefix("readonly_storage_forwards_basedirs")
+            .tempdir()
+            .expect("Failed to create tempdir");
+        let cache_dir = tempdir.path().join("cache");
+        std::fs::create_dir(&cache_dir).unwrap();
+
+        let basedirs = vec![
+            b"/home/user/project".to_vec(),
+            b"/home/user/workspace".to_vec(),
+        ];
+
+        let disk_cache = crate::cache::disk::DiskCache::new(
+            &cache_dir,
+            1024 * 1024,
+            runtime.handle(),
+            super::PreprocessorCacheModeConfig::default(),
+            super::CacheMode::ReadWrite,
+            basedirs.clone(),
+        );
+
+        let readonly_storage = ReadOnlyStorage(std::sync::Arc::new(disk_cache));
+
+        assert_eq!(readonly_storage.basedirs(), basedirs.as_slice());
+    }
+
+    #[test]
     fn readonly_storage_put_err() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -148,5 +201,34 @@ mod test {
                 "Cannot write to read-only storage"
             );
         });
+    }
+
+    #[test]
+    fn readonly_storage_forwards_cache_type_name() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .worker_threads(1)
+            .build()
+            .unwrap();
+
+        let tempdir = tempfile::Builder::new()
+            .prefix("readonly_cache_type_name")
+            .tempdir()
+            .expect("Failed to create tempdir");
+        let cache_dir = tempdir.path().join("cache");
+        std::fs::create_dir(&cache_dir).unwrap();
+
+        let disk_cache = crate::cache::disk::DiskCache::new(
+            &cache_dir,
+            1024 * 1024,
+            runtime.handle(),
+            super::PreprocessorCacheModeConfig::default(),
+            super::CacheMode::ReadWrite,
+            vec![],
+        );
+
+        let readonly_storage = ReadOnlyStorage(std::sync::Arc::new(disk_cache));
+
+        assert_eq!(readonly_storage.cache_type_name(), "disk");
     }
 }

@@ -1,9 +1,11 @@
 use fs_err as fs;
+use log::trace;
 #[cfg(any(feature = "dist-client", feature = "dist-server"))]
 use sccache::config::HTTPUrl;
 use sccache::dist::{self, SchedulerStatusResult, ServerId};
 use sccache::server::ServerInfo;
 use std::env;
+use std::fs::remove_dir_all;
 use std::io::Write;
 use std::net::{self, IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
@@ -30,6 +32,7 @@ const DIST_IMAGE: &str = "sccache_dist_test_image";
 const DIST_DOCKERFILE: &str = include_str!("Dockerfile.sccache-dist");
 const DIST_IMAGE_BWRAP_PATH: &str = "/usr/bin/bwrap";
 const MAX_STARTUP_WAIT: Duration = Duration::from_secs(5);
+const DIST_CACHE_RELPATH: &str = "client-dist-cache";
 
 const DIST_SERVER_TOKEN: &str = "THIS IS THE TEST TOKEN";
 
@@ -70,6 +73,13 @@ pub fn stop_local_daemon() -> bool {
         .stderr(Stdio::null())
         .status()
         .is_ok_and(|status| status.success())
+}
+
+pub fn clear_cache_local_daemon(tmpdir: &Path) -> bool {
+    trace!("clear local cache daemon");
+    let client_build_dir = tmpdir.join(DIST_CACHE_RELPATH);
+    assert!(client_build_dir.exists());
+    remove_dir_all(client_build_dir).is_ok()
 }
 
 pub fn get_stats<F: 'static + Fn(ServerInfo)>(f: F) {
@@ -130,7 +140,7 @@ pub fn prune_command(mut cmd: Command) -> Command {
 }
 
 pub fn sccache_command() -> Command {
-    prune_command(Command::new(assert_cmd::cargo::cargo_bin("sccache")))
+    prune_command(Command::new(env!("CARGO_BIN_EXE_sccache")))
 }
 
 pub fn cargo_command() -> Command {
@@ -139,7 +149,7 @@ pub fn cargo_command() -> Command {
 
 #[cfg(feature = "dist-server")]
 pub fn sccache_dist_path() -> PathBuf {
-    assert_cmd::cargo::cargo_bin("sccache-dist")
+    env!("CARGO_BIN_EXE_sccache-dist").into()
 }
 
 pub fn sccache_client_cfg(
@@ -147,7 +157,7 @@ pub fn sccache_client_cfg(
     preprocessor_cache_mode: bool,
 ) -> sccache::config::FileConfig {
     let cache_relpath = "client-cache";
-    let dist_cache_relpath = "client-dist-cache";
+    let dist_cache_relpath = DIST_CACHE_RELPATH;
     fs::create_dir(tmpdir.join(cache_relpath)).unwrap();
     fs::create_dir(tmpdir.join(dist_cache_relpath)).unwrap();
 
@@ -170,6 +180,8 @@ pub fn sccache_client_cfg(
             s3: None,
             webdav: None,
             oss: None,
+            cos: None,
+            multilevel: None,
         },
         dist: sccache::config::DistConfig {
             auth: Default::default(), // dangerously_insecure
@@ -180,6 +192,8 @@ pub fn sccache_client_cfg(
             rewrite_includes_only: false, // TODO
         },
         server_startup_timeout_ms: None,
+        basedirs: vec![],
+        client_side_mode: false,
     }
 }
 
@@ -227,6 +241,7 @@ fn create_server_token(server_id: ServerId, auth_token: &str) -> String {
 }
 
 #[cfg(feature = "dist-server")]
+#[allow(dead_code)]
 pub enum ServerHandle {
     Container {
         cid: String,
@@ -252,22 +267,36 @@ pub struct DistSystem {
 #[cfg(feature = "dist-server")]
 impl DistSystem {
     pub fn new(sccache_dist: &Path, tmpdir: &Path) -> Self {
-        // Make sure the docker image is available, building it if necessary
-        let mut child = Command::new("docker")
-            .args(["build", "-q", "-t", DIST_IMAGE, "-"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        child
-            .stdin
-            .as_mut()
-            .unwrap()
-            .write_all(DIST_DOCKERFILE.as_bytes())
-            .unwrap();
-        let output = child.wait_with_output().unwrap();
-        check_output(&output);
+        // Make sure the docker image is available, building it if necessary.
+        // Retry up to 3 times to handle transient apt-get failures in CI.
+        let mut last_output = None;
+        for attempt in 1..=3 {
+            let mut child = Command::new("docker")
+                .args(["build", "-q", "-t", DIST_IMAGE, "-"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            child
+                .stdin
+                .as_mut()
+                .unwrap()
+                .write_all(DIST_DOCKERFILE.as_bytes())
+                .unwrap();
+            let output = child.wait_with_output().unwrap();
+            if output.status.success() {
+                last_output = Some(output);
+                break;
+            }
+            eprintln!(
+                "docker build attempt {}/3 failed (exit {}), retrying...",
+                attempt, output.status
+            );
+            last_output = Some(output);
+            std::thread::sleep(Duration::from_secs(5 * attempt as u64));
+        }
+        check_output(&last_output.unwrap());
 
         let tmpdir = tmpdir.join("distsystem");
         fs::create_dir(&tmpdir).unwrap();
@@ -446,7 +475,9 @@ impl DistSystem {
                 child
             }
             ForkResult::Child => {
-                env::set_var("SCCACHE_LOG", "sccache=trace");
+                unsafe {
+                    env::set_var("SCCACHE_LOG", "sccache=trace");
+                }
                 env_logger::try_init().unwrap();
                 server.start().unwrap();
                 unreachable!();
@@ -475,6 +506,30 @@ impl DistSystem {
             }
         }
         self.wait_server_ready(handle)
+    }
+    pub fn count_toolchains_on_server(&mut self, handle: &ServerHandle) -> usize {
+        match handle {
+            ServerHandle::Container { cid, url: _ } => {
+                let output = Command::new("docker")
+                    .args([
+                        "exec",
+                        "-t",
+                        cid,
+                        "ls",
+                        "-1",
+                        &format!("{BUILD_DIR_CONTAINER_PATH}/toolchains"),
+                    ])
+                    .output()
+                    .unwrap();
+                check_output(&output);
+                println!("{output:?}");
+                let str_output = String::from_utf8_lossy(&output.stdout);
+                str_output.lines().filter(|&part| !part.is_empty()).count()
+            }
+            ServerHandle::Process { pid: _, url: _ } => {
+                panic!("restart not yet implemented for pids")
+            }
+        }
     }
 
     pub fn wait_server_ready(&mut self, handle: &ServerHandle) {
@@ -546,32 +601,44 @@ impl Drop for DistSystem {
         let mut exits = vec![];
 
         if let Some(scheduler_name) = self.scheduler_name.as_ref() {
-            droperr!(Command::new("docker")
-                .args(["logs", scheduler_name])
-                .output()
-                .map(|o| logs.push((scheduler_name, o))));
-            droperr!(Command::new("docker")
-                .args(["kill", scheduler_name])
-                .output()
-                .map(|o| outputs.push((scheduler_name, o))));
-            droperr!(Command::new("docker")
-                .args(["rm", "-f", scheduler_name])
-                .output()
-                .map(|o| outputs.push((scheduler_name, o))));
+            droperr!(
+                Command::new("docker")
+                    .args(["logs", scheduler_name])
+                    .output()
+                    .map(|o| logs.push((scheduler_name, o)))
+            );
+            droperr!(
+                Command::new("docker")
+                    .args(["kill", scheduler_name])
+                    .output()
+                    .map(|o| outputs.push((scheduler_name, o)))
+            );
+            droperr!(
+                Command::new("docker")
+                    .args(["rm", "-f", scheduler_name])
+                    .output()
+                    .map(|o| outputs.push((scheduler_name, o)))
+            );
         }
         for server_name in self.server_names.iter() {
-            droperr!(Command::new("docker")
-                .args(["logs", server_name])
-                .output()
-                .map(|o| logs.push((server_name, o))));
-            droperr!(Command::new("docker")
-                .args(["kill", server_name])
-                .output()
-                .map(|o| outputs.push((server_name, o))));
-            droperr!(Command::new("docker")
-                .args(["rm", "-f", server_name])
-                .output()
-                .map(|o| outputs.push((server_name, o))));
+            droperr!(
+                Command::new("docker")
+                    .args(["logs", server_name])
+                    .output()
+                    .map(|o| logs.push((server_name, o)))
+            );
+            droperr!(
+                Command::new("docker")
+                    .args(["kill", server_name])
+                    .output()
+                    .map(|o| outputs.push((server_name, o)))
+            );
+            droperr!(
+                Command::new("docker")
+                    .args(["rm", "-f", server_name])
+                    .output()
+                    .map(|o| outputs.push((server_name, o)))
+            );
         }
         for &pid in self.server_pids.iter() {
             droperr!(nix::sys::signal::kill(pid, Signal::SIGINT));
@@ -588,14 +655,16 @@ impl Drop for DistSystem {
             if killagain {
                 eprintln!("SIGINT didn't kill process, trying SIGKILL");
                 droperr!(nix::sys::signal::kill(pid, Signal::SIGKILL));
-                droperr!(nix::sys::wait::waitpid(pid, Some(WaitPidFlag::WNOHANG))
-                    .map_err(|e| e.to_string())
-                    .and_then(|ws| if ws == WaitStatus::StillAlive {
-                        Err("process alive after sigkill".to_owned())
-                    } else {
-                        exits.push(ws);
-                        Ok(())
-                    }));
+                droperr!(
+                    nix::sys::wait::waitpid(pid, Some(WaitPidFlag::WNOHANG))
+                        .map_err(|e| e.to_string())
+                        .and_then(|ws| if ws == WaitStatus::StillAlive {
+                            Err("process alive after sigkill".to_owned())
+                        } else {
+                            exits.push(ws);
+                            Ok(())
+                        })
+                );
             }
         }
 
@@ -654,8 +723,12 @@ fn make_container_name(tag: &str) -> String {
 
 fn check_output(output: &Output) {
     if !output.status.success() {
-        println!("{}\n\n[BEGIN STDOUT]\n===========\n{}\n===========\n[FIN STDOUT]\n\n[BEGIN STDERR]\n===========\n{}\n===========\n[FIN STDERR]\n\n",
-            output.status, String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        println!(
+            "{}\n\n[BEGIN STDOUT]\n===========\n{}\n===========\n[FIN STDOUT]\n\n[BEGIN STDERR]\n===========\n{}\n===========\n[FIN STDERR]\n\n",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
         panic!()
     }
 }
@@ -688,7 +761,7 @@ fn wait_for<F: Fn() -> Result<(), String>>(f: F, interval: Duration, max_wait: D
         if start.elapsed() > max_wait {
             break;
         }
-        thread::sleep(interval)
+        thread::sleep(interval);
     }
     panic!("wait timed out, last error result: {}", lasterr)
 }
