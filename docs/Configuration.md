@@ -132,6 +132,9 @@ db = 1
 # Entry expiration time in seconds. Default is 0 (never expire)
 expiration = 3600
 key_prefix = "/custom/prefix/if/need"
+# Optional positive IO deadline in seconds, including connection-pool acquisition.
+# Unset preserves the Redis backend's existing timeouts.
+# io_timeout_secs = 2
 
 [cache.s3]
 bucket = "name"
@@ -281,6 +284,7 @@ will default to `us-east-1`.
 * `SCCACHE_REDIS_DB` redis database (optional, default is 0).
 * `SCCACHE_REDIS_EXPIRATION` / `SCCACHE_REDIS_TTL` ttl for redis cache, don't set for default behavior.
 * `SCCACHE_REDIS_KEY_PREFIX` key prefix (optional).
+* `SCCACHE_REDIS_IO_TIMEOUT_SECS` optional positive integer deadline in seconds for Redis read/write IO, including connection-pool acquisition. Unset preserves existing backend timeouts; see [Redis.md](Redis.md).
 * `SCCACHE_REDIS_RW_MODE` allows to use redis backend in read-only mode if set to `READ_ONLY`
 
 The full url appears then as `redis://user:passwd@1.2.3.4:6379/?db=1`.
