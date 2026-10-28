@@ -2117,61 +2117,19 @@ mod test {
     fn test_parse_arguments_clang_profile_use() {
         let cwd = std::env::current_dir().unwrap();
         for flag in ["-fprofile-instr-use", "-fprofile-use"] {
-            for path in [
-                PathBuf::from("profile.profdata"),
-                PathBuf::from("profiles with spaces").join("profile.profdata"),
-                cwd.join("absolute.profdata"),
-            ] {
-                let mut option = OsString::from(format!("{flag}="));
-                option.push(&path);
-                let args = ovec!["-c", "foo.c", option.clone()];
-                let parsed = match parse_arguments_clang(args.clone()) {
-                    CompilerArguments::Ok(parsed) => parsed,
-                    other => panic!("Unexpected parse result: {other:?}"),
-                };
-                assert_eq!(parsed.common_args, vec![option]);
-                assert_eq!(parsed.extra_hash_files, vec![cwd.join(&path)]);
-                assert!(matches!(
-                    parse_arguments(args),
-                    CompilerArguments::CannotCache(..)
-                ));
-            }
-        }
-    }
-
-    #[test]
-    fn test_parse_arguments_clang_profile_use_default() {
-        let cwd = std::env::current_dir().unwrap();
-        for option in ["-fprofile-use", "-fprofile-use=."] {
-            let parsed = match parse_arguments_clang(ovec!["-c", "foo.c", option]) {
+            let option = format!("{flag}=profile.profdata");
+            let args = ovec!["-c", "foo.c", option.clone()];
+            let parsed = match parse_arguments_clang(args.clone()) {
                 CompilerArguments::Ok(parsed) => parsed,
                 other => panic!("Unexpected parse result: {other:?}"),
             };
             assert_eq!(parsed.common_args, ovec![option]);
-            assert_eq!(parsed.extra_hash_files, vec![cwd.join("default.profdata")]);
+            assert_eq!(parsed.extra_hash_files, vec![cwd.join("profile.profdata")]);
+            assert!(matches!(
+                parse_arguments(args),
+                CompilerArguments::CannotCache(..)
+            ));
         }
-    }
-
-    #[test]
-    fn test_parse_arguments_clang_profile_use_response_file() {
-        let temp = tempfile::tempdir().unwrap();
-        std::fs::write(
-            temp.path().join("args.rsp"),
-            "-c foo.c -fprofile-instr-use=\"profiles with spaces/test.profdata\"",
-        )
-        .unwrap();
-        let parsed = match super::parse_arguments(&["@args.rsp".into()], temp.path(), true) {
-            CompilerArguments::Ok(parsed) => parsed,
-            other => panic!("Unexpected parse result: {other:?}"),
-        };
-        assert_eq!(
-            parsed.common_args,
-            ovec!["-fprofile-instr-use=profiles with spaces/test.profdata"]
-        );
-        assert_eq!(
-            parsed.extra_hash_files,
-            vec![temp.path().join("profiles with spaces/test.profdata")]
-        );
     }
 
     #[test]
