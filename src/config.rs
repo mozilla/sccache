@@ -28,6 +28,7 @@ use serde::{
 use serial_test::serial;
 use std::env;
 use std::io::{Read, Write};
+use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::result::Result as StdResult;
 use std::str::FromStr;
@@ -441,6 +442,8 @@ pub struct RedisCacheConfig {
     /// Default to infinity (0)
     #[serde(default, alias = "expiration")]
     pub ttl: u64,
+
+    pub io_timeout_secs: Option<NonZeroU64>,
 
     #[serde(default)]
     pub key_prefix: String,
@@ -954,6 +957,9 @@ fn config_from_env() -> Result<EnvConfig> {
                 .transpose()?
                 .unwrap_or(DEFAULT_REDIS_CACHE_TTL);
 
+            let io_timeout_secs =
+                number_from_env_var("SCCACHE_REDIS_IO_TIMEOUT_SECS").transpose()?;
+
             let key_prefix = key_prefix_from_env_var("SCCACHE_REDIS_KEY_PREFIX");
 
             let rw_mode = cache_mode_from_env_var("SCCACHE_REDIS_RW_MODE")
@@ -967,6 +973,7 @@ fn config_from_env() -> Result<EnvConfig> {
                 password,
                 db,
                 ttl,
+                io_timeout_secs,
                 key_prefix,
                 rw_mode,
             })
@@ -1748,6 +1755,120 @@ fn test_skip_cache_check_from_env() {
 }
 
 #[test]
+fn test_redis_io_timeout_from_file() {
+    for (setting, expected) in [
+        ("", None),
+        ("io_timeout_secs = 1", Some(1)),
+        ("io_timeout_secs = 37", Some(37)),
+    ] {
+        let config: FileConfig = toml::from_str(&format!(
+            "[cache.redis]\nendpoint = \"redis://localhost:6379\"\n{setting}"
+        ))
+        .unwrap();
+        assert_eq!(
+            config.cache.redis.unwrap().io_timeout_secs,
+            expected.and_then(NonZeroU64::new)
+        );
+    }
+}
+
+#[test]
+fn test_redis_io_timeout_from_file_invalid() {
+    for value in ["0", "-1", "\"invalid\"", "\"1\"", "1.5"] {
+        let result = toml::from_str::<FileConfig>(&format!(
+            "[cache.redis]\nendpoint = \"redis://localhost:6379\"\nio_timeout_secs = {value}"
+        ));
+        assert!(result.is_err(), "accepted io_timeout_secs = {value}");
+    }
+}
+
+#[test]
+#[serial(config_from_env)]
+fn test_redis_io_timeout_from_env() {
+    for (value, expected) in [
+        (None, None),
+        (Some(""), None),
+        (Some("1"), Some(1)),
+        (Some("37"), Some(37)),
+        (Some("18446744073709551615"), Some(u64::MAX)),
+    ] {
+        unsafe {
+            env::set_var("SCCACHE_REDIS_ENDPOINT", "redis://localhost:6379");
+            match value {
+                Some(value) => env::set_var("SCCACHE_REDIS_IO_TIMEOUT_SECS", value),
+                None => env::remove_var("SCCACHE_REDIS_IO_TIMEOUT_SECS"),
+            }
+        }
+        let result = config_from_env();
+        unsafe {
+            env::remove_var("SCCACHE_REDIS_ENDPOINT");
+            env::remove_var("SCCACHE_REDIS_IO_TIMEOUT_SECS");
+        }
+        assert_eq!(
+            result.unwrap().cache.redis.unwrap().io_timeout_secs,
+            expected.and_then(NonZeroU64::new)
+        );
+    }
+
+    for value in ["0", "invalid", "-1", "18446744073709551616"] {
+        unsafe {
+            env::set_var("SCCACHE_REDIS_ENDPOINT", "redis://localhost:6379");
+            env::set_var("SCCACHE_REDIS_IO_TIMEOUT_SECS", value);
+        }
+        let result = config_from_env();
+        unsafe {
+            env::remove_var("SCCACHE_REDIS_ENDPOINT");
+            env::remove_var("SCCACHE_REDIS_IO_TIMEOUT_SECS");
+        }
+        assert!(result.is_err(), "accepted Redis IO timeout {value:?}");
+    }
+}
+
+#[test]
+#[serial(config_from_env)]
+fn test_redis_io_timeout_env_file_precedence() {
+    for endpoint in [None, Some("redis://env:6379")] {
+        for timeout in [None, Some("7")] {
+            unsafe {
+                env::remove_var("SCCACHE_REDIS");
+                env::remove_var("SCCACHE_REDIS_CLUSTER_ENDPOINTS");
+                match endpoint {
+                    Some(value) => env::set_var("SCCACHE_REDIS_ENDPOINT", value),
+                    None => env::remove_var("SCCACHE_REDIS_ENDPOINT"),
+                }
+                match timeout {
+                    Some(value) => env::set_var("SCCACHE_REDIS_IO_TIMEOUT_SECS", value),
+                    None => env::remove_var("SCCACHE_REDIS_IO_TIMEOUT_SECS"),
+                }
+            }
+            let result = config_from_env();
+            unsafe {
+                env::remove_var("SCCACHE_REDIS_ENDPOINT");
+                env::remove_var("SCCACHE_REDIS_IO_TIMEOUT_SECS");
+            }
+            let file_config: FileConfig = toml::from_str(
+                "[cache.redis]\nendpoint = \"redis://file:6379\"\nio_timeout_secs = 9",
+            )
+            .unwrap();
+            let config = Config::from_env_and_file_configs(result.unwrap(), file_config).unwrap();
+            let redis = config.cache_configs.redis.unwrap();
+            assert_eq!(
+                redis.endpoint.as_deref(),
+                Some(endpoint.unwrap_or("redis://file:6379"))
+            );
+            assert_eq!(
+                redis.io_timeout_secs,
+                if endpoint.is_some() {
+                    timeout.map(|_| NonZeroU64::new(7).unwrap())
+                } else {
+                    NonZeroU64::new(9)
+                }
+            );
+        }
+    }
+}
+
+#[test]
 fn config_overrides() {
     let env_conf = EnvConfig {
         cache: CacheConfigs {
@@ -1798,6 +1919,7 @@ fn config_overrides() {
             redis: Some(RedisCacheConfig {
                 url: Some("myredisurl".to_owned()),
                 ttl: 25 * 3600,
+                io_timeout_secs: NonZeroU64::new(9),
                 key_prefix: String::new(),
                 ..Default::default()
             }),
@@ -2976,6 +3098,7 @@ key_prefix = "cosprefix"
                     password: Some("new_passwd".to_owned()),
                     db: 12,
                     ttl: 24 * 3600,
+                    io_timeout_secs: None,
                     key_prefix: "/my/redis/cache".into(),
                     rw_mode: CacheModeConfig::ReadWrite,
                 }),
