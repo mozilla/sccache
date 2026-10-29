@@ -27,7 +27,7 @@ use crate::dist::pkg;
 use crate::lru_disk_cache::{LruCache, Meter};
 use crate::mock_command::{CommandCreatorSync, RunCommand};
 use crate::util::{Digest, fmt_duration_as_secs, hash_all, hash_all_archives, run_input_output};
-use crate::util::{HashToDigest, OsStrExt};
+use crate::util::{HashToDigest, OsStrExt, strip_basedirs_from_arg};
 use crate::{counted_array, dist};
 use async_trait::async_trait;
 use filetime::FileTime;
@@ -44,7 +44,7 @@ use std::collections::{HashMap, HashSet};
 use std::env::consts::DLL_EXTENSION;
 #[cfg(feature = "dist-client")]
 use std::env::consts::{DLL_PREFIX, EXE_EXTENSION};
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::future::Future;
 use std::hash::Hash;
@@ -561,12 +561,34 @@ fn parse_env_dep_info(dep_info: &str) -> Vec<(OsString, OsString)> {
         if let Some(env_dep) = line.strip_prefix("# env-dep:") {
             let mut split = env_dep.splitn(2, '=');
             match (split.next(), split.next()) {
-                (Some(var), Some(val)) => env_deps.push((var.into(), val.into())),
-                _ => env_deps.push((env_dep.into(), "".into())),
+                (Some(var), Some(val)) => {
+                    env_deps.push((unescape_dep_env(var).into(), unescape_dep_env(val).into()));
+                }
+                _ => env_deps.push((unescape_dep_env(env_dep).into(), "".into())),
             }
         }
     }
     env_deps
+}
+
+/// Undo rustc's escaping of `\`, newlines and carriage returns
+/// in env-dep names and values.
+fn unescape_dep_env(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some(c) => out.push(c),
+            None => out.push('\\'),
+        }
+    }
+    out
 }
 
 /// Rewrite the dep-info of a `--emit dep-info -o <file>` invocation
@@ -1668,6 +1690,21 @@ fn rust_dist_toolchain_weak_key(base: &Digest, sysroot: &Path) -> String {
     weak.finish()
 }
 
+/// `value` with the basedirs stripped from where a pathname can start, see
+/// [`strip_basedirs_from_arg`]. A value that is not valid UTF-8 is kept as is.
+///
+/// A stripped value starts with a NUL, which no environment variable, argument
+/// or path can contain, so it never hashes like an unstripped one: a value equal
+/// to a basedir is not keyed like an unset `option_env!`.
+fn strip_basedirs_os<'a>(value: &'a OsStr, basedirs: &[Vec<u8>]) -> Cow<'a, OsStr> {
+    match strip_basedirs_from_arg(value.as_encoded_bytes(), basedirs) {
+        Cow::Owned(stripped) => String::from_utf8(stripped).map_or(Cow::Borrowed(value), |s| {
+            Cow::Owned(format!("\0{s}").into())
+        }),
+        Cow::Borrowed(_) => Cow::Borrowed(value),
+    }
+}
+
 #[allow(clippy::suspicious_else_formatting)] // False positive
 #[async_trait]
 impl<T> CompilerHasher<T> for RustHasher
@@ -1682,10 +1719,11 @@ where
         _may_dist: bool,
         pool: &tokio::runtime::Handle,
         _rewrite_includes_only: bool,
-        _storage: Arc<dyn Storage>,
+        storage: Arc<dyn Storage>,
         _cache_control: CacheControl,
     ) -> Result<HashResult<T>> {
         trace!("[{}]: generate_hash_key", self.parsed_args.crate_name);
+        let basedirs = storage.basedirs();
         // TODO: this doesn't produce correct arguments if they should be concatenated - should use iter_os_strings
         let os_string_arguments: Vec<(OsString, Option<OsString>)> = self
             .parsed_args
@@ -1844,7 +1882,7 @@ where
                 .chain(sortables)
                 .flat_map(|(arg, val)| iter::once(arg).chain(val.as_ref()))
                 .fold(OsString::new(), |mut a, b| {
-                    a.push(b);
+                    a.push(strip_basedirs_os(b, basedirs));
                     a
                 })
         };
@@ -1868,7 +1906,7 @@ where
         for (var, val) in env_deps.iter() {
             var.hash(&mut HashToDigest { digest: &mut m });
             m.update(b"=");
-            val.hash(&mut HashToDigest { digest: &mut m });
+            strip_basedirs_os(val, basedirs).hash(&mut HashToDigest { digest: &mut m });
         }
         let mut env_vars: Vec<_> = env_vars
             .iter()
@@ -1899,10 +1937,11 @@ where
 
             var.hash(&mut HashToDigest { digest: &mut m });
             m.update(b"=");
-            val.hash(&mut HashToDigest { digest: &mut m });
+            strip_basedirs_os(val, basedirs).hash(&mut HashToDigest { digest: &mut m });
         }
         // 9. The cwd of the compile. This will wind up in the rlib.
-        cwd.hash(&mut HashToDigest { digest: &mut m });
+        Path::new(&strip_basedirs_os(cwd.as_os_str(), basedirs))
+            .hash(&mut HashToDigest { digest: &mut m });
         // 10. The version of the compiler.
         self.version.hash(&mut HashToDigest { digest: &mut m });
 
@@ -3575,6 +3614,19 @@ bar.rs:
     }
 
     #[test]
+    fn test_parse_env_dep_info_unescapes() {
+        let deps = "# env-dep:OUT_DIR=C:\\\\dir\\\\out\n# env-dep:X=a\\nb\\rc=d\n# env-dep:Y\n";
+        assert_eq!(
+            parse_env_dep_info(deps),
+            [
+                ("OUT_DIR".into(), r"C:\dir\out".into()),
+                ("X".into(), "a\nb\rc=d".into()),
+                ("Y".into(), "".into()),
+            ]
+        );
+    }
+
+    #[test]
     fn test_dep_info_with_targets() {
         // What `rustc --emit dep-info -o /tmp/x/deps.d` writes.
         let deps = "/tmp/x/deps.d: src/lib.rs src/../LICENSE
@@ -3918,7 +3970,24 @@ hash 42fac6f0 stable_crate_id StableCrateId(12206970385906972588)
         );
     }
 
+    /// What rustc writes for an env-dep value.
+    fn escape_dep_env(val: &OsStr) -> String {
+        val.to_str()
+            .unwrap()
+            .replace('\\', r"\\")
+            .replace('\n', r"\n")
+            .replace('\r', r"\r")
+    }
+
     fn mock_dep_info(creator: &Arc<Mutex<MockCommandCreator>>, dep_srcs: &[&str]) {
+        mock_dep_info_with_env(creator, dep_srcs, &[]);
+    }
+
+    fn mock_dep_info_with_env(
+        creator: &Arc<Mutex<MockCommandCreator>>,
+        dep_srcs: &[&str],
+        env_deps: &[(&str, OsString)],
+    ) {
         // Mock the `rustc --emit=dep-info` process by writing
         // a dep-info file.
         let mut sorted_deps = dep_srcs
@@ -3926,6 +3995,10 @@ hash 42fac6f0 stable_crate_id StableCrateId(12206970385906972588)
             .map(|s| (*s).to_string())
             .collect::<Vec<String>>();
         sorted_deps.sort();
+        let env_deps = env_deps
+            .iter()
+            .map(|(var, val)| format!("# env-dep:{var}={}", escape_dep_env(val)))
+            .collect::<Vec<String>>();
         next_command_calls(creator, move |args| {
             let mut dep_info_path = None;
             let mut it = args.iter();
@@ -3940,6 +4013,9 @@ hash 42fac6f0 stable_crate_id StableCrateId(12206970385906972588)
             writeln!(f, "blah: {}", sorted_deps.iter().join(" "))?;
             for d in sorted_deps.iter() {
                 writeln!(f, "{}:", d)?;
+            }
+            for e in env_deps.iter() {
+                writeln!(f, "{}", e)?;
             }
             Ok(MockChild::new(exit_status(0), "", ""))
         });
@@ -4187,7 +4263,32 @@ foo.rs:
     where
         F: Fn(&Path) -> Result<()>,
     {
-        let oargs = args.iter().map(OsString::from).collect::<Vec<OsString>>();
+        hash_key_with(
+            f,
+            args,
+            env_vars,
+            &[],
+            pre_func,
+            MockStorage::new(None, preprocessor_cache_mode),
+        )
+    }
+
+    fn hash_key_with<A, F>(
+        f: &TestFixture,
+        args: &[A],
+        env_vars: &[(OsString, OsString)],
+        env_deps: &[(&str, OsString)],
+        pre_func: F,
+        storage: MockStorage,
+    ) -> String
+    where
+        A: AsRef<OsStr>,
+        F: Fn(&Path) -> Result<()>,
+    {
+        let oargs = args
+            .iter()
+            .map(|a| a.as_ref().to_owned())
+            .collect::<Vec<OsString>>();
         let parsed_args = match parse_arguments(&oargs, f.tempdir.path()) {
             CompilerArguments::Ok(parsed_args) => parsed_args,
             o => panic!("Got unexpected parse result: {:?}", o),
@@ -4222,7 +4323,7 @@ foo.rs:
         let runtime = single_threaded_runtime();
         let pool = runtime.handle().clone();
 
-        mock_dep_info(&creator, &["foo.rs"]);
+        mock_dep_info_with_env(&creator, &["foo.rs"], env_deps);
         mock_file_names(&creator, &["foo.rlib"]);
         hasher
             .generate_hash_key(
@@ -4232,7 +4333,7 @@ foo.rs:
                 false,
                 &pool,
                 false,
-                Arc::new(MockStorage::new(None, preprocessor_cache_mode)),
+                Arc::new(storage),
                 CacheControl::Default,
             )
             .wait()
@@ -4243,6 +4344,90 @@ foo.rs:
     #[allow(clippy::unnecessary_unwrap)]
     fn nothing(_path: &Path) -> Result<()> {
         Ok(())
+    }
+
+    /// `root` the way `Config` normalizes a basedir.
+    fn basedir(root: &Path) -> Vec<u8> {
+        let mut b = root.to_str().unwrap().as_bytes().to_vec();
+        b.push(b'/');
+        if cfg!(windows) {
+            crate::util::normalize_win_path(&b)
+        } else {
+            b
+        }
+    }
+
+    /// The same crate in two checkouts, keyed alike once both roots are basedirs.
+    #[test]
+    fn test_equal_hashes_basedirs() {
+        // The root shows up in the cwd, an argument, a `CARGO_*` variable
+        // and an env-dep (`include!(concat!(env!("OUT_DIR"), ...))`).
+        fn key(f: &TestFixture, outside: &str, basedirs: Vec<Vec<u8>>) -> String {
+            let root = f.tempdir.path();
+            hash_key_with(
+                f,
+                &[
+                    OsString::from("--emit"),
+                    "link".into(),
+                    "foo.rs".into(),
+                    "--out-dir".into(),
+                    "out".into(),
+                    "--crate-name".into(),
+                    "foo".into(),
+                    "--crate-type".into(),
+                    "lib".into(),
+                    "-C".into(),
+                    format!("linker={}", root.join("link").display()).into(),
+                ],
+                &[
+                    ("CARGO_MANIFEST_DIR".into(), root.into()),
+                    ("CARGO_OUTSIDE".into(), outside.into()),
+                ],
+                &[("OUT_DIR", root.join("target").join("out").into())],
+                nothing,
+                MockStorage::new(None, false).with_basedirs(basedirs),
+            )
+        }
+
+        let a = TestFixture::new();
+        let b = TestFixture::new();
+        let both = vec![basedir(a.tempdir.path()), basedir(b.tempdir.path())];
+        assert_ne!(key(&a, "x", vec![]), key(&b, "x", vec![]));
+        assert_eq!(key(&a, "x", both.clone()), key(&b, "x", both.clone()));
+        // A difference outside the basedirs still counts.
+        assert_ne!(key(&a, "x", both.clone()), key(&b, "y", both));
+        // A basedir nothing lives under leaves the key as it was.
+        let elsewhere = basedir(&std::env::temp_dir().join("sccache-elsewhere"));
+        assert_eq!(key(&a, "x", vec![]), key(&a, "x", vec![elsewhere]));
+    }
+
+    /// An env-dep equal to a basedir is keyed apart from an unset one, which rustc
+    /// writes as `# env-dep:Y` for an `option_env!("Y")`.
+    #[test]
+    fn test_hash_env_dep_equal_to_basedir_is_not_unset() {
+        let f = TestFixture::new();
+        let root = f.tempdir.path().to_owned();
+        let key = |val: OsString| {
+            hash_key_with(
+                &f,
+                &[
+                    "--emit",
+                    "link",
+                    "foo.rs",
+                    "--out-dir",
+                    "out",
+                    "--crate-name",
+                    "foo",
+                    "--crate-type",
+                    "lib",
+                ],
+                &[],
+                &[("Y", val)],
+                nothing,
+                MockStorage::new(None, false).with_basedirs(vec![basedir(&root)]),
+            )
+        };
+        assert_ne!(key("".into()), key(root.clone().into()));
     }
 
     #[test_case(true ; "with preprocessor cache")]
