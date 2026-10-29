@@ -792,7 +792,18 @@ where
                     }
                     false
                 });
-                (env_vars.clone(), Cacheable::Yes, group)
+                // PTX verification passes have no output to cache.
+                let cacheable = if args.iter().any(|arg| {
+                    arg == "-o"
+                        || arg == "--output-file"
+                        || arg.starts_with("-o=")
+                        || arg.starts_with("--output-file=")
+                }) {
+                    Cacheable::Yes
+                } else {
+                    Cacheable::No
+                };
+                (env_vars.clone(), cacheable, group)
             }
             // cudafe++ _must be_ cached, because the `.module_id` file is unique to each invocation (new in CTK 12.8)
             Some("cudafe++") => {
@@ -1651,6 +1662,21 @@ mod test {
 
     #[test]
     fn test_group_nvcc_subcommands_with_simt_only_cicc_input() {
+        check_group_nvcc_subcommands_with_ptx_verification("-o \"kernel.cubin\"");
+    }
+
+    #[test]
+    fn test_group_nvcc_subcommands_with_ptxas_output_flags() {
+        for output in [
+            "--output-file \"kernel.cubin\"",
+            "-o=kernel.cubin",
+            "--output-file=kernel.cubin",
+        ] {
+            check_group_nvcc_subcommands_with_ptx_verification(output);
+        }
+    }
+
+    fn check_group_nvcc_subcommands_with_ptx_verification(output: &str) {
         let bin_dir = tempfile::tempdir().unwrap();
 
         #[cfg(windows)]
@@ -1670,7 +1696,10 @@ mod test {
 #$ cudafe++ --gen_c_file_name "kernel.cudafe1.cpp" --stub_file_name "kernel.cudafe1.stub.c" --module_id_file_name "kernel.module_id" --simt-only "kernel.cpp4.ii"
 #$ cl -D__CUDA_ARCH__=800 -D__CUDACC__ -E -x c++ "kernel.cu" > "kernel.cpp1.ii"
 #$ cicc --device-c -arch compute_80 --module_id_file_name "kernel.module_id" --gen_c_file_name "kernel.cudafe1.c" --stub_file_name "kernel.cudafe1.stub.c" --gen_device_file_name "kernel.cudafe1.gpu" "kernel.cpp1.ii" --simt-only -o "kernel.ptx"
-#$ ptxas -arch=sm_80 --compile-only "kernel.ptx" -o "kernel.cubin"
+#$ ptxas -arch=sm_80 --compile-only "kernel.ptx" {output}
+#$ cl -D__CUDA_ARCH__=1200 -D__CUDACC__ -E -x c++ "kernel.cu" > "kernel.compute_120.cpp1.ii"
+#$ cicc --device-c -arch compute_120 "kernel.compute_120.cpp1.ii" -o "kernel.compute_120.ptx"
+#$ ptxas -arch=compute_120 -m64 "kernel.compute_120.ptx"
 #$ fatbinary --create="kernel.fatbin" "--image3=kind=elf,sm=80,file=kernel.cubin" --embedded-fatbin="kernel.fatbin.c" --device-c
 #$ cl -D__CUDA_ARCH__=800 -D__CUDACC__ -c -x c++ "kernel.cudafe1.cpp" -Fo"kernel.o"
 "#
@@ -1682,7 +1711,10 @@ mod test {
 #$ cudafe++ --gen_c_file_name "kernel.cudafe1.cpp" --stub_file_name "kernel.cudafe1.stub.c" --module_id_file_name "kernel.module_id" --simt-only "kernel.cpp4.ii"
 #$ gcc -D__CUDA_ARCH__=800 -D__CUDACC__ -E -x c++ "kernel.cu" -o "kernel.cpp1.ii"
 #$ cicc --device-c -arch compute_80 --module_id_file_name "kernel.module_id" --gen_c_file_name "kernel.cudafe1.c" --stub_file_name "kernel.cudafe1.stub.c" --gen_device_file_name "kernel.cudafe1.gpu" "kernel.cpp1.ii" --simt-only -o "kernel.ptx"
-#$ ptxas -arch=sm_80 --compile-only "kernel.ptx" -o "kernel.cubin"
+#$ ptxas -arch=sm_80 --compile-only "kernel.ptx" {output}
+#$ gcc -D__CUDA_ARCH__=1200 -D__CUDACC__ -E -x c++ "kernel.cu" -o "kernel.compute_120.cpp1.ii"
+#$ cicc --device-c -arch compute_120 "kernel.compute_120.cpp1.ii" -o "kernel.compute_120.ptx"
+#$ ptxas -arch=compute_120 -m64 "kernel.compute_120.ptx"
 #$ fatbinary --create="kernel.fatbin" "--image3=kind=elf,sm=80,file=kernel.cubin" --embedded-fatbin="kernel.fatbin.c" --device-c
 #$ gcc -D__CUDA_ARCH__=800 -D__CUDACC__ -c -x c++ "kernel.cudafe1.cpp" -o "kernel.o"
 "#
@@ -1726,7 +1758,7 @@ mod test {
             .find(|group| {
                 group
                     .iter()
-                    .any(|cmd| cmd.exe.file_stem().and_then(|stem| stem.to_str()) == Some("cicc"))
+                    .any(|cmd| cmd.args.iter().any(|arg| arg == "kernel.ptx"))
             })
             .expect("missing device compile group");
 
@@ -1750,6 +1782,17 @@ mod test {
             .find(|cmd| cmd.exe.file_stem().and_then(|stem| stem.to_str()) == Some("ptxas"))
             .unwrap();
         assert!(ptxas.args.iter().any(cicc::is_ptxas_input));
+        assert_eq!(Cacheable::Yes, ptxas.cacheable);
+
+        let virtual_ptxas = groups
+            .iter()
+            .flatten()
+            .find(|cmd| {
+                cmd.exe.file_stem().and_then(|stem| stem.to_str()) == Some("ptxas")
+                    && cmd.args.iter().any(|arg| arg == "kernel.compute_120.ptx")
+            })
+            .expect("missing virtual-only ptxas command");
+        assert_eq!(Cacheable::No, virtual_ptxas.cacheable);
     }
 
     #[test]
