@@ -40,6 +40,12 @@ scheduler_url = "http://1.2.3.4:10600"
 toolchains = []
 # the maximum size of the toolchain cache in bytes
 toolchain_cache_size = 5368709120
+# whether a distributed compile that fails on the build server (non-zero exit)
+# or leaves out a declared output is recompiled locally. Default: true.
+# With false the remote result is reported to the client as is. An sccache
+# binary that predates this key rejects a configuration containing it,
+# because unknown keys are denied.
+fallback = true
 cache_dir = "/home/user/.cache/sccache-dist-client"
 
 [dist.auth]

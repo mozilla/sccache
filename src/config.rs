@@ -772,6 +772,7 @@ pub struct DistConfig {
     #[serde(deserialize_with = "deserialize_size_from_str")]
     pub toolchain_cache_size: u64,
     pub rewrite_includes_only: bool,
+    pub fallback: bool,
 }
 
 impl Default for DistConfig {
@@ -783,6 +784,7 @@ impl Default for DistConfig {
             toolchains: Default::default(),
             toolchain_cache_size: default_toolchain_cache_size(),
             rewrite_includes_only: false,
+            fallback: true,
         }
     }
 }
@@ -3040,6 +3042,7 @@ key_prefix = "cosprefix"
                 toolchains: vec![],
                 toolchain_cache_size: 5368709120,
                 rewrite_includes_only: false,
+                fallback: true,
             },
             server_startup_timeout_ms: Some(10000),
             basedirs: vec![],
@@ -3140,6 +3143,16 @@ size = "7g"
             client_side_mode: false,
         }
     );
+}
+
+#[test]
+fn dist_fallback_toml_parse() {
+    let config: FileConfig = toml::from_str("[dist]\nfallback = false\n").expect("Is valid toml.");
+    assert!(!config.dist.fallback);
+
+    let config: FileConfig = toml::from_str("[dist]\nscheduler_url = \"http://1.2.3.4:10600\"\n")
+        .expect("Is valid toml.");
+    assert!(config.dist.fallback);
 }
 
 #[test]

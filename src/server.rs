@@ -160,6 +160,7 @@ pub struct DistClientConfig {
     toolchain_cache_size: u64,
     toolchains: Vec<config::DistToolchainConfig>,
     rewrite_includes_only: bool,
+    fallback: bool,
 }
 
 #[cfg(feature = "dist-client")]
@@ -216,6 +217,7 @@ impl DistClientContainer {
             toolchain_cache_size: config.dist.toolchain_cache_size,
             toolchains: config.dist.toolchains.clone(),
             rewrite_includes_only: config.dist.rewrite_includes_only,
+            fallback: config.dist.fallback,
         };
         let state = Self::create_state(config);
         let state = pool.block_on(state);
@@ -382,7 +384,8 @@ impl DistClientContainer {
                     &config.toolchains,
                     auth_token,
                     config.rewrite_includes_only,
-                );
+                )
+                .map(|client| client.with_fallback(config.fallback));
                 let dist_client =
                     try_or_retry_later!(dist_client.context("failure during dist client creation"));
                 use crate::dist::Client;
@@ -1097,6 +1100,7 @@ where
                     toolchain_cache_size: 0,
                     toolchains: vec![],
                     rewrite_includes_only: false,
+                    fallback: true,
                 }),
                 dist_client,
             ))),
@@ -2607,6 +2611,7 @@ mod tests {
             toolchain_cache_size: 0,
             toolchains: vec![],
             rewrite_includes_only: false,
+            fallback: true,
         };
         let container = DistClientContainer::new_with_state(DistClientState::RetryCreateAt(
             Box::new(config),
