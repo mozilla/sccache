@@ -26,6 +26,7 @@ Table of Contents (ToC)
 * [Usage](#usage)
 * [Build Requirements](#build-requirements)
 * [Build](#build)
+  * [Profile-guided optimization](docs/PGO.md)
 * [Separating caches between invocations](#separating-caches-between-invocations)
 * [Overwriting the cache](#overwriting-the-cache)
 * [Debugging](#debugging)
@@ -250,6 +251,17 @@ cargo build --release [--no-default-features --features=s3|redis|gcs|memcached|a
 The list of features can be found in the `Cargo.toml` file, `[features]` section.
 
 By default, `sccache` builds with support for all storage backends, but individual backends may be disabled by resetting the list of features and enabling all the other backends. Refer the [Cargo Documentation](http://doc.crates.io/manifest.html#the-features-section) for details on how to select features with Cargo.
+
+### Profile-guided optimization
+
+The official release binaries are built with profile-guided optimization (PGO), which makes sccache itself faster on every compilation it wraps. `scripts/build-pgo.sh` builds sccache this way:
+
+```bash
+rustup component add llvm-tools
+./scripts/build-pgo.sh
+```
+
+**Packagers are encouraged to build sccache with PGO too.** See [docs/PGO.md](docs/PGO.md) for the options, and for how to plug the profile into an existing packaging recipe.
 
 ### Building portable binaries
 
