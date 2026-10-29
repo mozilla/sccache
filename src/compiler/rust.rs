@@ -4156,31 +4156,24 @@ foo.rs:
         // the new mtime made cargo rebuild every crate that had read it.
         let f = TestFixture::new();
         f.touch("foo.rs").unwrap();
-        let args = [
-            "--emit",
-            "link",
-            "foo.rs",
-            "--out-dir",
-            "out",
-            "--crate-name",
-            "foo",
-            "--crate-type",
-            "lib",
-            "-C",
-            "profile-use=merged.profdata",
-        ]
-        .iter()
-        .map(OsString::from)
-        .collect::<Vec<_>>();
         let key_and_outputs = |profile: &[u8]| {
             create_file(f.tempdir.path(), "merged.profdata", |mut f| {
                 f.write_all(profile)
             })
             .unwrap();
-            let parsed_args = match parse_arguments(&args, f.tempdir.path()) {
-                CompilerArguments::Ok(parsed_args) => parsed_args,
-                o => panic!("Got unexpected parse result: {:?}", o),
-            };
+            let parsed_args = parses!(
+                "--emit",
+                "link",
+                "foo.rs",
+                "--out-dir",
+                "out",
+                "--crate-name",
+                "foo",
+                "--crate-type",
+                "lib",
+                "-C",
+                "profile-use=merged.profdata"
+            );
             let mut hasher = Box::new(RustHasher {
                 executable: "rustc".into(),
                 host: "x86-64-unknown-unknown-unknown".to_owned(),
