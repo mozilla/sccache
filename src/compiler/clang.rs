@@ -266,7 +266,8 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("-fsanitize-system-ignorelist", PathBuf, Concatenated(b'='), ExtraHashFile),
     take_arg!("-fsave-optimization-record", OsString, Concatenated(b'='), TooHard),
     take_arg!("-fthin-link-bitcode", OsString, Concatenated(b'='), TooHard),
-    take_arg!("-ftime-trace", OsString, Concatenated(b'='), TooHard),
+    // The trace is a side file that doesn't affect the object; a cache hit just produces no trace.
+    take_arg!("-ftime-trace", OsString, Concatenated(b'='), PassThrough),
     flag!("-fuse-ctor-homing", PassThroughFlag),
     take_arg!("-fxray-always-instrument", PathBuf, Concatenated(b'='), ExtraHashFile),
     take_arg!("-fxray-attr-list", PathBuf, Concatenated(b'='), ExtraHashFile),
@@ -787,6 +788,31 @@ mod test {
                 let parsed = parses!("-c", "foo.c", "-MD", format!("{arg}{format}"));
                 assert_eq!(parsed.dependency_args, parsed_separated.dependency_args);
             }
+        }
+    }
+
+    #[test]
+    fn test_parse_arguments_time_trace() {
+        for flag in [
+            "-ftime-trace",
+            "-ftime-trace=trace.json",
+            "-ftime-trace-granularity=50",
+            "-ftime-trace-verbose",
+        ] {
+            let a = parses!("-c", "foo.c", "-o", "foo.o", flag);
+            assert_eq!(ovec![flag], a.common_args, "{flag}");
+            assert!(a.preprocessor_args.is_empty(), "{flag}");
+            assert_eq!(1, a.outputs.len(), "{flag}");
+            assert_map_contains!(
+                a.outputs,
+                (
+                    "obj",
+                    ArtifactDescriptor {
+                        path: PathBuf::from("foo.o"),
+                        optional: false
+                    }
+                )
+            );
         }
     }
 
@@ -1316,8 +1342,6 @@ mod test {
             ),
             (&["-fthin-link-bitcode"], "-fthin-link-bitcode"),
             (&["-fthin-link-bitcode=foo.bc"], "-fthin-link-bitcode"),
-            (&["-ftime-trace"], "-ftime-trace"),
-            (&["-ftime-trace=trace.json"], "-ftime-trace"),
             (
                 &["-module-dependency-dir", "/tmp/moddeps"],
                 "-module-dependency-dir",
