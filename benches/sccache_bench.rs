@@ -22,7 +22,7 @@
 use divan::{Bencher, black_box};
 use sccache::cache::{CacheRead, CacheWrite};
 use sccache::lru_disk_cache::LruCache;
-use sccache::util::{Digest, TimeMacroFinder, strip_basedirs};
+use sccache::util::{Digest, TimeMacroFinder, strip_basedirs, strip_basedirs_from_arg};
 use std::io::Cursor;
 
 // =============================================================================
@@ -865,6 +865,43 @@ fn strip_basedirs_multiple(bencher: Bencher) {
     }
 
     bencher.bench(|| black_box(strip_basedirs(black_box(&output), black_box(&basedirs))));
+}
+
+/// Most dependency paths fall outside the configured checkout roots.
+#[divan::bench(args = [0, 1, 8, 32])]
+fn strip_basedirs_from_arg_mostly_unmatched(bencher: Bencher, root_count: usize) {
+    let basedirs: Vec<Vec<u8>> = (0..root_count)
+        .map(|i| format!("/workspaces/project/checkouts/worktree-{i:02}/").into_bytes())
+        .collect();
+    let paths: Vec<Vec<u8>> = (0..100)
+        .map(|i| {
+            if i % 10 == 0 {
+                let root = (i / 10 * 7) % root_count.max(1);
+                format!("/workspaces/project/checkouts/worktree-{root:02}/src/lib.rs")
+            } else {
+                format!("/Users/example/.cargo/registry/src/package-{i}/src/lib.rs")
+            }
+            .into_bytes()
+        })
+        .collect();
+
+    for (i, path) in paths.iter().enumerate() {
+        let expected = if root_count > 0 && i % 10 == 0 {
+            b"src/lib.rs".as_slice()
+        } else {
+            path.as_slice()
+        };
+        assert_eq!(strip_basedirs_from_arg(path, &basedirs), expected);
+    }
+
+    bencher.bench(|| {
+        for path in &paths {
+            black_box(strip_basedirs_from_arg(
+                black_box(path),
+                black_box(&basedirs),
+            ));
+        }
+    });
 }
 
 fn main() {
