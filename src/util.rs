@@ -358,6 +358,15 @@ impl TimeMacroFinder {
     pub fn new() -> Self {
         Default::default()
     }
+
+    /// A finder for a file already known to contain the given macros.
+    pub fn with_found(date: bool, time: bool, timestamp: bool) -> Self {
+        let finder = Self::new();
+        finder.found_date.set(date);
+        finder.found_time.set(time);
+        finder.found_timestamp.set(timestamp);
+        finder
+    }
 }
 
 pub fn hex(bytes: &[u8]) -> String {
