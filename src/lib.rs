@@ -65,6 +65,30 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// logging for sccache, and sccache-dist.
 pub const LOGGING_ENV: &str = "SCCACHE_LOG";
 
+// The instrumented binary built by `scripts/build-pgo.sh` (`--cfg pgo_training`)
+// has to flush its own profile counters on Windows. sccache leaves through
+// `std::process::exit`, which is `libc::exit` on Unix but `ExitProcess` on
+// Windows; the latter skips the `atexit` handler the LLVM profiling runtime
+// writes the counters from, so the training runs would leave no profile behind.
+#[cfg(all(pgo_training, windows))]
+unsafe extern "C" {
+    fn __llvm_profile_write_file() -> i32;
+}
+
+/// Terminates the process with `code`, flushing the PGO counters when the
+/// binary was built for profile training on Windows.
+fn exit(code: i32) -> ! {
+    #[cfg(all(pgo_training, windows))]
+    // SAFETY: `__llvm_profile_write_file` is provided by the LLVM profiling
+    // runtime, which is linked in whenever this cfg is set (the same build
+    // passes `-Cprofile-generate`). It takes no arguments and only writes the
+    // counter file named by `LLVM_PROFILE_FILE`.
+    unsafe {
+        __llvm_profile_write_file();
+    }
+    std::process::exit(code)
+}
+
 pub fn main() {
     init_logging();
 
@@ -78,12 +102,12 @@ pub fn main() {
                 for source in some_other_err.chain().skip(1) {
                     println!("sccache: caused by: {source}");
                 }
-                std::process::exit(1);
+                exit(1);
             }
         },
     };
 
-    std::process::exit(match commands::run_command(command) {
+    exit(match commands::run_command(command) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("sccache: error: {}", e);

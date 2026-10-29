@@ -279,6 +279,10 @@ test = false
 [lints]
 workspace = true
 
+[workspace.lints.rust]
+# Set by scripts/build-pgo.sh on the instrumented build.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(pgo_training)'] }
+
 [workspace.lints.clippy]
 cloned_instead_of_copied = "warn"
 cloned_ref_to_slice_refs = "warn"
