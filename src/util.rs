@@ -1102,6 +1102,41 @@ pub fn daemonize(_preserve_fds: &[std::os::windows::io::RawHandle]) -> Result<()
     Ok(())
 }
 
+#[cfg(any(feature = "dist-server", feature = "dist-client"))]
+mod reqwest_dns_resolver {
+    use std::{
+        net::SocketAddr,
+        sync::{Arc, OnceLock},
+    };
+
+    use hickory_resolver::TokioAsyncResolver;
+    use reqwest::dns::{Addrs, Resolve};
+
+    #[derive(Debug, Default, Clone)]
+    pub struct HickoryResolver(Arc<OnceLock<TokioAsyncResolver>>);
+
+    impl Resolve for HickoryResolver {
+        fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+            let resolver = self.clone();
+            Box::pin(async move {
+                if resolver.0.get().is_none() {
+                    let _ = resolver
+                        .0
+                        .set(TokioAsyncResolver::tokio_from_system_conf()?);
+                }
+                let resolver = resolver.0.get().expect("DNS resolver initialized");
+
+                let lookup = resolver.lookup_ip(name.as_str()).await?;
+                let addrs: Addrs = Box::new(lookup.into_iter().map(|ip| SocketAddr::new(ip, 0)));
+                Ok(addrs)
+            })
+        }
+    }
+}
+
+#[cfg(any(feature = "dist-server", feature = "dist-client"))]
+pub use reqwest_dns_resolver::HickoryResolver;
+
 #[cfg(all(feature = "reqwest", not(target_os = "android")))]
 fn mozilla_root_certificates() -> reqwest::Result<Vec<reqwest::Certificate>> {
     webpki_root_certs::TLS_SERVER_ROOT_CERTS

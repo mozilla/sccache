@@ -337,17 +337,9 @@ jobs:
           rustup toolchain install nightly --profile minimal
           rustup component add rust-src --toolchain nightly
 
-      - name: fix build openssl error on s390x
-        if: ${{  matrix.target  == 's390x-unknown-linux-musl' }}
-        run: |
-          # see https://github.com/openssl/openssl/issues/27323
-          echo CFLAGS="-march=z10 -mzarch" >> $GITHUB_ENV
-          echo CXXFLAGS="$CFLAGS" >> $GITHUB_ENV
-          echo RUSTFLAGS="-C target-cpu=z10" >> $GITHUB_ENV
-
       - name: Build (s390x-musl with build-std)
         if: ${{ matrix.target == 's390x-unknown-linux-musl' }}
-        run: cargo +nightly build --locked --release --bin ${{ matrix.binary || 'sccache' }} --target ${{ matrix.target }} --features=openssl/vendored ${{ matrix.extra_args }} -Zbuild-std
+        run: cargo +nightly build --locked --release --bin ${{ matrix.binary || 'sccache' }} --target ${{ matrix.target }} ${{ matrix.extra_args }} -Zbuild-std
         env:
           MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macosx_deployment_target }}
           DEVELOPER_DIR: ${{ matrix.developer_dir }}
@@ -357,7 +349,7 @@ jobs:
 
       - name: Build
         if: ${{ matrix.target != 's390x-unknown-linux-musl' }}
-        run: cargo build --locked --release --bin ${{ matrix.binary || 'sccache' }} --target ${{ matrix.target }} --features=openssl/vendored ${{ matrix.extra_args }}
+        run: cargo build --locked --release --bin ${{ matrix.binary || 'sccache' }} --target ${{ matrix.target }} ${{ matrix.extra_args }}
         env:
           MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macosx_deployment_target }}
           DEVELOPER_DIR: ${{ matrix.developer_dir }}

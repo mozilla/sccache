@@ -3107,7 +3107,7 @@ fn server_toml_parse() {
             },
             toolchain_cache_size: 10737418240,
         }
-    )
+    );
 }
 
 #[test]

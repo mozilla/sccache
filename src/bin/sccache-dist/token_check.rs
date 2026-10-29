@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, bail};
 use base64::Engine;
+use rsa::pkcs1;
 use sccache::dist::http::{ClientAuthCheck, ClientVisibleMsg};
 use sccache::util::{BASE64_URL_SAFE_ENGINE, new_reqwest_blocking_client};
 use serde::{Deserialize, Serialize};
@@ -36,14 +37,16 @@ impl Jwk {
         let e = BASE64_URL_SAFE_ENGINE
             .decode(&self.e)
             .context("Failed to base64 decode e")?;
-        let n_bn = openssl::bn::BigNum::from_slice(&n)
-            .context("Failed to create openssl bignum from n")?;
-        let e_bn = openssl::bn::BigNum::from_slice(&e)
-            .context("Failed to create openssl bignum from e")?;
-        let pubkey = openssl::rsa::Rsa::from_public_components(n_bn, e_bn)
-            .context("Failed to create pubkey from n and e")?;
-        let der: Vec<u8> = pubkey
-            .public_key_to_der_pkcs1()
+
+        let n_bn = pkcs1::UintRef::new(&n).context("Failed to create pkcs1 bignum from n")?;
+        let e_bn = pkcs1::UintRef::new(&e).context("Failed to create pkcs1 bignum from e")?;
+
+        let pubkey = pkcs1::RsaPublicKey {
+            modulus: n_bn,
+            public_exponent: e_bn,
+        };
+
+        let der: Vec<u8> = pkcs1::der::Encode::to_der(&pubkey)
             .context("Failed to convert public key to der pkcs1")?;
         Ok(der)
     }
@@ -113,10 +116,10 @@ impl ProxyTokenCheck {
         if let Some(ref auth_cache) = self.maybe_auth_cache {
             let mut auth_cache = auth_cache.lock().unwrap();
             let (ref mut auth_cache, cache_duration) = *auth_cache;
-            if let Some(cached_at) = auth_cache.get(token) {
-                if cached_at.elapsed() < cache_duration {
-                    return Ok(());
-                }
+            if let Some(cached_at) = auth_cache.get(token)
+                && cached_at.elapsed() < cache_duration
+            {
+                return Ok(());
             }
             auth_cache.remove(token);
         }

@@ -184,7 +184,7 @@ impl OverlayBuilder {
 
     fn cleanup(&self) -> Result<()> {
         if self.dir.exists() {
-            fs::remove_dir_all(&self.dir).context("Failed to clean up builder directory")?
+            fs::remove_dir_all(&self.dir).context("Failed to clean up builder directory")?;
         }
         Ok(())
     }
@@ -253,7 +253,7 @@ impl OverlayBuilder {
                     // toolchains could be the opposite of the least recently
                     // recently used, so we clear out half of the accumulated
                     // toolchains to prevent repeated sort/delete cycles.
-                    entries.sort_by(|a, b| (a.1).ctime.cmp(&(b.1).ctime));
+                    entries.sort_by_key(|a| (a.1).ctime);
                     entries.truncate(entries.len() / 2);
                     for (tc, _) in entries {
                         warn!("Removing old un-compressed toolchain: {:?}", tc);
@@ -330,7 +330,7 @@ impl OverlayBuilder {
                         // This error is unfortunately not Send+Sync
                     )
                     .mount()
-                    .map_err(|e| anyhow!("Failed to mount overlay FS: {}", e.to_string()))?;
+                    .map_err(|e| anyhow!("Failed to mount overlay FS: {}", e))?;
 
                     let CompileCommand {
                         executable,
@@ -426,11 +426,11 @@ impl OverlayBuilder {
                                 Ok(file) => {
                                     let output = OutputData::try_from_reader(file)
                                         .context("Failed to read output file")?;
-                                    outputs.push((path, output))
+                                    outputs.push((path, output));
                                 }
                                 Err(e) => {
                                     if e.kind() == io::ErrorKind::NotFound {
-                                        debug!("Missing output path {:?}", path)
+                                        debug!("Missing output path {:?}", path);
                                     } else {
                                         return Err(
                                             Error::from(e).context("Failed to open output file")
@@ -560,7 +560,7 @@ impl DockerBuilder {
                     bail!("Malformed container listing - third field on row")
                 }
                 if image_name.starts_with("sccache-builder-") {
-                    containers_to_rm.push(container_id)
+                    containers_to_rm.push(container_id);
                 }
             }
             if !containers_to_rm.is_empty() {
@@ -590,7 +590,7 @@ impl DockerBuilder {
                     bail!("Malformed image listing - third field on row")
                 }
                 if image_name.starts_with("sccache-builder-") {
-                    images_to_rm.push(image_id)
+                    images_to_rm.push(image_id);
                 }
             }
             if !images_to_rm.is_empty() {
@@ -598,7 +598,7 @@ impl DockerBuilder {
                     .args(["rmi"])
                     .args(images_to_rm)
                     .check_run()
-                    .context("Failed to remove image")?
+                    .context("Failed to remove image")?;
             }
         }
 
@@ -671,10 +671,10 @@ impl DockerBuilder {
                 }
                 // Docker diff paths are in alphabetical order and we do `rm -rf`, so we might be able to skip
                 // calling Docker more than necessary (since it's slow)
-                if let Some(lastpath) = lastpath {
-                    if Path::new(changepath).starts_with(lastpath) {
-                        continue;
-                    }
+                if let Some(lastpath) = lastpath
+                    && Path::new(changepath).starts_with(lastpath)
+                {
+                    continue;
                 }
                 lastpath = Some(changepath);
                 if let Err(e) = Command::new("docker")
@@ -682,7 +682,7 @@ impl DockerBuilder {
                     .check_run()
                 {
                     // We do a final check anyway, so just continue
-                    warn!("Failed to remove added path in a container: {}", e)
+                    warn!("Failed to remove added path in a container: {}", e);
                 }
             }
 
@@ -718,7 +718,7 @@ impl DockerBuilder {
         // Good as new, add it back to the container list
         if let Some(entry) = self.container_lists.lock().unwrap().get_mut(tc) {
             debug!("Reclaimed container {}", cid);
-            entry.push(cid)
+            entry.push(cid);
         } else {
             warn!(
                 "Was ready to reclaim container {} but toolchain went missing",
@@ -759,7 +759,7 @@ impl DockerBuilder {
             .context("Failed to copy toolchain tar into container")?;
         drop(toolchain_rdr);
 
-        let imagename = format!("sccache-builder-{}", &tc.archive_id);
+        let imagename = format!("sccache-builder-{}", tc.archive_id);
         Command::new("docker")
             .args(["commit", &cid, &imagename])
             .check_run()
@@ -870,9 +870,9 @@ impl DockerBuilder {
             if output.status.success() {
                 let output = OutputData::try_from_reader(&*output.stdout)
                     .expect("Failed to read compress output stdout");
-                outputs.push((path, output))
+                outputs.push((path, output));
             } else {
-                debug!("Missing output path {:?}", path)
+                debug!("Missing output path {:?}", path);
             }
         }
 
