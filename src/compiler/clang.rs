@@ -131,9 +131,18 @@ impl CCompilerImpl for Clang {
             vec!["-P".to_string()]
         };
 
-        // Clang 14 and later support -fminimize-whitespace, which normalizes away non-semantic whitespace which in turn increases cache hit rate.
-        // '-fminimize-whitespace' invalid for input of type assembler-with-cpp
-        if self.is_minversion(14) && parsed_args.language != Language::AssemblerToPreprocess {
+        // Clang 14 and later support -fminimize-whitespace, which normalizes away
+        // non-semantic whitespace which in turn increases cache hit rate. It is
+        // invalid for some input types: assembler-with-cpp, and the
+        // c++-header-unit-header type clang infers from -fmodule-header.
+        let builds_header_unit = parsed_args
+            .common_args
+            .iter()
+            .any(|arg| arg.to_string_lossy().starts_with("-fmodule-header"));
+        if self.is_minversion(14)
+            && parsed_args.language != Language::AssemblerToPreprocess
+            && !builds_header_unit
+        {
             ignorable_whitespace_flags.push("-fminimize-whitespace".to_string());
         }
 
@@ -236,7 +245,15 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("-fmemory-profile-use", PathBuf, Concatenated(b'='), ExtraHashFile),
     take_arg!("-fmemory-profile=", OsString, Concatenated, TooHard),
     take_arg!("-fmodule-file", OsString, Concatenated(b'='), ExtraHashFileClangModuleFile),
-    take_arg!("-fmodule-header", OsString, Concatenated(b'='), TooHard),
+    // -fmodule-header[=user|=system] builds a header unit whose only output is
+    // the BMI named by -o, so the compilation is cacheable as long as that file
+    // name is explicit.
+    take_arg!(
+        "-fmodule-header",
+        OsString,
+        Concatenated(b'='),
+        PassThrough
+    ),
     take_arg!("-fmodule-map-file", PathBuf, Concatenated(b'='), ExtraHashFile),
     take_arg!("-fmodule-output", OsString, Concatenated, ClangModuleOutput),
     take_arg!("-fmodules-cache-path", OsString, Concatenated(b'='), TooHard),
@@ -253,7 +270,13 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("-fpass-plugin", PathBuf, Concatenated(b'='), ExtraHashFile),
     take_arg!("-fplugin", PathBuf, CanBeConcatenated(b'='), ExtraHashFile),
     flag!("-fprebuilt-implicit-modules", TooHardFlag),
-    take_arg!("-fprebuilt-module-path", OsString, Concatenated, TooHard),
+    // A directory of prebuilt module files, looked up by module name.
+    take_arg!(
+        "-fprebuilt-module-path",
+        PathBuf,
+        Concatenated(b'='),
+        PrebuiltModulePathDir
+    ),
     flag!("-fprofile-instr-generate", ProfileGenerate),
     // Note: the PathBuf argument is optional
     take_arg!("-fprofile-instr-use", PathBuf, Concatenated(b'='), ClangProfileUse),
@@ -339,6 +362,20 @@ mod test {
             assembler_digest: None,
         }
         .parse_arguments(&arguments, &std::env::current_dir().unwrap(), &[])
+    }
+
+    fn parse_arguments_in(
+        arguments: Vec<String>,
+        cwd: &Path,
+    ) -> CompilerArguments<ParsedArguments> {
+        let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
+        Clang {
+            clangplusplus: false,
+            is_appleclang: false,
+            version: None,
+            assembler_digest: None,
+        }
+        .parse_arguments(&arguments, cwd, &[])
     }
 
     macro_rules! parses {
@@ -1255,17 +1292,68 @@ mod test {
             ])
         );
 
-        // -fprebuilt-module-path is not supported (implicit module path discovery)
-        assert_eq!(
-            CompilerArguments::CannotCache("-fprebuilt-module-path", None),
-            parse_arguments_(stringvec![
-                "-c",
-                "foo.c",
-                "-fprebuilt-module-path=/path/to/modules",
-                "-o",
-                "foo.o"
-            ])
-        );
+        // -fprebuilt-module-path is supported: the module files it makes visible
+        // are hashed, which the test below covers.
+    }
+
+    #[test]
+    fn test_parse_arguments_prebuilt_module_path() {
+        let f = crate::test::utils::TestFixture::new();
+        for name in ["modules/m.pcm", "modules/n.pcm"] {
+            f.touch(name).unwrap();
+        }
+        // Not a module file, so it must not be hashed.
+        f.touch("modules/notes.txt").unwrap();
+
+        let a = match parse_arguments_in(
+            vec![
+                "-c".to_string(),
+                "foo.cpp".to_string(),
+                "-fprebuilt-module-path=modules".to_string(),
+                "-o".to_string(),
+                "foo.o".to_string(),
+            ],
+            f.tempdir.path(),
+        ) {
+            CompilerArguments::Ok(a) => a,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        let mut names: Vec<_> = a
+            .extra_hash_files
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(vec!["m.pcm", "n.pcm"], names);
+        assert_eq!(ovec!["-fprebuilt-module-path=modules"], a.common_args);
+
+        // A missing directory means the compilation cannot find its modules.
+        match parse_arguments_in(
+            vec![
+                "-c".to_string(),
+                "foo.cpp".to_string(),
+                "-fprebuilt-module-path=missing".to_string(),
+                "-o".to_string(),
+                "foo.o".to_string(),
+            ],
+            f.tempdir.path(),
+        ) {
+            CompilerArguments::CannotCache(why, _) => assert_eq!("-fprebuilt-module-path", why),
+            o => panic!("Got unexpected parse result: {:?}", o),
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_prebuilt_directory_follows_symlinks() {
+        let f = crate::test::utils::TestFixture::new();
+        f.touch("actual.bin").unwrap();
+        let dir = f.tempdir.path();
+        let link = dir.join("m.pcm");
+        std::os::unix::fs::symlink(dir.join("actual.bin"), &link).unwrap();
+        assert_eq!(gcc::find_module_files(dir, "pcm").unwrap(), vec![link]);
+        std::os::unix::fs::symlink(dir.join("missing"), dir.join("bad.pcm")).unwrap();
+        assert!(gcc::find_module_files(dir, "pcm").is_err());
     }
 
     #[test]
@@ -1292,8 +1380,6 @@ mod test {
             (&["-fimplicit-modules"], "-fimplicit-modules"),
             (&["-fmemory-profile"], "-fmemory-profile"),
             (&["-fmemory-profile=/tmp/memprof"], "-fmemory-profile="),
-            (&["-fmodule-header"], "-fmodule-header"),
-            (&["-fmodule-header=user"], "-fmodule-header"),
             (
                 &["-fmodules-cache-path=/tmp/modules"],
                 "-fmodules-cache-path",
@@ -1480,6 +1566,55 @@ mod test {
                 }
             )
         );
+    }
+
+    #[test]
+    fn test_parse_arguments_header_unit_producer() {
+        assert_eq!(
+            CompilerArguments::CannotCache("-fmodule-header without -o", None),
+            parse_arguments_(stringvec!["-c", "-fmodule-header", "foo.hpp"])
+        );
+        // Building a header unit writes only the BMI named by -o, so it is cached
+        // like any other compilation whose single artifact is that file.
+        let a = parses!(
+            "-c",
+            "-x",
+            "c++-header",
+            "-fmodule-header",
+            "foo.h",
+            "-o",
+            "foo.pcm"
+        );
+        assert_eq!(Language::CxxHeader, a.language);
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.pcm"),
+                    optional: false
+                }
+            )
+        );
+        assert!(
+            a.extra_hash_files.is_empty(),
+            "a header unit producer reads no BMI"
+        );
+        assert_eq!(ovec!["-fmodule-header"], a.common_args);
+
+        // The kind of header unit is part of the hash through the arguments.
+        let b = parses!(
+            "-c",
+            "-x",
+            "c++-header",
+            "-fmodule-header=user",
+            "foo.h",
+            "-o",
+            "foo.pcm"
+        );
+        assert_eq!(Language::CxxHeader, b.language);
+        assert_eq!(ovec!["-fmodule-header=user"], b.common_args);
+        assert_ne!(a.common_args, b.common_args);
     }
 
     #[test]
