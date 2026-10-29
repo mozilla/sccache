@@ -1868,7 +1868,10 @@ fn find_compilers() -> Vec<Compiler> {
     vec![Compiler {
         name: "cl.exe",
         exe: tool.path().as_os_str().to_os_string(),
-        env_vars: tool.env().to_vec(),
+        env_vars: tool
+            .get_envs()
+            .map(|(key, value)| (key.to_owned(), value.to_owned()))
+            .collect(),
     }]
 }
 
