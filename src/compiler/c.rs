@@ -29,6 +29,7 @@ use crate::util::{
     Digest, HashToDigest, MetadataCtimeExt, TimeMacroFinder, Timestamp, decode_path, encode_path,
     hash_all, strip_basedirs, strip_basedirs_from_arg,
 };
+use crate::{compiler::DirectCacheType, errors::*};
 use async_trait::async_trait;
 use fs_err as fs;
 use std::borrow::Cow;
@@ -41,8 +42,6 @@ use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::{Arc, LazyLock};
-
-use crate::errors::*;
 
 use super::CacheControl;
 use super::preprocessor_cache::PreprocessorCacheEntry;
@@ -551,6 +550,7 @@ where
                                 env_vars: env_vars.clone(),
                             }),
                             weak_toolchain_key,
+                            direct_cache_type: DirectCacheType::Hit,
                         });
                     } else {
                         debug!("Preprocessor cache miss: {preprocessor_key}");
@@ -668,7 +668,7 @@ where
         .compute();
 
         // Cache the preprocessing step
-        if let Some(preprocessor_key) = preprocessor_key
+        if let Some(ref preprocessor_key) = preprocessor_key
             && !include_files.is_empty()
         {
             let mut preprocessor_cache_entry = PreprocessorCacheEntry::new();
@@ -680,7 +680,7 @@ where
             preprocessor_cache_entry.add_result(start_of_compilation, &key, files);
 
             if let Err(e) = storage
-                .put_preprocessor_cache_entry(&preprocessor_key, preprocessor_cache_entry)
+                .put_preprocessor_cache_entry(preprocessor_key, preprocessor_cache_entry)
                 .await
             {
                 debug!("Failed to update preprocessor cache: {}", e);
@@ -695,6 +695,10 @@ where
             self.executable.to_string_lossy(),
             self.executable_digest
         );
+
+        let direct_attempted = needs_preprocessing
+            && preprocessor_key.is_some()
+            && cache_control == CacheControl::Default;
         Ok(HashResult {
             key,
             compilation: Box::new(CCompilation {
@@ -708,6 +712,11 @@ where
                 env_vars,
             }),
             weak_toolchain_key,
+            direct_cache_type: if direct_attempted {
+                DirectCacheType::Miss
+            } else {
+                DirectCacheType::NotAttempted
+            },
         })
     }
 
