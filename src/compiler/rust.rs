@@ -1437,7 +1437,9 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                 return CompilerArguments::NotCompilation;
             }
             Some(LinkLibrary(ArgLinkLibrary { kind, name })) => {
-                if kind == "static" {
+                // Link modifiers follow the kind (e.g. `static:+bundle`), and `-bundle` libraries
+                // aren't copied into the rlib, so they don't change the output.
+                if kind == "static" || (kind.starts_with("static:") && !kind.contains("-bundle")) {
                     static_lib_names.push(name.to_owned());
                 }
             }
@@ -3365,6 +3367,33 @@ LLVM version: 15.0.2
             "--out-dir",
             "out"
         );
+    }
+
+    #[test_case("static", true ; "without modifiers")]
+    #[test_case("static:+bundle", true ; "bundle")]
+    #[test_case("static:+whole-archive", true ; "whole archive")]
+    #[test_case("static:-bundle", false ; "not bundled")]
+    #[test_case("static:+whole-archive,-bundle", false ; "whole archive not bundled")]
+    fn test_parse_arguments_static_lib_with_link_modifiers(kind: &str, hashed: bool) {
+        let f = TestFixture::new();
+        let lib = f.touch("libbar.a").unwrap();
+        let h = parses!(
+            "--crate-name",
+            "foo",
+            "--crate-type",
+            "lib",
+            "--emit",
+            "link",
+            "-L",
+            format!("native={}", lib.parent().unwrap().display()),
+            "-l",
+            format!("{kind}=bar"),
+            "foo.rs",
+            "--out-dir",
+            "out"
+        );
+        let expected = if hashed { vec![lib] } else { vec![] };
+        assert_eq!(h.staticlibs, expected);
     }
 
     #[test]
