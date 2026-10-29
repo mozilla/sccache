@@ -42,7 +42,7 @@ use super::c::hash_arguments;
 
 /// The current format is 1 header byte for the version + bincode encoding
 /// of the [`PreprocessorCacheEntry`] struct.
-const FORMAT_VERSION: u8 = 1;
+const FORMAT_VERSION: u8 = 2;
 const MAX_PREPROCESSOR_CACHE_ENTRIES: usize = 100;
 const MAX_PREPROCESSOR_CACHE_FILE_INFO_ENTRIES: usize = 10000;
 
