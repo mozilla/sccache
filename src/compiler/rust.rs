@@ -1691,7 +1691,16 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                 return CompilerArguments::NotCompilation;
             }
             Some(LinkLibrary(ArgLinkLibrary { kind, name })) => {
-                if kind == "static" {
+                // Link modifiers follow the kind (e.g. `static:+bundle`), and `-bundle` libraries
+                // aren't copied into the rlib, so they don't change the output.
+                let bundled_static = match kind.split_once(':') {
+                    Some((kind, modifiers)) => {
+                        kind == "static"
+                            && !modifiers.split(',').any(|modifier| modifier == "-bundle")
+                    }
+                    None => kind == "static",
+                };
+                if bundled_static {
                     static_lib_names.push(name.to_owned());
                 }
             }
@@ -3709,6 +3718,36 @@ LLVM version: 15.0.2
             "--out-dir",
             "out"
         );
+    }
+
+    #[test_case("static", true ; "without modifiers")]
+    #[test_case("static:+bundle", true ; "with bundle")]
+    #[test_case("static:+whole-archive", true ; "with whole-archive")]
+    #[test_case("static:-bundle", false ; "without bundle")]
+    #[test_case("static:+whole-archive,-bundle", false ; "with whole-archive, without bundle")]
+    #[test_case("static:-bundle,+whole-archive", false ; "without bundle, with whole-archive")]
+    #[test_case("dylib", false ; "dylib, without modifiers")]
+    #[test_case("dylib:+as-needed", false ; "dylib, with as-needed")]
+    fn test_parse_arguments_static_lib_with_link_modifiers(kind: &str, hashed: bool) {
+        let f = TestFixture::new();
+        let lib = f.touch("libbar.a").unwrap();
+        let h = parses!(
+            "--crate-name",
+            "foo",
+            "--crate-type",
+            "lib",
+            "--emit",
+            "link",
+            "-L",
+            format!("native={}", lib.parent().unwrap().display()),
+            "-l",
+            format!("{kind}=bar"),
+            "foo.rs",
+            "--out-dir",
+            "out"
+        );
+        let expected = if hashed { vec![lib] } else { vec![] };
+        assert_eq!(h.staticlibs, expected);
     }
 
     #[test]
