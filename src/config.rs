@@ -835,9 +835,51 @@ pub fn try_read_config_file<T: DeserializeOwned>(path: &Path) -> Result<Option<T
 #[derive(Debug)]
 pub struct EnvConfig {
     cache: CacheConfigs,
+    disk_overrides: DiskCacheConfigOverrides,
     basedirs: Option<Vec<String>>,
     dist_cache_dir: Option<PathBuf>,
     client_side_mode: Option<bool>,
+}
+
+#[derive(Debug, Default)]
+struct DiskCacheConfigOverrides {
+    dir: Option<PathBuf>,
+    size: Option<u64>,
+    use_preprocessor_cache_mode: Option<bool>,
+    rw_mode: Option<CacheModeConfig>,
+}
+
+impl DiskCacheConfigOverrides {
+    fn apply_to(self, disk: &mut Option<DiskCacheConfig>) {
+        let Self {
+            dir,
+            size,
+            use_preprocessor_cache_mode,
+            rw_mode,
+        } = self;
+
+        if dir.is_none()
+            && size.is_none()
+            && use_preprocessor_cache_mode.is_none()
+            && rw_mode.is_none()
+        {
+            return;
+        }
+
+        let disk = disk.get_or_insert_default();
+        if let Some(dir) = dir {
+            disk.dir = dir;
+        }
+        if let Some(size) = size {
+            disk.size = size;
+        }
+        if let Some(enabled) = use_preprocessor_cache_mode {
+            disk.preprocessor_cache_mode.use_preprocessor_cache_mode = enabled;
+        }
+        if let Some(rw_mode) = rw_mode {
+            disk.rw_mode = rw_mode;
+        }
+    }
 }
 
 fn string_from_env_var(env_var_name: &str) -> Option<String> {
@@ -1201,36 +1243,11 @@ fn config_from_env() -> Result<EnvConfig> {
     };
 
     // ======= Local =======
-    let disk_dir = env::var_os("SCCACHE_DIR").map(PathBuf::from);
-    let disk_sz = string_from_env_var("SCCACHE_CACHE_SIZE").and_then(|v| parse_size(&v));
-
-    let mut preprocessor_mode_config = PreprocessorCacheModeConfig::activated();
-    let preprocessor_mode_overridden = if let Some(value) = bool_from_env_var("SCCACHE_DIRECT")? {
-        preprocessor_mode_config.use_preprocessor_cache_mode = value;
-        true
-    } else {
-        false
-    };
-
-    let (disk_rw_mode, disk_rw_mode_overridden) =
-        match cache_mode_from_env_var("SCCACHE_LOCAL_RW_MODE") {
-            Some(mode) => (mode, true),
-            _ => (CacheModeConfig::ReadWrite, false),
-        };
-
-    let any_overridden = disk_dir.is_some()
-        || disk_sz.is_some()
-        || preprocessor_mode_overridden
-        || disk_rw_mode_overridden;
-    let disk = if any_overridden {
-        Some(DiskCacheConfig {
-            dir: disk_dir.unwrap_or_else(default_disk_cache_dir),
-            size: disk_sz.unwrap_or_else(default_disk_cache_size),
-            preprocessor_cache_mode: preprocessor_mode_config,
-            rw_mode: disk_rw_mode,
-        })
-    } else {
-        None
+    let disk_overrides = DiskCacheConfigOverrides {
+        dir: env::var_os("SCCACHE_DIR").map(PathBuf::from),
+        size: string_from_env_var("SCCACHE_CACHE_SIZE").and_then(|v| parse_size(&v)),
+        use_preprocessor_cache_mode: bool_from_env_var("SCCACHE_DIRECT")?,
+        rw_mode: cache_mode_from_env_var("SCCACHE_LOCAL_RW_MODE"),
     };
 
     // Parse multi-level cache configuration
@@ -1251,7 +1268,7 @@ fn config_from_env() -> Result<EnvConfig> {
 
     let cache = CacheConfigs {
         azure,
-        disk,
+        disk: None,
         gcs,
         gha,
         memcached,
@@ -1283,6 +1300,7 @@ fn config_from_env() -> Result<EnvConfig> {
 
     Ok(EnvConfig {
         cache,
+        disk_overrides,
         basedirs,
         dist_cache_dir,
         client_side_mode,
@@ -1358,11 +1376,13 @@ impl Config {
 
         let EnvConfig {
             cache,
+            disk_overrides,
             basedirs: env_basedirs,
             dist_cache_dir: env_dist_cache_dir,
             client_side_mode: env_client_side_mode,
         } = env_conf;
         conf_caches.merge(cache);
+        disk_overrides.apply_to(&mut conf_caches.disk);
 
         if let Some(cache_dir) = env_dist_cache_dir {
             dist.cache_dir = cache_dir;
@@ -1776,6 +1796,7 @@ fn config_overrides() {
             }),
             ..Default::default()
         },
+        disk_overrides: Default::default(),
         basedirs: None,
         dist_cache_dir: None,
         client_side_mode: None,
@@ -1869,11 +1890,142 @@ fn config_overrides() {
 }
 
 #[test]
+#[serial(config_from_env)]
+fn config_disk_env_dir_preserves_file_size() {
+    const FILE_CACHE_SIZE: u64 = 20 * 1024 * 1024 * 1024;
+
+    let file_conf: FileConfig = toml::from_str(
+        r#"
+[cache.disk]
+size = 21474836480
+"#,
+    )
+    .unwrap();
+
+    temp_env::with_vars(
+        [
+            ("SCCACHE_DIR", Some("/env-cache")),
+            ("SCCACHE_CACHE_SIZE", None),
+            ("SCCACHE_DIRECT", None),
+            ("SCCACHE_LOCAL_RW_MODE", None),
+        ],
+        || {
+            let env_conf = config_from_env().unwrap();
+            let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
+
+            assert_eq!(config.fallback_cache.dir, PathBuf::from("/env-cache"));
+            assert_eq!(config.fallback_cache.size, FILE_CACHE_SIZE);
+        },
+    );
+}
+
+#[test]
+#[serial(config_from_env)]
+fn config_disk_env_overrides_only_explicit_fields() {
+    let file_preprocessor_config = PreprocessorCacheModeConfig {
+        use_preprocessor_cache_mode: true,
+        file_stat_matches: true,
+        use_ctime_for_stat: false,
+        ignore_time_macros: true,
+        skip_system_headers: true,
+        hash_working_directory: false,
+    };
+    let file_conf = FileConfig {
+        cache: CacheConfigs {
+            disk: Some(DiskCacheConfig {
+                dir: "/file-cache".into(),
+                size: 20 * 1024 * 1024 * 1024,
+                preprocessor_cache_mode: file_preprocessor_config,
+                rw_mode: CacheModeConfig::ReadOnly,
+            }),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    temp_env::with_vars(
+        [
+            ("SCCACHE_DIR", None),
+            ("SCCACHE_CACHE_SIZE", None),
+            ("SCCACHE_DIRECT", Some("false")),
+            ("SCCACHE_LOCAL_RW_MODE", Some("READ_WRITE")),
+        ],
+        || {
+            let env_conf = config_from_env().unwrap();
+            let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
+            let expected = DiskCacheConfig {
+                dir: "/file-cache".into(),
+                size: 20 * 1024 * 1024 * 1024,
+                preprocessor_cache_mode: PreprocessorCacheModeConfig {
+                    use_preprocessor_cache_mode: false,
+                    file_stat_matches: true,
+                    use_ctime_for_stat: false,
+                    ignore_time_macros: true,
+                    skip_system_headers: true,
+                    hash_working_directory: false,
+                },
+                rw_mode: CacheModeConfig::ReadWrite,
+            };
+
+            assert_eq!(config.fallback_cache, expected);
+            assert_eq!(config.cache_configs.disk.as_ref(), Some(&expected));
+        },
+    );
+}
+
+#[test]
+#[serial(config_from_env)]
+fn config_disk_env_size_creates_default_disk() {
+    temp_env::with_vars(
+        [
+            ("SCCACHE_DIR", None),
+            ("SCCACHE_CACHE_SIZE", Some("1")),
+            ("SCCACHE_DIRECT", None),
+            ("SCCACHE_LOCAL_RW_MODE", None),
+        ],
+        || {
+            let env_conf = config_from_env().unwrap();
+            let config =
+                Config::from_env_and_file_configs(env_conf, FileConfig::default()).unwrap();
+            let expected = DiskCacheConfig {
+                size: 1,
+                ..Default::default()
+            };
+
+            assert_eq!(config.fallback_cache, expected);
+            assert_eq!(config.cache_configs.disk.as_ref(), Some(&expected));
+        },
+    );
+}
+
+#[test]
+#[serial(config_from_env)]
+fn config_without_disk_sources_keeps_disk_unset() {
+    temp_env::with_vars(
+        [
+            ("SCCACHE_DIR", None::<&str>),
+            ("SCCACHE_CACHE_SIZE", None),
+            ("SCCACHE_DIRECT", None),
+            ("SCCACHE_LOCAL_RW_MODE", None),
+        ],
+        || {
+            let env_conf = config_from_env().unwrap();
+            let config =
+                Config::from_env_and_file_configs(env_conf, FileConfig::default()).unwrap();
+
+            assert_eq!(config.fallback_cache, DiskCacheConfig::default());
+            assert!(config.cache_configs.disk.is_none());
+        },
+    );
+}
+
+#[test]
 #[cfg(target_os = "windows")]
 fn config_basedirs_overrides() {
     // Test that env variable takes precedence over file config
     let env_conf = EnvConfig {
         cache: Default::default(),
+        disk_overrides: Default::default(),
         basedirs: vec!["C:/env/basedir".to_string()].into(),
         dist_cache_dir: None,
         client_side_mode: None,
@@ -1893,6 +2045,7 @@ fn config_basedirs_overrides() {
     // Test that file config is used when env is None
     let env_conf = EnvConfig {
         cache: Default::default(),
+        disk_overrides: Default::default(),
         basedirs: None,
         dist_cache_dir: None,
         client_side_mode: None,
@@ -1912,6 +2065,7 @@ fn config_basedirs_overrides() {
     // Test that env config is used when env is set but empty
     let env_conf = EnvConfig {
         cache: Default::default(),
+        disk_overrides: Default::default(),
         basedirs: vec![].into(),
         dist_cache_dir: None,
         client_side_mode: None,
@@ -1931,6 +2085,7 @@ fn config_basedirs_overrides() {
     // Test that both empty results in empty
     let env_conf = EnvConfig {
         cache: Default::default(),
+        disk_overrides: Default::default(),
         basedirs: vec![].into(),
         dist_cache_dir: None,
         client_side_mode: None,
@@ -1954,6 +2109,7 @@ fn config_basedirs_overrides() {
     // Test that env variable takes precedence over file config
     let env_conf = EnvConfig {
         cache: Default::default(),
+        disk_overrides: Default::default(),
         basedirs: vec!["/env/basedir".to_string()].into(),
         dist_cache_dir: None,
         client_side_mode: None,
@@ -1973,6 +2129,7 @@ fn config_basedirs_overrides() {
     // Test that file config is used when env is None
     let env_conf = EnvConfig {
         cache: Default::default(),
+        disk_overrides: Default::default(),
         basedirs: None,
         dist_cache_dir: None,
         client_side_mode: None,
@@ -1992,6 +2149,7 @@ fn config_basedirs_overrides() {
     // Test that env config is used when env is set but empty
     let env_conf = EnvConfig {
         cache: Default::default(),
+        disk_overrides: Default::default(),
         basedirs: vec![].into(),
         dist_cache_dir: None,
         client_side_mode: None,
@@ -2011,6 +2169,7 @@ fn config_basedirs_overrides() {
     // Test that both empty results in empty
     let env_conf = EnvConfig {
         cache: Default::default(),
+        disk_overrides: Default::default(),
         basedirs: vec![].into(),
         dist_cache_dir: None,
         client_side_mode: None,
@@ -2028,6 +2187,7 @@ fn config_basedirs_overrides() {
     assert!(config.basedirs.is_empty());
     let env_conf = EnvConfig {
         cache: Default::default(),
+        disk_overrides: Default::default(),
         basedirs: None,
         dist_cache_dir: None,
         client_side_mode: None,
@@ -3181,6 +3341,7 @@ fn test_integration_config_normalizes_and_strips() {
 
     let env_conf = EnvConfig {
         cache: Default::default(),
+        disk_overrides: Default::default(),
         basedirs: None,
         dist_cache_dir: None,
         client_side_mode: None,
@@ -3217,6 +3378,7 @@ fn test_integration_normalized_path_with_double_slashes() {
 
     let env_conf = EnvConfig {
         cache: Default::default(),
+        disk_overrides: Default::default(),
         basedirs: None,
         dist_cache_dir: None,
         client_side_mode: None,
@@ -3249,6 +3411,7 @@ fn test_integration_windows_path_normalization() {
 
     let env_conf = EnvConfig {
         cache: Default::default(),
+        disk_overrides: Default::default(),
         basedirs: None,
         dist_cache_dir: None,
         client_side_mode: None,
@@ -3282,6 +3445,7 @@ fn test_integration_cow_borrowed_when_no_match() {
 
     let env_conf = EnvConfig {
         cache: Default::default(),
+        disk_overrides: Default::default(),
         basedirs: None,
         dist_cache_dir: None,
         client_side_mode: None,
@@ -3315,6 +3479,7 @@ fn test_integration_cow_borrowed_when_empty_basedirs() {
 
     let env_conf = EnvConfig {
         cache: Default::default(),
+        disk_overrides: Default::default(),
         basedirs: None,
         dist_cache_dir: None,
         client_side_mode: None,
@@ -3347,6 +3512,7 @@ fn test_integration_multiple_basedirs_longest_match() {
 
     let env_conf = EnvConfig {
         cache: Default::default(),
+        disk_overrides: Default::default(),
         basedirs: None,
         dist_cache_dir: None,
         client_side_mode: None,
@@ -3384,6 +3550,7 @@ fn test_integration_paths_with_dots_normalized() {
 
     let env_conf = EnvConfig {
         cache: Default::default(),
+        disk_overrides: Default::default(),
         basedirs: None,
         dist_cache_dir: None,
         client_side_mode: None,
@@ -3417,6 +3584,7 @@ fn test_integration_windows_mixed_slashes() {
 
     let env_conf = EnvConfig {
         cache: Default::default(),
+        disk_overrides: Default::default(),
         basedirs: None,
         dist_cache_dir: None,
         client_side_mode: None,
