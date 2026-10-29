@@ -1785,6 +1785,16 @@ fn test_redis_io_timeout_from_file_invalid() {
 #[test]
 #[serial(config_from_env)]
 fn test_redis_io_timeout_from_env() {
+    fn parse_with_timeout(value: Option<&str>) -> Result<EnvConfig> {
+        temp_env::with_vars(
+            [
+                ("SCCACHE_REDIS_ENDPOINT", Some("redis://localhost:6379")),
+                ("SCCACHE_REDIS_IO_TIMEOUT_SECS", value),
+            ],
+            config_from_env,
+        )
+    }
+
     for (value, expected) in [
         (None, None),
         (Some(""), None),
@@ -1792,18 +1802,7 @@ fn test_redis_io_timeout_from_env() {
         (Some("37"), Some(37)),
         (Some("18446744073709551615"), Some(u64::MAX)),
     ] {
-        unsafe {
-            env::set_var("SCCACHE_REDIS_ENDPOINT", "redis://localhost:6379");
-            match value {
-                Some(value) => env::set_var("SCCACHE_REDIS_IO_TIMEOUT_SECS", value),
-                None => env::remove_var("SCCACHE_REDIS_IO_TIMEOUT_SECS"),
-            }
-        }
-        let result = config_from_env();
-        unsafe {
-            env::remove_var("SCCACHE_REDIS_ENDPOINT");
-            env::remove_var("SCCACHE_REDIS_IO_TIMEOUT_SECS");
-        }
+        let result = parse_with_timeout(value);
         assert_eq!(
             result.unwrap().cache.redis.unwrap().io_timeout_secs,
             expected.and_then(NonZeroU64::new)
@@ -1811,15 +1810,7 @@ fn test_redis_io_timeout_from_env() {
     }
 
     for value in ["0", "invalid", "-1", "18446744073709551616"] {
-        unsafe {
-            env::set_var("SCCACHE_REDIS_ENDPOINT", "redis://localhost:6379");
-            env::set_var("SCCACHE_REDIS_IO_TIMEOUT_SECS", value);
-        }
-        let result = config_from_env();
-        unsafe {
-            env::remove_var("SCCACHE_REDIS_ENDPOINT");
-            env::remove_var("SCCACHE_REDIS_IO_TIMEOUT_SECS");
-        }
+        let result = parse_with_timeout(Some(value));
         assert!(result.is_err(), "accepted Redis IO timeout {value:?}");
     }
 }
