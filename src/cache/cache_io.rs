@@ -18,8 +18,9 @@ use std::fmt;
 use std::io::{Cursor, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
-use zip::write::FileOptions;
-use zip::{CompressionMethod, ZipArchive, ZipWriter};
+use zip::read::{ArchiveOffset, Config as ZipReadConfig};
+use zip::write::SimpleFileOptions;
+use zip::{CompressionMethod, System, ZipArchive, ZipWriter};
 
 /// Cache object sourced by a file.
 #[derive(Clone)]
@@ -93,7 +94,12 @@ impl CacheRead {
     where
         R: ReadSeek + 'static,
     {
-        let z = ZipArchive::new(Box::new(reader) as Box<dyn ReadSeek>)
+        // Cache entries are standalone ZIP archives written by CacheWrite, so the
+        // archive always starts at byte 0. Avoid zip's generic embedded-archive scan.
+        let config = ZipReadConfig {
+            archive_offset: ArchiveOffset::Known(0),
+        };
+        let z = ZipArchive::with_config(config, Box::new(reader) as Box<dyn ReadSeek>)
             .context("Failed to parse cache entry")?;
         Ok(CacheRead { zip: z })
     }
@@ -271,7 +277,11 @@ impl CacheWrite {
     {
         // We're going to declare the compression method as "stored",
         // but we're actually going to store zstd-compressed blobs.
-        let opts = FileOptions::default().compression_method(CompressionMethod::Stored);
+        // zip 0.6 wrote entries with Unix creator metadata on every platform.
+        // Preserve that cache format explicitly with zip 9.
+        let opts = SimpleFileOptions::default()
+            .compression_method(CompressionMethod::Stored)
+            .system(System::Unix);
         let opts = if let Some(mode) = mode {
             opts.unix_permissions(mode)
         } else {
@@ -307,7 +317,7 @@ impl CacheWrite {
 
     /// Finish writing data to the cache entry writer, and return the data.
     pub fn finish(self) -> Result<Vec<u8>> {
-        let CacheWrite { mut zip } = self;
+        let CacheWrite { zip } = self;
         let cur = zip.finish().context("Failed to finish cache entry zip")?;
         Ok(cur.into_inner())
     }
@@ -322,6 +332,27 @@ impl Default for CacheWrite {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cache_entry_roundtrip_preserves_zip_format() {
+        let payload = b"cache payload";
+        let mut source = Cursor::new(payload);
+        let mut cache_write = CacheWrite::new();
+        cache_write
+            .put_object("object", &mut source, Some(0o755))
+            .unwrap();
+        let cache_bytes = cache_write.finish().unwrap();
+        assert_eq!(&cache_bytes[..4], b"PK\x03\x04");
+
+        let mut cache_read = CacheRead::from(Cursor::new(cache_bytes)).unwrap();
+        let mut output = Vec::new();
+        let mode = cache_read
+            .get_object("object", &mut output)
+            .unwrap()
+            .unwrap();
+        assert_eq!(mode & 0o777, 0o755);
+        assert_eq!(output, payload);
+    }
 
     #[cfg(unix)]
     #[test]
