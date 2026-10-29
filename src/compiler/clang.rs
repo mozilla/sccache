@@ -287,6 +287,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     // Note: this is ROCm clang specific. Parallelism level shouldn't affect output.
     take_arg!("-parallel-jobs", OsString, Concatenated(b'='), Unhashed),
     take_arg!("-plugin-arg", OsString, Concatenated(b'-'), PassThrough),
+    take_arg!("-resource-dir", PathBuf, CanBeSeparated(b'='), PassThroughPath),
     take_arg!("-save-stats", OsString, Concatenated(b'='), TooHard),
     take_arg!("-target", OsString, Separated, PassThrough),
     flag!("-verify", PreprocessorArgumentFlag),
@@ -389,6 +390,28 @@ mod test {
             version: Some("\"FreeBSD Clang 14.0.5 (https://github.com/llvm/llvm-project.git llvmorg-14.0.5-0-gc12386ae247c)\"".to_string()),
             assembler_digest: None,
         }.is_minversion(14)); // is_appleclang wins
+    }
+
+    #[test]
+    fn test_parse_arguments_resource_dir() {
+        let a = parses!(
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "-resource-dir",
+            "/usr/lib/clang/15"
+        );
+        assert_eq!(ovec!["-resource-dir", "/usr/lib/clang/15"], a.common_args);
+
+        let a = parses!(
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "-resource-dir=/usr/lib/clang/15"
+        );
+        assert_eq!(ovec!["-resource-dir", "/usr/lib/clang/15"], a.common_args);
     }
 
     #[test]
