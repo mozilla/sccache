@@ -339,7 +339,7 @@ pub struct RustupProxy {
 pub struct ParsedArguments {
     /// The full commandline, with all parsed arguments
     arguments: Vec<Argument<ArgData>>,
-    /// The location of compiler outputs.
+    /// The location of compiler outputs that `--emit` gives no path for.
     output_dir: PathBuf,
     /// Paths to extern crates used in the compile.
     externs: Vec<PathBuf>,
@@ -351,7 +351,7 @@ pub struct ParsedArguments {
     crate_name: String,
     /// The crate types that will be generated
     crate_types: CrateTypes,
-    /// If dependency info is being emitted, the name of the dep info file.
+    /// If dependency info is being emitted, the path of the dep info file.
     dep_info: Option<PathBuf>,
     /// If profile info is being emitted, the path of the profile.
     ///
@@ -375,7 +375,9 @@ pub struct ParsedArguments {
     gcno: Option<PathBuf>,
     /// rustc says that emits .rlib for --emit=metadata
     /// https://github.com/rust-lang/rust/issues/54852
-    emit: HashSet<String>,
+    ///
+    /// Maps each emitted kind to its path from `--emit kind=path`, if any.
+    emit: HashMap<String, Option<PathBuf>>,
     /// The value of any `--color` option passed on the commandline.
     color_mode: ColorMode,
     /// Whether `--json` was passed to this invocation.
@@ -1089,6 +1091,49 @@ impl IntoArg for ArgCrateTypes {
     }
 }
 
+/// The `kind[=path]` list of an `--emit` argument.
+#[derive(Clone, Debug, PartialEq)]
+struct ArgEmit(Vec<(String, Option<PathBuf>)>);
+impl FromArg for ArgEmit {
+    fn process(arg: OsString) -> ArgParseResult<Self> {
+        let arg = arg.into_string().map_err(ArgParseError::InvalidUnicode)?;
+        Ok(ArgEmit(
+            arg.split(',')
+                .map(|e| match e.split_once('=') {
+                    Some((kind, path)) => (kind.to_owned(), Some(path.into())),
+                    None => (e.to_owned(), None),
+                })
+                .collect(),
+        ))
+    }
+}
+impl IntoArg for ArgEmit {
+    fn into_arg_os_string(self) -> OsString {
+        let mut s = OsString::new();
+        for (i, (kind, path)) in self.0.into_iter().enumerate() {
+            if i > 0 {
+                s.push(",");
+            }
+            s.push(kind);
+            if let Some(path) = path {
+                s.push("=");
+                s.push(path);
+            }
+        }
+        s
+    }
+    fn into_arg_string(self, transformer: PathTransformerFn<'_>) -> ArgToStringResult {
+        let mut emits = vec![];
+        for (kind, path) in self.0 {
+            emits.push(match path {
+                Some(path) => format!("{}={}", kind, path.into_arg_string(transformer)?),
+                None => kind,
+            });
+        }
+        Ok(emits.join(","))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct ArgLinkLibrary {
     kind: String,
@@ -1288,7 +1333,7 @@ ArgData! {
     NotCompilation(OsString),
     LinkLibrary(ArgLinkLibrary),
     LinkPath(ArgLinkPath),
-    Emit(String),
+    Emit(ArgEmit),
     Extern(ArgExtern),
     Color(String),
     Json(String),
@@ -1318,7 +1363,7 @@ counted_array!(static ARGS: [ArgInfo<ArgData>; _] = [
     take_arg!("--crate-type", ArgCrateTypes, CanBeSeparated(b'='), CrateType),
     take_arg!("--deny", OsString, CanBeSeparated(b'='), PassThrough),
     take_arg!("--diagnostic-width", OsString, CanBeSeparated(b'='), PassThrough),
-    take_arg!("--emit", String, CanBeSeparated(b'='), Emit),
+    take_arg!("--emit", ArgEmit, CanBeSeparated(b'='), Emit),
     take_arg!("--error-format", OsString, CanBeSeparated(b'='), PassThrough),
     take_arg!("--explain", OsString, CanBeSeparated(b'='), NotCompilation),
     take_arg!("--extern", ArgExtern, CanBeSeparated(b'='), Extern),
@@ -1404,7 +1449,7 @@ impl Iterator for ExpandResponseFile<'_> {
 fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<ParsedArguments> {
     let mut args = vec![];
 
-    let mut emit: Option<HashSet<String>> = None;
+    let mut emit: Option<HashMap<String, Option<PathBuf>>> = None;
     let mut input = None;
     let mut output_dir = None;
     let mut crate_name = None;
@@ -1451,13 +1496,10 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                     static_link_paths.push(cwd.join(path));
                 }
             }
-            Some(Emit(value)) => {
-                if emit.is_some() {
-                    // We don't support passing --emit more than once.
-                    cannot_cache!("more than one --emit");
-                }
-                emit = Some(value.split(',').map(str::to_owned).collect());
-            }
+            // Like rustc, a later path for the same kind wins.
+            Some(Emit(ArgEmit(value))) => emit
+                .get_or_insert_with(HashMap::new)
+                .extend(value.iter().cloned()),
             Some(CrateType(ArgCrateTypes {
                 rlib,
                 staticlib,
@@ -1564,14 +1606,20 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
     // We don't actually save the input value, but there needs to be one.
     req!(input);
     drop(input);
-    req!(output_dir);
     req!(emit);
     req!(crate_name);
     // We won't cache invocations that are not producing
     // binary output.
-    if !emit.is_empty() && !emit.contains("link") && !emit.contains("metadata") {
+    if !emit.is_empty() && !emit.contains_key("link") && !emit.contains_key("metadata") {
         return CompilerArguments::NotCompilation;
     }
+    // rustc writes outputs without a path to the current directory, but cargo
+    // always passes --out-dir, so keep requiring it if any output lands there.
+    let output_dir = match output_dir {
+        Some(output_dir) => output_dir,
+        None if emit.values().all(Option::is_some) => PathBuf::new(),
+        None => cannot_cache!("missing output_dir"),
+    };
     // If it's not an rlib and not a staticlib then crate-type wasn't passed,
     // so it will usually be inferred as a binary, though the `#![crate_type`
     // annotation may dictate otherwise - either way, we don't know what to do.
@@ -1584,27 +1632,41 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
     }
     // We won't cache invocations that are outputting anything but
     // linker output and dep-info.
-    if emit.iter().any(|e| !ALLOWED_EMIT.contains(e.as_str())) {
+    if emit.keys().any(|e| !ALLOWED_EMIT.contains(e.as_str())) {
         cannot_cache!("unsupported --emit");
+    }
+    if emit.values().flatten().any(|p| p == Path::new("-")) {
+        cannot_cache!("--emit to stdout");
+    }
+    // rustc writes every crate type to the one `link` path, so all but the
+    // last would be lost.
+    if matches!(emit.get("link"), Some(Some(_))) && crate_types.rlib && crate_types.staticlib {
+        cannot_cache!("--emit link path with multiple crate types");
     }
 
     // Figure out the dep-info filename, if emitting dep-info.
-    let dep_info = if emit.contains("dep-info") {
-        let mut dep_info = crate_name.clone();
-        if let Some(extra_filename) = extra_filename.clone() {
-            dep_info.push_str(&extra_filename[..]);
+    let dep_info = match emit.get("dep-info") {
+        Some(Some(path)) => Some(path.clone()),
+        Some(None) => {
+            let mut dep_info = crate_name.clone();
+            if let Some(extra_filename) = extra_filename.clone() {
+                dep_info.push_str(&extra_filename[..]);
+            }
+            dep_info.push_str(".d");
+            Some(output_dir.join(dep_info))
         }
-        dep_info.push_str(".d");
-        Some(dep_info)
+        None => None,
+    };
+
+    // Ignore profile is `link` is not in emit which means we are running `cargo check`.
+    let profile = if emit.contains_key("link") {
+        profile
     } else {
         None
     };
 
-    // Ignore profile is `link` is not in emit which means we are running `cargo check`.
-    let profile = if emit.contains("link") { profile } else { None };
-
     // Figure out the gcno filename, if producing gcno files with `-Zprofile`.
-    let gcno = if gcno && emit.contains("link") {
+    let gcno = if gcno && emit.contains_key("link") {
         let mut gcno = crate_name.clone();
         if let Some(extra_filename) = extra_filename {
             gcno.push_str(&extra_filename[..]);
@@ -1649,7 +1711,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
         crate_link_paths,
         staticlibs,
         crate_name,
-        dep_info: dep_info.map(|s| s.into()),
+        dep_info,
         profile: profile.map(|s| s.into()),
         gcno: gcno.map(|s| s.into()),
         emit,
@@ -1736,13 +1798,26 @@ where
             .cloned()
             .flat_map(|(arg, val)| iter::once(arg).chain(val))
             .collect();
-        let outputs = get_compiler_outputs(
-            creator,
-            &self.executable,
-            flat_os_string_arguments,
-            &cwd,
-            &env_vars,
-        );
+        // `--print file-names` ignores the paths of `--emit kind=path`, so it
+        // is only needed for the kinds without one.
+        let emit = &self.parsed_args.emit;
+        let need_file_names = ["link", "metadata"]
+            .iter()
+            .any(|kind| matches!(emit.get(*kind), Some(None)));
+        let outputs = async {
+            if need_file_names {
+                get_compiler_outputs(
+                    creator,
+                    &self.executable,
+                    flat_os_string_arguments,
+                    &cwd,
+                    &env_vars,
+                )
+                .await
+            } else {
+                Ok(vec![])
+            }
+        };
 
         // Hash the contents of the externs listed on the commandline.
         trace!(
@@ -1917,18 +1992,14 @@ where
         // rmeta.
         //
         // This can go away once the above rustc PR makes it in.
-        let emit_generates_only_metadata = !self.parsed_args.emit.is_empty()
-            && self
-                .parsed_args
-                .emit
-                .iter()
-                .all(|e| e == "metadata" || e == "dep-info");
+        let emit_generates_only_metadata =
+            !emit.is_empty() && emit.keys().all(|e| e == "metadata" || e == "dep-info");
 
         if emit_generates_only_metadata {
             outputs.retain(|o| o.ends_with(".rlib") || o.ends_with(".rmeta"));
         }
 
-        if self.parsed_args.emit.contains("metadata") {
+        if emit.contains_key("metadata") {
             // rustc currently does not report rmeta outputs with --print file-names
             // --emit metadata the rlib is printed, and with --emit metadata,link
             // only the rlib is printed.
@@ -1944,11 +2015,34 @@ where
                 if !outputs.contains(&rmeta) {
                     outputs.push(rmeta);
                 }
-                if !self.parsed_args.emit.contains("link") {
+                if !emit.contains_key("link") {
                     outputs.retain(|p| *p != lib);
                 }
             }
         }
+
+        let link_path = emit.get("link").and_then(Option::as_ref);
+        let metadata_path = emit.get("metadata").and_then(Option::as_ref);
+        let outputs = outputs
+            .into_iter()
+            .filter(|o| {
+                if o.ends_with(".rmeta") {
+                    metadata_path.is_none()
+                } else {
+                    link_path.is_none()
+                }
+            })
+            .map(|o| {
+                let p = self.parsed_args.output_dir.join(&o);
+                (o, p)
+            })
+            .chain(
+                link_path
+                    .into_iter()
+                    .chain(metadata_path)
+                    .map(|p| (p.to_string_lossy().into_owned(), p.clone())),
+            )
+            .collect::<Vec<_>>();
 
         // Write dep-info from this invocation rather than restoring it from the cache,
         // which may come from another directory or machine (mozilla/sccache#984).
@@ -1959,36 +2053,26 @@ where
         // * https://github.com/rust-lang/rust/blob/1d81eb4ad9cd207/compiler/rustc_driver_impl/src/lib.rs#L311-L325
         // * https://github.com/rust-lang/cargo/blob/29c5daa1afc2623/src/compiler/mod.rs#L529-L551
         if let Some(dep_info) = &self.parsed_args.dep_info {
-            let dep_info = self.parsed_args.output_dir.join(dep_info);
-            let targets = std::iter::once(dep_info.clone())
-                .chain(outputs.iter().map(|o| self.parsed_args.output_dir.join(o)))
-                .collect::<Vec<_>>();
+            let targets =
+                std::iter::once(dep_info.as_path()).chain(outputs.iter().map(|(_, p)| p.as_path()));
             // Add the custom dist toolchain archive, if any, as a prerequisite,
             // so swapping it out would trigger a rebuild.
             // A local compile doesn't use the archive, and rustc overwrites this file anyway.
-            let text = dep_info_with_targets(
-                &dep_info_text,
-                targets.iter().map(|p| p.as_path()),
-                self.dist_archive.as_deref(),
-            )
-            .with_context(|| {
-                format!(
-                    "Failed to derive dep-info for {}",
-                    self.parsed_args.crate_name
-                )
-            })?;
-            let path = cwd.join(&dep_info);
+            let text = dep_info_with_targets(&dep_info_text, targets, self.dist_archive.as_deref())
+                .with_context(|| {
+                    format!(
+                        "Failed to derive dep-info for {}",
+                        self.parsed_args.crate_name
+                    )
+                })?;
+            let path = cwd.join(dep_info);
             fs::write(&path, text)
                 .with_context(|| format!("Failed to write dep-info to {}", path.display()))?;
         }
 
-        // Convert output files into a map of basename -> full
-        // path, and remove some unneeded / non-existing ones,
-        // see https://github.com/rust-lang/rust/pull/68799.
         let mut outputs = outputs
             .into_iter()
-            .map(|o| {
-                let p = self.parsed_args.output_dir.join(&o);
+            .map(|(o, p)| {
                 (
                     o,
                     ArtifactDescriptor {
@@ -3164,7 +3248,7 @@ LLVM version: 15.0.2
             "extra-filename=-abcxyz"
         );
         assert_eq!(h.output_dir.to_str(), Some("out"));
-        assert_eq!(h.dep_info.unwrap().to_str().unwrap(), "my_crate-abcxyz.d");
+        assert_eq!(h.dep_info, Some("out/my_crate-abcxyz.d".into()));
         fails!(
             "--emit",
             "link",
@@ -3249,8 +3333,8 @@ LLVM version: 15.0.2
         assert_eq!(h.output_dir.to_str(), Some("/foo/target/debug/deps"));
         assert_eq!(h.crate_name, "foo");
         assert_eq!(
-            h.dep_info.unwrap().to_str().unwrap(),
-            "foo-d6ae26f5bcfb7733.d"
+            h.dep_info,
+            Some("/foo/target/debug/deps/foo-d6ae26f5bcfb7733.d".into())
         );
         assert_eq!(
             h.externs,
@@ -3321,7 +3405,125 @@ LLVM version: 15.0.2
             "--out-dir",
             "/out"
         );
+        assert_eq!(h.dep_info, Some("/out/foo.d".into()));
+    }
+
+    #[test]
+    fn test_parse_arguments_multiple_emit() {
+        let h = parses!(
+            "--crate-name",
+            "foo",
+            "--crate-type",
+            "lib",
+            "src/lib.rs",
+            "--emit",
+            "dep-info",
+            "--emit=link",
+            "--out-dir",
+            "/out"
+        );
+        assert_eq!(h.dep_info, Some("/out/foo.d".into()));
+        assert!(h.emit.contains_key("link"));
+        fails!(
+            "--crate-name",
+            "foo",
+            "--crate-type",
+            "lib",
+            "src/lib.rs",
+            "--emit",
+            "link",
+            "--emit",
+            "asm",
+            "--out-dir",
+            "/out"
+        );
+    }
+
+    #[test]
+    fn test_parse_arguments_emit_paths() {
+        // As meson passes them, without --out-dir.
+        let h = parses!(
+            "--crate-type",
+            "rlib",
+            "--crate-name",
+            "foo",
+            "--emit",
+            "dep-info=foo.p/foo.d",
+            "--emit",
+            "link=libfoo.rlib",
+            "lib.rs"
+        );
+        assert_eq!(h.output_dir, PathBuf::new());
+        assert_eq!(h.dep_info, Some("foo.p/foo.d".into()));
+        assert_eq!(h.emit["link"], Some("libfoo.rlib".into()));
+
+        let h = parses!(
+            "--crate-type=rlib",
+            "--crate-name=foo",
+            "--emit=dep-info=foo.d,link=a.rlib",
+            "--emit=link=b.rlib",
+            "lib.rs"
+        );
         assert_eq!(h.dep_info, Some("foo.d".into()));
+        assert_eq!(h.emit["link"], Some("b.rlib".into()));
+
+        // A path only for some kinds still needs --out-dir for the others.
+        let h = parses!(
+            "--crate-type=rlib",
+            "--crate-name=foo",
+            "--emit=dep-info,link=libfoo.rlib",
+            "--out-dir=out",
+            "lib.rs"
+        );
+        assert_eq!(h.dep_info, Some("out/foo.d".into()));
+        assert_eq!(
+            fails!(
+                "--crate-type=rlib",
+                "--crate-name=foo",
+                "--emit=dep-info,link=libfoo.rlib",
+                "lib.rs"
+            ),
+            CompilerArguments::CannotCache("missing output_dir", None)
+        );
+
+        assert_eq!(
+            fails!(
+                "--crate-type=rlib",
+                "--crate-name=foo",
+                "--emit=link=-",
+                "lib.rs"
+            ),
+            CompilerArguments::CannotCache("--emit to stdout", None)
+        );
+        assert_eq!(
+            fails!(
+                "--crate-type=rlib,staticlib",
+                "--crate-name=foo",
+                "--emit=link=libfoo",
+                "lib.rs"
+            ),
+            CompilerArguments::CannotCache("--emit link path with multiple crate types", None)
+        );
+    }
+
+    #[test]
+    fn test_arg_emit_round_trip() {
+        let arg = OsString::from("dep-info=out/foo.d,link,metadata=libfoo.rmeta");
+        let emit = ArgEmit::process(arg.clone()).unwrap();
+        assert_eq!(
+            emit.0,
+            vec![
+                ("dep-info".to_owned(), Some("out/foo.d".into())),
+                ("link".to_owned(), None),
+                ("metadata".to_owned(), Some("libfoo.rmeta".into())),
+            ]
+        );
+        assert_eq!(emit.clone().into_arg_os_string(), arg);
+        let mut to_dist = |p: &Path| Some(format!("/dist/{}", p.display()));
+        assert_eq!(
+            emit.into_arg_string(&mut to_dist).unwrap(),
+            "dep-info=/dist/out/foo.d,link,metadata=/dist/libfoo.rmeta"
+        );
     }
 
     #[test]
@@ -3982,9 +4184,9 @@ hash 42fac6f0 stable_crate_id StableCrateId(12206970385906972588)
         m.update(&vec![0; BAZ_O_SIZE as usize]);
         let libbaz_a_digest = m.finish();
 
-        let mut emit = HashSet::new();
-        emit.insert("link".to_string());
-        emit.insert("metadata".to_string());
+        let mut emit = HashMap::new();
+        emit.insert("link".to_string(), None);
+        emit.insert("metadata".to_string(), None);
         let mut hasher = Box::new(RustHasher {
             executable: "rustc".into(),
             host: "x86-64-unknown-unknown-unknown".to_owned(),
@@ -4102,7 +4304,7 @@ hash 42fac6f0 stable_crate_id StableCrateId(12206970385906972588)
         fs::create_dir(f.tempdir.path().join("out")).unwrap();
         let emit = ["dep-info", "link", "metadata"]
             .into_iter()
-            .map(str::to_owned)
+            .map(|e| (e.to_owned(), None))
             .collect();
         let mut hasher = Box::new(RustHasher {
             executable: "rustc".into(),
@@ -4126,7 +4328,7 @@ hash 42fac6f0 stable_crate_id StableCrateId(12206970385906972588)
                     rlib: true,
                     staticlib: false,
                 },
-                dep_info: Some("foo-abc.d".into()),
+                dep_info: Some("out/foo-abc.d".into()),
                 emit,
                 color_mode: ColorMode::Auto,
                 has_json: false,
@@ -4174,6 +4376,79 @@ foo.rs:
                 rlib = out_dir.join("libfoo-abc.rlib").display(),
                 rmeta = out_dir.join("libfoo-abc.rmeta").display(),
             )
+        );
+    }
+
+    #[test]
+    fn test_generate_hash_key_emit_paths() {
+        let f = TestFixture::new();
+        f.touch("foo.rs").unwrap();
+        fs::create_dir(f.tempdir.path().join("foo.p")).unwrap();
+        let emit = [
+            ("dep-info".to_owned(), Some("foo.p/foo.d".into())),
+            ("link".to_owned(), Some("libfoo.rlib".into())),
+        ]
+        .into_iter()
+        .collect();
+        let mut hasher = Box::new(RustHasher {
+            executable: "rustc".into(),
+            host: "x86-64-unknown-unknown-unknown".to_owned(),
+            version: TEST_RUSTC_VERSION.to_string(),
+            sysroot: f.tempdir.path().join("sysroot"),
+            #[cfg(feature = "dist-client")]
+            target_libdir: f.tempdir.path().join("sysroot/lib/rustlib/fake-target/lib"),
+            compiler_shlibs_digests: vec![],
+            dist_archive: None,
+            #[cfg(feature = "dist-client")]
+            rlib_dep_reader: None,
+            parsed_args: ParsedArguments {
+                arguments: vec![],
+                output_dir: PathBuf::new(),
+                externs: vec![],
+                crate_link_paths: vec![],
+                staticlibs: vec![],
+                crate_name: "foo".into(),
+                crate_types: CrateTypes {
+                    rlib: true,
+                    staticlib: false,
+                },
+                dep_info: Some("foo.p/foo.d".into()),
+                emit,
+                color_mode: ColorMode::Auto,
+                has_json: false,
+                profile: None,
+                gcno: None,
+                target_json: None,
+            },
+        });
+        let creator = new_creator();
+        // No `--print file-names`: it would report the wrong paths.
+        mock_dep_info(&creator, &["foo.rs"]);
+        let runtime = single_threaded_runtime();
+        let pool = runtime.handle().clone();
+        let res = hasher
+            .generate_hash_key(
+                &creator,
+                f.tempdir.path().to_owned(),
+                vec![],
+                false,
+                &pool,
+                false,
+                Arc::new(MockStorage::new(None, false)),
+                CacheControl::Default,
+            )
+            .wait()
+            .unwrap();
+
+        let out = res
+            .compilation
+            .outputs()
+            .map(|o| (o.key, o.path))
+            .collect::<Vec<_>>();
+        assert_eq!(out, [("libfoo.rlib".to_owned(), "libfoo.rlib".into())]);
+        assert_eq!(
+            fs::read_to_string(f.tempdir.path().join("foo.p/foo.d")).unwrap(),
+            "foo.p/foo.d: foo.rs\n\nlibfoo.rlib: foo.rs\n\nfoo.rs:\n"
         );
     }
 
@@ -4300,6 +4575,33 @@ foo.rs:
                 preprocessor_cache_mode,
             )
         );
+    }
+
+    // Outputs given by `--emit kind=path` are stored under that path, so it
+    // must be part of the key.
+    #[test_case(true ; "with preprocessor cache")]
+    #[test_case(false ; "without preprocessor cache")]
+    fn test_different_hashes_emit_paths(preprocessor_cache_mode: bool) {
+        let f = TestFixture::new();
+        let key = |link| {
+            hash_key(
+                &f,
+                &[
+                    "--crate-type",
+                    "rlib",
+                    "--crate-name",
+                    "foo",
+                    "--emit",
+                    link,
+                    "foo.rs",
+                ],
+                &[],
+                nothing,
+                preprocessor_cache_mode,
+            )
+        };
+        assert_eq!(key("link=a/libfoo.rlib"), key("link=a/libfoo.rlib"));
+        assert_ne!(key("link=a/libfoo.rlib"), key("link=b/libfoo.rlib"));
     }
 
     #[test_case(true ; "with preprocessor cache")]
