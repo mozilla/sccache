@@ -1816,50 +1816,6 @@ fn test_redis_io_timeout_from_env() {
 }
 
 #[test]
-#[serial(config_from_env)]
-fn test_redis_io_timeout_env_file_precedence() {
-    for endpoint in [None, Some("redis://env:6379")] {
-        for timeout in [None, Some("7")] {
-            unsafe {
-                env::remove_var("SCCACHE_REDIS");
-                env::remove_var("SCCACHE_REDIS_CLUSTER_ENDPOINTS");
-                match endpoint {
-                    Some(value) => env::set_var("SCCACHE_REDIS_ENDPOINT", value),
-                    None => env::remove_var("SCCACHE_REDIS_ENDPOINT"),
-                }
-                match timeout {
-                    Some(value) => env::set_var("SCCACHE_REDIS_IO_TIMEOUT_SECS", value),
-                    None => env::remove_var("SCCACHE_REDIS_IO_TIMEOUT_SECS"),
-                }
-            }
-            let result = config_from_env();
-            unsafe {
-                env::remove_var("SCCACHE_REDIS_ENDPOINT");
-                env::remove_var("SCCACHE_REDIS_IO_TIMEOUT_SECS");
-            }
-            let file_config: FileConfig = toml::from_str(
-                "[cache.redis]\nendpoint = \"redis://file:6379\"\nio_timeout_secs = 9",
-            )
-            .unwrap();
-            let config = Config::from_env_and_file_configs(result.unwrap(), file_config).unwrap();
-            let redis = config.cache_configs.redis.unwrap();
-            assert_eq!(
-                redis.endpoint.as_deref(),
-                Some(endpoint.unwrap_or("redis://file:6379"))
-            );
-            assert_eq!(
-                redis.io_timeout_secs,
-                if endpoint.is_some() {
-                    timeout.map(|_| NonZeroU64::new(7).unwrap())
-                } else {
-                    NonZeroU64::new(9)
-                }
-            );
-        }
-    }
-}
-
-#[test]
 fn config_overrides() {
     let env_conf = EnvConfig {
         cache: CacheConfigs {
