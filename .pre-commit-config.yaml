@@ -3,8 +3,8 @@ repos:
     hooks:
     -   id: rust-linting
         name: Rust linting
-        description: Run cargo fmt on files included in the commit.
-        entry: cargo +nightly fmt --
+        description: Run rustfmt on files included in the commit.
+        entry: rustfmt +nightly --edition 2024
         pass_filenames: true
         types: [file, rust]
         language: system
