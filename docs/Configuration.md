@@ -6,6 +6,13 @@
 # If specified, wait this long for the server to start up.
 server_startup_timeout_ms = 10000
 
+# If specified, cap the size of the server log file written when
+# `SCCACHE_ERROR_LOG` is set. The file is truncated (emptied) when the
+# server starts if it is already larger than this, and the running server
+# periodically checks the file and truncates it again once it grows past
+# the limit. Accepts a byte count or a string with a K/M/G/T suffix.
+error_log_max_size = "10M"
+
 # Base directories to strip from source paths during cache key
 # computation.
 #
@@ -205,6 +212,7 @@ Note that some env variables may need sccache server restart to take effect.
   - If you want to be apply to all cache, you should reset cache and make new cache.
 * `SCCACHE_LOG_MILLIS` when set (to any value), enables millisecond precision timestamps in log output instead of the default second precision.
 * `SCCACHE_ERROR_LOG` path to a file where sccache will log errors
+* `SCCACHE_ERROR_LOG_MAX_SIZE` maximum size of the `SCCACHE_ERROR_LOG` file before it is truncated, as a byte count or a size with a K/M/G/T suffix (e.g. `10M`); overrides `error_log_max_size` from the configuration file
 * `SCCACHE_LOG` log level, accepting standard env_logger values, see [env_logger documentation](https://docs.rs/env_logger/latest/env_logger/#enabling-logging) for details
 
 ### cache configs

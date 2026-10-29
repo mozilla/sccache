@@ -35,7 +35,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::process::ExitStatusExt;
 #[cfg(windows)]
 use std::os::windows::io::AsRawHandle;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::Arc;
 use std::time::Duration;
@@ -155,8 +155,13 @@ fn redirect_stderr(f: File) {
     }
 }
 
-/// Create the log file and return an error if cannot be created
-fn create_error_log() -> Result<File> {
+/// How often the running server checks whether the error log has outgrown
+/// `error_log_max_size`.
+const ERROR_LOG_SIZE_CHECK_INTERVAL: Duration = Duration::from_secs(10);
+
+/// Create the log file and return it with its absolute path, or an error if
+/// it cannot be created.
+fn create_error_log() -> Result<(File, PathBuf)> {
     trace!("Create the log file");
     let name = match env::var("SCCACHE_ERROR_LOG") {
         Ok(filename) if !filename.is_empty() => filename,
@@ -171,7 +176,45 @@ fn create_error_log() -> Result<File> {
             bail!("Cannot open/write log file '{}'", name);
         }
     };
-    Ok(f)
+    let path = std::path::absolute(&name)
+        .with_context(|| format!("Cannot resolve log file path '{}'", name))?;
+    Ok((f, path))
+}
+
+/// Truncate the error log at `path` to zero length if it is larger than
+/// `max_size` bytes. Returns whether the file was truncated.
+fn truncate_error_log_if_oversized(path: &Path, max_size: u64) -> io::Result<bool> {
+    let len = std::fs::metadata(path)?.len();
+    if len <= max_size {
+        return Ok(false);
+    }
+    OpenOptions::new().write(true).truncate(true).open(path)?;
+    warn!("error log exceeded the configured maximum size ({len} > {max_size} bytes); truncated");
+    Ok(true)
+}
+
+/// Check the error log size once, logging (rather than failing) on error.
+fn enforce_error_log_max_size(path: &Path, max_size: u64) {
+    if let Err(e) = truncate_error_log_if_oversized(path, max_size) {
+        warn!("failed to check/truncate error log: {e}");
+    }
+}
+
+/// Enforce `max_size` on the error log: once immediately, so a log left
+/// behind by a previous server is trimmed before this one writes to it, and
+/// then periodically from a background thread for as long as the server runs.
+fn start_error_log_size_limiter(path: PathBuf, max_size: u64) -> Result<()> {
+    enforce_error_log_max_size(&path, max_size);
+    std::thread::Builder::new()
+        .name("error-log-size-limiter".to_owned())
+        .spawn(move || {
+            loop {
+                std::thread::sleep(ERROR_LOG_SIZE_CHECK_INTERVAL);
+                enforce_error_log_max_size(&path, max_size);
+            }
+        })
+        .context("failed to spawn error log size limiter thread")?;
+    Ok(())
 }
 
 /// If `SCCACHE_ERROR_LOG` is set, redirect stderr to it.
@@ -845,7 +888,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
         Command::InternalStartServer => {
             trace!("Command::InternalStartServer");
             if env::var("SCCACHE_ERROR_LOG").is_ok() {
-                let f = create_error_log()?;
+                let (f, log_path) = create_error_log()?;
                 #[cfg(not(windows))]
                 let preserve = [f.as_raw_fd()];
                 #[cfg(windows)]
@@ -853,6 +896,9 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                 // Can't report failure here, we're already daemonized.
                 daemonize(&preserve)?;
                 redirect_error_log(f)?;
+                if let Some(max_size) = config.error_log_max_size {
+                    start_error_log_size_limiter(log_path, max_size)?;
+                }
             } else {
                 // We aren't asking for a log file
                 daemonize(&[])?;
@@ -1056,6 +1102,28 @@ mod test {
             .enable_all()
             .build()
             .unwrap()
+    }
+
+    #[test]
+    fn test_truncate_error_log_if_oversized() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("server.log");
+        let mut f = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .unwrap();
+        f.write_all(b"0123456789").unwrap();
+
+        // Under or at the limit: untouched.
+        assert!(!truncate_error_log_if_oversized(&path, 10).unwrap());
+        assert_eq!(std::fs::read(&path).unwrap(), b"0123456789");
+
+        // Over the limit: emptied, and subsequent appends start from zero.
+        assert!(truncate_error_log_if_oversized(&path, 9).unwrap());
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
+        f.write_all(b"abc").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"abc");
     }
 
     #[test]
