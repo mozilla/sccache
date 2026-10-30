@@ -26,7 +26,6 @@ use std::time::{Duration, Instant};
 use crate::errors::*;
 
 use super::lazy_disk_cache::LazyDiskCache;
-use super::utils::normalize_key;
 use crate::config::PreprocessorCacheModeConfig;
 
 /// A cache that stores entries at local disk paths.
@@ -73,6 +72,17 @@ impl DiskCache {
 /// Make a path to the cache entry with key `key`.
 fn make_key_path(key: &str) -> PathBuf {
     Path::new(&key[0..1]).join(&key[1..2]).join(key)
+}
+
+/// Make a path to the preprocessor cache entry with key `key`.
+///
+/// This has to use the platform's separator: the entries found when the cache directory is scanned
+/// are keyed by their relative path, so a `/`-separated key never matches them on Windows.
+fn make_preprocessor_key_path(key: &str) -> PathBuf {
+    Path::new(&key[0..1])
+        .join(&key[1..2])
+        .join(&key[2..3])
+        .join(key)
 }
 
 #[async_trait]
@@ -219,7 +229,7 @@ impl Storage for DiskCache {
         &self.basedirs
     }
     async fn get_preprocessor_cache_entry(&self, key: &str) -> Result<Option<Box<dyn ReadSeek>>> {
-        let key = normalize_key(key);
+        let key = make_preprocessor_key_path(key);
         Ok(self
             .preprocessor_cache
             .lock()
@@ -237,7 +247,7 @@ impl Storage for DiskCache {
             return Err(anyhow!("Cannot write to a read-only cache"));
         }
 
-        let key = normalize_key(key);
+        let key = make_preprocessor_key_path(key);
         let mut f = self
             .preprocessor_cache
             .lock()
@@ -276,5 +286,34 @@ mod tests {
         );
 
         assert_eq!(disk.cache_type_name(), "disk");
+    }
+
+    #[test]
+    fn test_preprocessor_cache_entry_survives_restart() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let new_disk = || {
+            DiskCache::new(
+                tempdir.path(),
+                1024 * 1024,
+                runtime.handle(),
+                PreprocessorCacheModeConfig::default(),
+                CacheMode::ReadWrite,
+                vec![],
+            )
+        };
+        let key = "0123456789abcdef0123456789abcdef";
+
+        runtime
+            .block_on(new_disk().put_preprocessor_cache_entry(key, PreprocessorCacheEntry::new()))
+            .unwrap();
+
+        // A new cache only knows the entry from scanning the directory, like a new server does.
+        let entry = runtime
+            .block_on(new_disk().get_preprocessor_cache_entry(key))
+            .unwrap();
+        assert!(entry.is_some());
     }
 }
