@@ -23,7 +23,7 @@ Preprocessor cache mode will be disabled in any of the following cases:
 
 - Not compiling C or C++
 - The configuration option is false
-- Not using GCC or Clang
+- Not using GCC, Clang or MSVC
 - Not using local storage for the cache
 - Any of the compiler options `-MP`, `-Xpreprocessor`, `-Wp,` are present
 - The modification time of one of the header files is too new (avoids a race condition)
