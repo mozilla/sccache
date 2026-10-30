@@ -2444,6 +2444,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "opendal-layer-timeout"
+version = "0.58.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a704141924500f3803c05ed871b53305d2a2f11cb5ef20160c3ee688a1857f66"
+dependencies = [
+ "opendal-core",
+ "tokio",
+]
+
+[[package]]
 name = "opendal-service-azblob"
 version = "0.58.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3751,6 +3761,7 @@ dependencies = [
  "opendal",
  "opendal-http-transport-reqwest",
  "opendal-layer-logging",
+ "opendal-layer-timeout",
  "openssl",
  "predicates",
  "rand 0.8.5",
