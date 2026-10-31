@@ -23,7 +23,7 @@ pub enum Request {
     /// One-shot handshake: client requests cache metadata from the daemon.
     StorageHandshake,
     /// Fetch the filesystem path of the cached entry for `key`.
-    /// Returns `None` if the backend does not support direct file access or the key is absent.
+    /// Reports a missing key, unsupported direct file access, or a lookup error.
     StorageGetPath { key: String },
     /// Fetch raw (zip) bytes for `key`; returns `None` on a miss.
     StorageGetRaw { key: String },
@@ -57,7 +57,7 @@ pub enum Response {
     /// Response for `Request::StorageHandshake`.
     StorageHandshake(StorageHandshakeInfo),
     /// Response for `Request::StorageGetPath`.
-    StorageGetPath(GetPathResult),
+    StorageGetPath(Result<GetPathResult, String>),
     /// Response for `Request::StorageGetRaw`: zip bytes on hit, `None` on miss, or a read error.
     StorageGetRaw(Result<Option<Vec<u8>>, String>),
     /// Response for `Request::StoragePutRaw`.
