@@ -1794,6 +1794,7 @@ fn test_multilevel_read_outcomes_and_fallback() {
 
     runtime.block_on(async {
         for raw in [false, true] {
+            // Each character is a cache level: m = miss, e = error, h = hit.
             for (chain, expected) in [
                 ("me", vec![(0, 1, 0), (0, 0, 1)]),
                 ("ee", vec![(0, 0, 1), (0, 0, 1)]),
