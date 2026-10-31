@@ -949,20 +949,22 @@ where
                 }
                 Request::StorageGetPath { key } => {
                     debug!("handle_client: storage_get_path key={}", key);
-                    Ok(Message::WithoutBody(Response::StorageGetPath(
-                        me.storage.get_path(&key).await,
-                    )))
+                    let result = me
+                        .storage
+                        .get_path(&key)
+                        .await
+                        .map_err(|e| format!("{e:#}"));
+                    Ok(Message::WithoutBody(Response::StorageGetPath(result)))
                 }
                 Request::StorageGetRaw { key } => {
                     debug!("handle_client: storage_get_raw key={}", key);
-                    let resp = match me.storage.get_raw(&key).await {
-                        Ok(opt) => Response::StorageGetRaw(opt.map(|b| b.to_vec())),
-                        Err(e) => {
-                            warn!("storage_get_raw error: {e:#}");
-                            Response::StorageGetRaw(None)
-                        }
-                    };
-                    Ok(Message::WithoutBody(resp))
+                    let result = me
+                        .storage
+                        .get_raw(&key)
+                        .await
+                        .map(|opt| opt.map(|b| b.to_vec()))
+                        .map_err(|e| format!("{e:#}"));
+                    Ok(Message::WithoutBody(Response::StorageGetRaw(result)))
                 }
                 Request::StoragePutRaw { key, data } => {
                     debug!("handle_client: storage_put_raw key={}", key);
@@ -1618,6 +1620,7 @@ where
                                     stats.cache_timeouts += 1;
                                 }
                                 MissType::CacheReadError => {
+                                    stats.cache_read_errors += 1;
                                     stats.cache_errors.increment(&kind, &lang);
                                 }
                             }
@@ -2891,6 +2894,191 @@ mod tests {
             other => panic!("body must end with CompileFinished, got {other:?}"),
         };
         (body, finished)
+    }
+
+    fn connect_ipc_storage(
+        runtime: &Runtime,
+        storage: Arc<dyn Storage>,
+    ) -> (
+        crate::cache::IpcStorage,
+        tokio::task::JoinHandle<Result<()>>,
+    ) {
+        let listener = runtime
+            .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
+            .unwrap();
+        let addr = crate::net::SocketAddr::Net(listener.local_addr().unwrap());
+        let service = MockService::mock_with_storage(storage, runtime.handle().clone());
+        let server = runtime.spawn(async move {
+            let (socket, _) = listener.accept().await?;
+            service.bind(socket).await
+        });
+        let connection = crate::client::connect_to_server(&addr).unwrap();
+        let storage = crate::cache::ipc_storage::IpcStorage::connect(connection).unwrap();
+        (storage, server)
+    }
+
+    #[test_case::test_case(Err(anyhow!("backend read failed")), true; "backend_error")]
+    #[test_case::test_case(Ok(Some(bytes::Bytes::from_static(b"not a zip"))), true; "invalid_archive")]
+    #[test_case::test_case(Ok(None), false; "normal_miss")]
+    fn ipc_lookup_outcomes_reach_service_stats(
+        lookup: Result<Option<bytes::Bytes>>,
+        read_error: bool,
+    ) {
+        use crate::test::mock_storage::MockStorage;
+
+        let (_f, runtime, mut service, compile) = rustc_miss_fixture();
+        let backend = Arc::new(MockStorage::new(None, false));
+        backend.next_get_raw(lookup);
+        let (storage, server) = connect_ipc_storage(&runtime, backend);
+        service.storage = Arc::new(storage);
+
+        let (response, finished, _) = runtime
+            .block_on(service.compile_direct(compile, &mut Vec::new()))
+            .unwrap();
+        assert!(matches!(response, CompileResponse::CompileStarted));
+        assert_eq!(finished.unwrap().retcode, Some(0));
+        assert_eq!(service.creator.lock().unwrap().children.len(), 0);
+        let stats = runtime.block_on(service.take_stats());
+        assert_eq!(stats.cache_read_errors, u64::from(read_error));
+        assert_eq!(stats.cache_errors.all(), u64::from(read_error));
+        assert_eq!(stats.cache_misses.all(), 1);
+        assert_eq!(stats.compilations, 1);
+        assert_eq!(stats.requests_executed, 1);
+        assert_eq!(stats.cache_timeouts, 0);
+        assert_eq!(stats.cache_hits.all(), 0);
+        assert_eq!(stats.compile_fails, 0);
+
+        drop(service);
+        runtime.block_on(server).unwrap().unwrap();
+    }
+
+    #[test]
+    fn ipc_disk_lookup_preserves_hits_misses_and_archive_errors() {
+        use crate::cache::{Cache, CacheWrite, GetPathResult};
+
+        let (_f, runtime, service, _compile) = rustc_miss_fixture();
+        let (storage, server) = connect_ipc_storage(&runtime, service.storage.clone());
+        let key = "0123456789abcdef";
+        assert!(matches!(
+            runtime.block_on(storage.get(key)).unwrap(),
+            Cache::Miss
+        ));
+
+        let mut entry = CacheWrite::new();
+        entry.put_stdout(b"cached output").unwrap();
+        runtime.block_on(service.storage.put(key, entry)).unwrap();
+        match runtime.block_on(storage.get(key)).unwrap() {
+            Cache::Hit(mut entry) => assert_eq!(entry.get_stdout(), b"cached output"),
+            _ => panic!("expected a cache hit"),
+        }
+
+        runtime
+            .block_on(
+                service
+                    .storage
+                    .put_raw(key, bytes::Bytes::from_static(b"not a zip")),
+            )
+            .unwrap();
+        let GetPathResult::Found(path) = runtime.block_on(service.storage.get_path(key)).unwrap()
+        else {
+            panic!("expected a cached archive path");
+        };
+        let error = runtime.block_on(storage.get(key)).err().unwrap();
+        assert!(format!("{error:#}").contains(path.to_str().unwrap()));
+        assert!(error.downcast_ref::<zip::result::ZipError>().is_some());
+
+        drop(storage);
+        runtime.block_on(server).unwrap().unwrap();
+    }
+
+    #[test_case::test_case(true; "initialization_error")]
+    #[test_case::test_case(false; "normal_miss")]
+    fn ipc_disk_path_lookup_outcomes_reach_service_stats(initialization_error: bool) {
+        let (f, runtime, mut service, compile) = rustc_miss_fixture();
+        if initialization_error {
+            std::fs::write(f.tempdir.path().join("cache"), b"not a directory").unwrap();
+        }
+        let (storage, server) = connect_ipc_storage(&runtime, service.storage.clone());
+        service.storage = Arc::new(storage);
+
+        let (response, finished, _) = runtime
+            .block_on(service.compile_direct(compile, &mut Vec::new()))
+            .unwrap();
+        assert!(matches!(response, CompileResponse::CompileStarted));
+        assert_eq!(finished.unwrap().retcode, Some(0));
+        assert_eq!(
+            std::fs::read(f.tempdir.path().join("libdep.rlib")).unwrap(),
+            b"rlib"
+        );
+        let stats = runtime.block_on(service.take_stats());
+        assert_eq!(stats.cache_read_errors, u64::from(initialization_error));
+        assert_eq!(stats.cache_errors.all(), u64::from(initialization_error));
+        assert_eq!(stats.cache_misses.all(), 1);
+        assert_eq!(stats.cache_hits.all(), 0);
+        assert_eq!(stats.cache_timeouts, 0);
+        assert_eq!(stats.compile_fails, 0);
+        assert_eq!(stats.cache_writes, u64::from(!initialization_error));
+        assert_eq!(stats.cache_write_errors, u64::from(initialization_error));
+
+        drop(service);
+        runtime.block_on(server).unwrap().unwrap();
+    }
+
+    #[test_case::test_case(true, false; "daemon_read_error")]
+    #[test_case::test_case(false, false; "daemon_normal_miss")]
+    #[test_case::test_case(true, true; "client_side_read_error")]
+    #[test_case::test_case(false, true; "client_side_normal_miss")]
+    fn cache_lookup_outcomes_preserve_service_stats(read_error: bool, client_side: bool) {
+        use crate::cache::Cache;
+        use crate::test::mock_storage::MockStorage;
+
+        let (f, runtime, mut service, compile) = rustc_miss_fixture();
+        let storage = Arc::new(MockStorage::new(None, false));
+        storage.next_get(if read_error {
+            Err(anyhow!("cache lookup failed"))
+        } else {
+            Ok(Cache::Miss)
+        });
+        service.storage = storage;
+
+        let (finished, stats) = if client_side {
+            let (response, finished, _) = runtime
+                .block_on(service.compile_direct(compile, &mut Vec::new()))
+                .unwrap();
+            assert!(matches!(response, CompileResponse::CompileStarted));
+            (
+                finished.expect("compile started"),
+                runtime.block_on(service.take_stats()),
+            )
+        } else {
+            let (_, finished) = compile_body(&runtime, &service, compile);
+            (
+                finished,
+                runtime.block_on(service.get_info()).unwrap().stats,
+            )
+        };
+
+        assert_eq!(finished.retcode, Some(0));
+        assert_eq!(
+            std::fs::read(f.tempdir.path().join("libdep.rlib")).unwrap(),
+            b"rlib"
+        );
+        assert_eq!(service.creator.lock().unwrap().children.len(), 0);
+        assert_eq!(stats.requests_executed, 1);
+        assert_eq!(stats.cache_read_errors, u64::from(read_error));
+        assert_eq!(stats.cache_errors.all(), u64::from(read_error));
+        assert_eq!(
+            stats.cache_errors.get("Rust").copied().unwrap_or(0),
+            u64::from(read_error)
+        );
+        assert_eq!(stats.cache_misses.all(), 1);
+        assert_eq!(stats.cache_misses.get("Rust"), Some(&1));
+        assert_eq!(stats.compilations, 1);
+        assert_eq!(stats.cache_hits.all(), 0);
+        assert_eq!(stats.cache_timeouts, 0);
+        assert_eq!(stats.compile_fails, 0);
+        assert_eq!(stats.cache_writes, 1);
+        assert_eq!(stats.cache_write_errors, 0);
     }
 
     #[test]
