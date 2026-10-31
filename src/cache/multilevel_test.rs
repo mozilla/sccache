@@ -1786,6 +1786,29 @@ fn assert_read_outcomes(stats: &MultiLevelStats, expected: &[(u64, u64, u64)]) {
 }
 
 #[test]
+fn test_multilevel_stats_merge_and_serde() {
+    let mut merged = MultiLevelStats(vec![LevelStats {
+        hits: 2,
+        misses: 3,
+        read_failures: 5,
+        ..Default::default()
+    }]);
+    merged += MultiLevelStats(vec![LevelStats {
+        hits: 7,
+        misses: 11,
+        read_failures: 13,
+        ..Default::default()
+    }]);
+    let expected = [(9, 14, 18)];
+    assert_read_outcomes(&merged, &expected);
+
+    let json = serde_json::to_value(&merged).unwrap();
+    assert_eq!(json[0]["read_failures"], serde_json::json!(18));
+    let decoded: MultiLevelStats = serde_json::from_value(json).unwrap();
+    assert_read_outcomes(&decoded, &expected);
+}
+
+#[test]
 fn test_multilevel_read_outcomes_and_fallback() {
     let runtime = RuntimeBuilder::new_current_thread()
         .enable_all()
@@ -1834,20 +1857,6 @@ fn test_multilevel_read_outcomes_and_fallback() {
                 }
                 let stats = storage.stats();
                 assert_read_outcomes(&stats, &expected);
-
-                let mut merged = stats.clone();
-                merged += stats;
-                let doubled: Vec<_> = expected
-                    .iter()
-                    .map(|&(hits, misses, failures)| (hits * 2, misses * 2, failures * 2))
-                    .collect();
-                assert_read_outcomes(&merged, &doubled);
-                let json = serde_json::to_value(&merged).unwrap();
-                for (level, &(_, _, failures)) in json.as_array().unwrap().iter().zip(&doubled) {
-                    assert_eq!(level["read_failures"], serde_json::json!(failures));
-                }
-                let decoded: MultiLevelStats = serde_json::from_value(json).unwrap();
-                assert_read_outcomes(&decoded, &doubled);
 
                 if chain == "meh" {
                     // A failed intervening tier must not stop a later hit backfilling L0.
