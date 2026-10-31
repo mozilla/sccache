@@ -2954,7 +2954,7 @@ mod tests {
 
     #[test]
     fn ipc_disk_lookup_preserves_hits_misses_and_archive_errors() {
-        use crate::cache::{Cache, CacheWrite};
+        use crate::cache::{Cache, CacheWrite, GetPathResult};
 
         let (_f, runtime, service, _compile) = rustc_miss_fixture();
         let (storage, server) = connect_ipc_storage(&runtime, service.storage.clone());
@@ -2979,7 +2979,13 @@ mod tests {
                     .put_raw(key, bytes::Bytes::from_static(b"not a zip")),
             )
             .unwrap();
-        assert!(runtime.block_on(storage.get(key)).is_err());
+        let GetPathResult::Found(path) = runtime.block_on(service.storage.get_path(key)).unwrap()
+        else {
+            panic!("expected a cached archive path");
+        };
+        let error = runtime.block_on(storage.get(key)).err().unwrap();
+        assert!(format!("{error:#}").contains(path.to_str().unwrap()));
+        assert!(error.downcast_ref::<zip::result::ZipError>().is_some());
 
         drop(storage);
         runtime.block_on(server).unwrap().unwrap();
