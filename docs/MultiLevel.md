@@ -249,9 +249,6 @@ consulted and their counters do not change. The per-level hit rate is
 `hits / (hits + misses)`; read failures are excluded. JSON statistics expose
 the failure count as `stats.multi_level[].read_failures`.
 
-Completed reads are counted even if a later level stalls and the lookup is
-cancelled. A still-pending read is not counted as a completed outcome.
-
 Read failures do not change fallback behavior: the next level is tried, and
 exhausting the chain still returns an overall miss, even if every level
 failed. Per-level failures are therefore distinct from the aggregate
