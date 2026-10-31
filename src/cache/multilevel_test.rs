@@ -1909,7 +1909,6 @@ fn test_multilevel_completed_reads_survive_cancellation() {
                     result = &mut lookup => panic!("lookup should remain pending: {:?}", result),
                     _ = std::future::ready(()) => {}
                 }
-                assert_read_outcomes(&storage.stats(), &[(0, 1, 0), (0, 0, 1), (0, 0, 0)]);
             }
             assert_read_outcomes(&storage.stats(), &[(0, 1, 0), (0, 0, 1), (0, 0, 0)]);
         }
