@@ -949,9 +949,12 @@ where
                 }
                 Request::StorageGetPath { key } => {
                     debug!("handle_client: storage_get_path key={}", key);
-                    Ok(Message::WithoutBody(Response::StorageGetPath(
-                        me.storage.get_path(&key).await,
-                    )))
+                    let result = me
+                        .storage
+                        .get_path(&key)
+                        .await
+                        .map_err(|e| format!("{e:#}"));
+                    Ok(Message::WithoutBody(Response::StorageGetPath(result)))
                 }
                 Request::StorageGetRaw { key } => {
                     debug!("handle_client: storage_get_raw key={}", key);
@@ -2979,6 +2982,39 @@ mod tests {
         assert!(runtime.block_on(storage.get(key)).is_err());
 
         drop(storage);
+        runtime.block_on(server).unwrap().unwrap();
+    }
+
+    #[test_case::test_case(true; "initialization_error")]
+    #[test_case::test_case(false; "normal_miss")]
+    fn ipc_disk_path_lookup_outcomes_reach_service_stats(initialization_error: bool) {
+        let (f, runtime, mut service, compile) = rustc_miss_fixture();
+        if initialization_error {
+            std::fs::write(f.tempdir.path().join("cache"), b"not a directory").unwrap();
+        }
+        let (storage, server) = connect_ipc_storage(&runtime, service.storage.clone());
+        service.storage = Arc::new(storage);
+
+        let (response, finished, _) = runtime
+            .block_on(service.compile_direct(compile, &mut Vec::new()))
+            .unwrap();
+        assert!(matches!(response, CompileResponse::CompileStarted));
+        assert_eq!(finished.unwrap().retcode, Some(0));
+        assert_eq!(
+            std::fs::read(f.tempdir.path().join("libdep.rlib")).unwrap(),
+            b"rlib"
+        );
+        let stats = runtime.block_on(service.take_stats());
+        assert_eq!(stats.cache_read_errors, u64::from(initialization_error));
+        assert_eq!(stats.cache_errors.all(), u64::from(initialization_error));
+        assert_eq!(stats.cache_misses.all(), 1);
+        assert_eq!(stats.cache_hits.all(), 0);
+        assert_eq!(stats.cache_timeouts, 0);
+        assert_eq!(stats.compile_fails, 0);
+        assert_eq!(stats.cache_writes, u64::from(!initialization_error));
+        assert_eq!(stats.cache_write_errors, u64::from(initialization_error));
+
+        drop(service);
         runtime.block_on(server).unwrap().unwrap();
     }
 

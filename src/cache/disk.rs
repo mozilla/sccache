@@ -142,24 +142,18 @@ impl Storage for DiskCache {
             .await?
     }
 
-    async fn get_path(&self, key: &str) -> GetPathResult {
+    async fn get_path(&self, key: &str) -> Result<GetPathResult> {
         let rel_path = make_key_path(key);
         let lru = self.lru.clone();
         self.pool
             .spawn_blocking(move || {
-                match lru
-                    .lock()
-                    .unwrap()
-                    .get_or_init()
-                    .ok()
-                    .and_then(|c| c.get_abs_path(&rel_path))
-                {
+                let path = lru.lock().unwrap().get_or_init()?.get_abs_path(&rel_path);
+                Ok(match path {
                     Some(p) => GetPathResult::Found(p),
                     None => GetPathResult::Miss,
-                }
+                })
             })
-            .await
-            .unwrap_or(GetPathResult::Miss)
+            .await?
     }
 
     async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration> {
