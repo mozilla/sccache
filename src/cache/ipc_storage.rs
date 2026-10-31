@@ -75,7 +75,9 @@ impl Storage for IpcStorage {
             GetPathResult::Found(path) => {
                 let file = std::fs::File::open(&path)
                     .with_context(|| format!("IpcStorage::get: open {}", path.display()))?;
-                Ok(Cache::Hit(CacheRead::from(file)?))
+                let entry = CacheRead::from(file)
+                    .with_context(|| format!("IpcStorage::get: read {}", path.display()))?;
+                Ok(Cache::Hit(entry))
             }
             GetPathResult::Miss => Ok(Cache::Miss),
             // Backend doesn't support paths (S3, Redis, …); fall back to bytes over IPC.
