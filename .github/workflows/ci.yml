@@ -184,11 +184,16 @@ jobs:
           fi
           URL="https://github.com/mozilla/grcov/releases/download/v${GRCOV_VERSION}/grcov-${TARGET}.${EXT}"
           curl -sL "$URL" -o "grcov.${EXT}"
+          # The macos-15 images don't install Rust under ~/.cargo, so the
+          # directory may not exist yet; create it and put it on PATH.
+          BIN_DIR="${CARGO_HOME:-$HOME/.cargo}/bin"
+          mkdir -p "$BIN_DIR"
           if [[ "$EXT" == "zip" ]]; then
-            unzip -q "grcov.${EXT}" -d "$HOME/.cargo/bin/"
+            unzip -q "grcov.${EXT}" -d "$BIN_DIR"
           else
-            tar -xjf "grcov.${EXT}" -C "$HOME/.cargo/bin/"
+            tar -xjf "grcov.${EXT}" -C "$BIN_DIR"
           fi
+          echo "$BIN_DIR" >> "$GITHUB_PATH"
 
       - name: Create config for testing
         if: ${{ ! matrix.no_coverage }}
