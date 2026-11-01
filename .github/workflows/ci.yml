@@ -97,7 +97,7 @@ jobs:
             rustc: "1.91.0"
             extra_desc: cuda12.8
           # # M1 CPU
-          - os: macos-14
+          - os: macos-15
           - os: macos-15-intel
           - os: windows-2022
             cuda: "12.8"
@@ -292,7 +292,7 @@ jobs:
           - os: ubuntu-22.04
             target: i686-unknown-linux-musl
             container: '{"image": "messense/rust-musl-cross:i686-musl"}'
-          - os: macos-14
+          - os: macos-15
             target: aarch64-apple-darwin
             macosx_deployment_target: 11.0
           - os: macos-15-intel
