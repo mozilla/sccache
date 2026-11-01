@@ -1802,12 +1802,18 @@ fn test_clang_cache_whitespace_normalization(
         assert_eq!(1, info.stats.cache_misses.all());
     });
 
+    // Reformat the same file: the file name is part of the hash.
     debug!("compile whitespace_alt");
+    fs::copy(
+        tempdir.join(INPUT_WITH_WHITESPACE_ALT),
+        tempdir.join(INPUT_WITH_WHITESPACE),
+    )
+    .unwrap();
     sccache_command()
         .args(compile_cmdline(
             name,
             &exe,
-            INPUT_WITH_WHITESPACE_ALT,
+            INPUT_WITH_WHITESPACE,
             OUTPUT,
             Vec::new(),
         ))

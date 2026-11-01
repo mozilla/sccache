@@ -36,6 +36,8 @@ We also take into account in the hash:
   the version it reports, when there is one: GCC always assembles that way,
   clang only with `-fno-integrated-as`
 * Programming language
+* File name of the input, without its directory, since the compiler records it
+  in the object file
 * Flag required to compile for the given language
 * File in which to generate dependencies.
 * Commandline arguments for dependency generation

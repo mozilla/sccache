@@ -665,6 +665,7 @@ where
         .with_plusplus(self.compiler.plusplus())
         .with_basedirs(storage.basedirs())
         .with_assembler_digest(assembler_digest.as_deref())
+        .with_input_file_name(self.parsed_args.input.file_name())
         .compute();
 
         // Cache the preprocessing step
@@ -1485,7 +1486,7 @@ impl pkg::ToolchainPackager for CToolchainPackager {
 }
 
 /// The cache is versioned by the inputs to `HashKeyParams::compute`.
-pub const CACHE_VERSION: &[u8] = b"13";
+pub const CACHE_VERSION: &[u8] = b"14";
 
 /// Environment variables that are factored into the cache key.
 static CACHED_ENV_VARS: LazyLock<HashSet<&'static OsStr>> = LazyLock::new(|| {
@@ -1549,6 +1550,7 @@ pub struct HashKeyParams<'a> {
     plusplus: bool,
     basedirs: &'a [Vec<u8>],
     assembler_digest: Option<&'a str>,
+    input_file_name: Option<&'a OsStr>,
 }
 
 impl<'a> HashKeyParams<'a> {
@@ -1577,6 +1579,7 @@ impl<'a> HashKeyParams<'a> {
             plusplus: false,
             basedirs: &[],
             assembler_digest: None,
+            input_file_name: None,
         }
     }
 
@@ -1610,6 +1613,12 @@ impl<'a> HashKeyParams<'a> {
         self
     }
 
+    /// Sets the file name, without its directory, of the source being compiled.
+    pub fn with_input_file_name(mut self, input_file_name: Option<&'a OsStr>) -> Self {
+        self.input_file_name = input_file_name;
+        self
+    }
+
     /// Computes the hash key based on the configured parameters.
     ///
     /// If `basedirs` are provided, paths in the preprocessor output will be normalized by
@@ -1632,6 +1641,15 @@ impl<'a> HashKeyParams<'a> {
         }
         if let Some(assembler_digest) = self.assembler_digest {
             m.update(assembler_digest.as_bytes());
+        }
+        // The compiler writes the source's file name into the object (the
+        // STT_FILE symbol on ELF), and -P leaves it out of the preprocessed
+        // output, so two sources that preprocess the same would share an
+        // object naming only one of them. The directory is left out: the
+        // symbol does not record it, and keeping it would cost cache hits
+        // across checkouts.
+        if let Some(input_file_name) = self.input_file_name {
+            input_file_name.hash(&mut HashToDigest { digest: &mut m });
         }
 
         for (var, val) in self.env_vars.iter() {
@@ -1692,6 +1710,19 @@ mod test {
             .with_assembler_digest(None)
             .compute();
         assert_eq!(h1, h4);
+    }
+
+    #[test]
+    fn test_input_file_name_differs() {
+        let args = ovec!["a", "b", "c"];
+        let hash_for = |input: &str| {
+            HashKeyParams::new("abcd", Language::C, &args, b"")
+                .with_input_file_name(Path::new(input).file_name())
+                .compute()
+        };
+        assert_neq!(hash_for("alpha.c"), hash_for("beta.c"));
+        assert_eq!(hash_for("alpha.c"), hash_for("src/alpha.c"));
+        assert_eq!(hash_for("/a/alpha.c"), hash_for("/b/alpha.c"));
     }
 
     #[test]
