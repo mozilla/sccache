@@ -654,6 +654,14 @@ where
         let mut common_and_arch_args = self.parsed_args.common_args.clone();
         common_and_arch_args.extend(self.parsed_args.arch_args.clone());
 
+        // The inputs of nvcc's device-code steps are its own temporaries, named
+        // after the source, and identical device code from different sources
+        // is meant to be shared.
+        let input_file_name = match self.parsed_args.language {
+            Language::CudaFE | Language::Ptx | Language::Cubin => None,
+            _ => self.parsed_args.input.file_name(),
+        };
+
         let key = HashKeyParams::new(
             &self.executable_digest,
             self.parsed_args.language,
@@ -665,7 +673,7 @@ where
         .with_plusplus(self.compiler.plusplus())
         .with_basedirs(storage.basedirs())
         .with_assembler_digest(assembler_digest.as_deref())
-        .with_input_file_name(self.parsed_args.input.file_name())
+        .with_input_file_name(input_file_name)
         .compute();
 
         // Cache the preprocessing step
