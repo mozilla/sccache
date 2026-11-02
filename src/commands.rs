@@ -519,9 +519,11 @@ fn strip_ansi_bytes(data: &[u8]) -> Vec<u8> {
                     i += 1;
                 }
             }
-            b'(' | b')' | b'*' | b'+' | b'-' | b'.' | b'/' | b'#' => {
-                // nF escapes: ESC intermediate final
-                i += 1;
+            0x20..=0x2f => {
+                // nF escapes: ESC, one or more intermediates (0x20..=0x2F), final
+                while i < data.len() && (0x20..=0x2f).contains(&data[i]) {
+                    i += 1;
+                }
                 if i < data.len() {
                     i += 1;
                 }
@@ -1224,6 +1226,52 @@ mod test {
         // ESC[31m café ESC[0m  — Latin-1 0xe9 must survive when colors are stripped.
         let input = b"\x1b[31mcaf\xe9\x1b[0m";
         assert_eq!(strip_ansi_bytes(input), b"caf\xe9");
+    }
+
+    #[test]
+    fn strip_ansi_bytes_strips_osc_bel() {
+        // OSC 8 hyperlink terminated by BEL.
+        let input = b"caf\xe9 \x1b]8;;http://x\x07link\x1b]8;;\x07 \xe9";
+        assert_eq!(strip_ansi_bytes(input), b"caf\xe9 link \xe9");
+    }
+
+    #[test]
+    fn strip_ansi_bytes_strips_osc_st() {
+        // OSC terminated by ST (ESC \).
+        let input = b"caf\xe9\x1b]0;title\x1b\\ \xe9";
+        assert_eq!(strip_ansi_bytes(input), b"caf\xe9 \xe9");
+    }
+
+    #[test]
+    fn strip_ansi_bytes_strips_dcs() {
+        let input = b"caf\xe9\x1bP1$r0m\x1b\\ \xe9";
+        assert_eq!(strip_ansi_bytes(input), b"caf\xe9 \xe9");
+    }
+
+    #[test]
+    fn strip_ansi_bytes_strips_nf() {
+        // ESC ( B (designate G0 charset), ESC # 8, and a two-intermediate ESC SP SP F.
+        let input = b"\x1b(Bcaf\xe9\x1b#8 \x1b  F\xe9";
+        assert_eq!(strip_ansi_bytes(input), b"caf\xe9 \xe9");
+    }
+
+    #[test]
+    fn strip_ansi_bytes_handles_truncated_sequences() {
+        // An unterminated sequence is stripped up to end of input; no panic.
+        let cases: &[(&[u8], &[u8])] = &[
+            (b"caf\xe9\x1b", b"caf\xe9"),
+            (b"caf\xe9\x1b[", b"caf\xe9"),
+            (b"caf\xe9\x1b[31", b"caf\xe9"),
+            (b"caf\xe9\x1b]0;title", b"caf\xe9"),
+            (b"caf\xe9\x1b]0;title\x1b", b"caf\xe9"),
+            (b"caf\xe9\x1bPpayload", b"caf\xe9"),
+            (b"caf\xe9\x1bPpayload\x1b", b"caf\xe9"),
+            (b"caf\xe9\x1b(", b"caf\xe9"),
+            (b"caf\xe9\x1b  ", b"caf\xe9"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(strip_ansi_bytes(input), *expected, "input: {input:?}");
+        }
     }
 
     #[test]
