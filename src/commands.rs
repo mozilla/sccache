@@ -18,6 +18,7 @@ use crate::cmdline::{Command, StatsFormat};
 use crate::compiler::{ColorMode, is_rmeta_artifact_notification};
 use crate::config::Config;
 use crate::jobserver::Client;
+use crate::lru_disk_cache::CACHEDIR_TAG_FILE_NAME;
 use crate::mock_command::{CommandChild, CommandCreatorSync, ProcessCommandCreator, RunCommand};
 use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
 use crate::server::{self, DistInfo, ServerInfo, ServerStartup, ServerStats};
@@ -830,7 +831,11 @@ pub fn run_command(cmd: Command) -> Result<i32> {
             for entry in WalkDir::new(entries_dir).sort_by_file_name() {
                 let preprocessor_cache_entry_file = entry?;
                 let path = preprocessor_cache_entry_file.path();
-                if !path.is_file() {
+                if !path.is_file()
+                    || preprocessor_cache_entry_file.file_name() == CACHEDIR_TAG_FILE_NAME
+                {
+                    // The cache-directory tag is metadata for backup tools,
+                    // not an entry (see lru_disk_cache).
                     continue;
                 }
                 println!("=========================");
