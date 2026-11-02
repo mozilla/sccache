@@ -1265,7 +1265,9 @@ fn config_from_env() -> Result<EnvConfig> {
     };
 
     // ======= Base directory =======
-    let basedirs = env::var_os("SCCACHE_BASEDIRS").map(|s| split_basedirs(&s));
+    let basedirs = env::var_os("SCCACHE_BASEDIRS")
+        .map(|s| split_basedirs(&s))
+        .transpose()?;
 
     let dist_cache_dir = env::var_os("SCCACHE_DIST_CLIENT_CACHE_DIR").map(PathBuf::from);
     let client_side_mode = bool_from_env_var("SCCACHE_CLIENT_SIDE")?;
@@ -1280,17 +1282,19 @@ fn config_from_env() -> Result<EnvConfig> {
 
 /// Split a `SCCACHE_BASEDIRS` value into its paths, separated by ';' on Windows
 /// and ':' on other platforms to match PATH behavior.
-fn split_basedirs(value: &OsStr) -> Vec<String> {
+fn split_basedirs(value: &OsStr) -> Result<Vec<String>> {
     #[cfg(target_os = "windows")]
     let split_symbol = ';';
     #[cfg(not(target_os = "windows"))]
     let split_symbol = ':';
-    value
-        .to_string_lossy()
+    let Some(value) = value.to_str() else {
+        bail!("SCCACHE_BASEDIRS is not valid UTF-8: {value:?}");
+    };
+    Ok(value
         .split(split_symbol)
         .filter(|s| !s.is_empty())
         .map(|s| s.to_owned())
-        .collect()
+        .collect())
 }
 
 /// Validate basedirs and normalize them for matching.
@@ -1332,7 +1336,7 @@ fn normalize_basedirs(basedirs_raw: Vec<String>) -> Result<Vec<Vec<u8>>> {
 
 /// The basedirs a `SCCACHE_BASEDIRS` value names, normalized like the configured ones.
 pub(crate) fn basedirs_from_env(value: &OsStr) -> Result<Vec<Vec<u8>>> {
-    normalize_basedirs(split_basedirs(value))
+    normalize_basedirs(split_basedirs(value)?)
 }
 
 // The directories crate changed the location of `config_dir` on macos in version 3,
@@ -2315,6 +2319,21 @@ fn test_env_basedirs_with_spaces() {
     };
     Config::from_env_and_file_configs(env_conf, file_conf)
         .expect_err("Should fail due to non-absolute path");
+}
+
+#[test]
+fn test_basedirs_from_env_not_utf8() {
+    #[cfg(unix)]
+    let value = {
+        use std::os::unix::ffi::OsStrExt;
+        OsStr::from_bytes(b"/home/caf\xe9").to_owned()
+    };
+    #[cfg(windows)]
+    let value = {
+        use std::os::windows::ffi::OsStringExt;
+        std::ffi::OsString::from_wide(&[b'C' as u16, b':' as u16, b'\\' as u16, 0xd800])
+    };
+    assert!(basedirs_from_env(&value).is_err());
 }
 
 #[test]
