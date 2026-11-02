@@ -18,7 +18,7 @@ use crate::errors::*;
 
 /// Normalize key `abcdef` into `a/b/c/abcdef`
 pub(in crate::cache) fn normalize_key(key: &str) -> String {
-    format!("{}/{}/{}/{}", &key[0..1], &key[1..2], &key[2..3], &key)
+    format!("{}/{}/{}/{}", &key[0..1], &key[1..2], &key[2..3], key)
 }
 
 #[cfg(unix)]

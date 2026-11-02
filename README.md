@@ -2,7 +2,6 @@
 [![Crates.io](https://img.shields.io/crates/v/sccache.svg)](https://crates.io/crates/sccache)
 [![Matrix](https://img.shields.io/matrix/sccache:mozilla.org)](https://chat.mozilla.org/#/room/#sccache:mozilla.org)
 ![Crates.io](https://img.shields.io/crates/l/sccache)
-[![dependency status](https://deps.rs/repo/github/mozilla/sccache/status.svg)](https://deps.rs/repo/github/mozilla/sccache)
 
 [![CodeCov](https://codecov.io/gh/mozilla/sccache/branch/main/graph/badge.svg)](https://codecov.io/gh/mozilla/sccache)
 
@@ -237,7 +236,7 @@ And you can build code as usual without any additional flags in the command line
 Build Requirements
 ------------------
 
-sccache is a [Rust](https://www.rust-lang.org/) program. Building it requires `cargo` (and thus`rustc`). sccache currently requires **Rust 1.85.0**. We recommend you install Rust via [Rustup](https://rustup.rs/).
+sccache is a [Rust](https://www.rust-lang.org/) program. Building it requires `cargo` (and thus`rustc`). sccache currently requires **Rust 1.91.0**. We recommend you install Rust via [Rustup](https://rustup.rs/).
 
 Build
 -----
@@ -344,6 +343,12 @@ export SCCACHE_BASEDIRS="/home/user/project:/home/user/workspace"
 
 Path matching is **case-insensitive** on Windows and **case-sensitive** on other operating systems.
 
+Base directories are stripped from the preprocessed source and from the compiler arguments alike. The arguments matter because a flag can name the tree it is building: `-ffile-prefix-map=/home/user/project=.` makes the object file independent of where the tree is checked out, but the flag itself is not, and it is hashed verbatim.
+
+In an argument only the places that are expected to spell a pathname are considered: the whole argument, the value of an option written with an `=` (either half of a prefix map), and the value glued to a short option such as `-I`. A base directory appearing anywhere else is left alone, so a definition the compiler bakes into the output verbatim, `-DROOT="/home/user/project"`, still counts. A match also has to end where a path component ends, so a sibling `/home/user/project-docs` is not one.
+
+For Rust, base directories are also stripped from the working directory, from the `CARGO_*` environment variables such as `CARGO_MANIFEST_DIR`, and from the variables a crate reads with `env!` or `option_env!`, such as a build script's `OUT_DIR`. A hit then returns a crate compiled in another directory: its debug info and panic messages name that directory unless `--remap-path-prefix` maps it away, and so does any `env!("CARGO_MANIFEST_DIR")` the crate keeps.
+
 This is similar to ccache's `CCACHE_BASEDIR` and helps when:
 * Building the same project from different directories
 * Sharing cache between CI jobs with different checkout paths
@@ -391,6 +396,8 @@ The following module-related flags are **not supported** and will bypass the cac
 
 * `-fmodules` and `-fcxx-modules` - Clang header modules (not C++20 named modules)
 * `-fprebuilt-implicit-modules` and `-fprebuilt-module-path` - implicit module discovery
+
+With **clang-cl**, `-fmodule-file=[<name>=]<path>` and `-x c++-module` together with `-fmodule-output=<path>` are supported, but not through `-Xclang` or `-clang:`.
 
 **GCC** and **MSVC** C++20 modules are not yet supported. Compilations using `-fmodules-ts` (GCC) or `/interface`, `/ifcOutput`, etc. (MSVC) will bypass the cache.
 

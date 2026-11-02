@@ -263,10 +263,10 @@ impl LruDiskCache {
         size: Option<u64>,
         by: F,
     ) -> Result<()> {
-        if let Some(size) = size {
-            if !self.can_store(size) {
-                return Err(Error::FileTooLarge);
-            }
+        if let Some(size) = size
+            && !self.can_store(size)
+        {
+            return Err(Error::FileTooLarge);
         }
         let rel_path = key.as_ref();
         let path = self.rel_to_abs_path(rel_path);
@@ -395,6 +395,16 @@ impl LruDiskCache {
     /// `Err(Error::FileNotInCache)`.
     pub fn get<K: AsRef<OsStr>>(&mut self, key: K) -> Result<Box<dyn ReadSeek>> {
         self.get_file(key).map(|f| Box::new(f) as Box<dyn ReadSeek>)
+    }
+
+    /// Like `get`, but leaves the file's times unchanged and only updates the in-memory LRU
+    /// order. For readers that may not be allowed to write the cache directory, such as a
+    /// cache on a read-only mount.
+    /// Entries created by `LruDiskCache::prepare_add` but not yet committed return
+    /// `Err(Error::FileNotInCache)`.
+    pub fn get_untouched<K: AsRef<OsStr>>(&mut self, key: K) -> Result<Box<dyn ReadSeek>> {
+        let path = self.get_abs_path(key).ok_or(Error::FileNotInCache)?;
+        Ok(Box::new(File::open(path)?))
     }
 
     /// Return the absolute path for `key` if it is present in the cache, without opening the

@@ -10,13 +10,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use opendal::OperationContext;
 use opendal::Operator;
-use opendal::layers::{HttpClientLayer, LoggingLayer};
 use opendal::services::Cos;
+use opendal_layer_logging::LoggingLayer;
 
 use crate::errors::*;
 
-use super::http_client::set_user_agent;
+use super::http_client::new_http_transport;
 
 pub struct COSCache;
 
@@ -30,9 +31,8 @@ impl COSCache {
         }
 
         let op = Operator::new(builder)?
-            .layer(HttpClientLayer::new(set_user_agent()))
-            .layer(LoggingLayer::default())
-            .finish();
+            .with_context(OperationContext::new().with_http_transport(new_http_transport()?))
+            .layer(LoggingLayer::default());
         Ok(op)
     }
 }

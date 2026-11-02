@@ -31,7 +31,7 @@ endgroup =
 endif
 
 BACKENDS := redis redis-deprecated memcached memcached-deprecated s3 azblob webdav basedirs multilevel multilevel-chain
-TOOLS := gcc clang cmake cmake-modules cmake-modules-v4 autotools coverage zstd
+TOOLS := gcc clang cmake cmake-modules cmake-modules-v4 autotools coverage zstd file-prefix-map
 
 # Map backends to their compose profiles
 PROFILES_autotools := autotools
@@ -42,6 +42,7 @@ PROFILES_cmake := cmake
 PROFILES_cmake-modules := cmake-modules
 PROFILES_cmake-modules-v4 := cmake-modules-v4
 PROFILES_coverage := coverage
+PROFILES_file-prefix-map := file-prefix-map
 PROFILES_gcc := gcc
 PROFILES_memcached := memcached
 PROFILES_memcached-deprecated := memcached
@@ -56,20 +57,21 @@ PROFILES_zstd := zstd
 # Map backends to their services
 SERVICES_autotools :=
 SERVICES_azblob := azurite azurite-setup
-SERVICES_basedirs := redis memcached minio minio-setup azurite azurite-setup webdav
+SERVICES_basedirs := redis memcached silo silo-setup azurite azurite-setup webdav
 SERVICES_clang :=
 SERVICES_cmake :=
 SERVICES_cmake-modules :=
 SERVICES_cmake-modules-v4 :=
 SERVICES_coverage :=
+SERVICES_file-prefix-map :=
 SERVICES_gcc :=
 SERVICES_memcached := memcached
 SERVICES_memcached-deprecated := memcached
-SERVICES_multilevel := redis memcached minio minio-setup azurite azurite-setup webdav
-SERVICES_multilevel-chain := redis memcached minio minio-setup
+SERVICES_multilevel := redis memcached silo silo-setup azurite azurite-setup webdav
+SERVICES_multilevel-chain := redis memcached silo silo-setup
 SERVICES_redis := redis
 SERVICES_redis-deprecated := redis
-SERVICES_s3 := minio minio-setup
+SERVICES_s3 := silo silo-setup
 SERVICES_webdav := webdav
 SERVICES_zstd :=
 
@@ -84,7 +86,7 @@ help:
 	@echo "  make test-redis-deprecated   Run Redis (deprecated) test"
 	@echo "  make test-memcached          Run Memcached (new endpoint) test"
 	@echo "  make test-memcached-deprecated Run Memcached (deprecated) test"
-	@echo "  make test-s3                 Run S3/MinIO test"
+	@echo "  make test-s3                 Run S3/Silo test"
 	@echo "  make test-azblob             Run Azure Blob Storage test"
 	@echo "  make test-webdav             Run WebDAV test"
 	@echo ""
@@ -102,6 +104,7 @@ help:
 	@echo "  make test-coverage           Run Rust coverage instrumentation test"
 	@echo "  make test-zstd               Run ZSTD compression levels test"
 	@echo "  make test-basedirs           Run basedirs test across all backends"
+	@echo "  make test-file-prefix-map    Run basedirs vs -ffile-prefix-map test"
 	@echo "  make test-multilevel         Run multi-level cache test across all backends"
 	@echo "  make test-multilevel-chain   Run multi-level backfill chain test (4 levels)"
 	@echo ""
@@ -159,6 +162,7 @@ test-%: build clean-%
 	$(call group,Testing $*)
 	@echo "Testing $*..."
 	@docker compose $(call profiles,$*) up --quiet-pull -d $(SERVICES_$*)
+	@rm -f $(COVERAGE_DIR)/sccache.log
 	@docker compose $(call profiles,$*) run --quiet-pull --rm test-$*
 	@docker compose $(call profiles,$*) down
 	@echo "$* test completed"

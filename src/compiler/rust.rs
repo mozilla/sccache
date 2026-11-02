@@ -20,14 +20,14 @@ use crate::compiler::{
     SingleCompileCommand, c::ArtifactDescriptor,
 };
 #[cfg(feature = "dist-client")]
-use crate::compiler::{DistPackagers, OutputsRewriter};
+use crate::compiler::{DistPackagers, NoopOutputsRewriter};
 #[cfg(feature = "dist-client")]
 use crate::dist::pkg;
 #[cfg(feature = "dist-client")]
 use crate::lru_disk_cache::{LruCache, Meter};
 use crate::mock_command::{CommandCreatorSync, RunCommand};
 use crate::util::{Digest, fmt_duration_as_secs, hash_all, hash_all_archives, run_input_output};
-use crate::util::{HashToDigest, OsStrExt};
+use crate::util::{HashToDigest, OsStrExt, strip_basedirs_from_arg};
 use crate::{counted_array, dist};
 use async_trait::async_trait;
 use filetime::FileTime;
@@ -44,7 +44,7 @@ use std::collections::{HashMap, HashSet};
 use std::env::consts::DLL_EXTENSION;
 #[cfg(feature = "dist-client")]
 use std::env::consts::{DLL_PREFIX, EXE_EXTENSION};
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::future::Future;
 use std::hash::Hash;
@@ -61,6 +61,8 @@ use std::sync::{Arc, LazyLock};
 use std::time;
 
 use crate::errors::*;
+
+pub(crate) const NO_CRATE_TYPE_PASSED: &str = "No crate-type passed";
 
 #[cfg(feature = "dist-client")]
 const RLIB_PREFIX: &str = "lib";
@@ -81,6 +83,187 @@ const LIBS_DIR: &str = "lib";
 /// Directory in the sysroot containing shared libraries to which rustc is linked.
 #[cfg(windows)]
 const LIBS_DIR: &str = "bin";
+
+/// Entries in `rustlib` that rustc never loads while compiling:
+/// src -> the standard library sources
+/// etc -> the gdb/lldb pretty-printers.
+#[cfg(feature = "dist-client")]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+const RUSTLIB_UNUSED_ENTRIES: &[&str] = &["src", "etc"];
+
+/// rustc's `rustlib` directory, from the `--print=target-libdir` output, which
+/// points at `$libdir/rustlib/$target/lib`.
+///
+/// `$libdir` is chosen when rustc is built, so it cannot be assumed to be
+/// [`LIBS_DIR`] for a rustc installed into a shared prefix such as `/usr`.
+#[cfg(feature = "dist-client")]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+fn rustlib_dir(target_libdir: &Path) -> Option<&Path> {
+    target_libdir.ancestors().nth(2)
+}
+
+/// The entries under `rustlib` that need to end up in a toolchain package.
+#[cfg(feature = "dist-client")]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+fn needed_rustlib_entries(rustlib_path: &Path) -> Result<Vec<PathBuf>> {
+    let mut entries = vec![];
+    for entry in fs::read_dir(rustlib_path)
+        .with_context(|| format!("Failed to list rustlib dir `{}`", rustlib_path.display()))?
+    {
+        let entry = entry?;
+        if RUSTLIB_UNUSED_ENTRIES
+            .iter()
+            .any(|unused| entry.file_name() == **unused)
+        {
+            continue;
+        }
+        entries.push(entry.path());
+    }
+    entries.sort();
+    Ok(entries)
+}
+
+#[test]
+#[cfg(feature = "dist-client")]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+fn test_rustlib_dir() {
+    // A self-contained toolchain, as unpacked by rustup.
+    assert_eq!(
+        rustlib_dir(Path::new(
+            "/Users/user/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/lib"
+        )),
+        Some(Path::new(
+            "/Users/user/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib"
+        ))
+    );
+    // A rustc installed into a shared prefix.
+    assert_eq!(
+        rustlib_dir(Path::new("/usr/lib64/rustlib/x86_64-unknown-linux-gnu/lib")),
+        Some(Path::new("/usr/lib64/rustlib"))
+    );
+    assert_eq!(rustlib_dir(Path::new("lib")), None);
+}
+
+#[test]
+#[cfg(feature = "dist-client")]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+fn test_needed_rustlib_entries() {
+    let tempdir = tempfile::Builder::new()
+        .prefix("sccache_test")
+        .tempdir()
+        .unwrap();
+    let rustlib = tempdir.path().join("rustlib");
+    for dir in [
+        "aarch64-unknown-linux-gnu",
+        "wasm32-unknown-unknown",
+        "src",
+        "etc",
+    ] {
+        fs::create_dir_all(rustlib.join(dir)).unwrap();
+    }
+    fs::write(rustlib.join("components"), "rustc\n").unwrap();
+
+    // Every installed target is kept, whichever they are; `src` and `etc` go.
+    assert_eq!(
+        needed_rustlib_entries(&rustlib).unwrap(),
+        vec![
+            rustlib.join("aarch64-unknown-linux-gnu"),
+            rustlib.join("components"),
+            rustlib.join("wasm32-unknown-unknown"),
+        ]
+    );
+}
+
+#[test]
+#[cfg(feature = "dist-client")]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+fn test_toolchain_package_through_symlinked_libdir() {
+    use crate::dist::pkg::ToolchainPackager;
+    use std::io::Read;
+
+    let tempdir = tempfile::Builder::new()
+        .prefix("sccache_test")
+        .tempdir()
+        .unwrap();
+    // `tarify_path` resolves every symlink in the path, so the expectations
+    // below have to be built from a path that has none of its own.
+    let root = tempdir.path().canonicalize().unwrap();
+    let sysroot = root.join("sysroot");
+
+    // A real ELF, so that `add_executable_and_deps` can run ldd against it.
+    // Looked up on PATH rather than hardcoded as /bin/true, since not every
+    // system (e.g. NixOS) has it there.
+    fs::create_dir_all(sysroot.join("bin")).unwrap();
+    let true_bin = which::which("true").expect("`true` not found on PATH");
+    fs::copy(true_bin, sysroot.join("bin/rustc")).unwrap();
+
+    let rustlib = sysroot.join("lib/rustlib");
+    fs::create_dir_all(rustlib.join("fake-target/lib")).unwrap();
+    fs::create_dir_all(rustlib.join("src")).unwrap();
+    fs::write(rustlib.join("fake-target/lib/libstd.so"), []).unwrap();
+    fs::write(rustlib.join("src/lib.rs"), []).unwrap();
+    fs::write(rustlib.join("components"), "rustc\n").unwrap();
+    // The case this guards: rustc reports a libdir reached through a symlink.
+    std::os::unix::fs::symlink("lib", sysroot.join("lib64")).unwrap();
+
+    let pkg = tempdir.path().join("toolchain.tar.gz");
+    Box::new(RustToolchainPackager {
+        sysroot: sysroot.clone(),
+        target_libdir: sysroot.join("lib64/rustlib/fake-target/lib"),
+    })
+    .write_pkg(fs::File::create(&pkg).unwrap())
+    .unwrap();
+
+    let mut buf = vec![];
+    flate2::read::GzDecoder::new(fs::File::open(&pkg).unwrap())
+        .read_to_end(&mut buf)
+        .unwrap();
+    let mut archive = tar::Archive::new(buf.as_slice());
+    let entries: Vec<(PathBuf, Option<PathBuf>)> = archive
+        .entries()
+        .unwrap()
+        .map(|e| {
+            let e = e.unwrap();
+            (
+                e.path().unwrap().into_owned(),
+                e.link_name().unwrap().map(|l| l.into_owned()),
+            )
+        })
+        .collect();
+
+    let tarified = |p: &Path| p.strip_prefix("/").unwrap().to_path_buf();
+    let has = |p: &Path| entries.iter().any(|(name, _)| *name == tarified(p));
+
+    // Contents land under the resolved libdir, not the `lib64` spelling.
+    assert!(has(&rustlib.join("fake-target/lib/libstd.so")));
+    assert!(has(&rustlib.join("components")));
+    assert!(has(&sysroot.join("bin/rustc")));
+    // ... and `lib64` is recorded as a symlink, so both spellings resolve on
+    // the server.
+    assert!(entries.iter().any(|(name, link)| {
+        *name == tarified(&sysroot.join("lib64")) && link.as_deref() == Some(&sysroot.join("lib"))
+    }));
+    // `rustlib/src` is still excluded.
+    assert!(!has(&rustlib.join("src/lib.rs")));
+}
 
 /// A struct on which to hang a `Compiler` impl.
 #[derive(Debug, Clone)]
@@ -109,8 +292,13 @@ pub struct Rust {
     version: String,
     /// The path to the rustc sysroot.
     sysroot: PathBuf,
+    /// The `--print=target-libdir` of this rustc, i.e. `$libdir/rustlib/$target/lib`.
+    #[cfg(feature = "dist-client")]
+    target_libdir: PathBuf,
     /// The digests of all the shared libraries in rustc's $sysroot/lib (or /bin on Windows).
     compiler_shlibs_digests: Vec<String>,
+    /// The custom dist toolchain archive for this rustc, if configured.
+    dist_archive: Option<PathBuf>,
     /// A shared, caching reader for rlib dependencies
     #[cfg(feature = "dist-client")]
     rlib_dep_reader: Option<Arc<RlibDepReader>>,
@@ -127,8 +315,13 @@ pub struct RustHasher {
     version: String,
     /// The path to the rustc sysroot.
     sysroot: PathBuf,
+    /// The `--print=target-libdir` of this rustc, i.e. `$libdir/rustlib/$target/lib`.
+    #[cfg(feature = "dist-client")]
+    target_libdir: PathBuf,
     /// The digests of all the shared libraries in rustc's $sysroot/lib (or /bin on Windows).
     compiler_shlibs_digests: Vec<String>,
+    /// The custom dist toolchain archive for this rustc, if configured.
+    dist_archive: Option<PathBuf>,
     /// A shared, caching reader for rlib dependencies
     #[cfg(feature = "dist-client")]
     rlib_dep_reader: Option<Arc<RlibDepReader>>,
@@ -200,6 +393,9 @@ pub struct RustCompilation {
     host: String,
     /// The sysroot for this rustc
     sysroot: PathBuf,
+    /// The `--print=target-libdir` of this rustc, i.e. `$libdir/rustlib/$target/lib`.
+    #[cfg(feature = "dist-client")]
+    target_libdir: PathBuf,
     /// A shared, caching reader for rlib dependencies
     #[cfg(feature = "dist-client")]
     rlib_dep_reader: Option<Arc<RlibDepReader>>,
@@ -215,8 +411,6 @@ pub struct RustCompilation {
     crate_name: String,
     /// The crate types that will be generated
     crate_types: CrateTypes,
-    /// If dependency info is being emitted, the name of the dep info file.
-    dep_info: Option<PathBuf>,
     /// The current working directory
     cwd: PathBuf,
     /// The environment variables
@@ -235,9 +429,11 @@ static ALLOWED_EMIT: LazyLock<HashSet<&'static str>> =
     LazyLock::new(|| ["link", "metadata", "dep-info"].iter().copied().collect());
 
 /// Version number for cache key.
-const CACHE_VERSION: &[u8] = b"6";
+const CACHE_VERSION: &[u8] = b"7";
 
-/// Get absolute paths for all source files and env-deps listed in rustc's dep-info output.
+/// Run `rustc --emit=dep-info` to get the list of source files and env-deps.
+///
+/// Also returns the dep-info text, from which the dep-info output is written.
 async fn get_source_files_and_env_deps<T>(
     creator: &T,
     crate_name: &str,
@@ -246,7 +442,7 @@ async fn get_source_files_and_env_deps<T>(
     cwd: &Path,
     env_vars: &[(OsString, OsString)],
     pool: &tokio::runtime::Handle,
-) -> Result<(Vec<PathBuf>, Vec<(OsString, OsString)>)>
+) -> Result<(Vec<PathBuf>, Vec<(OsString, OsString)>, String)>
 where
     T: CommandCreatorSync,
 {
@@ -278,7 +474,7 @@ where
         })
         .await?;
 
-    parsed.map(move |(files, env_deps)| {
+    parsed.map(move |(files, env_deps, dep_info)| {
         trace!(
             "[{}]: got {} source files and {} env-deps from dep-info in {}",
             crate_name,
@@ -288,13 +484,16 @@ where
         );
         // Just to make sure we capture temp_dir.
         drop(temp_dir);
-        (files, env_deps)
+        (files, env_deps, dep_info)
     })
 }
 
-/// Parse dependency info from `file` and return a Vec of files mentioned.
-/// Treat paths as relative to `cwd`.
-fn parse_dep_file<T, U>(file: T, cwd: U) -> Result<(Vec<PathBuf>, Vec<(OsString, OsString)>)>
+/// Parse dependency info from `file` and return a Vec of files mentioned, the env-deps,
+/// and the raw text. Treat paths as relative to `cwd`.
+fn parse_dep_file<T, U>(
+    file: T,
+    cwd: U,
+) -> Result<(Vec<PathBuf>, Vec<(OsString, OsString)>, String)>
 where
     T: AsRef<Path>,
     U: AsRef<Path>,
@@ -302,7 +501,7 @@ where
     let mut f = fs::File::open(file.as_ref())?;
     let mut deps = String::new();
     f.read_to_string(&mut deps)?;
-    Ok((parse_dep_info(&deps, cwd), parse_env_dep_info(&deps)))
+    Ok((parse_dep_info(&deps, cwd), parse_env_dep_info(&deps), deps))
 }
 
 fn parse_dep_info<T>(dep_info: &str, cwd: T) -> Vec<PathBuf>
@@ -362,12 +561,104 @@ fn parse_env_dep_info(dep_info: &str) -> Vec<(OsString, OsString)> {
         if let Some(env_dep) = line.strip_prefix("# env-dep:") {
             let mut split = env_dep.splitn(2, '=');
             match (split.next(), split.next()) {
-                (Some(var), Some(val)) => env_deps.push((var.into(), val.into())),
-                _ => env_deps.push((env_dep.into(), "".into())),
+                (Some(var), Some(val)) => {
+                    env_deps.push((unescape_dep_env(var).into(), unescape_dep_env(val).into()));
+                }
+                _ => env_deps.push((unescape_dep_env(env_dep).into(), "".into())),
             }
         }
     }
     env_deps
+}
+
+/// Undo rustc's escaping of `\`, newlines and carriage returns
+/// in env-dep names and values.
+fn unescape_dep_env(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some(c) => out.push(c),
+            None => out.push('\\'),
+        }
+    }
+    out
+}
+
+/// Rewrite the dep-info of a `--emit dep-info -o <file>` invocation
+/// into one with a rule per `targets`.
+///
+/// The dep-info-only invocation has a single rule, naming `<file>`.
+/// It is replaced by one rule per `targets`, with the same prerequisites;
+/// the rest is kept verbatim.
+///
+/// Like rustc, targets are unescaped and prerequisites have spaces escaped. See
+/// <https://github.com/rust-lang/rust/blob/1d81eb4ad9cd207e3e638bd32b17ec4fce8412a6/compiler/rustc_interface/src/passes.rs#L712-L726>
+///
+/// `extra_prerequisites` are added to every rule, each with a phony rule.
+fn dep_info_with_targets<'a>(
+    dep_info: &str,
+    targets: impl IntoIterator<Item = &'a Path>,
+    extra_prerequisites: impl IntoIterator<Item = &'a Path>,
+) -> Result<String> {
+    if dep_info.trim().is_empty() {
+        bail!("dep-info written by rustc is empty");
+    }
+    let (rule, rest) = dep_info.split_once('\n').unwrap_or((dep_info, ""));
+    let (prerequisites, rest) = match rule.split_once(": ") {
+        Some((_, prerequisites)) => (prerequisites.to_owned(), rest),
+        // With -Zdep-info-omit-d-target, the dep-info-only invocation has no
+        // output to name, so rustc writes only the phony rules of the prerequisites.
+        None if rule.ends_with(':') => {
+            let prerequisites = dep_info
+                .lines()
+                .map_while(|line| line.strip_suffix(':'))
+                .collect::<Vec<_>>()
+                .join(" ");
+            (prerequisites, dep_info)
+        }
+        None => {
+            // Show what rustc wrote, so a format change can be diagnosed from the error alone.
+            const MAX_LEN: usize = 200;
+            let first_line = match rule.char_indices().nth(MAX_LEN) {
+                Some((i, _)) => format!("{}...", &rule[..i]),
+                None => rule.to_owned(),
+            };
+            bail!(
+                "dep-info does not start with a `<target>: <prerequisites>` rule; \
+                 its first line is {first_line:?}"
+            )
+        }
+    };
+    let extra_prerequisites = extra_prerequisites
+        .into_iter()
+        .map(|p| p.to_string_lossy().replace(' ', "\\ "))
+        .collect::<Vec<_>>();
+    let prerequisites = extra_prerequisites
+        .iter()
+        .map(String::as_str)
+        .chain((!prerequisites.is_empty()).then_some(prerequisites.as_str()))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut out = String::new();
+    for target in targets {
+        out.push_str(&target.to_string_lossy());
+        out.push_str(": ");
+        out.push_str(&prerequisites);
+        out.push_str("\n\n");
+    }
+    for prerequisite in &extra_prerequisites {
+        out.push_str(prerequisite);
+        out.push_str(":\n");
+    }
+    out.push_str(rest.strip_prefix('\n').unwrap_or(rest));
+    Ok(out)
 }
 
 /// Run `rustc --print file-names` to get the outputs of compilation.
@@ -381,22 +672,25 @@ async fn get_compiler_outputs<T>(
 where
     T: Clone + CommandCreatorSync,
 {
+    let start = time::Instant::now();
     let mut cmd = creator.clone().new_command_sync(executable);
     cmd.args(&arguments)
         .args(&["--print", "file-names"])
         .env_clear()
         .envs(env_vars.to_vec())
         .current_dir(cwd);
-    if log_enabled!(Trace) {
-        trace!("get_compiler_outputs: {:?}", cmd);
-    }
+    trace!("get_compiler_outputs: {:?}", cmd);
     let outputs = run_input_output(cmd, None).await?;
 
     let outstr = String::from_utf8(outputs.stdout).context("Error parsing rustc output")?;
-    if log_enabled!(Trace) {
-        trace!("get_compiler_outputs: {:?}", outstr);
-    }
-    Ok(outstr.lines().map(|l| l.to_owned()).collect())
+    let outputs = outstr.lines().map(|l| l.to_owned()).collect::<Vec<_>>();
+    trace!(
+        "get_compiler_outputs: got {} outputs in {}: {:?}",
+        outputs.len(),
+        fmt_duration_as_secs(&start.elapsed()),
+        outstr,
+    );
+    Ok(outputs)
 }
 
 impl Rust {
@@ -426,13 +720,18 @@ impl Rust {
         cmd.stdout(process::Stdio::piped())
             .stderr(process::Stdio::null())
             .arg("--print=sysroot")
+            .arg("--print=target-libdir")
             .env_clear()
             .envs(env_vars.to_vec());
+        let hashed_archive = dist_archive.clone();
         let sysroot_and_libs = async move {
             let output = run_input_output(cmd, None).await?;
             //debug!("output.and_then: {}", output);
             let outstr = String::from_utf8(output.stdout).context("Error parsing sysroot")?;
-            let sysroot = PathBuf::from(outstr.trim_end());
+            let mut lines = outstr.lines();
+            let sysroot = PathBuf::from(lines.next().context("rustc didn't print a sysroot")?);
+            let target_libdir =
+                PathBuf::from(lines.next().context("rustc didn't print a target-libdir")?);
             let libs_path = sysroot.join(LIBS_DIR);
             let mut libs = fs::read_dir(&libs_path)
                 .with_context(|| format!("Failed to list rustc sysroot: `{:?}`", libs_path))?
@@ -451,12 +750,12 @@ impl Rust {
                     })
                 })
                 .collect::<Vec<_>>();
-            if let Some(path) = dist_archive {
+            if let Some(path) = hashed_archive {
                 trace!("Hashing {:?} along with rustc libs.", path);
                 libs.push(path);
             }
             libs.sort();
-            Result::Ok((sysroot, libs))
+            Result::Ok((sysroot, target_libdir, libs))
         };
 
         #[cfg(feature = "dist-client")]
@@ -469,7 +768,7 @@ impl Rust {
                     .map_err(anyhow::Error::from)
             };
 
-            let ((sysroot, libs), rlib_dep_reader) =
+            let ((sysroot, target_libdir, libs), rlib_dep_reader) =
                 futures::future::try_join(sysroot_and_libs, rlib_dep_reader).await?;
 
             let rlib_dep_reader = match rlib_dep_reader {
@@ -487,20 +786,23 @@ impl Rust {
                 host,
                 version: rustc_verbose_version.to_string(),
                 sysroot,
+                target_libdir,
                 compiler_shlibs_digests: digests,
+                dist_archive,
                 rlib_dep_reader,
             })
         }
 
         #[cfg(not(feature = "dist-client"))]
         {
-            let (sysroot, libs) = sysroot_and_libs.await?;
+            let (sysroot, _target_libdir, libs) = sysroot_and_libs.await?;
             hash_all(&libs, &pool).await.map(move |digests| Rust {
                 executable,
                 host,
                 version: rustc_verbose_version.to_string(),
                 sysroot,
                 compiler_shlibs_digests: digests,
+                dist_archive,
             })
         }
     }
@@ -517,6 +819,7 @@ where
     fn get_toolchain_packager(&self) -> Box<dyn pkg::ToolchainPackager> {
         Box::new(RustToolchainPackager {
             sysroot: self.sysroot.clone(),
+            target_libdir: self.target_libdir.clone(),
         })
     }
     /// Parse `arguments` as rustc command-line arguments, determine if
@@ -542,7 +845,10 @@ where
                 host: self.host.clone(),
                 version: self.version.clone(),
                 sysroot: self.sysroot.clone(),
+                #[cfg(feature = "dist-client")]
+                target_libdir: self.target_libdir.clone(),
                 compiler_shlibs_digests: self.compiler_shlibs_digests.clone(),
+                dist_archive: self.dist_archive.clone(),
                 #[cfg(feature = "dist-client")]
                 rlib_dep_reader: self.rlib_dep_reader.clone(),
                 parsed_args: args,
@@ -585,10 +891,7 @@ where
                 .context("Failed to parse output of rustup which rustc")?;
 
             let proxied_compiler = PathBuf::from(stdout.trim());
-            trace!(
-                "proxy: rustup which rustc produced: {:?}",
-                &proxied_compiler
-            );
+            trace!("proxy: rustup which rustc produced: {:?}", proxied_compiler);
             // TODO: Delegate FS access to a thread pool if possible
             let attr = fs::metadata(proxied_compiler.as_path())
                 .context("Failed to obtain metadata of the resolved, true rustc")?;
@@ -725,7 +1028,7 @@ impl RustupProxy {
                 let stdout = String::from_utf8(rustup_candidate_check.stdout)
                     .map_err(|_e| anyhow!("Response of `rustup --version` is not valid UTF-8"))?;
                 Ok(if stdout.trim().starts_with("rustup ") {
-                    trace!("PROXY rustup --version produced: {}", &stdout);
+                    trace!("PROXY rustup --version produced: {}", stdout);
                     Self::new(&proxy_executable).map(Some)
                 } else {
                     Err(anyhow!("Unexpected output or `rustup --version`"))
@@ -1185,7 +1488,8 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                 // We can't cache non-rlib/staticlib crates, because rustc invokes the
                 // system linker to link them, and we don't know about all the linker inputs.
                 if !others.is_empty() {
-                    let others: Vec<&str> = others.iter().map(String::as_str).collect();
+                    let mut others: Vec<&str> = others.iter().map(String::as_str).collect();
+                    others.sort_unstable();
                     let others_string = others.join(",");
                     cannot_cache!("crate-type", others_string)
                 }
@@ -1238,14 +1542,13 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
             None => {
                 match arg {
                     Argument::Raw(ref val) => {
-                        if idx == 0 {
-                            if let Some(value) = val.to_str() {
-                                if value == "rustc" {
-                                    // If the first argument is rustc, it's likely called via clippy-driver,
-                                    // so it's not actually an input file, which means we should discount it.
-                                    continue;
-                                }
-                            }
+                        if idx == 0
+                            && let Some(value) = val.to_str()
+                            && value == "rustc"
+                        {
+                            // If the first argument is rustc, it's likely called via clippy-driver,
+                            // so it's not actually an input file, which means we should discount it.
+                            continue;
                         }
                         if input.is_some() {
                             // Can't cache compilations with multiple inputs.
@@ -1299,7 +1602,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
         staticlib: false,
     } = crate_types
     {
-        cannot_cache!("crate-type", "No crate-type passed".to_owned())
+        cannot_cache!("crate-type", NO_CRATE_TYPE_PASSED.to_owned())
     }
     // We won't cache invocations that are outputting anything but
     // linker output and dep-info.
@@ -1378,6 +1681,30 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
     })
 }
 
+fn rust_dist_toolchain_weak_key(base: &Digest, sysroot: &Path) -> String {
+    let mut weak = base.clone();
+    // Distributed Rust toolchain archives preserve the sysroot's absolute layout.
+    // The weak map must therefore distinguish identical toolchain contents installed
+    // at different paths even though ordinary compile cache keys can remain portable.
+    sysroot.hash(&mut HashToDigest { digest: &mut weak });
+    weak.finish()
+}
+
+/// `value` with the basedirs stripped from where a pathname can start, see
+/// [`strip_basedirs_from_arg`]. A value that is not valid UTF-8 is kept as is.
+///
+/// A stripped value starts with a NUL, which no environment variable, argument
+/// or path can contain, so it never hashes like an unstripped one: a value equal
+/// to a basedir is not keyed like an unset `option_env!`.
+fn strip_basedirs_os<'a>(value: &'a OsStr, basedirs: &[Vec<u8>]) -> Cow<'a, OsStr> {
+    match strip_basedirs_from_arg(value.as_encoded_bytes(), basedirs) {
+        Cow::Owned(stripped) => String::from_utf8(stripped).map_or(Cow::Borrowed(value), |s| {
+            Cow::Owned(format!("\0{s}").into())
+        }),
+        Cow::Borrowed(_) => Cow::Borrowed(value),
+    }
+}
+
 #[allow(clippy::suspicious_else_formatting)] // False positive
 #[async_trait]
 impl<T> CompilerHasher<T> for RustHasher
@@ -1392,10 +1719,11 @@ where
         _may_dist: bool,
         pool: &tokio::runtime::Handle,
         _rewrite_includes_only: bool,
-        _storage: Arc<dyn Storage>,
+        storage: Arc<dyn Storage>,
         _cache_control: CacheControl,
     ) -> Result<HashResult<T>> {
         trace!("[{}]: generate_hash_key", self.parsed_args.crate_name);
+        let basedirs = storage.basedirs();
         // TODO: this doesn't produce correct arguments if they should be concatenated - should use iter_os_strings
         let os_string_arguments: Vec<(OsString, Option<OsString>)> = self
             .parsed_args
@@ -1426,7 +1754,7 @@ where
         // Find all the source files and hash them
         let source_hashes_pool = pool.clone();
         let source_files_and_hashes_and_env_deps = async {
-            let (source_files, env_deps) = get_source_files_and_env_deps(
+            let (source_files, env_deps, dep_info) = get_source_files_and_env_deps(
                 creator,
                 &self.parsed_args.crate_name,
                 &self.executable,
@@ -1437,8 +1765,22 @@ where
             )
             .await?;
             let source_hashes = hash_all(&source_files, &source_hashes_pool).await?;
-            Ok((source_files, source_hashes, env_deps))
+            Ok((source_files, source_hashes, env_deps, dep_info))
         };
+
+        // Turn arguments into a simple Vec<OsString> to calculate outputs.
+        let flat_os_string_arguments: Vec<OsString> = os_string_arguments
+            .iter()
+            .cloned()
+            .flat_map(|(arg, val)| iter::once(arg).chain(val))
+            .collect();
+        let outputs = get_compiler_outputs(
+            creator,
+            &self.executable,
+            flat_os_string_arguments,
+            &cwd,
+            &env_vars,
+        );
 
         // Hash the contents of the externs listed on the commandline.
         trace!(
@@ -1481,17 +1823,19 @@ where
 
         let target_json_hash = hash_all(&target_json_files, pool);
 
-        // Perform all hashing operations on the files.
+        // Invoke the compiler and perform all hashing operations on the files.
         let (
-            (source_files, source_hashes, mut env_deps),
+            (source_files, source_hashes, mut env_deps, dep_info_text),
             extern_hashes,
             staticlib_hashes,
             target_json_hash,
+            mut outputs,
         ) = futures::try_join!(
             source_files_and_hashes_and_env_deps,
             extern_hashes,
             staticlib_hashes,
-            target_json_hash
+            target_json_hash,
+            outputs,
         )?;
 
         // If you change any of the inputs to the hash, you should change `CACHE_VERSION`.
@@ -1503,7 +1847,7 @@ where
         for d in &self.compiler_shlibs_digests {
             m.update(d.as_bytes());
         }
-        let weak_toolchain_key = m.clone().finish();
+        let weak_toolchain_key = rust_dist_toolchain_weak_key(&m, &self.sysroot);
         // 3. The full commandline (self.arguments)
         // TODO: there will be full paths here, it would be nice to
         // normalize them so we can get cross-machine cache hits.
@@ -1538,7 +1882,7 @@ where
                 .chain(sortables)
                 .flat_map(|(arg, val)| iter::once(arg).chain(val.as_ref()))
                 .fold(OsString::new(), |mut a, b| {
-                    a.push(b);
+                    a.push(strip_basedirs_os(b, basedirs));
                     a
                 })
         };
@@ -1562,7 +1906,7 @@ where
         for (var, val) in env_deps.iter() {
             var.hash(&mut HashToDigest { digest: &mut m });
             m.update(b"=");
-            val.hash(&mut HashToDigest { digest: &mut m });
+            strip_basedirs_os(val, basedirs).hash(&mut HashToDigest { digest: &mut m });
         }
         let mut env_vars: Vec<_> = env_vars
             .iter()
@@ -1593,27 +1937,13 @@ where
 
             var.hash(&mut HashToDigest { digest: &mut m });
             m.update(b"=");
-            val.hash(&mut HashToDigest { digest: &mut m });
+            strip_basedirs_os(val, basedirs).hash(&mut HashToDigest { digest: &mut m });
         }
         // 9. The cwd of the compile. This will wind up in the rlib.
-        cwd.hash(&mut HashToDigest { digest: &mut m });
+        Path::new(&strip_basedirs_os(cwd.as_os_str(), basedirs))
+            .hash(&mut HashToDigest { digest: &mut m });
         // 10. The version of the compiler.
         self.version.hash(&mut HashToDigest { digest: &mut m });
-
-        // Turn arguments into a simple Vec<OsString> to calculate outputs.
-        let flat_os_string_arguments: Vec<OsString> = os_string_arguments
-            .into_iter()
-            .flat_map(|(arg, val)| iter::once(arg).chain(val))
-            .collect();
-
-        let mut outputs = get_compiler_outputs(
-            creator,
-            &self.executable,
-            flat_os_string_arguments,
-            &cwd,
-            &env_vars,
-        )
-        .await?;
 
         // metadata / dep-info don't ever generate binaries, but
         // rustc still makes them appear in the --print
@@ -1659,6 +1989,38 @@ where
             }
         }
 
+        // Write dep-info from this invocation rather than restoring it from the cache,
+        // which may come from another directory or machine (mozilla/sccache#984).
+        //
+        // Like rustc, it is written before compiling, so a failed compile leaves it behind.
+        // cargo reads dep-info only after rustc succeeds. See
+        //
+        // * https://github.com/rust-lang/rust/blob/1d81eb4ad9cd207/compiler/rustc_driver_impl/src/lib.rs#L311-L325
+        // * https://github.com/rust-lang/cargo/blob/29c5daa1afc2623/src/compiler/mod.rs#L529-L551
+        if let Some(dep_info) = &self.parsed_args.dep_info {
+            let dep_info = self.parsed_args.output_dir.join(dep_info);
+            let targets = std::iter::once(dep_info.clone())
+                .chain(outputs.iter().map(|o| self.parsed_args.output_dir.join(o)))
+                .collect::<Vec<_>>();
+            // Add the custom dist toolchain archive, if any, as a prerequisite,
+            // so swapping it out would trigger a rebuild.
+            // A local compile doesn't use the archive, and rustc overwrites this file anyway.
+            let text = dep_info_with_targets(
+                &dep_info_text,
+                targets.iter().map(|p| p.as_path()),
+                self.dist_archive.as_deref(),
+            )
+            .with_context(|| {
+                format!(
+                    "Failed to derive dep-info for {}",
+                    self.parsed_args.crate_name
+                )
+            })?;
+            let path = cwd.join(&dep_info);
+            fs::write(&path, text)
+                .with_context(|| format!("Failed to write dep-info to {}", path.display()))?;
+        }
+
         // Convert output files into a map of basename -> full
         // path, and remove some unneeded / non-existing ones,
         // see https://github.com/rust-lang/rust/pull/68799.
@@ -1675,19 +2037,6 @@ where
                 )
             })
             .collect::<HashMap<_, _>>();
-        let dep_info = if let Some(dep_info) = &self.parsed_args.dep_info {
-            let p = self.parsed_args.output_dir.join(dep_info);
-            outputs.insert(
-                dep_info.to_string_lossy().into_owned(),
-                ArtifactDescriptor {
-                    path: p.clone(),
-                    optional: false,
-                },
-            );
-            Some(p)
-        } else {
-            None
-        };
         if let Some(profile) = &self.parsed_args.profile {
             let p = self.parsed_args.output_dir.join(profile);
             outputs.insert(
@@ -1730,13 +2079,14 @@ where
                 executable: self.executable.clone(),
                 host: self.host.clone(),
                 sysroot: self.sysroot.clone(),
+                #[cfg(feature = "dist-client")]
+                target_libdir: self.target_libdir.clone(),
                 arguments,
                 inputs,
                 outputs,
                 crate_link_paths: self.parsed_args.crate_link_paths.clone(),
                 crate_name: self.parsed_args.crate_name.clone(),
                 crate_types: self.parsed_args.crate_types.clone(),
-                dep_info,
                 cwd,
                 env_vars,
                 #[cfg(feature = "dist-client")]
@@ -1802,6 +2152,11 @@ impl<T: CommandCreatorSync> Compilation<T> for RustCompilation {
                 .collect(),
             env_vars: env_vars.to_owned(),
             cwd: cwd.to_owned(),
+            // rustc reads `CARGO_MAKEFLAGS` and runs codegen on a thread pool
+            // sized by the jobserver. Without one, every concurrent rustc
+            // spawns as many threads as there are CPUs, which is the
+            // oversubscription sccache's own jobserver exists to prevent.
+            share_jobserver: true,
         };
 
         #[cfg(not(feature = "dist-client"))]
@@ -1873,10 +2228,10 @@ impl<T: CommandCreatorSync> Compilation<T> for RustCompilation {
             }
             // OUT_DIR was changed during transformation, check if this compilation is relying on anything
             // inside it - if so, disallow distributed compilation (there are sometimes hardcoded paths present)
-            if let Some(out_dir) = changed_out_dir {
-                if self.inputs.iter().any(|input| input.starts_with(&out_dir)) {
-                    return None;
-                }
+            if let Some(out_dir) = changed_out_dir
+                && self.inputs.iter().any(|input| input.starts_with(&out_dir))
+            {
+                return None;
             }
 
             // Add any necessary path transforms - although we haven't packaged up inputs yet, we've
@@ -1892,7 +2247,7 @@ impl<T: CommandCreatorSync> Compilation<T> for RustCompilation {
                 if remapped_disks.contains(&dist_path) {
                     continue;
                 }
-                dist_arguments.push(format!("--remap-path-prefix={}={}", &dist_path, local_path));
+                dist_arguments.push(format!("--remap-path-prefix={}={}", dist_path, local_path));
                 remapped_disks.insert(dist_path);
             }
 
@@ -1921,8 +2276,8 @@ impl<T: CommandCreatorSync> Compilation<T> for RustCompilation {
             inputs,
             crate_link_paths,
             sysroot,
+            target_libdir,
             crate_types,
-            dep_info,
             rlib_dep_reader,
             env_vars,
             ..
@@ -1940,8 +2295,11 @@ impl<T: CommandCreatorSync> Compilation<T> for RustCompilation {
             path_transformer,
             rlib_dep_reader,
         });
-        let toolchain_packager = Box::new(RustToolchainPackager { sysroot });
-        let outputs_rewriter = Box::new(RustOutputsRewriter { dep_info });
+        let toolchain_packager = Box::new(RustToolchainPackager {
+            sysroot,
+            target_libdir,
+        });
+        let outputs_rewriter = Box::new(NoopOutputsRewriter);
 
         Ok((inputs_packager, toolchain_packager, outputs_rewriter))
     }
@@ -1978,16 +2336,30 @@ struct RustInputsPackager {
 #[cfg(feature = "dist-client")]
 fn can_trim_this(input_path: &Path) -> bool {
     trace!("can_trim_this: input_path={:?}", input_path);
-    let mut ar_path = input_path.to_path_buf();
-    ar_path.set_extension("a");
-    // Check if the input path exists with both a .rlib and a .a, in which case
-    // we want to refuse to trim, otherwise triggering
+    // A dependency that also emits a linkable artifact is handed to its
+    // dependents as a whole rlib rather than as metadata, so trimming it to
+    // metadata strands the remote compile.
     // https://bugzilla.mozilla.org/show_bug.cgi?id=1760743
     input_path
         .extension()
         .map(|e| e == RLIB_EXTENSION)
         .unwrap_or(false)
-        && !ar_path.exists()
+        && !has_link_artifact_sibling(input_path)
+}
+
+/// Whether `rlib` sits beside a staticlib, cdylib or dylib built from the same crate.
+#[cfg(feature = "dist-client")]
+fn has_link_artifact_sibling(rlib: &Path) -> bool {
+    const LINK_EXTENSIONS: &[&str] = &["a", "so", "dylib", "dll", "wasm"];
+    let (Some(dir), Some(stem)) = (rlib.parent(), rlib.file_stem().and_then(|s| s.to_str())) else {
+        return false;
+    };
+    // Only some of the artifacts carry the `lib` prefix the rlib has.
+    let unprefixed = stem.strip_prefix("lib").unwrap_or(stem);
+    LINK_EXTENSIONS.iter().any(|ext| {
+        dir.join(format!("{stem}.{ext}")).exists()
+            || dir.join(format!("{unprefixed}.{ext}")).exists()
+    })
 }
 
 #[test]
@@ -2008,6 +2380,82 @@ fn test_can_trim_this() {
     // we need to refuse to allow trimming
     let _ar_file = create_file(tempdir, "libtest.a", |_f| Ok(())).unwrap();
     assert!(!can_trim_this(&rlib_file));
+
+    // Same for a cdylib, whose artifact shares the rlib's stem
+    let tempdir = tempfile::Builder::new()
+        .prefix("sccache_test")
+        .tempdir()
+        .unwrap();
+    let tempdir = tempdir.path();
+    let rlib_file = create_file(tempdir, "libtest.rlib", |_f| Ok(())).unwrap();
+    assert!(can_trim_this(&rlib_file));
+    let _so_file = create_file(tempdir, "libtest.so", |_f| Ok(())).unwrap();
+    assert!(!can_trim_this(&rlib_file));
+
+    // A wasm cdylib is the same case, minus the `lib` prefix
+    let tempdir = tempfile::Builder::new()
+        .prefix("sccache_test")
+        .tempdir()
+        .unwrap();
+    let tempdir = tempdir.path();
+    let rlib_file = create_file(tempdir, "libtest.rlib", |_f| Ok(())).unwrap();
+    assert!(can_trim_this(&rlib_file));
+    let _wasm_file = create_file(tempdir, "test.wasm", |_f| Ok(())).unwrap();
+    assert!(!can_trim_this(&rlib_file));
+}
+
+/// Extract the crate name and extension from a library file path in a crate
+/// link directory.
+///
+/// Filenames are normally `lib<crate>-<metadata-hash>.<ext>`, but some Rust
+/// library artifacts can have no metadata hash (for example, an observed
+/// `libcrc_fast.rlib`). In that case `rsplitn(2, '-')` yields a single element,
+/// so the whole filename is the libname.
+#[cfg(feature = "dist-client")]
+fn crate_name_and_ext_from_lib_path(path: &Path) -> Option<(&str, &str, bool)> {
+    let ext = path.extension()?.to_str()?;
+    let stem = path.file_stem()?.to_str()?;
+    let mut rev_name_split = stem.rsplitn(2, '-');
+    let suffix_or_name = rev_name_split.next()?;
+    let (libname, hashless) = match rev_name_split.next() {
+        Some(name) => (name, false),
+        None => (suffix_or_name, true),
+    };
+    if libname.starts_with(DLL_PREFIX) && ext == DLL_EXTENSION {
+        Some((&libname[DLL_PREFIX.len()..], ext, hashless))
+    } else if libname.starts_with(RLIB_PREFIX) && (ext == RLIB_EXTENSION || ext == RMETA_EXTENSION)
+    {
+        Some((&libname[RLIB_PREFIX.len()..], ext, hashless))
+    } else {
+        None
+    }
+}
+
+#[test]
+#[cfg(feature = "dist-client")]
+fn test_crate_name_and_ext_from_lib_path() {
+    let dynamic_hashed = format!("{DLL_PREFIX}foo-abc123.{DLL_EXTENSION}");
+    let dynamic_hashless = format!("{DLL_PREFIX}crc_fast.{DLL_EXTENSION}");
+    let cases = [
+        ("libfoo-abc123.rlib", Some(("foo", "rlib", false))),
+        ("libfoo-abc123.rmeta", Some(("foo", "rmeta", false))),
+        ("libcrc_fast.rmeta", Some(("crc_fast", "rmeta", true))),
+        ("libcrc_fast.rlib", Some(("crc_fast", "rlib", true))),
+        (dynamic_hashed.as_str(), Some(("foo", DLL_EXTENSION, false))),
+        (
+            dynamic_hashless.as_str(),
+            Some(("crc_fast", DLL_EXTENSION, true)),
+        ),
+        ("foo.txt", None),
+        (
+            "libxai_file_utils-abc123.rmeta",
+            Some(("xai_file_utils", "rmeta", false)),
+        ),
+    ];
+
+    for (path, expected) in cases {
+        assert_eq!(crate_name_and_ext_from_lib_path(Path::new(path)), expected);
+    }
 }
 
 #[cfg(feature = "dist-client")]
@@ -2103,18 +2551,17 @@ impl pkg::InputsPackager for RustInputsPackager {
                         "Cannot distribute dylib input {} on this platform",
                         input_path.display()
                     )
-                } else if ext == RLIB_EXTENSION || ext == RMETA_EXTENSION {
-                    if let Some((ref rlib_dep_reader, ref mut dep_crate_names)) =
+                } else if (ext == RLIB_EXTENSION || ext == RMETA_EXTENSION)
+                    && let Some((ref rlib_dep_reader, ref mut dep_crate_names)) =
                         rlib_dep_reader_and_names
-                    {
-                        dep_crate_names.extend(
-                            rlib_dep_reader
-                                .discover_rlib_deps(&env_vars, &input_path)
-                                .with_context(|| {
-                                    format!("Failed to read deps of {}", input_path.display())
-                                })?,
-                        );
-                    }
+                {
+                    dep_crate_names.extend(
+                        rlib_dep_reader
+                            .discover_rlib_deps(&env_vars, &input_path)
+                            .with_context(|| {
+                                format!("Failed to read deps of {}", input_path.display())
+                            })?,
+                    );
                 }
             }
 
@@ -2137,10 +2584,10 @@ impl pkg::InputsPackager for RustInputsPackager {
             tar_inputs.push((input_path, dist_input_path));
         }
 
-        if log_enabled!(Trace) {
-            if let Some((_, ref dep_crate_names)) = rlib_dep_reader_and_names {
-                trace!("Identified dependency crate names: {:?}", dep_crate_names);
-            }
+        if log_enabled!(Trace)
+            && let Some((_, ref dep_crate_names)) = rlib_dep_reader_and_names
+        {
+            trace!("Identified dependency crate names: {:?}", dep_crate_names);
         }
 
         // Given the link paths, find the things we need to send over the wire to the remote machine. If
@@ -2163,32 +2610,16 @@ impl pkg::InputsPackager for RustInputsPackager {
 
                 {
                     // Take a look at the path and see if it's something we care about
-                    let libname: &str = match path.file_name().and_then(|s| s.to_str()) {
-                        Some(name) => {
-                            let mut rev_name_split = name.rsplitn(2, '-');
-                            let _extra_filename_and_ext = rev_name_split.next();
-                            let libname = if let Some(libname) = rev_name_split.next() {
-                                libname
-                            } else {
-                                continue;
-                            };
-                            assert!(rev_name_split.next().is_none());
-                            libname
-                        }
+                    let (crate_name, ext, hashless) = match crate_name_and_ext_from_lib_path(&path)
+                    {
+                        Some(c) => c,
                         None => continue,
                     };
-                    let (crate_name, ext): (&str, _) = match path.extension() {
-                        Some(ext) if libname.starts_with(DLL_PREFIX) && ext == DLL_EXTENSION => {
-                            (&libname[DLL_PREFIX.len()..], ext)
-                        }
-                        Some(ext) if libname.starts_with(RLIB_PREFIX) && ext == RLIB_EXTENSION => {
-                            (&libname[RLIB_PREFIX.len()..], ext)
-                        }
-                        Some(ext) if libname.starts_with(RLIB_PREFIX) && ext == RMETA_EXTENSION => {
-                            (&libname[RLIB_PREFIX.len()..], ext)
-                        }
-                        _ => continue,
-                    };
+                    // Without rustc dependency names, a hashless native library such as
+                    // libz.so is indistinguishable from a hashless Rust artifact.
+                    if hashless && rlib_dep_reader_and_names.is_none() {
+                        continue;
+                    }
                     if let Some((_, ref dep_crate_names)) = rlib_dep_reader_and_names {
                         // We have a list of crate names we care about, see if this lib is a candidate
                         if !dep_crate_names.contains(crate_name) {
@@ -2268,6 +2699,7 @@ impl pkg::InputsPackager for RustInputsPackager {
 #[allow(unused)]
 struct RustToolchainPackager {
     sysroot: PathBuf,
+    target_libdir: PathBuf,
 }
 
 #[cfg(feature = "dist-client")]
@@ -2281,143 +2713,41 @@ impl pkg::ToolchainPackager for RustToolchainPackager {
             "Packaging Rust compiler for sysroot {}",
             self.sysroot.display()
         );
-        let RustToolchainPackager { sysroot } = *self;
+        let RustToolchainPackager {
+            sysroot,
+            target_libdir,
+        } = *self;
 
         let mut package_builder = pkg::ToolchainPackageBuilder::new();
         package_builder.add_common()?;
 
-        let bins_path = sysroot.join(BINS_DIR);
-        let sysroot_executable = bins_path.join("rustc").with_extension(EXE_EXTENSION);
+        // The server only ever runs rustc, so the rest of `$sysroot/bin` (cargo,
+        // rustdoc, rust-analyzer, ...) is left out.
+        let sysroot_executable = sysroot
+            .join(BINS_DIR)
+            .join("rustc")
+            .with_extension(EXE_EXTENSION);
         package_builder.add_executable_and_deps(sysroot_executable)?;
 
-        package_builder.add_dir_contents(&bins_path)?;
-        if BINS_DIR != LIBS_DIR {
-            let libs_path = sysroot.join(LIBS_DIR);
-            package_builder.add_dir_contents(&libs_path)?;
+        // rustlib holds everything rustc loads at runtime: the target libraries,
+        // `rust-lld` and the llvm-tools. Packaging the whole libdir instead would,
+        // for example, drag in all of `/usr/lib` for a rustc installed into /usr.
+        let rustlib_path = rustlib_dir(&target_libdir)
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| sysroot.join(LIBS_DIR).join("rustlib"));
+
+        for path in needed_rustlib_entries(&rustlib_path)? {
+            // Ignore anything that is neither a directory nor a file, such as a
+            // dangling symlink, as `add_dir_contents` does.
+            if path.is_dir() {
+                package_builder.add_dir_contents(&path)?;
+            } else if path.is_file() {
+                package_builder.add_file(path)?;
+            }
         }
 
         package_builder.into_compressed_tar(f)
     }
-}
-
-#[cfg(feature = "dist-client")]
-struct RustOutputsRewriter {
-    dep_info: Option<PathBuf>,
-}
-
-#[cfg(feature = "dist-client")]
-impl OutputsRewriter for RustOutputsRewriter {
-    fn handle_outputs(
-        self: Box<Self>,
-        path_transformer: &dist::PathTransformer,
-        output_paths: &[PathBuf],
-        extra_inputs: &[PathBuf],
-    ) -> Result<()> {
-        use std::io::Write;
-
-        // Outputs in dep files (the files at the beginning of lines) are untransformed at this point -
-        // remap-path-prefix is documented to only apply to 'inputs'.
-        trace!("Pondering on rewriting dep file {:?}", self.dep_info);
-        if let Some(dep_info) = self.dep_info {
-            let extra_input_str = extra_inputs
-                .iter()
-                .fold(String::new(), |s, p| s + " " + &p.to_string_lossy());
-            for dep_info_local_path in output_paths {
-                trace!("Comparing with {}", dep_info_local_path.display());
-                if dep_info == *dep_info_local_path {
-                    info!("Replacing using the transformer {:?}", path_transformer);
-                    // Found the dep info file, read it in
-                    let f = fs::File::open(&dep_info)
-                        .with_context(|| "Failed to open dep info file")?;
-                    let mut deps = String::new();
-                    { f }.read_to_string(&mut deps)?;
-                    // Replace all the output paths, at the beginning of lines
-                    for (local_path, dist_path) in get_path_mappings(path_transformer) {
-                        let re_str = format!("(?m)^{}", regex::escape(&dist_path));
-                        let local_path_str = local_path.to_str().with_context(|| {
-                            format!(
-                                "could not convert {} to string for RE replacement",
-                                local_path.display()
-                            )
-                        })?;
-                        error!(
-                            "RE replacing {} with {} in {}",
-                            re_str, local_path_str, deps
-                        );
-                        let re = regex::Regex::new(&re_str).expect("Invalid regex");
-                        deps = re.replace_all(&deps, local_path_str).into_owned();
-                    }
-                    if !extra_inputs.is_empty() {
-                        deps = deps.replace(": ", &format!(":{} ", extra_input_str));
-                    }
-                    // Write the depinfo file
-                    let f =
-                        fs::File::create(&dep_info).context("Failed to recreate dep info file")?;
-                    { f }.write_all(deps.as_bytes())?;
-                    return Ok(());
-                }
-            }
-            // We expected there to be dep info, but none of the outputs matched
-            bail!("No outputs matched dep info file {}", dep_info.display());
-        }
-        Ok(())
-    }
-}
-
-#[test]
-#[cfg(all(feature = "dist-client", target_os = "windows"))]
-fn test_rust_outputs_rewriter() {
-    use crate::compiler::compiler::OutputsRewriter;
-    use crate::test::utils::create_file;
-    use std::io::Write;
-
-    let mut pt = dist::PathTransformer::new();
-    pt.as_dist(Path::new("c:\\")).unwrap();
-    let mappings: Vec<_> = pt.disk_mappings().collect();
-    assert!(mappings.len() == 1);
-    let linux_prefix = &mappings[0].1;
-
-    let depinfo_data = format!("{prefix}/sccache/target/x86_64-unknown-linux-gnu/debug/deps/sccache_dist-c6f3229b9ef0a5c3.rmeta: src/bin/sccache-dist/main.rs src/bin/sccache-dist/build.rs src/bin/sccache-dist/token_check.rs
-
-{prefix}/sccache/target/x86_64-unknown-linux-gnu/debug/deps/sccache_dist-c6f3229b9ef0a5c3.d: src/bin/sccache-dist/main.rs src/bin/sccache-dist/build.rs src/bin/sccache-dist/token_check.rs
-
-src/bin/sccache-dist/main.rs:
-src/bin/sccache-dist/build.rs:
-src/bin/sccache-dist/token_check.rs:
-", prefix=linux_prefix);
-
-    let depinfo_resulting_data = format!("{prefix}/sccache/target/x86_64-unknown-linux-gnu/debug/deps/sccache_dist-c6f3229b9ef0a5c3.rmeta: src/bin/sccache-dist/main.rs src/bin/sccache-dist/build.rs src/bin/sccache-dist/token_check.rs
-
-{prefix}/sccache/target/x86_64-unknown-linux-gnu/debug/deps/sccache_dist-c6f3229b9ef0a5c3.d: src/bin/sccache-dist/main.rs src/bin/sccache-dist/build.rs src/bin/sccache-dist/token_check.rs
-
-src/bin/sccache-dist/main.rs:
-src/bin/sccache-dist/build.rs:
-src/bin/sccache-dist/token_check.rs:
-", prefix="c:");
-
-    let tempdir = tempfile::Builder::new()
-        .prefix("sccache_test")
-        .tempdir()
-        .unwrap();
-    let tempdir = tempdir.path();
-    let depinfo_file = create_file(tempdir, "depinfo.d", |mut f| {
-        f.write_all(depinfo_data.as_bytes())
-    })
-    .unwrap();
-
-    let ror = Box::new(RustOutputsRewriter {
-        dep_info: Some(depinfo_file.clone()),
-    });
-    let () = ror
-        .handle_outputs(&pt, &[depinfo_file.clone()], &[])
-        .unwrap();
-
-    let mut s = String::new();
-    fs::File::open(depinfo_file)
-        .unwrap()
-        .read_to_string(&mut s)
-        .unwrap();
-    assert_eq!(s, depinfo_resulting_data);
 }
 
 #[cfg(feature = "dist-client")]
@@ -2586,10 +2916,10 @@ impl RlibDepReader {
 
         {
             let mut cache = self.cache.lock().unwrap();
-            if let Some(deps_detail) = cache.get(rlib) {
-                if rlib_mtime == deps_detail.mtime {
-                    return Ok(deps_detail.deps.clone());
-                }
+            if let Some(deps_detail) = cache.get(rlib)
+                && rlib_mtime == deps_detail.mtime
+            {
+                return Ok(deps_detail.deps.clone());
             }
         }
 
@@ -2681,6 +3011,11 @@ fn parse_rustc_z_ls(stdout: &str) -> Result<Vec<&str>> {
         let libstring = line_splits
             .next()
             .context("No lib string on line from rustc -Z ls")?;
+        // Ignore metadata after the crate name.
+        let libstring = libstring
+            .split_whitespace()
+            .next()
+            .context("No lib string on line from rustc -Z ls")?;
         if num != dep_names.len() + 1 {
             bail!(
                 "Unexpected numbering of {} in rustc -Z ls output",
@@ -2716,6 +3051,23 @@ fn parse_rustc_z_ls(stdout: &str) -> Result<Vec<&str>> {
     Ok(dep_names)
 }
 
+/// Whether `line` is rustc's `--json=artifacts` notification for a `.rmeta`.
+pub fn is_rmeta_artifact_notification(line: &[u8]) -> bool {
+    // Cheap reject before parsing as most stderr lines are diagnostics.
+    if memchr::memmem::find(line, b".rmeta").is_none() {
+        return false;
+    }
+    #[derive(serde::Deserialize)]
+    struct ArtifactNotification<'a> {
+        // `Cow` as Windows path may need escapes
+        #[serde(borrow)]
+        artifact: std::borrow::Cow<'a, str>,
+    }
+    serde_json::from_slice::<ArtifactNotification<'_>>(line)
+        .map(|n| n.artifact.ends_with(".rmeta"))
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -2730,6 +3082,19 @@ mod test {
     use std::io::{self, Write};
     use std::sync::{Arc, Mutex};
     use test_case::test_case;
+
+    #[test]
+    fn rust_dist_toolchain_weak_key_tracks_sysroot_path() {
+        let mut base = Digest::new();
+        base.update(b"same-toolchain-contents");
+
+        let first = rust_dist_toolchain_weak_key(&base, Path::new("toolchains/first"));
+        let repeated = rust_dist_toolchain_weak_key(&base, Path::new("toolchains/first"));
+        let second = rust_dist_toolchain_weak_key(&base, Path::new("toolchains/second"));
+
+        assert_eq!(first, repeated);
+        assert_ne!(first, second);
+    }
 
     fn _parse_arguments(arguments: &[String]) -> CompilerArguments<ParsedArguments> {
         let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
@@ -2932,6 +3297,25 @@ LLVM version: 15.0.2
                 "/foo/target/debug/deps/liblibc-89a24418d48d484a.rlib",
                 "/foo/target/debug/deps/liblog-2f7366be74992849.rlib"
             ]
+        );
+    }
+
+    #[test]
+    fn test_parse_arguments_non_cacheable_crate_types_are_deterministic() {
+        let result = fails!(
+            "--emit",
+            "link",
+            "foo.rs",
+            "--out-dir",
+            "out",
+            "--crate-name",
+            "foo",
+            "--crate-type",
+            "proc-macro,bin"
+        );
+        assert_eq!(
+            result,
+            CompilerArguments::CannotCache("crate-type", Some("bin,proc-macro".to_string()))
         );
     }
 
@@ -3230,6 +3614,121 @@ bar.rs:
     }
 
     #[test]
+    fn test_parse_env_dep_info_unescapes() {
+        let deps = "# env-dep:OUT_DIR=C:\\\\dir\\\\out\n# env-dep:X=a\\nb\\rc=d\n# env-dep:Y\n";
+        assert_eq!(
+            parse_env_dep_info(deps),
+            [
+                ("OUT_DIR".into(), r"C:\dir\out".into()),
+                ("X".into(), "a\nb\rc=d".into()),
+                ("Y".into(), "".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_dep_info_with_targets() {
+        // What `rustc --emit dep-info -o /tmp/x/deps.d` writes.
+        let deps = "/tmp/x/deps.d: src/lib.rs src/../LICENSE
+
+src/lib.rs:
+src/../LICENSE:
+
+# env-dep:FOO=bar
+# env-dep:BAZ
+";
+        let targets = [
+            Path::new("out/foo-abc.d"),
+            Path::new("out/libfoo-abc.rlib"),
+            Path::new("out/libfoo-abc.rmeta"),
+        ];
+        assert_eq!(
+            dep_info_with_targets(deps, targets, []).unwrap(),
+            "out/foo-abc.d: src/lib.rs src/../LICENSE
+
+out/libfoo-abc.rlib: src/lib.rs src/../LICENSE
+
+out/libfoo-abc.rmeta: src/lib.rs src/../LICENSE
+
+src/lib.rs:
+src/../LICENSE:
+
+# env-dep:FOO=bar
+# env-dep:BAZ
+"
+        );
+    }
+
+    #[test]
+    fn test_dep_info_with_targets_does_not_escape_targets() {
+        let deps = "/tmp/x/deps.d: a\\ b.rs\n\na\\ b.rs:\n";
+        assert_eq!(
+            dep_info_with_targets(deps, [Path::new("out dir/foo.d")], []).unwrap(),
+            "out dir/foo.d: a\\ b.rs\n\na\\ b.rs:\n"
+        );
+    }
+
+    #[test]
+    fn test_dep_info_with_targets_extra_prerequisites() {
+        let deps = "/tmp/x/deps.d: src/lib.rs\n\nsrc/lib.rs:\n\n# env-dep:FOO=a: b\n";
+        assert_eq!(
+            dep_info_with_targets(
+                deps,
+                [Path::new("out/foo.d"), Path::new("out/libfoo.rlib")],
+                [Path::new("/toolchains/my rust.tar.gz")],
+            )
+            .unwrap(),
+            "out/foo.d: /toolchains/my\\ rust.tar.gz src/lib.rs
+
+out/libfoo.rlib: /toolchains/my\\ rust.tar.gz src/lib.rs
+
+/toolchains/my\\ rust.tar.gz:
+src/lib.rs:
+
+# env-dep:FOO=a: b
+"
+        );
+    }
+
+    #[test]
+    fn test_dep_info_with_targets_requires_a_rule() {
+        let err = dep_info_with_targets("", [Path::new("foo.d")], []).unwrap_err();
+        assert_eq!(err.to_string(), "dep-info written by rustc is empty");
+        let err = dep_info_with_targets("# env-dep:FOO\n", [Path::new("foo.d")], []).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "dep-info does not start with a `<target>: <prerequisites>` rule; \
+             its first line is \"# env-dep:FOO\""
+        );
+        let long = format!("{}\n", "x".repeat(300));
+        let err = dep_info_with_targets(&long, [Path::new("foo.d")], []).unwrap_err();
+        assert!(
+            err.to_string()
+                .ends_with(&format!("\"{}...\"", "x".repeat(200)))
+        );
+    }
+
+    // mozilla/sccache#2945
+    #[test]
+    fn test_dep_info_with_targets_omit_d_target() {
+        // What `rustc -Zdep-info-omit-d-target --emit dep-info -o deps.d` writes.
+        let deps = "src/lib.rs:\nsrc/a\\ b.rs:\n\n# env-dep:FOO=bar\n";
+        assert_eq!(
+            dep_info_with_targets(deps, [Path::new("foo.d"), Path::new("libfoo.rlib")], [])
+                .unwrap(),
+            "foo.d: src/lib.rs src/a\\ b.rs
+
+libfoo.rlib: src/lib.rs src/a\\ b.rs
+
+src/lib.rs:
+src/a\\ b.rs:
+
+# env-dep:FOO=bar
+"
+        );
+    }
+
+    #[test]
     fn test_parse_dep_info_with_escaped_spaces() {
         let deps = r#"foo: baz.rs abc\ def.rs
 
@@ -3366,6 +3865,36 @@ proc_macro false
 
     #[cfg(feature = "dist-client")]
     #[test]
+    fn test_parse_rustc_z_ls_modern_no_hash_suffix() {
+        // Modern rustc (1.75+) prints extended metadata per dep line:
+        //   N libname[-hash] hash HASH host_hash ... kind ... public
+        // Crates without a -HASH suffix (as observed for crc_fast) appear as:
+        //   N crc_fast hash 05bce6... host_hash None kind Unconditional public
+        // The parser must extract just "crc_fast", not the entire trailing
+        // metadata, so that RustInputsPackager can match it against rmeta
+        // files in crate_link_paths.
+        let output = "Crate info:
+name xai_file_utils
+hash 42fac6f0 stable_crate_id StableCrateId(12206970385906972588)
+=External Dependencies=
+1 std-453218b5e9634890 hash c76be37888b32288681053863554e618 host_hash None kind Unconditional public
+2 core-5f5c0031517c19c4 hash 4e0d60221dfd8f9efa10e2a33c921b61 host_hash None kind Unconditional public
+3 crc_fast hash 05bce60290e56777e3ae6d3ddcc01e6c host_hash None kind Unconditional public
+4 crc-8c7d86e779319534 hash 49e85fac7c830ee1def0dd1674e740b0 host_hash None kind Unconditional public
+5 aws_sdk_s3-c49a342c963fe6e9 hash 119191ef3d4a8059aee3abebc4c4b5bf host_hash None kind Unconditional public
+
+";
+        let res = parse_rustc_z_ls(output).expect("modern rustc -Z ls output should parse");
+        assert_eq!(res.len(), 5);
+        assert_eq!(res[0], "std");
+        assert_eq!(res[1], "core");
+        assert_eq!(res[2], "crc_fast");
+        assert_eq!(res[3], "crc");
+        assert_eq!(res[4], "aws_sdk_s3");
+    }
+
+    #[cfg(feature = "dist-client")]
+    #[test]
     fn test_rlib_dep_reader_call() {
         let mut env_vars = vec![];
         if let Some(rustup_home) = std::env::var_os("RUSTUP_HOME") {
@@ -3441,7 +3970,24 @@ proc_macro false
         );
     }
 
+    /// What rustc writes for an env-dep value.
+    fn escape_dep_env(val: &OsStr) -> String {
+        val.to_str()
+            .unwrap()
+            .replace('\\', r"\\")
+            .replace('\n', r"\n")
+            .replace('\r', r"\r")
+    }
+
     fn mock_dep_info(creator: &Arc<Mutex<MockCommandCreator>>, dep_srcs: &[&str]) {
+        mock_dep_info_with_env(creator, dep_srcs, &[]);
+    }
+
+    fn mock_dep_info_with_env(
+        creator: &Arc<Mutex<MockCommandCreator>>,
+        dep_srcs: &[&str],
+        env_deps: &[(&str, OsString)],
+    ) {
         // Mock the `rustc --emit=dep-info` process by writing
         // a dep-info file.
         let mut sorted_deps = dep_srcs
@@ -3449,6 +3995,10 @@ proc_macro false
             .map(|s| (*s).to_string())
             .collect::<Vec<String>>();
         sorted_deps.sort();
+        let env_deps = env_deps
+            .iter()
+            .map(|(var, val)| format!("# env-dep:{var}={}", escape_dep_env(val)))
+            .collect::<Vec<String>>();
         next_command_calls(creator, move |args| {
             let mut dep_info_path = None;
             let mut it = args.iter();
@@ -3463,6 +4013,9 @@ proc_macro false
             writeln!(f, "blah: {}", sorted_deps.iter().join(" "))?;
             for d in sorted_deps.iter() {
                 writeln!(f, "{}:", d)?;
+            }
+            for e in env_deps.iter() {
+                writeln!(f, "{}", e)?;
             }
             Ok(MockChild::new(exit_status(0), "", ""))
         });
@@ -3513,7 +4066,10 @@ proc_macro false
             host: "x86-64-unknown-unknown-unknown".to_owned(),
             version: TEST_RUSTC_VERSION.to_string(),
             sysroot: f.tempdir.path().join("sysroot"),
+            #[cfg(feature = "dist-client")]
+            target_libdir: f.tempdir.path().join("sysroot/lib/rustlib/fake-target/lib"),
             compiler_shlibs_digests: vec![FAKE_DIGEST.to_owned()],
+            dist_archive: None,
             #[cfg(feature = "dist-client")]
             rlib_dep_reader: None,
             parsed_args: ParsedArguments {
@@ -3615,6 +4171,88 @@ proc_macro false
         assert_eq!(out, vec!["foo.a", "foo.rlib", "foo.rmeta"]);
     }
 
+    #[test]
+    fn test_generate_hash_key_dep_info() {
+        let f = TestFixture::new();
+        f.touch("foo.rs").unwrap();
+        fs::create_dir(f.tempdir.path().join("out")).unwrap();
+        let emit = ["dep-info", "link", "metadata"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        let mut hasher = Box::new(RustHasher {
+            executable: "rustc".into(),
+            host: "x86-64-unknown-unknown-unknown".to_owned(),
+            version: TEST_RUSTC_VERSION.to_string(),
+            sysroot: f.tempdir.path().join("sysroot"),
+            #[cfg(feature = "dist-client")]
+            target_libdir: f.tempdir.path().join("sysroot/lib/rustlib/fake-target/lib"),
+            compiler_shlibs_digests: vec![],
+            dist_archive: Some("/toolchains/rust.tar.gz".into()),
+            #[cfg(feature = "dist-client")]
+            rlib_dep_reader: None,
+            parsed_args: ParsedArguments {
+                arguments: vec![],
+                output_dir: "out".into(),
+                externs: vec![],
+                crate_link_paths: vec![],
+                staticlibs: vec![],
+                crate_name: "foo".into(),
+                crate_types: CrateTypes {
+                    rlib: true,
+                    staticlib: false,
+                },
+                dep_info: Some("foo-abc.d".into()),
+                emit,
+                color_mode: ColorMode::Auto,
+                has_json: false,
+                profile: None,
+                gcno: None,
+                target_json: None,
+            },
+        });
+        let creator = new_creator();
+        mock_dep_info(&creator, &["foo.rs"]);
+        mock_file_names(&creator, &["libfoo-abc.rlib"]);
+        let runtime = single_threaded_runtime();
+        let pool = runtime.handle().clone();
+        let res = hasher
+            .generate_hash_key(
+                &creator,
+                f.tempdir.path().to_owned(),
+                vec![],
+                false,
+                &pool,
+                false,
+                Arc::new(MockStorage::new(None, false)),
+                CacheControl::Default,
+            )
+            .wait()
+            .unwrap();
+
+        let mut out = res.compilation.outputs().map(|k| k.key).collect::<Vec<_>>();
+        out.sort();
+        assert_eq!(out, ["libfoo-abc.rlib", "libfoo-abc.rmeta"]);
+        let out_dir = Path::new("out");
+        assert_eq!(
+            fs::read_to_string(f.tempdir.path().join("out/foo-abc.d")).unwrap(),
+            format!(
+                "{d}: /toolchains/rust.tar.gz foo.rs
+
+{rlib}: /toolchains/rust.tar.gz foo.rs
+
+{rmeta}: /toolchains/rust.tar.gz foo.rs
+
+/toolchains/rust.tar.gz:
+foo.rs:
+",
+                d = out_dir.join("foo-abc.d").display(),
+                rlib = out_dir.join("libfoo-abc.rlib").display(),
+                rmeta = out_dir.join("libfoo-abc.rmeta").display(),
+            )
+        );
+    }
+
     fn hash_key<F>(
         f: &TestFixture,
         args: &[&'static str],
@@ -3625,7 +4263,32 @@ proc_macro false
     where
         F: Fn(&Path) -> Result<()>,
     {
-        let oargs = args.iter().map(OsString::from).collect::<Vec<OsString>>();
+        hash_key_with(
+            f,
+            args,
+            env_vars,
+            &[],
+            pre_func,
+            MockStorage::new(None, preprocessor_cache_mode),
+        )
+    }
+
+    fn hash_key_with<A, F>(
+        f: &TestFixture,
+        args: &[A],
+        env_vars: &[(OsString, OsString)],
+        env_deps: &[(&str, OsString)],
+        pre_func: F,
+        storage: MockStorage,
+    ) -> String
+    where
+        A: AsRef<OsStr>,
+        F: Fn(&Path) -> Result<()>,
+    {
+        let oargs = args
+            .iter()
+            .map(|a| a.as_ref().to_owned())
+            .collect::<Vec<OsString>>();
         let parsed_args = match parse_arguments(&oargs, f.tempdir.path()) {
             CompilerArguments::Ok(parsed_args) => parsed_args,
             o => panic!("Got unexpected parse result: {:?}", o),
@@ -3647,7 +4310,10 @@ proc_macro false
             host: "x86-64-unknown-unknown-unknown".to_owned(),
             version: TEST_RUSTC_VERSION.to_string(),
             sysroot: f.tempdir.path().join("sysroot"),
+            #[cfg(feature = "dist-client")]
+            target_libdir: f.tempdir.path().join("sysroot/lib/rustlib/fake-target/lib"),
             compiler_shlibs_digests: vec![],
+            dist_archive: None,
             #[cfg(feature = "dist-client")]
             rlib_dep_reader: None,
             parsed_args,
@@ -3657,7 +4323,7 @@ proc_macro false
         let runtime = single_threaded_runtime();
         let pool = runtime.handle().clone();
 
-        mock_dep_info(&creator, &["foo.rs"]);
+        mock_dep_info_with_env(&creator, &["foo.rs"], env_deps);
         mock_file_names(&creator, &["foo.rlib"]);
         hasher
             .generate_hash_key(
@@ -3667,7 +4333,7 @@ proc_macro false
                 false,
                 &pool,
                 false,
-                Arc::new(MockStorage::new(None, preprocessor_cache_mode)),
+                Arc::new(storage),
                 CacheControl::Default,
             )
             .wait()
@@ -3678,6 +4344,90 @@ proc_macro false
     #[allow(clippy::unnecessary_unwrap)]
     fn nothing(_path: &Path) -> Result<()> {
         Ok(())
+    }
+
+    /// `root` the way `Config` normalizes a basedir.
+    fn basedir(root: &Path) -> Vec<u8> {
+        let mut b = root.to_str().unwrap().as_bytes().to_vec();
+        b.push(b'/');
+        if cfg!(windows) {
+            crate::util::normalize_win_path(&b)
+        } else {
+            b
+        }
+    }
+
+    /// The same crate in two checkouts, keyed alike once both roots are basedirs.
+    #[test]
+    fn test_equal_hashes_basedirs() {
+        // The root shows up in the cwd, an argument, a `CARGO_*` variable
+        // and an env-dep (`include!(concat!(env!("OUT_DIR"), ...))`).
+        fn key(f: &TestFixture, outside: &str, basedirs: Vec<Vec<u8>>) -> String {
+            let root = f.tempdir.path();
+            hash_key_with(
+                f,
+                &[
+                    OsString::from("--emit"),
+                    "link".into(),
+                    "foo.rs".into(),
+                    "--out-dir".into(),
+                    "out".into(),
+                    "--crate-name".into(),
+                    "foo".into(),
+                    "--crate-type".into(),
+                    "lib".into(),
+                    "-C".into(),
+                    format!("linker={}", root.join("link").display()).into(),
+                ],
+                &[
+                    ("CARGO_MANIFEST_DIR".into(), root.into()),
+                    ("CARGO_OUTSIDE".into(), outside.into()),
+                ],
+                &[("OUT_DIR", root.join("target").join("out").into())],
+                nothing,
+                MockStorage::new(None, false).with_basedirs(basedirs),
+            )
+        }
+
+        let a = TestFixture::new();
+        let b = TestFixture::new();
+        let both = vec![basedir(a.tempdir.path()), basedir(b.tempdir.path())];
+        assert_ne!(key(&a, "x", vec![]), key(&b, "x", vec![]));
+        assert_eq!(key(&a, "x", both.clone()), key(&b, "x", both.clone()));
+        // A difference outside the basedirs still counts.
+        assert_ne!(key(&a, "x", both.clone()), key(&b, "y", both));
+        // A basedir nothing lives under leaves the key as it was.
+        let elsewhere = basedir(&std::env::temp_dir().join("sccache-elsewhere"));
+        assert_eq!(key(&a, "x", vec![]), key(&a, "x", vec![elsewhere]));
+    }
+
+    /// An env-dep equal to a basedir is keyed apart from an unset one, which rustc
+    /// writes as `# env-dep:Y` for an `option_env!("Y")`.
+    #[test]
+    fn test_hash_env_dep_equal_to_basedir_is_not_unset() {
+        let f = TestFixture::new();
+        let root = f.tempdir.path().to_owned();
+        let key = |val: OsString| {
+            hash_key_with(
+                &f,
+                &[
+                    "--emit",
+                    "link",
+                    "foo.rs",
+                    "--out-dir",
+                    "out",
+                    "--crate-name",
+                    "foo",
+                    "--crate-type",
+                    "lib",
+                ],
+                &[],
+                &[("Y", val)],
+                nothing,
+                MockStorage::new(None, false).with_basedirs(vec![basedir(&root)]),
+            )
+        };
+        assert_ne!(key("".into()), key(root.clone().into()));
     }
 
     #[test_case(true ; "with preprocessor cache")]
@@ -4102,5 +4852,36 @@ proc_macro false
         let args: Vec<OsString> = vec![OsString::from("@missing_file")];
         let result = parse_arguments(&args, cwd);
         assert!(matches!(result, CompilerArguments::CannotCache(..)));
+    }
+
+    #[test]
+    fn test_is_rmeta_artifact_notification() {
+        // rmeta notification
+        assert!(is_rmeta_artifact_notification(
+            br#"{"artifact":"/t/deps/libdep-1234.rmeta","emit":"metadata"}"#
+        ));
+        assert!(is_rmeta_artifact_notification(
+            b"{\"artifact\":\"/t/deps/libdep-1234.rmeta\",\"emit\":\"metadata\"}\n"
+        ));
+        // Paths with JSON escapes: Windows separators, or an escaped quote.
+        assert!(is_rmeta_artifact_notification(
+            br#"{"artifact":"C:\\t\\deps\\libdep-1234.rmeta","emit":"metadata"}"#
+        ));
+        assert!(is_rmeta_artifact_notification(
+            br#"{"artifact":"/t/de\"ps/libdep-1234.rmeta","emit":"metadata"}"#
+        ));
+
+        // not rmeta notification
+        assert!(!is_rmeta_artifact_notification(
+            br#"{"artifact":"/t/deps/libdep-1234.rlib","emit":"link"}"#
+        ));
+        assert!(!is_rmeta_artifact_notification(
+            br#"{"artifact":"/t/deps/dep-1234.d","emit":"dep-info"}"#
+        ));
+        assert!(!is_rmeta_artifact_notification(
+            br#"{"$message_type":"diagnostic","message":"unused variable","level":"warning"}"#
+        ));
+        assert!(!is_rmeta_artifact_notification(b"not json\n"));
+        assert!(!is_rmeta_artifact_notification(b""));
     }
 }
