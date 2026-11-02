@@ -144,7 +144,7 @@ jobs:
           target: $TARGET
 
       - name: Build
-        run: cargo build --bin sccache --target $env:TARGET
+        run: cargo build --bin sccache --target $env:TARGET --features=vendored-openssl
 
       - name: Compile MSVC (no cache)
         shell: bash
