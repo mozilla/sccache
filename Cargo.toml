@@ -80,9 +80,9 @@ memmap2 = "0.9.4"
 mime = "0.3"
 number_prefix = "0.4"
 object = "0.37"
-opendal = { version = "0.58.1", optional = true, default-features = false }
-opendal-http-transport-reqwest = { version = "0.58.1", optional = true }
-opendal-layer-logging = { version = "0.58.1", optional = true }
+opendal = { version = "0.59.4", optional = true, default-features = false }
+opendal-http-transport-reqwest = { version = "0.59.4", optional = true }
+opendal-layer-logging = { version = "0.59.4", optional = true }
 openssl = { version = "0.10.75", optional = true }
 rand = "0.8.4"
 regex = "1.10.3"
