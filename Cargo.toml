@@ -142,7 +142,7 @@ cfg_aliases = "0.2.2"
 
 [dev-dependencies]
 assert_cmd = "2.0.13"
-cc = "1.0"
+cc = "1.9"
 chrono = "0.4.42"
 divan = { package = "codspeed-divan-compat", version = "4" }
 filetime = "0.2"
