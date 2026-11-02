@@ -165,8 +165,8 @@ Client-side mode is enabled with the `SCCACHE_CLIENT_SIDE` environment variable
 supported configuration in the future, with server-side mode eventually
 removed. It is currently mutually exclusive with:
 
-- **error logging** (`SCCACHE_ERROR_LOG`): the client always logs to stderr, and
-  multiple concurrent CLI processes would race on the log file, and
+- **logging** (`SCCACHE_LOG`): the client always logs to stderr, ignoring `SCCACHE_ERROR_LOG`
+  (concurrent CLI processes would race on a shared log file), and
 - **distributed compilation** (a configured scheduler URL).
 
 If either is in use, the setting is ignored and sccache stays in server-side
