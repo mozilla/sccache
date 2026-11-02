@@ -458,12 +458,21 @@ fn status_signal(_status: process::ExitStatus) -> Option<i32> {
     None
 }
 
-/// Strip ANSI escape sequences from `data` while keeping every other byte.
-///
-/// `strip_ansi_escapes` parses through VTE and drops bytes that are not valid
-/// UTF-8 ground-state input (including Latin-1 in compiler diagnostics, C1
-/// controls, and bare `\r`). Compiler diagnostics are raw octets, so we only
-/// remove CSI/OSC/other ESC sequences and copy everything else unchanged.
+/// Return the index just past the BEL or ST (ESC \\) that ends a control
+/// string starting at `i`, or `data.len()` if it is unterminated.
+fn skip_string_terminator(data: &[u8], mut i: usize) -> usize {
+    while i < data.len() {
+        match data[i] {
+            0x07 => return i + 1,
+            0x1b if data.get(i + 1) == Some(&b'\\') => return i + 2,
+            _ => i += 1,
+        }
+    }
+    i
+}
+
+/// Strip ANSI escape sequences (CSI, OSC, DCS/PM/APC, nF and two-byte escapes)
+/// from `data`, copying every other byte unchanged.
 fn strip_ansi_bytes(data: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(data.len());
     let mut i = 0;
@@ -481,43 +490,19 @@ fn strip_ansi_bytes(data: &[u8]) -> Vec<u8> {
         match data[i] {
             b'[' => {
                 // CSI: ESC [ ... final (0x40..=0x7E)
+                // Stop at any other byte without consuming it, so an
+                // unterminated CSI does not swallow following text.
                 i += 1;
-                while i < data.len() && !(0x40..=0x7e).contains(&data[i]) {
+                while i < data.len() && (0x20..=0x3f).contains(&data[i]) {
                     i += 1;
                 }
-                if i < data.len() {
+                if i < data.len() && (0x40..=0x7e).contains(&data[i]) {
                     i += 1;
                 }
             }
-            b']' => {
-                // OSC: ESC ] ... BEL or ST (ESC \)
-                i += 1;
-                while i < data.len() {
-                    if data[i] == 0x07 {
-                        i += 1;
-                        break;
-                    }
-                    if data[i] == 0x1b && i + 1 < data.len() && data[i + 1] == b'\\' {
-                        i += 2;
-                        break;
-                    }
-                    i += 1;
-                }
-            }
-            b'P' | b'^' | b'_' => {
-                // DCS/PM/APC: terminated by ST
-                i += 1;
-                while i < data.len() {
-                    if data[i] == 0x1b && i + 1 < data.len() && data[i + 1] == b'\\' {
-                        i += 2;
-                        break;
-                    }
-                    if data[i] == 0x07 {
-                        i += 1;
-                        break;
-                    }
-                    i += 1;
-                }
+            b']' | b'P' | b'^' | b'_' => {
+                // OSC and DCS/PM/APC: terminated by BEL or ST (ESC \)
+                i = skip_string_terminator(data, i + 1);
             }
             0x20..=0x2f => {
                 // nF escapes: ESC, one or more intermediates (0x20..=0x2F), final
@@ -1256,12 +1241,24 @@ mod test {
     }
 
     #[test]
+    fn strip_ansi_bytes_unterminated_csi_keeps_following_text() {
+        // A CSI cut short by a byte outside 0x20..=0x7E must not eat the rest.
+        let input = b"\x1b[31\ncaf\xe9";
+        assert_eq!(strip_ansi_bytes(input), b"\ncaf\xe9");
+        // A following ESC starts a new sequence.
+        let input = b"\x1b[31\x1b[0mcaf\xe9";
+        assert_eq!(strip_ansi_bytes(input), b"caf\xe9");
+    }
+
+    #[test]
     fn strip_ansi_bytes_handles_truncated_sequences() {
         // An unterminated sequence is stripped up to end of input; no panic.
         let cases: &[(&[u8], &[u8])] = &[
             (b"caf\xe9\x1b", b"caf\xe9"),
             (b"caf\xe9\x1b[", b"caf\xe9"),
             (b"caf\xe9\x1b[31", b"caf\xe9"),
+            (b"\x1b[31\ncaf\xe9", b"\ncaf\xe9"),
+            (b"\x1b[31\xe9", b"\xe9"),
             (b"caf\xe9\x1b]0;title", b"caf\xe9"),
             (b"caf\xe9\x1b]0;title\x1b", b"caf\xe9"),
             (b"caf\xe9\x1bPpayload", b"caf\xe9"),
