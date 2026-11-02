@@ -85,6 +85,7 @@ opendal-http-transport-reqwest = { version = "0.58.1", optional = true }
 opendal-layer-logging = { version = "0.58.1", optional = true }
 openssl = { version = "0.10.75", optional = true }
 rand = "0.8.4"
+ratatui = { version = "0.30", optional = true }
 regex = "1.10.3"
 reqwest = { version = "0.13", features = [
   "json",
@@ -182,6 +183,7 @@ all = [
   "webdav",
   "oss",
   "cos",
+  "monitor",
 ]
 azure = [
   "opendal/services-azblob",
@@ -195,7 +197,20 @@ cos = [
   "opendal-http-transport-reqwest",
   "reqwest",
 ]
-default = ["all"]
+# Everything in `all` but the `monitor` dashboard, which pulls in a TUI stack
+# that most builds have no use for.
+default = [
+  "dist-client",
+  "redis",
+  "s3",
+  "memcached",
+  "gcs",
+  "azure",
+  "gha",
+  "webdav",
+  "oss",
+  "cos",
+]
 gcs = [
   "opendal/services-gcs",
   "opendal-layer-logging",
@@ -210,6 +225,8 @@ gha = [
   "reqwest",
 ]
 memcached = ["opendal/services-memcached", "opendal-layer-logging"]
+# Enables the `sccache --monitor` terminal dashboard
+monitor = ["ratatui"]
 native-zlib = []
 oss = [
   "opendal/services-oss",
