@@ -83,6 +83,7 @@ object = "0.37"
 opendal = { version = "0.58.1", optional = true, default-features = false }
 opendal-http-transport-reqwest = { version = "0.58.1", optional = true }
 opendal-layer-logging = { version = "0.58.1", optional = true }
+opendal-layer-timeout = { version = "0.58.1", optional = true }
 openssl = { version = "0.10.75", optional = true }
 rand = "0.8.4"
 regex = "1.10.3"
@@ -217,7 +218,12 @@ oss = [
   "opendal-http-transport-reqwest",
   "reqwest",
 ]
-redis = ["url", "opendal/services-redis", "opendal-layer-logging"]
+redis = [
+  "url",
+  "opendal/services-redis",
+  "opendal-layer-logging",
+  "opendal-layer-timeout",
+]
 reqwest = ["dep:reqwest", "dep:webpki-root-certs"]
 s3 = [
   "opendal/services-s3",

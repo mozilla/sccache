@@ -483,8 +483,10 @@ pub fn build_single_cache(
             url,
             ttl,
             key_prefix,
+            io_timeout_secs,
             rw_mode,
         }) => {
+            let io_timeout = io_timeout_secs.map(|secs| Duration::from_secs(secs.get()));
             let storage = match (endpoint, cluster_endpoints, url) {
                 (Some(url), None, None) => {
                     debug!("Init redis single-node cache with url {url}");
@@ -495,6 +497,7 @@ pub fn build_single_cache(
                         *db,
                         key_prefix,
                         *ttl,
+                        io_timeout,
                     )
                 }
                 (None, Some(urls), None) => {
@@ -506,6 +509,7 @@ pub fn build_single_cache(
                         *db,
                         key_prefix,
                         *ttl,
+                        io_timeout,
                     )
                 }
                 (None, None, Some(url)) => {
@@ -514,7 +518,7 @@ pub fn build_single_cache(
                         bail!("`username`, `password` and `db` has no effect when `url` is set. Please use `endpoint` or `cluster_endpoints` for new API accessing");
                     }
 
-                    RedisCache::build_from_url(url, key_prefix, *ttl)
+                    RedisCache::build_from_url(url, key_prefix, *ttl, io_timeout)
                 }
                 _ => bail!("Only one of `endpoint`, `cluster_endpoints`, `url` must be set"),
             }
@@ -840,6 +844,7 @@ mod test {
             0,
             "test-prefix",
             0,
+            None,
         )
         .expect("Failed to create Redis cache operator");
 
@@ -866,6 +871,7 @@ mod test {
             0,
             "test-prefix",
             0,
+            None,
         )
         .expect("Failed to create Redis cache operator");
 
