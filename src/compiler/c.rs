@@ -495,6 +495,8 @@ where
             None
         };
 
+        let direct_attempted = preprocessor_key.is_some() && cache_control == CacheControl::Default;
+
         let (preprocessor_output, include_files) = if needs_preprocessing {
             if let Some(preprocessor_key) = &preprocessor_key
                 && cache_control == CacheControl::Default
@@ -696,9 +698,6 @@ where
             self.executable_digest
         );
 
-        let direct_attempted = needs_preprocessing
-            && preprocessor_key.is_some()
-            && cache_control == CacheControl::Default;
         Ok(HashResult {
             key,
             compilation: Box::new(CCompilation {
