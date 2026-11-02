@@ -10,11 +10,11 @@ runs:
     - if: runner.os == 'Linux'
       shell: bash
       env:
-        INPUTS_NAME: ${{ inputs.name }}
-      run: .github/actions/nvcc-toolchain/install-cuda.sh ${INPUTS_NAME}
+        INPUTS_NAME: ${{ inputs.cuda-version }}
+      run: .github/actions/nvcc-toolchain/install-cuda.sh ${INPUTS_CUDA_VERSION}
 
     - if: runner.os == 'Windows'
       shell: powershell
       env:
         INPUTS_CUDA_VERSION: ${{ inputs.cuda-version }}
-      run: .\.github\actions\nvcc-toolchain\install-cuda.ps1 -cudaVersion ${INPUTS_CUDA_VERSION}
+      run: .\.github\actions\nvcc-toolchain\install-cuda.ps1 -cudaVersion $env:INPUTS_CUDA_VERSION
