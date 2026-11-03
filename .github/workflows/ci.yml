@@ -97,7 +97,7 @@ jobs:
             rustc: "1.91.0"
             extra_desc: cuda12.8
           # # M1 CPU
-          - os: macos-14
+          - os: macos-15
           - os: macos-15-intel
           - os: windows-2022
             cuda: "12.8"
@@ -184,11 +184,16 @@ jobs:
           fi
           URL="https://github.com/mozilla/grcov/releases/download/v${GRCOV_VERSION}/grcov-${TARGET}.${EXT}"
           curl -sL "$URL" -o "grcov.${EXT}"
+          # The macos-15 images don't install Rust under ~/.cargo, so the
+          # directory may not exist yet; create it and put it on PATH.
+          BIN_DIR="${CARGO_HOME:-$HOME/.cargo}/bin"
+          mkdir -p "$BIN_DIR"
           if [[ "$EXT" == "zip" ]]; then
-            unzip -q "grcov.${EXT}" -d "$HOME/.cargo/bin/"
+            unzip -q "grcov.${EXT}" -d "$BIN_DIR"
           else
-            tar -xjf "grcov.${EXT}" -C "$HOME/.cargo/bin/"
+            tar -xjf "grcov.${EXT}" -C "$BIN_DIR"
           fi
+          echo "$BIN_DIR" >> "$GITHUB_PATH"
 
       - name: Create config for testing
         if: ${{ ! matrix.no_coverage }}
@@ -292,7 +297,7 @@ jobs:
           - os: ubuntu-22.04
             target: i686-unknown-linux-musl
             container: '{"image": "messense/rust-musl-cross:i686-musl"}'
-          - os: macos-14
+          - os: macos-15
             target: aarch64-apple-darwin
             macosx_deployment_target: 11.0
           - os: macos-15-intel
