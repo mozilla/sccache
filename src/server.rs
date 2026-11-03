@@ -99,7 +99,6 @@ pub enum ServerStartup {
 fn bind_unix_listener(path: &std::path::Path) -> io::Result<tokio::net::UnixListener> {
     use std::fs::OpenOptions;
     use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
-    use std::os::unix::io::AsRawFd;
     use std::os::unix::net::UnixStream;
 
     let mut lock_path = path.as_os_str().to_os_string();
@@ -110,15 +109,20 @@ fn bind_unix_listener(path: &std::path::Path) -> io::Result<tokio::net::UnixList
         .read(true)
         .write(true)
         .mode(0o600)
+        // Never follow a symlink planted at the lock path, so that the chmod
+        // below cannot be tricked into applying to the link's target.
+        .custom_flags(libc::O_NOFOLLOW)
         .open(lock_path)?;
     let mut permissions = lock.metadata()?.permissions();
     permissions.set_mode(0o600);
     lock.set_permissions(permissions)?;
 
     // Keep the lock inode so that it also serializes startup after a crash.
-    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } == -1 {
-        return Err(io::Error::last_os_error());
-    }
+    lock.lock()?;
+
+    // The lock file was just opened and chmod'ed by us, so its owner is the
+    // user allowed to clean up a stale socket below.
+    let lock_uid = lock.metadata()?.uid();
 
     match UnixStream::connect(path) {
         Ok(_) => {
@@ -134,10 +138,7 @@ fn bind_unix_listener(path: &std::path::Path) -> io::Result<tokio::net::UnixList
             ) =>
         {
             match std::fs::symlink_metadata(path) {
-                Ok(metadata)
-                    if metadata.file_type().is_socket()
-                        && metadata.uid() == unsafe { libc::geteuid() } =>
-                {
+                Ok(metadata) if metadata.file_type().is_socket() && metadata.uid() == lock_uid => {
                     match std::fs::remove_file(path) {
                         Ok(()) => {}
                         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -145,10 +146,10 @@ fn bind_unix_listener(path: &std::path::Path) -> io::Result<tokio::net::UnixList
                     }
                 }
                 Ok(_) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::AddrInUse,
-                        "unix socket path is not a stale socket",
-                    ));
+                    return Err(io::Error::other(format!(
+                        "unix socket path {} is not a stale socket",
+                        path.display()
+                    )));
                 }
                 Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
                 Err(_) => {}
@@ -2679,6 +2680,56 @@ mod tests {
         let replacement = bind_unix_listener(&path).unwrap();
         assert!(std::os::unix::net::UnixStream::connect(&path).is_ok());
         drop(replacement);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_socket_binding_keeps_regular_file() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let path = tempdir.path().join("server.sock");
+        std::fs::write(&path, b"not a socket").unwrap();
+
+        assert!(
+            bind_unix_listener(&path).is_err(),
+            "a regular file at the socket path must not be replaced"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"not a socket");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_socket_binding_serializes_concurrent_startup() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let tempdir = tempfile::tempdir().unwrap();
+        let path = Arc::new(tempdir.path().join("server.sock"));
+
+        let spawn = |p: Arc<std::path::PathBuf>| {
+            thread::spawn(move || {
+                let runtime = Runtime::new().unwrap();
+                let _guard = runtime.enter();
+                bind_unix_listener(&p)
+            })
+        };
+        let first = spawn(Arc::clone(&path));
+        let second = spawn(Arc::clone(&path));
+
+        let first = first.join().unwrap();
+        let second = second.join().unwrap();
+
+        let listeners = [&first, &second].iter().filter(|r| r.is_ok()).count();
+        assert_eq!(
+            listeners, 1,
+            "exactly one call may end up with the listener"
+        );
+        let error = first
+            .as_ref()
+            .err()
+            .or_else(|| second.as_ref().err())
+            .unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::AddrInUse);
+        assert!(std::os::unix::net::UnixStream::connect(&*path).is_ok());
     }
 
     #[test]
