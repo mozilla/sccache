@@ -95,9 +95,9 @@ fn test_rust_cargo_basedirs_cross_dir_cache_hit() -> Result<()> {
         .find_map(|entry| {
             let path = entry.ok()?.into_path();
             (path.extension().is_some_and(|extension| extension == "d")
-                && path.file_stem().is_some_and(|stem| {
-                    stem.as_encoded_bytes().starts_with(b"basedirs_test-")
-                }))
+                && path
+                    .file_stem()
+                    .is_some_and(|stem| stem.as_encoded_bytes().starts_with(b"basedirs_test-")))
             .then_some(path)
         })
         .context("missing dep-info for second checkout")?;
