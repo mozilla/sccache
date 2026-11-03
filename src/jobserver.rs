@@ -49,6 +49,22 @@ impl Client {
         Client::new_num(crate::util::num_cpus())
     }
 
+    /// The jobserver of the build that ran us, if it is one opened by path
+    /// (`--jobserver-auth=fifo:PATH`, GNU make 4.4 and later). The problems
+    /// above are about inherited pipe descriptors; a path holds nothing of
+    /// the build's open, so the client, which lives only as long as one
+    /// compile, can use it and hand it on to what it runs. Whoever ran us
+    /// already holds a token for this compile, so none is taken per spawn.
+    pub fn from_env_fifo() -> Option<Client> {
+        if !env_names_fifo() {
+            return None;
+        }
+        // SAFETY: a `fifo:` jobserver is opened by path; no inherited file
+        // descriptors are taken over.
+        let inner = unsafe { jobserver::Client::from_env() }?;
+        Some(Client::_new(inner, true))
+    }
+
     pub fn new_num(num: usize) -> Client {
         let inner = jobserver::Client::new(num).expect("failed to create jobserver");
         Client::_new(inner, false)
@@ -105,5 +121,34 @@ impl Client {
         Ok(Acquired {
             _token: Some(acquired),
         })
+    }
+}
+
+/// Whether the jobserver in our environment, as `jobserver::Client::from_env`
+/// would pick it, is opened by path.
+pub fn env_names_fifo() -> bool {
+    ["CARGO_MAKEFLAGS", "MAKEFLAGS", "MFLAGS"]
+        .iter()
+        .find_map(std::env::var_os)
+        .is_some_and(|flags| flags.to_str().is_some_and(names_fifo))
+}
+
+fn names_fifo(flags: &str) -> bool {
+    flags
+        .split_ascii_whitespace()
+        .any(|arg| arg.starts_with("--jobserver-auth=fifo:"))
+}
+
+#[cfg(test)]
+mod test {
+    use super::names_fifo;
+
+    #[test]
+    fn fifo_jobserver_flags() {
+        assert!(names_fifo("-j8 --jobserver-auth=fifo:/tmp/GMfifo1234"));
+        assert!(names_fifo(" -j --jobserver-auth=fifo:/dev/steve"));
+        assert!(!names_fifo("-j8 --jobserver-fds=3,4 --jobserver-auth=3,4"));
+        assert!(!names_fifo("-j8"));
+        assert!(!names_fifo(""));
     }
 }
