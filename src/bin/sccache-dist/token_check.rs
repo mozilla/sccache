@@ -30,7 +30,7 @@ impl Jwk {
             bail!("Cannot handle non-RSA JWK")
         }
 
-        // JWK is big-endian, openssl bignum from_slice is big-endian
+        // JWK and PKCS#1 integers are both big-endian.
         let n = BASE64_URL_SAFE_ENGINE
             .decode(&self.n)
             .context("Failed to base64 decode n")?;
@@ -208,5 +208,59 @@ impl ValidJWTCheck {
         let _tokendata = jwt::decode::<Claims>(token, &pkcs1, &validation)
             .context("Unable to validate and decode jwt")?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn jwk_to_der_pkcs1_encodes_unsigned_big_endian_integers() {
+        let jwk = Jwk {
+            kid: "test".into(),
+            kty: "RSA".into(),
+            n: BASE64_URL_SAFE_ENGINE.encode([0x80, 0x01]),
+            e: BASE64_URL_SAFE_ENGINE.encode([0x01, 0x00, 0x01]),
+        };
+        // The high bit of the modulus requires a leading zero in DER INTEGER.
+        assert_eq!(
+            jwk.to_der_pkcs1().unwrap(),
+            [
+                0x30, 0x0a, 0x02, 0x03, 0x00, 0x80, 0x01, 0x02, 0x03, 0x01, 0x00, 0x01
+            ]
+        );
+    }
+
+    #[test]
+    fn jwk_to_der_pkcs1_rejects_non_rsa_and_invalid_base64() {
+        let mut jwk = Jwk {
+            kid: "test".into(),
+            kty: "EC".into(),
+            n: BASE64_URL_SAFE_ENGINE.encode([0x80, 0x01]),
+            e: BASE64_URL_SAFE_ENGINE.encode([0x01, 0x00, 0x01]),
+        };
+        assert!(
+            jwk.to_der_pkcs1()
+                .unwrap_err()
+                .to_string()
+                .contains("non-RSA")
+        );
+        jwk.kty = "RSA".into();
+        jwk.n = "!".into();
+        assert!(
+            jwk.to_der_pkcs1()
+                .unwrap_err()
+                .to_string()
+                .contains("decode n")
+        );
+        jwk.n = BASE64_URL_SAFE_ENGINE.encode([0x80, 0x01]);
+        jwk.e = "!".into();
+        assert!(
+            jwk.to_der_pkcs1()
+                .unwrap_err()
+                .to_string()
+                .contains("decode e")
+        );
     }
 }

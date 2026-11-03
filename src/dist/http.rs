@@ -236,7 +236,7 @@ pub mod urls {
 }
 
 #[cfg(feature = "dist-server")]
-pub(crate) mod server {
+mod server {
     use crate::util::{new_reqwest_blocking_builder, new_reqwest_blocking_client, num_cpus};
     use byteorder::{BigEndian, ReadBytesExt};
     use chrono::{Datelike, Timelike};
@@ -308,9 +308,7 @@ pub(crate) mod server {
         create_https_cert_and_privkey_inner(OsRng, chrono::Utc::now().naive_utc(), addr)
     }
 
-    pub(crate) fn create_https_cert_and_privkey_inner<
-        R: rand::RngCore + rand::prelude::CryptoRng,
-    >(
+    fn create_https_cert_and_privkey_inner<R: rand::RngCore + rand::prelude::CryptoRng>(
         mut rng: R,
         now: chrono::NaiveDateTime,
         addr: SocketAddr,
@@ -349,35 +347,8 @@ pub(crate) mod server {
         let issuer_name = DirectoryName::new_common_name(name.clone());
         let subject_name = DirectoryName::new_common_name(name);
         let octets = match addr.ip() {
-            IpAddr::V4(inner) => {
-                // Ipv4Addr::octets does not include the mask, so we have to
-                // manually insert the mask
-                let mut octets = Vec::with_capacity(8);
-
-                let ip: [u8; 4] = inner.octets();
-                let _mask: [u8; 4] = [0xFF, 0xFF, 0xFF, 0x00];
-
-                octets.extend_from_slice(&ip);
-                // octets.extend_from_slice(&mask);
-
-                octets
-            }
-            IpAddr::V6(inner) => {
-                // Ipv6Addr::octets does not include the mask, so we have to
-                // manually insert the mask
-                let mut octets = Vec::with_capacity(32);
-
-                let ip: [u8; 16] = inner.octets();
-                let _mask: [u8; 16] = [
-                    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-                    0xFF, 0xFF, 0x00,
-                ];
-
-                octets.extend_from_slice(&ip);
-                // octets.extend_from_slice(&mask);
-
-                octets
-            }
+            IpAddr::V4(inner) => inner.octets().to_vec(),
+            IpAddr::V6(inner) => inner.octets().to_vec(),
         };
         let subject_alt_name = GeneralNames::new(picky::x509::name::GeneralName::IpAddress(octets));
         let cert = CertificateBuilder::new()
@@ -402,6 +373,60 @@ pub(crate) mod server {
         let cert_pem = cert_pem.to_string().as_bytes().to_vec();
         let privkey_pem = sk_pkcs8.as_bytes().to_vec();
         Ok((cert_digest, cert_pem, privkey_pem))
+    }
+
+    #[cfg(test)]
+    mod test {
+        use super::*;
+        use picky::x509::{certificate::Cert, extension::Extension, name::GeneralName};
+        use rsa::{pkcs8::DecodePrivateKey, traits::PublicKeyParts};
+
+        #[test]
+        fn https_certificate_has_ip_san_digest_and_matching_key() {
+            let now = chrono::NaiveDate::from_ymd_opt(2026, 1, 2)
+                .unwrap()
+                .and_hms_opt(3, 4, 5)
+                .unwrap();
+            for address in ["192.0.2.1:10501", "[2001:db8::1]:10501"] {
+                let addr: SocketAddr = address.parse().unwrap();
+                let (digest, cert_pem, key_pem) =
+                    create_https_cert_and_privkey_inner(OsRng, now, addr).unwrap();
+                let cert = Cert::from_pem_str(std::str::from_utf8(&cert_pem).unwrap()).unwrap();
+                let der = cert.to_der().unwrap();
+                assert_eq!(digest, sha2::Sha256::digest(&der).to_vec());
+                assert_eq!(cert.subject_name(), cert.issuer_name());
+                assert_eq!(cert.subject_name(), DirectoryName::new_common_name(address));
+                assert_eq!(
+                    cert.valid_not_before(),
+                    UTCDate::new(2026, 1, 2, 3, 4, 5).unwrap()
+                );
+                assert_eq!(
+                    cert.valid_not_after(),
+                    UTCDate::new(2027, 1, 2, 3, 4, 5).unwrap()
+                );
+                let octets = match addr.ip() {
+                    IpAddr::V4(ip) => ip.octets().to_vec(),
+                    IpAddr::V6(ip) => ip.octets().to_vec(),
+                };
+                assert!(cert.extensions().contains(&Extension::new_subject_alt_name(
+                    GeneralNames::new(GeneralName::IpAddress(octets))
+                )));
+                let key_text = std::str::from_utf8(&key_pem).unwrap();
+                let rsa_key = rsa::RsaPrivateKey::from_pkcs8_pem(key_text).unwrap();
+                assert_eq!(rsa_key.n().bits(), 2048);
+                rsa_key.validate().unwrap();
+                let key = PrivateKey::from_pem_str(key_text).unwrap();
+                assert_eq!(
+                    key.to_public_key().to_der().unwrap(),
+                    cert.public_key().to_der().unwrap()
+                );
+                let algorithm = SignatureAlgorithm::RsaPkcs1v15(HashAlgorithm::SHA2_256);
+                let signature = algorithm.sign(b"key matching regression", &key).unwrap();
+                algorithm
+                    .verify(cert.public_key(), b"key matching regression", &signature)
+                    .unwrap();
+            }
+        }
     }
 
     // Messages that are non-sensitive and can be sent to the client
@@ -1102,7 +1127,6 @@ mod client {
         self, AllocJobResult, CompileCommand, JobAlloc, PathTransformer, RunJobResult,
         SchedulerStatusResult, SubmitToolchainResult, Toolchain,
     };
-    use crate::util::HickoryResolver;
 
     use async_trait::async_trait;
     use byteorder::{BigEndian, WriteBytesExt};
@@ -1156,7 +1180,6 @@ mod client {
                 // Disable connection pool to avoid broken connection
                 // between runtime
                 .pool_max_idle_per_host(0)
-                .dns_resolver(Arc::new(HickoryResolver::default()))
                 .build()
                 .context("failed to create an async HTTP client")?;
             let client_toolchains =
