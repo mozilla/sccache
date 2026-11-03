@@ -637,6 +637,13 @@ where
 
     let mut cmd = creator.new_command_sync(exe);
     cmd.args(&cmdline).current_dir(cwd);
+    // `spawn` strips the jobserver from the environment, so without this
+    // a compile we run ourselves (bins, tests, proc-macros, links) gets none
+    // and rustc makes its own pool of one token per CPU. When it is opened by
+    // path, our jobserver is the build's own (see `Client::from_env_fifo`).
+    if crate::jobserver::env_names_fifo() {
+        cmd.share_jobserver();
+    }
     if log_enabled!(Trace) {
         trace!("running command: {:?}", cmd);
     }
@@ -1001,7 +1008,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                     _ => (),
                 });
 
-            let jobserver = Client::new();
+            let jobserver = Client::from_env_fifo().unwrap_or_else(Client::new);
             let conn = connect_or_start_server(&get_addr(), startup_timeout)?;
             if config.client_side_mode {
                 // Under make -jN each CLI process gets only 2 worker threads;
@@ -1103,6 +1110,66 @@ mod test {
         fn try_clone(&self) -> io::Result<Box<dyn Connection>> {
             Ok(Box::new(DisconnectedConnection))
         }
+    }
+
+    /// A compile the client runs itself gets the build's `fifo:` jobserver.
+    /// The environment is per process, so the test runs itself again in a
+    /// child with `CARGO_MAKEFLAGS` set.
+    #[test]
+    #[cfg(unix)]
+    fn local_compile_gets_fifo_jobserver() {
+        const OUT: &str = "SCCACHE_TEST_FIFO_JOBSERVER_OUT";
+        if let Some(out) = env::var_os(OUT) {
+            let client = Client::from_env_fifo().expect("fifo jobserver from the environment");
+            let mut runtime = make_runtime();
+            let cmdline = vec![
+                OsString::from("-c"),
+                OsString::from("printf %s \"$CARGO_MAKEFLAGS\" > \"$1\""),
+                OsString::from("sh"),
+                out,
+            ];
+            let exit = handle_compile_result(
+                <ProcessCommandCreator as CommandCreatorSync>::new(&client),
+                &mut runtime,
+                CompileResponse::UnhandledCompile,
+                None,
+                false,
+                Path::new("/bin/sh"),
+                cmdline,
+                Path::new("/"),
+                &mut vec![],
+                &mut vec![],
+            )
+            .unwrap();
+            assert_eq!(exit, 0);
+            return;
+        }
+
+        let tempdir = tempfile::tempdir().unwrap();
+        let fifo = tempdir.path().join("jobserver");
+        let fifo_c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        // SAFETY: a valid NUL-terminated path.
+        assert_eq!(unsafe { libc::mkfifo(fifo_c.as_ptr(), 0o600) }, 0);
+        let out = tempdir.path().join("cargo_makeflags");
+        let status = std::process::Command::new(env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "commands::test::local_compile_gets_fifo_jobserver",
+                "--nocapture",
+            ])
+            .env(
+                "CARGO_MAKEFLAGS",
+                format!("-j2 --jobserver-auth=fifo:{}", fifo.display()),
+            )
+            .env(OUT, &out)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let seen = std::fs::read_to_string(&out).unwrap();
+        assert!(
+            seen.contains(&format!("--jobserver-auth=fifo:{}", fifo.display())),
+            "the compile got {seen:?}"
+        );
     }
 
     /// A mid-compile server disconnect: the server sends CompileStarted then drops the
