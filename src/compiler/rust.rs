@@ -184,7 +184,6 @@ struct DepInfoTemplate {
     tail: String,
 }
 
-#[cfg_attr(windows, allow(clippy::permissions_set_readonly_false))]
 fn rewrite_dep_info_targets(
     dep_info: &Path,
     outputs: &HashMap<String, ArtifactDescriptor>,
@@ -264,31 +263,37 @@ fn rewrite_dep_info_targets(
     rewritten.push_str(&template.tail);
 
     if rewritten != deps {
-        let parent = dep_info
-            .parent()
-            .context("Cached Rust dep-info has no parent directory")?;
-        let permissions = fs::metadata(&dep_info)?.permissions();
-        let mut temp = tempfile::NamedTempFile::new_in(parent)
-            .context("Failed to create temporary Rust dep-info")?;
-        temp.write_all(rewritten.as_bytes())?;
-        #[cfg(not(windows))]
-        temp.as_file().set_permissions(permissions.clone())?;
+        replace_dep_info(&dep_info, rewritten.as_bytes())?;
+    }
+    Ok(())
+}
+
+#[cfg_attr(windows, allow(clippy::permissions_set_readonly_false))]
+fn replace_dep_info(dep_info: &Path, contents: &[u8]) -> Result<()> {
+    let parent = dep_info
+        .parent()
+        .context("Cached Rust dep-info has no parent directory")?;
+    let permissions = fs::metadata(dep_info)?.permissions();
+    let mut temp = tempfile::NamedTempFile::new_in(parent)
+        .context("Failed to create temporary Rust dep-info")?;
+    temp.write_all(contents)?;
+    #[cfg(not(windows))]
+    temp.as_file().set_permissions(permissions.clone())?;
+    #[cfg(windows)]
+    if permissions.readonly() {
+        let mut writable = permissions.clone();
+        writable.set_readonly(false);
+        fs::set_permissions(dep_info, writable)?;
+    }
+    if let Err(error) = temp.persist(dep_info) {
         #[cfg(windows)]
         if permissions.readonly() {
-            let mut writable = permissions.clone();
-            writable.set_readonly(false);
-            fs::set_permissions(&dep_info, writable)?;
+            let _ = fs::set_permissions(dep_info, permissions);
         }
-        if let Err(error) = temp.persist(&dep_info) {
-            #[cfg(windows)]
-            if permissions.readonly() {
-                let _ = fs::set_permissions(&dep_info, permissions);
-            }
-            return Err(error.error).context("Failed to replace cached Rust dep-info");
-        }
-        #[cfg(windows)]
-        fs::set_permissions(&dep_info, permissions)?;
+        return Err(error.error).context("Failed to replace cached Rust dep-info");
     }
+    #[cfg(windows)]
+    fs::set_permissions(dep_info, permissions)?;
     Ok(())
 }
 
