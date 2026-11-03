@@ -3814,7 +3814,7 @@ dependencies = [
  "tokio-util",
  "toml",
  "tower-service",
- "typed-path",
+ "typed-path 0.13.0",
  "url",
  "uuid",
  "version-compare",
@@ -4825,6 +4825,12 @@ checksum = "8b907da542cbced5261bd3256de1b3a1bf340a3d37f93425a07362a1d687de56"
 
 [[package]]
 name = "typed-path"
+version = "0.12.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "54ec2755506471f54baf5e4bb5499d8e510cc1caf271270e778a736bd2d7336c"
+
+[[package]]
+name = "typed-path"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9ce898823d8cd0f028662d2f349694b1af0a5cc9be83f1d213a00d3147445e1e"
@@ -5536,7 +5542,7 @@ dependencies = [
  "indexmap",
  "memchr",
  "nix 0.31.3",
- "typed-path",
+ "typed-path 0.12.4",
 ]
 
 [[package]]
