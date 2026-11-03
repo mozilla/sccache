@@ -239,27 +239,20 @@ pub mod urls {
 mod server {
     use crate::util::{new_reqwest_blocking_builder, new_reqwest_blocking_client, num_cpus};
     use byteorder::{BigEndian, ReadBytesExt};
-    use chrono::{Datelike, Timelike};
+    use chrono::{DateTime, Datelike, Timelike, Utc};
     use flate2::read::ZlibDecoder as ZlibReadDecoder;
-    use picky::{
-        hash::HashAlgorithm,
-        key::{PrivateKey, PublicKey},
-        signature::SignatureAlgorithm,
-        x509::{
-            certificate::CertificateBuilder,
-            date::UTCDate,
-            extension::ExtendedKeyUsage,
-            name::{DirectoryName, GeneralNames},
-        },
-    };
     use rand::{RngCore, rngs::OsRng};
+    use rcgen::{
+        CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose, IsCa, KeyPair,
+        SanType,
+    };
     use rouille::accept;
     use serde::{Deserialize, Serialize};
     use sha2::Digest;
     use std::collections::HashMap;
     use std::convert::Infallible;
     use std::io::Read;
-    use std::net::{IpAddr, SocketAddr};
+    use std::net::SocketAddr;
     use std::result::Result as StdResult;
     use std::sync::atomic;
     use std::sync::{LazyLock, Mutex};
@@ -305,127 +298,119 @@ mod server {
     }
 
     fn create_https_cert_and_privkey(addr: SocketAddr) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
-        create_https_cert_and_privkey_inner(OsRng, chrono::Utc::now().naive_utc(), addr)
+        create_https_cert_and_privkey_inner(Utc::now(), addr)
     }
 
-    fn create_https_cert_and_privkey_inner<R: rand::RngCore + rand::prelude::CryptoRng>(
-        mut rng: R,
-        now: chrono::NaiveDateTime,
+    fn create_https_cert_and_privkey_inner(
+        now: DateTime<Utc>,
         addr: SocketAddr,
     ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
-        let rsa_key = rsa::RsaPrivateKey::new(&mut rng, 2048)?;
-
-        let line_ending = rsa::pkcs8::LineEnding::default();
-        let sk_pkcs8 = rsa::pkcs8::EncodePrivateKey::to_pkcs8_pem(&rsa_key, line_ending)?;
-        let pk_pkcs8 =
-            rsa::pkcs8::EncodePublicKey::to_public_key_pem(rsa_key.as_ref(), line_ending)?;
-
-        // convert to picky
-        let sk = PrivateKey::from_pem_str(sk_pkcs8.as_str())?;
-        let pk = PublicKey::from_pem_str(pk_pkcs8.as_str())?;
-        let expires = now + chrono::Days::new(365);
-        let start = UTCDate::new(
-            now.year() as u16,
-            now.month() as u8,
-            now.day() as u8,
-            now.time().hour() as u8,
-            now.time().minute() as u8,
-            now.time().second() as u8,
-        )
-        .context("failed to create certificate not-before timestamp")?;
-        let end = UTCDate::new(
-            expires.year() as u16,
-            expires.month() as u8,
-            expires.day() as u8,
-            expires.time().hour() as u8,
-            expires.time().minute() as u8,
-            expires.time().second() as u8,
-        )
-        .context("failed to create certificate not-after timestamp")?;
-        let extended_key_usage = ExtendedKeyUsage::new(vec![picky::oids::kp_server_auth()]);
-        let name = addr.to_string();
-        let issuer_name = DirectoryName::new_common_name(name.clone());
-        let subject_name = DirectoryName::new_common_name(name);
-        let octets = match addr.ip() {
-            IpAddr::V4(inner) => inner.octets().to_vec(),
-            IpAddr::V6(inner) => inner.octets().to_vec(),
+        let key = KeyPair::generate()?;
+        let mut params = CertificateParams::default();
+        params.distinguished_name = DistinguishedName::new();
+        params
+            .distinguished_name
+            .push(DnType::CommonName, addr.to_string());
+        params.subject_alt_names = vec![SanType::IpAddress(addr.ip())];
+        params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+        params.is_ca = IsCa::ExplicitNoCa;
+        let certificate_timestamp = |date: DateTime<Utc>| {
+            rcgen::date_time_ymd(date.year(), date.month() as u8, date.day() as u8)
+                + Duration::from_secs(u64::from(date.num_seconds_from_midnight()))
         };
-        let subject_alt_name = GeneralNames::new(picky::x509::name::GeneralName::IpAddress(octets));
-        let cert = CertificateBuilder::new()
-            .ca(false)
-            .validity(start, end)
-            .subject(subject_name, pk)
-            .subject_alt_name(subject_alt_name)
-            .serial_number(vec![1]) // cannot be 0 according to picky internal notes
-            .signature_hash_type(SignatureAlgorithm::RsaPkcs1v15(HashAlgorithm::SHA2_256))
-            .extended_key_usage(extended_key_usage)
-            .self_signed(issuer_name, &sk)
-            .build()?;
-        let cert_digest = {
-            let der = cert.to_der()?;
-            let mut state = sha2::Sha256::new();
-            state.update(&der);
-            state.finalize()
-        }
-        .as_slice()
-        .to_vec();
-        let cert_pem = cert.to_pem()?;
-        let cert_pem = cert_pem.to_string().as_bytes().to_vec();
-        let privkey_pem = sk_pkcs8.as_bytes().to_vec();
-        Ok((cert_digest, cert_pem, privkey_pem))
+        params.not_before = certificate_timestamp(now);
+        params.not_after = certificate_timestamp(now + chrono::Days::new(365));
+        let cert = params.self_signed(&key)?;
+        let digest = sha2::Sha256::digest(cert.der()).to_vec();
+        Ok((
+            digest,
+            cert.pem().into_bytes(),
+            key.serialize_pem().into_bytes(),
+        ))
     }
 
     #[cfg(test)]
     mod test {
         use super::*;
-        use picky::x509::{certificate::Cert, extension::Extension, name::GeneralName};
-        use rsa::{pkcs8::DecodePrivateKey, traits::PublicKeyParts};
+        use x509_parser::{pem::parse_x509_pem, prelude::GeneralName};
 
         #[test]
-        fn https_certificate_has_ip_san_digest_and_matching_key() {
-            let now = chrono::NaiveDate::from_ymd_opt(2026, 1, 2)
-                .unwrap()
-                .and_hms_opt(3, 4, 5)
-                .unwrap();
+        fn https_certificate_has_ip_san_server_auth_eku_validity_and_matching_key() {
+            let now = DateTime::from_timestamp(1767323045, 0).unwrap();
             for address in ["192.0.2.1:10501", "[2001:db8::1]:10501"] {
                 let addr: SocketAddr = address.parse().unwrap();
                 let (digest, cert_pem, key_pem) =
-                    create_https_cert_and_privkey_inner(OsRng, now, addr).unwrap();
-                let cert = Cert::from_pem_str(std::str::from_utf8(&cert_pem).unwrap()).unwrap();
-                let der = cert.to_der().unwrap();
-                assert_eq!(digest, sha2::Sha256::digest(&der).to_vec());
-                assert_eq!(cert.subject_name(), cert.issuer_name());
-                assert_eq!(cert.subject_name(), DirectoryName::new_common_name(address));
+                    create_https_cert_and_privkey_inner(now, addr).unwrap();
+                let (_, pem) = parse_x509_pem(&cert_pem).unwrap();
+                let cert = pem.parse_x509().unwrap();
+                assert_eq!(digest, sha2::Sha256::digest(&pem.contents).to_vec());
+                assert_eq!(cert.subject(), cert.issuer());
                 assert_eq!(
-                    cert.valid_not_before(),
-                    UTCDate::new(2026, 1, 2, 3, 4, 5).unwrap()
+                    cert.subject()
+                        .iter_common_name()
+                        .next()
+                        .unwrap()
+                        .as_str()
+                        .unwrap(),
+                    address
                 );
+                assert_eq!(cert.validity().not_before.timestamp(), now.timestamp());
                 assert_eq!(
-                    cert.valid_not_after(),
-                    UTCDate::new(2027, 1, 2, 3, 4, 5).unwrap()
+                    cert.validity().not_after.timestamp(),
+                    (now + chrono::Days::new(365)).timestamp()
                 );
+                assert!(!cert.basic_constraints().unwrap().unwrap().value.ca);
+                let eku = cert.extended_key_usage().unwrap().unwrap().value;
+                assert!(eku.server_auth);
+                assert!(!eku.client_auth && !eku.any);
                 let octets = match addr.ip() {
-                    IpAddr::V4(ip) => ip.octets().to_vec(),
-                    IpAddr::V6(ip) => ip.octets().to_vec(),
+                    std::net::IpAddr::V4(ip) => ip.octets().to_vec(),
+                    std::net::IpAddr::V6(ip) => ip.octets().to_vec(),
                 };
-                assert!(cert.extensions().contains(&Extension::new_subject_alt_name(
-                    GeneralNames::new(GeneralName::IpAddress(octets))
-                )));
-                let key_text = std::str::from_utf8(&key_pem).unwrap();
-                let rsa_key = rsa::RsaPrivateKey::from_pkcs8_pem(key_text).unwrap();
-                assert_eq!(rsa_key.n().bits(), 2048);
-                rsa_key.validate().unwrap();
-                let key = PrivateKey::from_pem_str(key_text).unwrap();
                 assert_eq!(
-                    key.to_public_key().to_der().unwrap(),
-                    cert.public_key().to_der().unwrap()
+                    cert.subject_alternative_name()
+                        .unwrap()
+                        .unwrap()
+                        .value
+                        .general_names,
+                    vec![GeneralName::IPAddress(&octets)]
                 );
-                let algorithm = SignatureAlgorithm::RsaPkcs1v15(HashAlgorithm::SHA2_256);
-                let signature = algorithm.sign(b"key matching regression", &key).unwrap();
-                algorithm
-                    .verify(cert.public_key(), b"key matching regression", &signature)
-                    .unwrap();
+                cert.verify_signature(None).unwrap();
+                let key = KeyPair::from_pem(std::str::from_utf8(&key_pem).unwrap()).unwrap();
+                assert_eq!(
+                    key.public_key_raw(),
+                    cert.public_key().subject_public_key.data.as_ref()
+                );
             }
+        }
+
+        #[test]
+        fn https_certificate_works_with_distributed_tls_stack() {
+            let (_, cert, key) =
+                create_https_cert_and_privkey("127.0.0.1:0".parse().unwrap()).unwrap();
+            let root = reqwest::Certificate::from_pem(&cert).unwrap();
+            let server = rouille::Server::new_ssl(
+                "127.0.0.1:0",
+                |_| rouille::Response::text("ok"),
+                cert,
+                key,
+            )
+            .unwrap();
+            let addr = server.server_addr();
+            let (handle, stop) = server.stoppable();
+            let result = reqwest::blocking::Client::builder()
+                .no_proxy()
+                .add_root_certificate(root)
+                .timeout(Duration::from_secs(5))
+                .build()
+                .unwrap()
+                .get(format!("https://{addr}/"))
+                .send()
+                .and_then(|response| response.error_for_status())
+                .and_then(|response| response.text());
+            stop.send(()).unwrap();
+            handle.join().unwrap();
+            assert_eq!(result.unwrap(), "ok");
         }
     }
 
