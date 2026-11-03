@@ -15,6 +15,7 @@ use predicates::prelude::*;
 use serial_test::serial;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use test_case::test_case;
 
 #[macro_use]
 extern crate log;
@@ -39,8 +40,226 @@ fn test_rust_cargo_build() -> Result<()> {
 
 #[test]
 #[serial]
+fn test_rust_cargo_basedirs_cross_dir_cache_hit() -> Result<()> {
+    let work = tempfile::Builder::new()
+        .prefix("sccache_basedirs_xdir")
+        .tempdir()
+        .context("tempdir")?;
+    // On macOS `/var/...` is a symlink to `/private/var/...` and cargo reports
+    // the resolved target for CARGO_MANIFEST_DIR. Basedirs are compared by
+    // byte prefix, so the user-supplied path must be in the same canonical
+    // form. Windows `fs::canonicalize` returns `\\?\`-prefixed UNC paths that
+    // cargo does not emit, so only canonicalize on Unix.
+    #[cfg(unix)]
+    let work_root = fs::canonicalize(work.path())?;
+    #[cfg(not(unix))]
+    let work_root = work.path().to_path_buf();
+    let crate_a = work_root.join("a");
+    let crate_b = work_root.join("b");
+    for crate_dir in [&crate_a, &crate_b] {
+        fs::create_dir_all(crate_dir.join("src"))?;
+        let lib_path = crate_dir
+            .join("src/lib.rs")
+            .to_string_lossy()
+            .replace('\\', "/");
+        fs::write(
+            crate_dir.join("Cargo.toml"),
+            format!(
+                "[package]\nname = \"basedirs-test\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[lib]\npath = {lib_path:?}\n"
+            ),
+        )?;
+        fs::write(crate_dir.join("src/lib.rs"), "pub fn value() -> u8 { 1 }\n")?;
+    }
+
+    let sep = if cfg!(windows) { ';' } else { ':' };
+    let basedirs = format!("{}{sep}{}", crate_a.display(), crate_b.display());
+    let test = SccacheTest::new(None)?;
+    restart_sccache(&test, Some(vec![("SCCACHE_BASEDIRS".into(), basedirs)]))?;
+
+    for crate_dir in [&crate_a, &crate_b] {
+        Command::new(CARGO.as_os_str())
+            .args(["build", "--lib"])
+            .envs(test.env.iter().cloned())
+            .env("CARGO_INSTALL_ROOT", crate_dir.join("install"))
+            .env("CARGO_TARGET_DIR", crate_dir.join("target"))
+            .env(
+                "CARGO_ENCODED_RUSTFLAGS",
+                format!("--remap-path-prefix={}=/workspace", crate_dir.display()),
+            )
+            .current_dir(crate_dir)
+            .assert()
+            .try_success()?;
+    }
+
+    let dep_info = walkdir::WalkDir::new(crate_b.join("target/debug"))
+        .into_iter()
+        .find_map(|entry| {
+            let path = entry.ok()?.into_path();
+            (path.extension().is_some_and(|extension| extension == "d")
+                && path
+                    .file_stem()
+                    .is_some_and(|stem| stem.as_encoded_bytes().starts_with(b"basedirs_test-")))
+            .then_some(path)
+        })
+        .context("missing dep-info for second checkout")?;
+    let dep_info = fs::read_to_string(dep_info)?;
+    assert!(!dep_info.contains(crate_a.to_string_lossy().as_ref()));
+    assert!(dep_info.contains(crate_b.to_string_lossy().as_ref()));
+
+    test.show_stats()?
+        .try_stdout(predicates::str::contains(r#""cache_hits":{"counts":{"Rust":1}"#).from_utf8())?
+        .try_success()?;
+    Ok(())
+}
+
+#[test]
+#[serial]
 fn test_rust_cargo_build_readonly() -> Result<()> {
     test_rust_cargo_cmd_readonly("build", SccacheTest::new(None)?)
+}
+
+#[test_case("env", false)]
+#[test_case("unremapped", false)]
+#[test_case("destination", false)]
+#[test_case("proc_macro", false)]
+#[test_case("safe", true)]
+#[serial]
+fn test_rust_basedirs_cached_value_matches_fresh(case: &str, expect_hit: bool) -> Result<()> {
+    use std::env::consts::{DLL_PREFIX, DLL_SUFFIX, EXE_SUFFIX};
+    use std::ffi::OsString;
+
+    let test = SccacheTest::new(None)?;
+    let root = real_tempdir(&test)?;
+    let [a, b] = ["a", "b"].map(|name| root.join(name));
+    let basedirs = std::env::join_paths([&a, &b])?.into_string().unwrap();
+    restart_sccache(&test, Some(vec![("SCCACHE_BASEDIRS".into(), basedirs)]))?;
+    let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+    let macro_lib = root.join(format!("{DLL_PREFIX}path_macro{DLL_SUFFIX}"));
+    if case == "proc_macro" {
+        let source = root.join("macro.rs");
+        fs::write(
+            &source,
+            r#"
+extern crate proc_macro;
+use proc_macro::TokenStream;
+#[proc_macro]
+pub fn cwd(_: TokenStream) -> TokenStream {
+    format!("{:?}", std::env::current_dir().unwrap().to_string_lossy()).parse().unwrap()
+}
+"#,
+        )?;
+        Command::new(&rustc)
+            .arg(&source)
+            .args([
+                "--crate-name",
+                "path_macro",
+                "--crate-type",
+                "proc-macro",
+                "-o",
+            ])
+            .arg(&macro_lib)
+            .assert()
+            .try_success()?;
+    }
+    let expression = match case {
+        "env" => "env!(\"CARGO_MANIFEST_DIR\")",
+        "proc_macro" => "path_macro::cwd!()",
+        _ => "file!()",
+    };
+    for checkout in [&a, &b] {
+        let out = checkout.join("out");
+        fs::create_dir_all(&out)?;
+        let source = checkout.join("lib.rs");
+        fs::write(
+            &source,
+            format!("pub fn value() -> &'static str {{ {expression} }}\n"),
+        )?;
+        let mut args: Vec<OsString> = vec![
+            "--edition=2021".into(),
+            source.into_os_string(),
+            "--crate-name".into(),
+            "probe".into(),
+            "--crate-type".into(),
+            "rlib".into(),
+            "--emit".into(),
+            "link,dep-info".into(),
+            "--out-dir".into(),
+            out.as_os_str().to_owned(),
+        ];
+        if case != "unremapped" {
+            let destination = if case == "destination" {
+                checkout.join("virtual").into_os_string()
+            } else {
+                "/workspace".into()
+            };
+            args.extend([
+                "--remap-path-prefix".into(),
+                format!("{}={}", checkout.display(), destination.to_string_lossy()).into(),
+            ]);
+        }
+        if case == "proc_macro" {
+            args.extend([
+                "--extern".into(),
+                format!("path_macro={}", macro_lib.display()).into(),
+            ]);
+        }
+        Command::new(SCCACHE_BIN.as_os_str())
+            .arg(&rustc)
+            .args(&args)
+            .current_dir(checkout)
+            .env("CARGO_MANIFEST_DIR", checkout)
+            .assert()
+            .try_success()?;
+        let main = checkout.join("main.rs");
+        fs::write(&main, "fn main() { println!(\"{}\", probe::value()); }\n")?;
+        let executable = checkout.join(format!("check{EXE_SUFFIX}"));
+        let run = || -> Result<Vec<u8>> {
+            Command::new(&rustc)
+                .arg(&main)
+                .arg("--edition=2021")
+                .arg("--extern")
+                .arg(format!("probe={}", out.join("libprobe.rlib").display()))
+                .arg("-L")
+                .arg(format!("dependency={}", root.display()))
+                .arg("-o")
+                .arg(&executable)
+                .assert()
+                .try_success()?;
+            let output = Command::new(&executable).output()?;
+            assert!(output.status.success());
+            Ok(output.stdout)
+        };
+        let cached = run()?;
+        Command::new(&rustc)
+            .args(&args)
+            .current_dir(checkout)
+            .env("CARGO_MANIFEST_DIR", checkout)
+            .assert()
+            .try_success()?;
+        let fresh = run()?;
+        assert_eq!(
+            cached,
+            fresh,
+            "{case}: cached artifact differs from a fresh build in {}",
+            checkout.display()
+        );
+    }
+    let stats = Command::new(SCCACHE_BIN.as_os_str())
+        .args(["--show-stats", "--stats-format=json"])
+        .output()?;
+    assert!(stats.status.success());
+    let stats: serde_json::Value = serde_json::from_slice(&stats.stdout)?;
+    assert_eq!(
+        stats["stats"]["cache_hits"]["counts"]["Rust"]
+            .as_u64()
+            .unwrap_or(0),
+        u64::from(expect_hit)
+    );
+    assert_eq!(
+        stats["stats"]["cache_misses"]["counts"]["Rust"].as_u64(),
+        Some(2 - u64::from(expect_hit))
+    );
+    Ok(())
 }
 
 #[test]
@@ -553,11 +772,9 @@ fn real_tempdir(test_info: &SccacheTest) -> Result<PathBuf> {
     }
 }
 
-/// A crate and its path dependency, built from two checkouts listed in `SCCACHE_BASEDIRS`,
-/// hit in the second one, whose dep-info still names its own files.
 #[test]
 #[serial]
-fn test_rust_cargo_basedirs_other_checkout() -> Result<()> {
+fn test_rust_cargo_basedirs_preserve_out_dir() -> Result<()> {
     let test_info = SccacheTest::new(None)?;
     let tempdir = real_tempdir(&test_info)?;
     let [a, b] = ["a", "b"].map(|name| tempdir.join(name));
@@ -579,14 +796,13 @@ fn test_rust_cargo_basedirs_other_checkout() -> Result<()> {
     test_info
         .show_stats()?
         .try_stdout(
-            predicates::str::contains(
-                r#""cache_hits":{"counts":{"Rust":2},"adv_counts":{"rust":2}}"#,
-            )
-            .from_utf8(),
+            predicates::str::contains(r#""cache_hits":{"counts":{},"adv_counts":{}}"#).from_utf8(),
         )?
         .try_stdout(
-            predicates::str::contains(r#""cache_misses":{"counts":{},"adv_counts":{}}"#)
-                .from_utf8(),
+            predicates::str::contains(
+                r#""cache_misses":{"counts":{"Rust":2},"adv_counts":{"rust":2}}"#,
+            )
+            .from_utf8(),
         )?
         .try_success()?;
 
