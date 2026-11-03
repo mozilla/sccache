@@ -1665,20 +1665,26 @@ where
         // whenever an explicit extern or dynamic crate search entry may load one.
         let can_normalize_paths = !basedirs.is_empty()
             && self.parsed_args.externs.is_empty()
-            && !self.parsed_args.crate_link_paths.iter().any(|path| {
-                fs::read_dir(path)
-                    .map(|mut entries| {
-                        entries.any(|entry| {
-                            entry.map_or(true, |entry| {
-                                entry
-                                    .path()
-                                    .extension()
-                                    .is_some_and(|ext| ext == DLL_EXTENSION)
+            && {
+                let paths = self.parsed_args.crate_link_paths.clone();
+                pool.spawn_blocking(move || {
+                    !paths.iter().any(|path| {
+                        fs::read_dir(path)
+                            .map(|mut entries| {
+                                entries.any(|entry| {
+                                    entry.map_or(true, |entry| {
+                                        entry
+                                            .path()
+                                            .extension()
+                                            .is_some_and(|ext| ext == DLL_EXTENSION)
+                                    })
+                                })
                             })
-                        })
+                            .unwrap_or(true)
                     })
-                    .unwrap_or(true)
-            });
+                })
+                .await?
+            };
         let normalized_basedirs: &[Vec<u8>] = if can_normalize_paths { basedirs } else { &[] };
         // TODO: this doesn't produce correct arguments if they should be concatenated - should use iter_os_strings
         let os_string_arguments: Vec<(OsString, Option<OsString>)> = self
