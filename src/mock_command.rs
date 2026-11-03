@@ -192,6 +192,26 @@ pub struct AsyncCommand {
     share_jobserver: bool,
 }
 
+/// Whether the environment set on `cmd` hands it a jobserver opened by path
+/// (`--jobserver-auth=fifo:PATH`, as GNU make 4.4+ and Cargo pass on), which,
+/// unlike inherited pipe descriptors, any process can reopen.
+fn names_fifo_jobserver(cmd: &Command) -> bool {
+    // The variables `jobserver::Client::from_env` reads, in its order.
+    ["CARGO_MAKEFLAGS", "MAKEFLAGS", "MFLAGS"]
+        .iter()
+        .find_map(|var| {
+            cmd.get_envs()
+                .find(|(key, _)| key == var)
+                .and_then(|(_, value)| value)
+        })
+        .and_then(OsStr::to_str)
+        .is_some_and(|flags| {
+            flags
+                .split_ascii_whitespace()
+                .any(|arg| arg.starts_with("--jobserver-auth=fifo:"))
+        })
+}
+
 impl AsyncCommand {
     pub fn new<S: AsRef<OsStr>>(program: S, jobserver: Client) -> AsyncCommand {
         AsyncCommand {
@@ -263,17 +283,24 @@ impl RunCommand for AsyncCommand {
     }
     async fn spawn(&mut self) -> Result<Child> {
         let mut inner = self.inner.take().unwrap();
-        inner.env_remove("MAKEFLAGS");
-        inner.env_remove("MFLAGS");
-        inner.env_remove("CARGO_MAKEFLAGS");
-        // `configure` registers a `pre_exec` closure to clear `CLOEXEC` on the
-        // jobserver's file descriptors, and any `pre_exec` makes `std` fall
-        // back from `posix_spawn` to `fork`+`exec`. Almost nothing sccache
-        // spawns can use a jobserver -- preprocessors, version probes and
-        // C/C++ compilers all ignore it -- so the default is not to share,
-        // and the callers that spawn `rustc` ask for it.
-        if self.share_jobserver {
-            self.jobserver.configure(&mut inner);
+        if self.share_jobserver && names_fifo_jobserver(&inner) {
+            // The build that asked for this compile named its jobserver by
+            // path, so the child can open it the way it would have without
+            // sccache, and stays within that build's (or a system-wide)
+            // limit instead of getting our private pool.
+        } else {
+            inner.env_remove("MAKEFLAGS");
+            inner.env_remove("MFLAGS");
+            inner.env_remove("CARGO_MAKEFLAGS");
+            // `configure` registers a `pre_exec` closure to clear `CLOEXEC` on
+            // the jobserver's file descriptors, and any `pre_exec` makes `std`
+            // fall back from `posix_spawn` to `fork`+`exec`. Almost nothing
+            // sccache spawns can use a jobserver -- preprocessors, version
+            // probes and C/C++ compilers all ignore it -- so the default is
+            // not to share, and the callers that spawn `rustc` ask for it.
+            if self.share_jobserver {
+                self.jobserver.configure(&mut inner);
+            }
         }
 
         // The token is acquired either way: it rate-limits how many children
@@ -728,5 +755,70 @@ mod test {
             child_sees_cargo_makeflags(true),
             "share_jobserver() should give the child CARGO_MAKEFLAGS"
         );
+    }
+
+    /// `CARGO_MAKEFLAGS` as the child sees it, when the compile's own
+    /// environment (as the server sets it from the client's) carries `flags`.
+    #[cfg(unix)]
+    fn child_cargo_makeflags_given(flags: &str, share: bool) -> String {
+        let client = Client::new_num(1);
+        let mut creator = <ProcessCommandCreator as CommandCreator>::new(&client);
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let mut cmd = creator.new_command("/bin/sh");
+        cmd.args(&["-c", "printf %s \"$CARGO_MAKEFLAGS\""])
+            .env_clear()
+            .env("CARGO_MAKEFLAGS", flags);
+        if share {
+            cmd.share_jobserver();
+        }
+        let output: std::process::Output = runtime
+            .block_on(async { crate::util::run_input_output(cmd, None).await })
+            .unwrap();
+        String::from_utf8(output.stdout).unwrap()
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn share_jobserver_keeps_a_fifo_jobserver() {
+        let flags = "-j8 --jobserver-auth=fifo:/tmp/GMfifo1234";
+        assert_eq!(child_cargo_makeflags_given(flags, true), flags);
+        assert_eq!(
+            child_cargo_makeflags_given(flags, false),
+            "",
+            "a child that doesn't ask for a jobserver still gets none"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn share_jobserver_replaces_an_inherited_pipe_jobserver() {
+        let flags = "-j8 --jobserver-fds=1000,1001 --jobserver-auth=1000,1001";
+        let seen = child_cargo_makeflags_given(flags, true);
+        assert!(!seen.is_empty());
+        assert_ne!(seen, flags);
+    }
+
+    #[test]
+    fn fifo_jobserver_detection() {
+        let names = |vars: &[(&str, &str)]| {
+            let mut cmd = Command::new("true");
+            cmd.env_clear();
+            for (key, value) in vars {
+                cmd.env(key, value);
+            }
+            names_fifo_jobserver(&cmd)
+        };
+        assert!(names(&[(
+            "CARGO_MAKEFLAGS",
+            "--jobserver-auth=fifo:/dev/x"
+        )]));
+        assert!(names(&[("MAKEFLAGS", " -j8 --jobserver-auth=fifo:/dev/x")]));
+        assert!(!names(&[("CARGO_MAKEFLAGS", "--jobserver-auth=3,4")]));
+        assert!(!names(&[]));
+        // `CARGO_MAKEFLAGS` wins, as in `jobserver::Client::from_env`.
+        assert!(!names(&[
+            ("CARGO_MAKEFLAGS", "--jobserver-auth=3,4"),
+            ("MAKEFLAGS", "--jobserver-auth=fifo:/dev/x"),
+        ]));
     }
 }
