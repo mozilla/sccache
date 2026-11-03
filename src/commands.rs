@@ -12,16 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cache::{IpcStorage, storage_from_config};
+use crate::cache::{CacheMode, IpcStorage, Storage, storage_from_config};
 use crate::client::{ServerConnection, connect_to_server, connect_with_retry};
 use crate::cmdline::{Command, StatsFormat};
-use crate::compiler::ColorMode;
-use crate::config::{Config, default_disk_cache_dir};
+use crate::compiler::{ColorMode, is_rmeta_artifact_notification};
+use crate::config::Config;
 use crate::jobserver::Client;
 use crate::mock_command::{CommandChild, CommandCreatorSync, ProcessCommandCreator, RunCommand};
 use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
 use crate::server::{self, DistInfo, ServerInfo, ServerStartup, ServerStats};
-use crate::util::{daemonize, new_client_runtime};
+use crate::util::{daemonize, new_client_runtime, run_input_output};
 use byteorder::{BigEndian, ByteOrder};
 use fs::{File, OpenOptions};
 use fs_err as fs;
@@ -364,17 +364,27 @@ pub fn request_zero_stats(mut conn: ServerConnection) -> Result<()> {
     }
 }
 
-/// Send a `GetStats` request to the server, and return the `ServerInfo` request if successful.
-pub fn request_stats(mut conn: ServerConnection) -> Result<ServerInfo> {
-    debug!("request_stats");
+pub(crate) fn request_stats_with_cache_mode(
+    mut conn: ServerConnection,
+) -> Result<(ServerInfo, CacheMode)> {
+    debug!("request_stats_with_cache_mode");
     let response = conn.request(Request::GetStats).context(
         "Failed to send data to or receive data from server. Mismatch of client/server versions?",
     )?;
-    if let Response::Stats(stats) = response {
-        Ok(*stats)
+    let stats = if let Response::Stats(stats) = response {
+        *stats
     } else {
         bail!("Unexpected server response!")
-    }
+    };
+
+    let response = conn
+        .request(Request::StorageHandshake)
+        .context("failed to get effective cache mode from server")?;
+    let cache_mode = match response {
+        Response::StorageHandshake(info) => info.cache_mode,
+        _ => bail!("Unexpected server response!"),
+    };
+    Ok((stats, cache_mode))
 }
 
 /// Send a `DistStatus` request to the server, and return `DistStatus` if successful.
@@ -528,35 +538,42 @@ fn handle_compile_response<T>(
 where
     T: CommandCreatorSync,
 {
+    let mut forwarded_notification = false;
     let result = match &response {
         CompileResponse::CompileStarted => {
             debug!("Server sent CompileStarted");
-            // Wait for CompileFinished.
-            match conn.read_one_response() {
-                Ok(Response::CompileFinished(result)) => Some(result),
-                Ok(_) => bail!("unexpected response from server"),
-                Err(e) => {
-                    match e.downcast_ref::<io::Error>() {
-                        Some(io_e) if io_e.kind() == io::ErrorKind::UnexpectedEof => {
-                            eprintln!(
-                                "sccache: warning: The server looks like it shut down \
-                                 unexpectedly, compiling locally instead"
-                            );
-                        }
-                        _ => {
-                            //TODO: something better here?
-                            if ignore_all_server_io_errors() {
+            loop {
+                match conn.read_one_response() {
+                    Ok(Response::ArtifactNotification(chunk)) => {
+                        stderr.write_all(&chunk)?;
+                        stderr.flush()?;
+                        forwarded_notification = true;
+                    }
+                    Ok(Response::CompileFinished(result)) => break Some(result),
+                    Ok(_) => bail!("unexpected response from server"),
+                    Err(e) => {
+                        match e.downcast_ref::<io::Error>() {
+                            Some(io_e) if io_e.kind() == io::ErrorKind::UnexpectedEof => {
                                 eprintln!(
-                                    "sccache: warning: error reading compile response from server \
-                                     compiling locally instead"
+                                    "sccache: warning: The server looks like it shut down \
+                                     unexpectedly, compiling locally instead"
                                 );
-                            } else {
-                                return Err(e)
-                                    .context("error reading compile response from server");
+                            }
+                            _ => {
+                                //TODO: something better here?
+                                if ignore_all_server_io_errors() {
+                                    eprintln!(
+                                        "sccache: warning: error reading compile response from server \
+                                         compiling locally instead"
+                                    );
+                                } else {
+                                    return Err(e)
+                                        .context("error reading compile response from server");
+                                }
                             }
                         }
+                        break None;
                     }
-                    None
                 }
             }
         }
@@ -564,18 +581,32 @@ where
     };
 
     handle_compile_result(
-        creator, runtime, response, result, exe, cmdline, cwd, stdout, stderr,
+        creator,
+        runtime,
+        response,
+        result,
+        forwarded_notification,
+        exe,
+        cmdline,
+        cwd,
+        stdout,
+        stderr,
     )
 }
 
 /// Dispatch the outcome of a compile, whether received from the daemon over IPC
 /// or produced by a local `SccacheService` in client-side mode.
+///
+/// * `forwarded_notification`
+///   is whether a [`Response::ArtifactNotification`] already reached `stderr`,
+///   in which case its copy in compiler's stderr is dropped.
 #[allow(clippy::too_many_arguments)]
 fn handle_compile_result<T>(
     mut creator: T,
     runtime: &mut Runtime,
     response: CompileResponse,
     finished: Option<CompileFinished>,
+    forwarded_notification: bool,
     exe: &Path,
     cmdline: Vec<OsString>,
     cwd: &Path,
@@ -587,7 +618,10 @@ where
 {
     match response {
         CompileResponse::CompileStarted => {
-            if let Some(finished) = finished {
+            if let Some(mut finished) = finished {
+                if forwarded_notification {
+                    finished.stderr = without_rmeta_artifact_notifications(&finished.stderr);
+                }
                 return handle_compile_finished(finished, stdout, stderr);
             }
             // Server disconnected before sending CompileFinished; fall back to local compilation.
@@ -607,13 +641,30 @@ where
         trace!("running command: {:?}", cmd);
     }
 
-    let status = runtime.block_on(async move {
-        let child = cmd.spawn().await?;
-        child
-            .wait()
-            .await
-            .with_context(|| "failed to wait for a child")
-    })?;
+    let status = if !forwarded_notification {
+        runtime.block_on(async move {
+            let child = cmd.spawn().await?;
+            child
+                .wait()
+                .await
+                .with_context(|| "failed to wait for a child")
+        })?
+    } else {
+        // The `.rmeta` notification was already forwarded so drop them from local rustc's copy.
+        // Assumption: this rewrites artifacts which callers may be reading,
+        // which is safe only while rustc output is deterministic (it is as of 1.98.1)
+        let output = match runtime.block_on(run_input_output(cmd, None)) {
+            Ok(output) => output,
+            Err(e) => match e.downcast::<ProcessError>() {
+                Ok(ProcessError(output)) => output,
+                Err(e) => return Err(e).context("failed to wait for a child"),
+            },
+        };
+        stdout.write_all(&output.stdout)?;
+        stderr.write_all(&without_rmeta_artifact_notifications(&output.stderr))?;
+        stderr.flush()?;
+        output.status
+    };
 
     Ok(status.code().unwrap_or_else(|| {
         if let Some(sig) = status_signal(status) {
@@ -622,6 +673,16 @@ where
         // Arbitrary.
         2
     }))
+}
+
+/// Drop `.rmeta` artifact notification lines from `stderr`
+/// when they have already been forwarded to the caller.
+fn without_rmeta_artifact_notifications(stderr: &[u8]) -> Vec<u8> {
+    stderr
+        .split_inclusive(|&b| b == b'\n')
+        .filter(|line| !is_rmeta_artifact_notification(line))
+        .collect::<Vec<_>>()
+        .concat()
 }
 
 /// Send a `Compile` request to the sccache server `conn`, and handle the response.
@@ -677,12 +738,14 @@ where
     trace!("do_compile_client_side");
     let exe_path = which_in(exe, path, cwd)?;
     let storage = IpcStorage::connect(conn)?;
+    let cache_mode = runtime.block_on(storage.check())?;
     let conn_arc = storage.conn();
     let (tx, _rx) = futures::channel::mpsc::channel(1);
     let (_, info) = server::WaitUntilZero::new();
     let service = server::SccacheService::<C>::new(
         server::DistClientContainer::new_disabled(),
         Arc::new(storage),
+        cache_mode,
         jobserver,
         runtime.handle().clone(),
         tx,
@@ -694,13 +757,15 @@ where
         args: cmdline.clone(),
         env_vars,
     };
-    let (compile_resp, finished) = runtime.block_on(service.compile_direct(compile))?;
+    let (compile_resp, finished, forwarded_notification) =
+        runtime.block_on(service.compile_direct(compile, &mut *stderr))?;
     let creator = C::new(jobserver);
     let exit_code = handle_compile_result(
         creator,
         runtime,
         compile_resp,
         finished,
+        forwarded_notification,
         &exe_path,
         cmdline,
         cwd,
@@ -715,6 +780,19 @@ where
     Ok(exit_code)
 }
 
+#[derive(serde::Serialize)]
+struct StatsOutput<'a> {
+    #[serde(flatten)]
+    info: &'a ServerInfo,
+    effective_cache_mode: Option<CacheMode>,
+}
+
+fn empty_server_info(config: &Config) -> Result<ServerInfo> {
+    let runtime = new_client_runtime()?;
+    let storage = storage_from_config(config, runtime.handle()).ok();
+    runtime.block_on(ServerInfo::new(ServerStats::default(), storage.as_deref()))
+}
+
 /// Run `cmd` and return the process exit status.
 pub fn run_command(cmd: Command) -> Result<i32> {
     // Config isn't required for all commands, but if it's broken then we should flag
@@ -725,24 +803,30 @@ pub fn run_command(cmd: Command) -> Result<i32> {
     match cmd {
         Command::ShowStats(fmt, advanced) => {
             trace!("Command::ShowStats({:?})", fmt);
-            let stats = match connect_to_server(&get_addr()) {
-                Ok(srv) => request_stats(srv).context("failed to get stats from server")?,
+            let (stats, effective_cache_mode) = match connect_to_server(&get_addr()) {
+                Ok(srv) => {
+                    let (info, cache_mode) = request_stats_with_cache_mode(srv)
+                        .context("failed to get stats from server")?;
+                    (info, Some(cache_mode))
+                }
                 // If there is no server, spawning a new server would start with zero stats
                 // anyways, so we can just return (mostly) empty stats directly.
-                Err(_) => {
-                    let runtime = new_client_runtime()?;
-                    let storage = storage_from_config(config, runtime.handle()).ok();
-                    runtime.block_on(ServerInfo::new(ServerStats::default(), storage.as_deref()))?
-                }
+                Err(_) => (empty_server_info(config)?, None),
             };
             match fmt {
-                StatsFormat::Text => stats.print(advanced),
-                StatsFormat::Json => serde_json::to_writer(&mut io::stdout(), &stats)?,
+                StatsFormat::Text => stats.print(advanced, effective_cache_mode),
+                StatsFormat::Json => serde_json::to_writer(
+                    &mut io::stdout(),
+                    &StatsOutput {
+                        info: &stats,
+                        effective_cache_mode,
+                    },
+                )?,
             }
         }
         Command::DebugPreprocessorCacheEntries => {
             trace!("Command::DebugPreprocessorCacheEntries");
-            let entries_dir = default_disk_cache_dir().join("preprocessor");
+            let entries_dir = config.fallback_cache.dir.join("preprocessor");
             for entry in WalkDir::new(entries_dir).sort_by_file_name() {
                 let preprocessor_cache_entry_file = entry?;
                 let path = preprocessor_cache_entry_file.path();
@@ -794,7 +878,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
             println!("Stopping sccache server...");
             let server = connect_to_server(&get_addr()).context("couldn't connect to server")?;
             let stats = request_shutdown(server)?;
-            stats.print(false);
+            stats.print(false, None);
         }
         Command::ZeroStats => {
             trace!("Command::ZeroStats");
@@ -972,6 +1056,24 @@ mod test {
             .enable_all()
             .build()
             .unwrap()
+    }
+
+    #[test]
+    fn stats_output_serializes_effective_cache_mode() {
+        let runtime = make_runtime();
+        let info = runtime
+            .block_on(ServerInfo::new(ServerStats::default(), None))
+            .unwrap();
+        let output = serde_json::to_value(StatsOutput {
+            info: &info,
+            effective_cache_mode: Some(CacheMode::ReadOnly),
+        })
+        .unwrap();
+
+        assert_eq!(
+            output.get("effective_cache_mode"),
+            Some(&serde_json::Value::String("ReadOnly".to_owned()))
+        );
     }
 
     /// A `Connection` that immediately returns EOF on reads and discards writes.

@@ -5,7 +5,7 @@
 
 pub mod helpers;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use helpers::{CARGO, CRATE_DIR, cargo_clean, stop_sccache};
 
 use assert_cmd::prelude::*;
@@ -13,8 +13,9 @@ use fs_err as fs;
 use helpers::{SCCACHE_BIN, SccacheTest};
 use predicates::prelude::*;
 use serial_test::serial;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use test_case::test_case;
 
 #[macro_use]
 extern crate log;
@@ -115,6 +116,150 @@ fn test_rust_cargo_basedirs_cross_dir_cache_hit() -> Result<()> {
 #[serial]
 fn test_rust_cargo_build_readonly() -> Result<()> {
     test_rust_cargo_cmd_readonly("build", SccacheTest::new(None)?)
+}
+
+#[test_case("env", false)]
+#[test_case("unremapped", false)]
+#[test_case("destination", false)]
+#[test_case("proc_macro", false)]
+#[test_case("safe", true)]
+#[serial]
+fn test_rust_basedirs_cached_value_matches_fresh(case: &str, expect_hit: bool) -> Result<()> {
+    use std::env::consts::{DLL_PREFIX, DLL_SUFFIX, EXE_SUFFIX};
+    use std::ffi::OsString;
+
+    let test = SccacheTest::new(None)?;
+    let root = real_tempdir(&test)?;
+    let [a, b] = ["a", "b"].map(|name| root.join(name));
+    let basedirs = std::env::join_paths([&a, &b])?.into_string().unwrap();
+    restart_sccache(&test, Some(vec![("SCCACHE_BASEDIRS".into(), basedirs)]))?;
+    let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+    let macro_lib = root.join(format!("{DLL_PREFIX}path_macro{DLL_SUFFIX}"));
+    if case == "proc_macro" {
+        let source = root.join("macro.rs");
+        fs::write(
+            &source,
+            r#"
+extern crate proc_macro;
+use proc_macro::TokenStream;
+#[proc_macro]
+pub fn cwd(_: TokenStream) -> TokenStream {
+    format!("{:?}", std::env::current_dir().unwrap().to_string_lossy()).parse().unwrap()
+}
+"#,
+        )?;
+        Command::new(&rustc)
+            .arg(&source)
+            .args([
+                "--crate-name",
+                "path_macro",
+                "--crate-type",
+                "proc-macro",
+                "-o",
+            ])
+            .arg(&macro_lib)
+            .assert()
+            .try_success()?;
+    }
+    let expression = match case {
+        "env" => "env!(\"CARGO_MANIFEST_DIR\")",
+        "proc_macro" => "path_macro::cwd!()",
+        _ => "file!()",
+    };
+    for checkout in [&a, &b] {
+        let out = checkout.join("out");
+        fs::create_dir_all(&out)?;
+        let source = checkout.join("lib.rs");
+        fs::write(
+            &source,
+            format!("pub fn value() -> &'static str {{ {expression} }}\n"),
+        )?;
+        let mut args: Vec<OsString> = vec![
+            "--edition=2021".into(),
+            source.into_os_string(),
+            "--crate-name".into(),
+            "probe".into(),
+            "--crate-type".into(),
+            "rlib".into(),
+            "--emit".into(),
+            "link,dep-info".into(),
+            "--out-dir".into(),
+            out.as_os_str().to_owned(),
+        ];
+        if case != "unremapped" {
+            let destination = if case == "destination" {
+                checkout.join("virtual").into_os_string()
+            } else {
+                "/workspace".into()
+            };
+            args.extend([
+                "--remap-path-prefix".into(),
+                format!("{}={}", checkout.display(), destination.to_string_lossy()).into(),
+            ]);
+        }
+        if case == "proc_macro" {
+            args.extend([
+                "--extern".into(),
+                format!("path_macro={}", macro_lib.display()).into(),
+            ]);
+        }
+        Command::new(SCCACHE_BIN.as_os_str())
+            .arg(&rustc)
+            .args(&args)
+            .current_dir(checkout)
+            .env("CARGO_MANIFEST_DIR", checkout)
+            .assert()
+            .try_success()?;
+        let main = checkout.join("main.rs");
+        fs::write(&main, "fn main() { println!(\"{}\", probe::value()); }\n")?;
+        let executable = checkout.join(format!("check{EXE_SUFFIX}"));
+        let run = || -> Result<Vec<u8>> {
+            Command::new(&rustc)
+                .arg(&main)
+                .arg("--edition=2021")
+                .arg("--extern")
+                .arg(format!("probe={}", out.join("libprobe.rlib").display()))
+                .arg("-L")
+                .arg(format!("dependency={}", root.display()))
+                .arg("-o")
+                .arg(&executable)
+                .assert()
+                .try_success()?;
+            let output = Command::new(&executable).output()?;
+            assert!(output.status.success());
+            Ok(output.stdout)
+        };
+        let cached = run()?;
+        Command::new(&rustc)
+            .args(&args)
+            .current_dir(checkout)
+            .env("CARGO_MANIFEST_DIR", checkout)
+            .assert()
+            .try_success()?;
+        let fresh = run()?;
+        assert_eq!(
+            cached,
+            fresh,
+            "{case}: cached artifact differs from a fresh build in {}",
+            checkout.display()
+        );
+    }
+    let stats = Command::new(SCCACHE_BIN.as_os_str())
+        .args(["--show-stats", "--stats-format=json"])
+        .output()?;
+    assert!(stats.status.success());
+    let stats: serde_json::Value = serde_json::from_slice(&stats.stdout)?;
+    assert_eq!(
+        stats["stats"]["cache_hits"]["counts"]["Rust"]
+            .as_u64()
+            .unwrap_or(0),
+        u64::from(expect_hit)
+    );
+    assert_eq!(
+        stats["stats"]["cache_misses"]["counts"]["Rust"].as_u64(),
+        Some(2 - u64::from(expect_hit))
+    );
+    Ok(())
 }
 
 #[test]
@@ -481,5 +626,194 @@ fn test_rust_cargo_cmd_readonly_preemtive_block() -> Result<()> {
             .from_utf8(),
         )?
         .try_success()?;
+    Ok(())
+}
+
+/// Copy the test crate to `name` under the test tempdir
+/// and build it there with its own target directory.
+///
+/// Returns the checkout's target directory.
+fn build_checkout(test_info: &SccacheTest, name: &str) -> Result<PathBuf> {
+    let checkout = test_info.tempdir.path().join(name);
+    fs::create_dir_all(checkout.join("src"))?;
+    for file in ["Cargo.toml", "Cargo.lock", "src/lib.rs", "src/bin.rs"] {
+        fs::copy(CRATE_DIR.join(file), checkout.join(file))?;
+    }
+    cargo_build(test_info, &checkout)
+}
+
+/// Build the crate in `checkout` with its own target directory.
+///
+/// Returns the checkout's target directory.
+fn cargo_build(test_info: &SccacheTest, checkout: &Path) -> Result<PathBuf> {
+    let target_dir = checkout.join("target");
+    Command::new(CARGO.as_os_str())
+        // `--target-dir` rather than `CARGO_TARGET_DIR`,
+        // since cargo forwards `CARGO_*` to rustc and sccache hashes them.
+        .args(["build", "--color=never", "--target-dir"])
+        .arg(&target_dir)
+        .envs(test_info.env.iter().cloned())
+        .current_dir(checkout)
+        .assert()
+        .try_success()?;
+    Ok(target_dir)
+}
+
+/// Read the dep-info file cargo keeps for the crate `name` under `target_dir`.
+fn read_dep_info(target_dir: &Path, name: &str) -> Result<String> {
+    /// Search rather than assume `target/debug/deps`,
+    /// since cargo changed the build-dir layout in rust-lang/cargo#15010.
+    fn collect(dir: &Path, prefix: &str, found: &mut Vec<PathBuf>) -> Result<()> {
+        for entry in fs::read_dir(dir)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                collect(&path, prefix, found)?;
+            } else if path.extension().is_some_and(|e| e == "d")
+                && path
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with(prefix))
+            {
+                found.push(path);
+            }
+        }
+        Ok(())
+    }
+
+    let mut found = Vec::new();
+    collect(target_dir, &format!("{name}-"), &mut found)?;
+    found.sort();
+
+    // One profile and no `--target`, so the crate is built exactly once.
+    match found.as_slice() {
+        [dep_info] => Ok(fs::read_to_string(dep_info)?),
+        [] => bail!("no {name} dep-info file under {}", target_dir.display()),
+        _ => bail!(
+            "several {name} dep-info files under {}: {found:?}",
+            target_dir.display()
+        ),
+    }
+}
+
+/// The same dependency built from two checkouts, the second one being a cache hit.
+/// Whose paths does the second checkout's dep-info name? (mozilla/sccache#984)
+#[test]
+#[serial]
+fn test_rust_cargo_dep_info_from_other_checkout() -> Result<()> {
+    let test_info = SccacheTest::new(None)?;
+
+    let target_a = build_checkout(&test_info, "a")?;
+    let target_b = build_checkout(&test_info, "b")?;
+
+    // Only `itoa` is shared;
+    // the crate's own lib and bin are keyed on their differing cwd.
+    test_info
+        .show_stats()?
+        .try_stdout(
+            predicates::str::contains(
+                r#""cache_hits":{"counts":{"Rust":1},"adv_counts":{"rust":1}}"#,
+            )
+            .from_utf8(),
+        )?
+        .try_success()?;
+
+    let dep_info = read_dep_info(&target_b, "itoa")?;
+    assert!(
+        !dep_info.contains(target_a.to_str().unwrap()),
+        "dep-info names checkout a:\n{dep_info}"
+    );
+    assert!(
+        dep_info.contains(target_b.to_str().unwrap()),
+        "dep-info does not name checkout b:\n{dep_info}"
+    );
+    Ok(())
+}
+
+/// Write a crate to `checkout` whose path dependency includes build script output,
+/// so the checkout's path reaches both crates' keys through the cwd,
+/// `CARGO_MANIFEST_DIR` and the dependency's `OUT_DIR` env-dep.
+fn write_out_dir_crate(checkout: &Path) -> Result<()> {
+    let package = |name: &str| {
+        format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n")
+    };
+    fs::create_dir_all(checkout.join("src"))?;
+    fs::create_dir_all(checkout.join("dep/src"))?;
+    fs::write(
+        checkout.join("Cargo.toml"),
+        package("out-dir-test") + "\n[dependencies]\ndep = { path = \"dep\" }\n",
+    )?;
+    fs::write(
+        checkout.join("src/lib.rs"),
+        "pub fn answer() -> u32 { dep::ANSWER }\n",
+    )?;
+    fs::write(checkout.join("dep/Cargo.toml"), package("dep"))?;
+    fs::write(
+        checkout.join("dep/build.rs"),
+        r#"fn main() {
+    let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+    std::fs::write(out.join("answer.rs"), "pub const ANSWER: u32 = 42;").unwrap();
+}
+"#,
+    )?;
+    fs::write(
+        checkout.join("dep/src/lib.rs"),
+        "include!(concat!(env!(\"OUT_DIR\"), \"/answer.rs\"));\n",
+    )?;
+    Ok(())
+}
+
+/// The test's tempdir by its real path, which is how cargo names it in `CARGO_MANIFEST_DIR`
+/// and `[env]` paths; on macOS the tempdir is under a symlink to /private.
+fn real_tempdir(test_info: &SccacheTest) -> Result<PathBuf> {
+    let path = test_info.tempdir.path();
+    if cfg!(unix) {
+        Ok(fs::canonicalize(path)?)
+    } else {
+        Ok(path.to_owned())
+    }
+}
+
+#[test]
+#[serial]
+fn test_rust_cargo_basedirs_preserve_out_dir() -> Result<()> {
+    let test_info = SccacheTest::new(None)?;
+    let tempdir = real_tempdir(&test_info)?;
+    let [a, b] = ["a", "b"].map(|name| tempdir.join(name));
+    let basedirs = std::env::join_paths([&a, &b])?.into_string().unwrap();
+    restart_sccache(
+        &test_info,
+        Some(vec![("SCCACHE_BASEDIRS".into(), basedirs)]),
+    )?;
+
+    write_out_dir_crate(&a)?;
+    cargo_build(&test_info, &a)?;
+    Command::new(SCCACHE_BIN.as_os_str())
+        .arg("--zero-stats")
+        .assert()
+        .try_success()?;
+    write_out_dir_crate(&b)?;
+    let target_b = cargo_build(&test_info, &b)?;
+
+    test_info
+        .show_stats()?
+        .try_stdout(
+            predicates::str::contains(r#""cache_hits":{"counts":{},"adv_counts":{}}"#).from_utf8(),
+        )?
+        .try_stdout(
+            predicates::str::contains(
+                r#""cache_misses":{"counts":{"Rust":2},"adv_counts":{"rust":2}}"#,
+            )
+            .from_utf8(),
+        )?
+        .try_success()?;
+
+    let dep_info = read_dep_info(&target_b, "dep")?;
+    assert!(
+        !dep_info.contains(a.to_str().unwrap()),
+        "dep-info names checkout a:\n{dep_info}"
+    );
+    assert!(
+        dep_info.contains(b.to_str().unwrap()),
+        "dep-info does not name checkout b:\n{dep_info}"
+    );
     Ok(())
 }

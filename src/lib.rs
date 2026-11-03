@@ -49,6 +49,10 @@ pub mod server;
 #[doc(hidden)]
 pub mod util;
 
+// For benches/sccache_bench.rs.
+#[doc(hidden)]
+pub use compiler::PreprocessorCacheEntry;
+
 use std::env;
 
 /// VERSION is the pkg version of sccache.

@@ -16,7 +16,7 @@ use opendal::Operator;
 use opendal::services::Webdav;
 use opendal_layer_logging::LoggingLayer;
 
-use super::http_client::set_user_agent;
+use super::http_client::new_http_transport;
 
 /// A cache that stores entries in a Webdav.
 pub struct WebdavCache;
@@ -40,7 +40,7 @@ impl WebdavCache {
             .disable_create_dir(disable_create_dir);
 
         let op = Operator::new(builder)?
-            .with_context(OperationContext::new().with_http_transport(set_user_agent()))
+            .with_context(OperationContext::new().with_http_transport(new_http_transport()?))
             .layer(LoggingLayer::default());
         Ok(op)
     }

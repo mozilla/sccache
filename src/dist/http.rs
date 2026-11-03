@@ -237,7 +237,7 @@ pub mod urls {
 
 #[cfg(feature = "dist-server")]
 mod server {
-    use crate::util::{new_reqwest_blocking_client, num_cpus};
+    use crate::util::{new_reqwest_blocking_builder, new_reqwest_blocking_client, num_cpus};
     use byteorder::{BigEndian, ReadBytesExt};
     use flate2::read::ZlibDecoder as ZlibReadDecoder;
     use rand::{RngCore, rngs::OsRng};
@@ -681,7 +681,10 @@ mod server {
                 check_server_auth,
             } = self;
             let requester = SchedulerRequester {
-                client: Mutex::new(new_reqwest_blocking_client()),
+                client: Mutex::new(
+                    new_reqwest_blocking_client()
+                        .context("failed to build scheduler HTTP client")?,
+                ),
             };
 
             macro_rules! check_server_auth_or_err {
@@ -732,7 +735,7 @@ mod server {
                     "Adding new certificate for {} to scheduler",
                     server_id.addr()
                 );
-                let mut client_builder = reqwest::blocking::ClientBuilder::new();
+                let mut client_builder = new_reqwest_blocking_builder()?;
                 // Add all the certificates we know about
                 client_builder = client_builder.add_root_certificate(
                     reqwest::Certificate::from_pem(&cert_pem)
@@ -936,18 +939,20 @@ mod server {
             let job_authorizer = JWTJobAuthorizer::new(jwt_key);
             let heartbeat_url = urls::scheduler_heartbeat_server(&scheduler_url);
             let requester = ServerRequester {
-                client: new_reqwest_blocking_client(),
+                client: new_reqwest_blocking_client()
+                    .context("failed to build scheduler requester HTTP client")?,
                 scheduler_url,
                 scheduler_auth: scheduler_auth.clone(),
             };
+            let heartbeat_client =
+                new_reqwest_blocking_client().context("failed to build heartbeat HTTP client")?;
 
             // TODO: detect if this panics
             thread::spawn(move || {
-                let client = new_reqwest_blocking_client();
                 loop {
                     trace!(target: "sccache_heartbeat", "Performing heartbeat");
                     match bincode_req(
-                        client
+                        heartbeat_client
                             .post(heartbeat_url.clone())
                             .bearer_auth(scheduler_auth.clone())
                             .bincode(&heartbeat_req)
@@ -1083,6 +1088,7 @@ mod client {
     };
     use super::urls;
     use crate::errors::*;
+    use crate::util::new_reqwest_client_builder;
 
     const REQUEST_TIMEOUT_SECS: u64 = 1200;
     const CONNECT_TIMEOUT_SECS: u64 = 5;
@@ -1110,7 +1116,7 @@ mod client {
         ) -> Result<Self> {
             let timeout = Duration::new(REQUEST_TIMEOUT_SECS, 0);
             let connect_timeout = Duration::new(CONNECT_TIMEOUT_SECS, 0);
-            let client = reqwest::ClientBuilder::new()
+            let client = new_reqwest_client_builder()?
                 .timeout(timeout)
                 .connect_timeout(connect_timeout)
                 // Disable connection pool to avoid broken connection
@@ -1138,7 +1144,7 @@ mod client {
             cert_digest: Vec<u8>,
             cert_pem: Vec<u8>,
         ) -> Result<()> {
-            let mut client_async_builder = reqwest::ClientBuilder::new();
+            let mut client_async_builder = new_reqwest_client_builder()?;
             // Add all the certificates we know about
             client_async_builder = client_async_builder.add_root_certificate(
                 reqwest::Certificate::from_pem(&cert_pem)

@@ -40,7 +40,7 @@ impl MockStorage {
             rx: Arc::new(Mutex::new(rx)),
             delay,
             preprocessor_cache_mode,
-            basedirs: Vec::new(),
+            basedirs: vec![],
         }
     }
 
@@ -82,13 +82,13 @@ impl Storage for MockStorage {
     async fn max_size(&self) -> Result<Option<u64>> {
         Ok(None)
     }
-    fn basedirs(&self) -> &[Vec<u8>] {
-        &self.basedirs
-    }
     fn preprocessor_cache_mode_config(&self) -> PreprocessorCacheModeConfig {
         PreprocessorCacheModeConfig {
             use_preprocessor_cache_mode: self.preprocessor_cache_mode,
             ..Default::default()
         }
+    }
+    fn basedirs(&self) -> &[Vec<u8>] {
+        &self.basedirs
     }
 }
