@@ -484,7 +484,11 @@ async fn get_source_files_and_env_deps<T>(
     env_vars: &[(OsString, OsString)],
     pool: &tokio::runtime::Handle,
     needs_dep_info_template: bool,
-) -> Result<(Vec<PathBuf>, Vec<(OsString, OsString)>, Option<DepInfoTemplate>)>
+) -> Result<(
+    Vec<PathBuf>,
+    Vec<(OsString, OsString)>,
+    Option<DepInfoTemplate>,
+)>
 where
     T: CommandCreatorSync,
 {
@@ -536,7 +540,11 @@ fn parse_dep_file<T, U>(
     file: T,
     cwd: U,
     needs_template: bool,
-) -> Result<(Vec<PathBuf>, Vec<(OsString, OsString)>, Option<DepInfoTemplate>)>
+) -> Result<(
+    Vec<PathBuf>,
+    Vec<(OsString, OsString)>,
+    Option<DepInfoTemplate>,
+)>
 where
     T: AsRef<Path>,
     U: AsRef<Path>,
@@ -1663,28 +1671,26 @@ where
         // Procedural macros can observe the physical working directory and inherited environment
         // variables without reporting them in rustc dep-info. Conservatively retain physical paths
         // whenever an explicit extern or dynamic crate search entry may load one.
-        let can_normalize_paths = !basedirs.is_empty()
-            && self.parsed_args.externs.is_empty()
-            && {
-                let paths = self.parsed_args.crate_link_paths.clone();
-                pool.spawn_blocking(move || {
-                    !paths.iter().any(|path| {
-                        fs::read_dir(path)
-                            .map(|mut entries| {
-                                entries.any(|entry| {
-                                    entry.map_or(true, |entry| {
-                                        entry
-                                            .path()
-                                            .extension()
-                                            .is_some_and(|ext| ext == DLL_EXTENSION)
-                                    })
+        let can_normalize_paths = !basedirs.is_empty() && self.parsed_args.externs.is_empty() && {
+            let paths = self.parsed_args.crate_link_paths.clone();
+            pool.spawn_blocking(move || {
+                !paths.iter().any(|path| {
+                    fs::read_dir(path)
+                        .map(|mut entries| {
+                            entries.any(|entry| {
+                                entry.map_or(true, |entry| {
+                                    entry
+                                        .path()
+                                        .extension()
+                                        .is_some_and(|ext| ext == DLL_EXTENSION)
                                 })
                             })
-                            .unwrap_or(true)
-                    })
+                        })
+                        .unwrap_or(true)
                 })
-                .await?
-            };
+            })
+            .await?
+        };
         let normalized_basedirs: &[Vec<u8>] = if can_normalize_paths { basedirs } else { &[] };
         // TODO: this doesn't produce correct arguments if they should be concatenated - should use iter_os_strings
         let os_string_arguments: Vec<(OsString, Option<OsString>)> = self
@@ -1732,7 +1738,7 @@ where
                 &cwd,
                 &env_vars,
                 pool,
-                !basedirs.is_empty(),
+                can_normalize_paths && self.parsed_args.dep_info.is_some(),
             )
             .await?;
             let source_hashes = hash_all(&source_files, &source_hashes_pool).await?;
@@ -1810,6 +1816,7 @@ where
 
         // If you change any of the inputs to the hash, you should change `CACHE_VERSION`.
         let mut m = Digest::new();
+        let mut key_normalized = false;
         // Hash inputs:
         // 1. A version
         m.update(CACHE_VERSION);
@@ -1847,6 +1854,7 @@ where
                 .partition(|&(arg, _)| arg == "--cfg");
             sortables.sort();
             let mut hash_arg = |normalized: bool, value: &[u8]| {
+                key_normalized |= normalized;
                 normalized.hash(&mut HashToDigest { digest: &mut m });
                 value.hash(&mut HashToDigest { digest: &mut m });
             };
@@ -1878,6 +1886,7 @@ where
             .zip(source_hashes)
             .map(|(path, hash)| {
                 if let Some(remapped) = remap_input_path(path) {
+                    key_normalized = true;
                     (true, remapped, path.as_os_str().to_owned(), hash)
                 } else {
                     (
@@ -1958,12 +1967,14 @@ where
             } else {
                 val_bytes
             };
+            key_normalized |= normalized != val_bytes;
             (normalized != val_bytes).hash(&mut HashToDigest { digest: &mut m });
             normalized.hash(&mut HashToDigest { digest: &mut m });
         }
         // 9. The cwd of the compile. This will wind up in the rlib.
         let cwd_bytes = cwd.as_os_str().as_encoded_bytes();
         if let Some(remapped) = remap_input_path(&cwd) {
+            key_normalized = true;
             true.hash(&mut HashToDigest { digest: &mut m });
             remapped
                 .as_encoded_bytes()
@@ -2083,7 +2094,7 @@ where
             .chain(abs_externs)
             .chain(abs_staticlibs)
             .collect();
-        let dep_info_template = dep_info.as_ref().and(dep_info_template);
+        let dep_info_template = dep_info_template.filter(|_| key_normalized);
 
         Ok(HashResult {
             key: m.finish(),
@@ -4561,6 +4572,91 @@ proc_macro false
         "--crate-type",
         "lib",
     ];
+
+    #[test]
+    fn test_dep_info_postprocessing_requires_normalized_key() {
+        for (basedirs_enabled, remap_enabled, explicit_extern, expect_rewrite) in [
+            (false, false, false, false),
+            (false, true, false, false),
+            (true, false, false, false),
+            (true, true, true, false),
+            (true, true, false, true),
+        ] {
+            let f = TestFixture::new();
+            f.touch("foo.rs").unwrap();
+            f.touch("dependency.rlib").unwrap();
+            fs::create_dir(f.tempdir.path().join("out")).unwrap();
+            let cached = "out/foo.d: old.rs\n\nout/foo.rlib: old.rs\n\nold.rs:\n";
+            let dep_file = f.tempdir.path().join("out/foo.d");
+            fs::write(&dep_file, cached).unwrap();
+            let remap = format!("{}=/workspace", f.tempdir.path().display());
+            let mut args = vec![
+                "--emit",
+                "link,dep-info",
+                "foo.rs",
+                "--out-dir",
+                "out",
+                "--crate-name",
+                "foo",
+                "--crate-type",
+                "lib",
+            ];
+            if remap_enabled {
+                args.extend(["--remap-path-prefix", &remap]);
+            }
+            if explicit_extern {
+                args.extend(["--extern", "dependency=dependency.rlib"]);
+            }
+            let args = args.iter().map(OsString::from).collect::<Vec<_>>();
+            let CompilerArguments::Ok(parsed_args) = parse_arguments(&args, f.tempdir.path())
+            else {
+                panic!("failed to parse arguments");
+            };
+            let mut hasher = RustHasher {
+                executable: "rustc".into(),
+                host: "x86-64-unknown-unknown-unknown".to_owned(),
+                version: TEST_RUSTC_VERSION.to_owned(),
+                sysroot: f.tempdir.path().join("sysroot"),
+                compiler_shlibs_digests: vec![],
+                #[cfg(feature = "dist-client")]
+                rlib_dep_reader: None,
+                parsed_args,
+            };
+            let creator = new_creator();
+            mock_dep_info(&creator, &["foo.rs"], &[]);
+            mock_file_names(&creator, &["foo.rlib"]);
+            let runtime = single_threaded_runtime();
+            let basedirs = if basedirs_enabled {
+                vec![basedir_for(f.tempdir.path())]
+            } else {
+                vec![]
+            };
+            let result = hasher
+                .generate_hash_key(
+                    &creator,
+                    f.tempdir.path().to_owned(),
+                    vec![],
+                    false,
+                    runtime.handle(),
+                    false,
+                    Arc::new(MockStorage::new(None, false).with_basedirs(basedirs)),
+                    CacheControl::Default,
+                )
+                .wait()
+                .unwrap();
+            result
+                .compilation
+                .postprocess_cache_hit(f.tempdir.path())
+                .unwrap();
+            let actual = fs::read_to_string(&dep_file).unwrap();
+            if expect_rewrite {
+                assert!(actual.contains("foo.rs"));
+                assert!(!actual.contains("old.rs"));
+            } else {
+                assert_eq!(actual, cached);
+            }
+        }
+    }
 
     #[test]
     fn test_rewrite_cached_dep_info_targets() {
