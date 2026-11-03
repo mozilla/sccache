@@ -483,7 +483,8 @@ async fn get_source_files_and_env_deps<T>(
     cwd: &Path,
     env_vars: &[(OsString, OsString)],
     pool: &tokio::runtime::Handle,
-) -> Result<(Vec<PathBuf>, Vec<(OsString, OsString)>, DepInfoTemplate)>
+    needs_dep_info_template: bool,
+) -> Result<(Vec<PathBuf>, Vec<(OsString, OsString)>, Option<DepInfoTemplate>)>
 where
     T: CommandCreatorSync,
 {
@@ -510,7 +511,7 @@ where
     let name2 = crate_name.to_owned();
     let parsed = pool
         .spawn_blocking(move || {
-            parse_dep_file(&dep_file, &cwd)
+            parse_dep_file(&dep_file, &cwd, needs_dep_info_template)
                 .with_context(|| format!("Failed to parse dep info for {}", name2))
         })
         .await?;
@@ -534,7 +535,8 @@ where
 fn parse_dep_file<T, U>(
     file: T,
     cwd: U,
-) -> Result<(Vec<PathBuf>, Vec<(OsString, OsString)>, DepInfoTemplate)>
+    needs_template: bool,
+) -> Result<(Vec<PathBuf>, Vec<(OsString, OsString)>, Option<DepInfoTemplate>)>
 where
     T: AsRef<Path>,
     U: AsRef<Path>,
@@ -542,6 +544,9 @@ where
     let mut f = fs::File::open(file.as_ref())?;
     let mut deps = String::new();
     f.read_to_string(&mut deps)?;
+    if !needs_template {
+        return Ok((parse_dep_info(&deps, cwd), parse_env_dep_info(&deps), None));
+    }
     let (target_line, tail) = deps
         .split_once('\n')
         .context("Rust dep-info has no target line")?;
@@ -556,10 +561,10 @@ where
     Ok((
         source_files,
         parse_env_dep_info(&deps),
-        DepInfoTemplate {
+        Some(DepInfoTemplate {
             target_dependencies,
             tail: tail.to_owned(),
-        },
+        }),
     ))
 }
 
@@ -1721,6 +1726,7 @@ where
                 &cwd,
                 &env_vars,
                 pool,
+                !basedirs.is_empty(),
             )
             .await?;
             let source_hashes = hash_all(&source_files, &source_hashes_pool).await?;
@@ -2079,7 +2085,7 @@ where
             .chain(abs_externs)
             .chain(abs_staticlibs)
             .collect();
-        let dep_info_template = dep_info.as_ref().map(|_| dep_info_template);
+        let dep_info_template = dep_info.as_ref().and(dep_info_template);
 
         Ok(HashResult {
             key: m.finish(),
@@ -2287,11 +2293,7 @@ impl<T: CommandCreatorSync> Compilation<T> for RustCompilation {
     }
 
     fn postprocess_cache_hit(&self, cwd: &Path) -> Result<()> {
-        if let Some(dep_info) = &self.dep_info {
-            let template = self
-                .dep_info_template
-                .as_ref()
-                .context("Missing local Rust dep-info template")?;
+        if let (Some(dep_info), Some(template)) = (&self.dep_info, &self.dep_info_template) {
             rewrite_dep_info_targets(dep_info, &self.outputs, cwd, template)?;
         }
         Ok(())
@@ -3737,11 +3739,29 @@ abc def.rs:
         )
         .unwrap();
 
-        let (files, _, template) = parse_dep_file(&dep_file, tempdir.path()).unwrap();
+        let (files, _, template) = parse_dep_file(&dep_file, tempdir.path(), true).unwrap();
+        let template = template.unwrap();
 
         assert_eq!(vec![tempdir.path().join("source.rs")], files);
         assert_eq!(": source.rs\n", template.target_dependencies);
         assert_eq!("\nsource.rs:\n", template.tail);
+    }
+
+    #[test]
+    fn test_parse_dep_file_only_validates_target_for_template() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let dep_file = tempdir.path().join("deps.d");
+        fs::write(&dep_file, "other: source.rs\n\n# env-dep:FOO=bar\n").unwrap();
+
+        let (files, env, template) = parse_dep_file(&dep_file, tempdir.path(), false).unwrap();
+        assert_eq!(files, vec![tempdir.path().join("source.rs")]);
+        assert_eq!(env, vec![("FOO".into(), "bar".into())]);
+        assert!(template.is_none());
+        assert!(parse_dep_file(&dep_file, tempdir.path(), true).is_err());
+
+        fs::write(&dep_file, "").unwrap();
+        assert!(parse_dep_file(&dep_file, tempdir.path(), false).is_ok());
+        assert!(parse_dep_file(&dep_file, tempdir.path(), true).is_err());
     }
 
     #[test]
