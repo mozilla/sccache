@@ -63,7 +63,7 @@ use std::time;
 use crate::errors::*;
 
 #[cfg(not(windows))]
-fn strip_basedir_prefix<'a>(value: &'a [u8], basedirs: &[Vec<u8>]) -> Cow<'a, [u8]> {
+fn strip_basedir_prefix<'a>(value: &'a [u8], basedirs: &[Vec<u8>]) -> &'a [u8] {
     let prefix_len = basedirs
         .iter()
         .filter_map(|basedir| {
@@ -74,13 +74,13 @@ fn strip_basedir_prefix<'a>(value: &'a [u8], basedirs: &[Vec<u8>]) -> Cow<'a, [u
         })
         .max()
         .unwrap_or(0);
-    Cow::Borrowed(&value[prefix_len..])
+    &value[prefix_len..]
 }
 
 #[cfg(windows)]
-fn strip_basedir_prefix<'a>(value: &'a [u8], basedirs: &[Vec<u8>]) -> Cow<'a, [u8]> {
+fn strip_basedir_prefix<'a>(value: &'a [u8], basedirs: &[Vec<u8>]) -> &'a [u8] {
     if !value.is_ascii() {
-        return Cow::Borrowed(value);
+        return value;
     }
     let normalized = crate::util::normalize_win_path(value);
     let prefix_len = basedirs
@@ -96,11 +96,7 @@ fn strip_basedir_prefix<'a>(value: &'a [u8], basedirs: &[Vec<u8>]) -> Cow<'a, [u
         })
         .max()
         .unwrap_or(0);
-    if prefix_len == 0 {
-        Cow::Borrowed(value)
-    } else {
-        Cow::Borrowed(&value[prefix_len..])
-    }
+    &value[prefix_len..]
 }
 
 fn normalize_arg_value<'a>(
@@ -117,7 +113,7 @@ fn normalize_arg_value<'a>(
         if stripped.len() == separator {
             return Cow::Borrowed(value);
         }
-        let mut result = stripped.into_owned();
+        let mut result = stripped.to_vec();
         result.extend_from_slice(&value[separator..]);
         return Cow::Owned(result);
     }
@@ -1951,10 +1947,9 @@ where
             let normalized = if normalize_cargo_paths && is_path_cargo_env(var) {
                 strip_basedir_prefix(val_bytes, basedirs)
             } else {
-                Cow::Borrowed(val_bytes)
+                val_bytes
             };
-            let normalized_bytes: &[u8] = &normalized;
-            (normalized_bytes != val_bytes).hash(&mut HashToDigest { digest: &mut m });
+            (normalized != val_bytes).hash(&mut HashToDigest { digest: &mut m });
             normalized.hash(&mut HashToDigest { digest: &mut m });
         }
         // 9. The cwd of the compile. This will wind up in the rlib.
@@ -4897,14 +4892,14 @@ proc_macro false
         }
 
         assert_eq!(
-            &*super::strip_basedir_prefix(
+            super::strip_basedir_prefix(
                 b"/home/user/src/lib.rs",
                 &[b"/home/".to_vec(), b"/home/user/".to_vec()]
             ),
             b"src/lib.rs"
         );
         assert_eq!(
-            &*super::strip_basedir_prefix(b"/other/path", &basedirs),
+            super::strip_basedir_prefix(b"/other/path", &basedirs),
             b"/other/path"
         );
         assert!(super::is_path_cargo_env(&"CARGO_MANIFEST_DIR".into()));
@@ -4969,11 +4964,11 @@ proc_macro false
     fn test_windows_basedir_matching_preserves_suffix() {
         let basedirs = [b"c:/work/repo/".to_vec()];
         assert_eq!(
-            &*super::strip_basedir_prefix(b"C:\\Work\\Repo\\MixedCase", &basedirs),
+            super::strip_basedir_prefix(b"C:\\Work\\Repo\\MixedCase", &basedirs),
             b"MixedCase"
         );
         assert_eq!(
-            &*super::strip_basedir_prefix(b"C:\\Work\\Repo\\\xc4\xb0", &basedirs),
+            super::strip_basedir_prefix(b"C:\\Work\\Repo\\\xc4\xb0", &basedirs),
             b"C:\\Work\\Repo\\\xc4\xb0"
         );
         let remap = vec![(
