@@ -332,7 +332,7 @@ mod server {
             now.time().minute() as u8,
             now.time().second() as u8,
         )
-        .unwrap();
+        .context("failed to create certificate not-before timestamp")?;
         let end = UTCDate::new(
             expires.year() as u16,
             expires.month() as u8,
@@ -341,7 +341,7 @@ mod server {
             expires.time().minute() as u8,
             expires.time().second() as u8,
         )
-        .unwrap();
+        .context("failed to create certificate not-after timestamp")?;
         let extended_key_usage = ExtendedKeyUsage::new(vec![picky::oids::kp_server_auth()]);
         let name = addr.to_string();
         let issuer_name = DirectoryName::new_common_name(name.clone());
