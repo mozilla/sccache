@@ -1890,25 +1890,17 @@ where
             })
             .collect::<Vec<_>>();
         source_inputs.sort();
-        for index in 0..source_inputs.len() {
-            let (normalized, path, original_path, hash) = &source_inputs[index];
-            let previous_is_duplicate = index > 0
-                && normalized == &source_inputs[index - 1].0
-                && path == &source_inputs[index - 1].1;
-            let next_is_duplicate =
-                source_inputs
-                    .get(index + 1)
-                    .is_some_and(|(other_normalized, other_path, _, _)| {
-                        normalized == other_normalized && path == other_path
-                    });
-            let has_duplicate_path = previous_is_duplicate || next_is_duplicate;
-            normalized.hash(&mut HashToDigest { digest: &mut m });
-            path.hash(&mut HashToDigest { digest: &mut m });
-            has_duplicate_path.hash(&mut HashToDigest { digest: &mut m });
-            if has_duplicate_path {
-                original_path.hash(&mut HashToDigest { digest: &mut m });
+        for group in source_inputs.chunk_by(|a, b| a.0 == b.0 && a.1 == b.1) {
+            let has_duplicate_path = group.len() > 1;
+            for (normalized, path, original_path, hash) in group {
+                normalized.hash(&mut HashToDigest { digest: &mut m });
+                path.hash(&mut HashToDigest { digest: &mut m });
+                has_duplicate_path.hash(&mut HashToDigest { digest: &mut m });
+                if has_duplicate_path {
+                    original_path.hash(&mut HashToDigest { digest: &mut m });
+                }
+                m.update(hash.as_bytes());
             }
-            m.update(hash.as_bytes());
         }
         for h in extern_hashes
             .into_iter()
