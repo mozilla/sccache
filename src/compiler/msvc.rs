@@ -3558,7 +3558,6 @@ mod test {
             );
             cmd.args[0].clone()
         };
-        // The preprocessor cache finds the included files through the #line markers, which -EP drops.
         assert_eq!(preprocess_flag(true), "-E");
         assert_eq!(preprocess_flag(false), "-EP");
     }
