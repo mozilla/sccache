@@ -477,8 +477,7 @@ const CACHE_VERSION: &[u8] = b"7";
 /// Run `rustc --emit=dep-info` to get the list of source files and env-deps.
 async fn get_source_files_and_env_deps<T>(
     creator: &T,
-    crate_name: &str,
-    executable: &Path,
+    hasher: &RustHasher,
     arguments: &[OsString],
     cwd: &Path,
     env_vars: &[(OsString, OsString)],
@@ -492,6 +491,8 @@ async fn get_source_files_and_env_deps<T>(
 where
     T: CommandCreatorSync,
 {
+    let crate_name = &hasher.parsed_args.crate_name;
+    let executable = &hasher.executable;
     let start = time::Instant::now();
     // Get the full list of source files from rustc's dep-info.
     let temp_dir = tempfile::Builder::new()
@@ -1732,8 +1733,7 @@ where
         let source_files_and_hashes_and_env_deps = async {
             let (source_files, env_deps, dep_info_template) = get_source_files_and_env_deps(
                 creator,
-                &self.parsed_args.crate_name,
-                &self.executable,
+                self,
                 &filtered_arguments,
                 &cwd,
                 &env_vars,
