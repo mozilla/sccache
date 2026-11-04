@@ -3101,6 +3101,78 @@ mod tests {
         assert!(request_basedirs(&env("relative"), &fallback).is_err());
     }
 
+    #[test]
+    fn request_basedirs_use_the_last_value() {
+        #[cfg(target_os = "windows")]
+        let (first, last, normalized) = (r"C:\first", r"C:\last", b"c:/last/");
+        #[cfg(not(target_os = "windows"))]
+        let (first, last, normalized) = ("/first", "/last", b"/last/");
+        let env_vars: Vec<(OsString, OsString)> = vec![
+            ("SCCACHE_BASEDIRS".into(), first.into()),
+            ("SCCACHE_BASEDIRS_EXTRA".into(), "relative".into()),
+            ("SCCACHE_BASEDIRS".into(), last.into()),
+        ];
+
+        assert_eq!(
+            request_basedirs(&env_vars, &[]).unwrap(),
+            [normalized.to_vec()]
+        );
+    }
+
+    /// Whether `dep` compiled in a second root hits the entry the first root wrote.
+    fn second_root_hits(file_basedirs: bool, request_basedirs: Option<&str>) -> bool {
+        use crate::cache::disk::DiskCache;
+        use crate::config::PreprocessorCacheModeConfig;
+
+        let roots = [TestFixture::new(), TestFixture::new()];
+        let both = env::join_paths(roots.iter().map(|f| f.tempdir.path())).unwrap();
+        let runtime = Runtime::new().unwrap();
+        let storage = Arc::new(DiskCache::new(
+            roots[0].tempdir.path().join("cache"),
+            u64::MAX,
+            runtime.handle(),
+            PreprocessorCacheModeConfig::default(),
+            CacheMode::ReadWrite,
+            if file_basedirs {
+                config::parse_basedirs_env(&both).unwrap()
+            } else {
+                vec![]
+            },
+        ));
+        let service = MockService::mock_with_storage(storage, runtime.handle().clone());
+
+        for f in &roots {
+            let rustc = f.mk_bin("rustc").unwrap();
+            std::fs::create_dir(f.tempdir.path().join("lib")).unwrap();
+            std::fs::create_dir(f.tempdir.path().join("bin")).unwrap();
+            f.touch("lib.rs").unwrap();
+            mock_rustc_cache_miss(&service.creator, f);
+            let mut compile = dep_compile(f, &rustc);
+            if let Some(value) = request_basedirs {
+                let value = value.replace("{both}", both.to_str().unwrap());
+                compile
+                    .env_vars
+                    .push(("SCCACHE_BASEDIRS".into(), value.into()));
+            }
+            let (_, finished) = compile_body(&runtime, &service, compile);
+            assert_eq!(Some(0), finished.retcode);
+        }
+
+        let stats = runtime.block_on(service.take_stats());
+        stats.cache_hits.counts.values().sum::<u64>() == 1
+    }
+
+    #[test_case::test_case(false, None => false ; "no basedirs")]
+    #[test_case::test_case(false, Some("{both}") => true ; "request basedirs")]
+    #[test_case::test_case(true, None => true ; "config file basedirs")]
+    #[test_case::test_case(true, Some("") => false ; "empty request value clears config file basedirs")]
+    fn request_basedirs_reach_the_hasher(
+        file_basedirs: bool,
+        request_basedirs: Option<&str>,
+    ) -> bool {
+        second_root_hits(file_basedirs, request_basedirs)
+    }
+
     /// An invalid request value runs the compiler uncached and shows in the stats.
     #[test]
     fn invalid_request_basedirs_compile_uncached() {

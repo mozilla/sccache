@@ -1893,6 +1893,22 @@ fn request_basedirs_preserve_non_utf8_paths() {
 }
 
 #[test]
+fn request_basedirs_keep_the_first_of_equal_paths() {
+    #[cfg(target_os = "windows")]
+    let (value, expected) = (
+        OsStr::new(r"C:\root;c:/other;c:/root/;C:/root/./"),
+        vec![b"c:/root/".to_vec(), b"c:/other/".to_vec()],
+    );
+    #[cfg(not(target_os = "windows"))]
+    let (value, expected) = (
+        OsStr::new("/root:/other:/root/:/root/./"),
+        vec![b"/root/".to_vec(), b"/other/".to_vec()],
+    );
+
+    assert_eq!(parse_basedirs_env(value).unwrap(), expected);
+}
+
+#[test]
 #[cfg(not(target_os = "windows"))]
 fn test_deserialize_basedirs() {
     // Test array of paths
