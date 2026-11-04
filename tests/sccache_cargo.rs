@@ -788,7 +788,10 @@ fn test_rust_cargo_basedirs_other_checkout() -> Result<()> {
     restart_sccache(
         &test_info,
         // The launcher and the daemon both ignore a startup value.
-        Some(vec![("SCCACHE_BASEDIRS".into(), "relative/startup-value".into())]),
+        Some(vec![(
+            "SCCACHE_BASEDIRS".into(),
+            "relative/startup-value".into(),
+        )]),
     )?;
 
     write_out_dir_crate(&a)?;

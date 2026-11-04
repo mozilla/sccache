@@ -2722,10 +2722,7 @@ LLVM version: 6.0",
 
         let basedirs = [b"/checkout/a/".to_vec(), b"/checkout/b/".to_vec()];
         assert_ne!(key("/checkout/a", &[]), key("/checkout/b", &[]));
-        assert_eq!(
-            key("/checkout/a", &basedirs),
-            key("/checkout/b", &basedirs)
-        );
+        assert_eq!(key("/checkout/a", &basedirs), key("/checkout/b", &basedirs));
     }
 
     #[test_case(true ; "with preprocessor cache")]
