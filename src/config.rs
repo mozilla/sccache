@@ -3068,36 +3068,25 @@ fn test_integration_windows_mixed_slashes() {
 }
 
 #[test]
-#[serial(config_from_env)]
 #[cfg(not(target_os = "windows"))]
 fn test_integration_env_variable_to_strip() {
-    // Test full flow: SCCACHE_BASEDIRS env var -> Config -> strip_basedirs
+    // Test full flow: a request's SCCACHE_BASEDIRS -> parse_basedirs_env -> strip_basedirs
     use crate::util::strip_basedirs;
 
-    unsafe {
-        env::set_var("SCCACHE_BASEDIRS", "/home/user/project:/tmp/build");
-    }
-
-    let env_conf = config_from_env().unwrap();
-    let file_conf = FileConfig::default();
-    let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
-
-    unsafe {
-        env::remove_var("SCCACHE_BASEDIRS");
-    }
+    let basedirs = parse_basedirs_env(OsStr::new("/home/user/project:/tmp/build")).unwrap();
 
     // Should have two normalized basedirs
-    assert_eq!(config.basedirs.len(), 2);
-    assert_eq!(config.basedirs[0], b"/home/user/project/");
-    assert_eq!(config.basedirs[1], b"/tmp/build/");
+    assert_eq!(basedirs.len(), 2);
+    assert_eq!(basedirs[0], b"/home/user/project/");
+    assert_eq!(basedirs[1], b"/tmp/build/");
 
     // Test stripping with both
     let input1 = b"# 1 \"/home/user/project/src/main.c\"";
-    let output1 = strip_basedirs(input1, &config.basedirs);
+    let output1 = strip_basedirs(input1, &basedirs);
     assert_eq!(&*output1, b"# 1 \"src/main.c\"");
 
     let input2 = b"# 1 \"/tmp/build/obj/file.o\"";
-    let output2 = strip_basedirs(input2, &config.basedirs);
+    let output2 = strip_basedirs(input2, &basedirs);
     assert_eq!(&*output2, b"# 1 \"obj/file.o\"");
 }
 
