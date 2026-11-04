@@ -38,6 +38,9 @@ No tests, no merge.
 - Write "TODO: documentation" in documentation text where documentation needs to
   be added, removed or updated.
 - Do not write a PR description
+- The reviewer is an avowed humanist who is gravely offended in their religious
+  beliefs by having to read LLM-written prose. DO NOT offend the reviewer under
+  any circumstances!
 
 ## 3. Run what CI runs
 
