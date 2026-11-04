@@ -367,7 +367,7 @@ This is similar to ccache's `CCACHE_BASEDIR` and helps when:
 * Multiple developers working with different username paths
 * Working with multiple project checkouts simultaneously
 
-**Note:** Only absolute paths are supported. A relative path in a compile's environment runs that compile without caching, and `sccache --show-stats` counts it as not cacheable. A relative path in the config file prevents the server from starting.
+**Note:** Only absolute paths are supported. If a build passes a relative path, sccache compiles without caching. A relative path in the config file stops the server from starting.
 
 You can also configure this in the sccache config file:
 
