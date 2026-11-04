@@ -13,7 +13,7 @@
 // limitations under the License.SCCACHE_MAX_FRAME_LENGTH
 
 use crate::cache::readonly::ReadOnlyStorage;
-use crate::cache::{CacheMode, Storage, storage_from_config, with_basedirs};
+use crate::cache::{CacheMode, Storage, storage_from_config};
 use crate::compiler::PreprocessorCacheEntry;
 use crate::compiler::{
     CacheControl, CompileResult, Compiler, CompilerArguments, CompilerHasher, CompilerKind,
@@ -89,6 +89,21 @@ fn is_basedirs_env(name: &OsStr) -> bool {
     #[cfg(not(target_os = "windows"))]
     {
         name == "SCCACHE_BASEDIRS"
+    }
+}
+
+/// The request's own `SCCACHE_BASEDIRS` when it sets one, `fallback` otherwise.
+fn request_basedirs(
+    env_vars: &[(OsString, OsString)],
+    fallback: &[Vec<u8>],
+) -> Result<Vec<Vec<u8>>> {
+    match env_vars
+        .iter()
+        .rev()
+        .find(|(name, _)| is_basedirs_env(name))
+    {
+        Some((_, value)) => config::parse_basedirs_env(value),
+        None => Ok(fallback.to_vec()),
     }
 }
 
@@ -1293,29 +1308,20 @@ where
         let cmd = compile.args;
         let cwd: PathBuf = compile.cwd.into();
         let env_vars = compile.env_vars;
-        let storage = self.storage_for_request(&env_vars)?;
+        let basedirs = self.basedirs_for_request(&env_vars)?;
         let me = self.clone();
 
         let info = self
             .compiler_info(exe.into(), cwd.clone(), &cmd, &env_vars)
             .await;
-        Ok(me.check_compiler(info, cmd, cwd, env_vars, storage).await)
+        Ok(me.check_compiler(info, cmd, cwd, env_vars, basedirs).await)
     }
 
-    pub(crate) fn storage_for_request(
+    pub(crate) fn basedirs_for_request(
         &self,
         env_vars: &[(OsString, OsString)],
-    ) -> Result<Arc<dyn Storage>> {
-        let Some((_, value)) = env_vars
-            .iter()
-            .rev()
-            .find(|(name, _)| is_basedirs_env(name))
-        else {
-            return Ok(self.storage.clone());
-        };
-
-        let basedirs = config::parse_basedirs_env(value)?;
-        Ok(with_basedirs(self.storage.clone(), basedirs))
+    ) -> Result<Vec<Vec<u8>>> {
+        request_basedirs(env_vars, self.storage.basedirs())
     }
 
     /// Run a compile entirely in the current process (used in client-side mode).
@@ -1519,7 +1525,7 @@ where
         cmd: Vec<OsString>,
         cwd: PathBuf,
         env_vars: Vec<(OsString, OsString)>,
-        storage: Arc<dyn Storage>,
+        basedirs: Vec<Vec<u8>>,
     ) -> SccacheResponse {
         match compiler {
             Err(e) => {
@@ -1545,7 +1551,7 @@ where
                             me.notification_tx = Some(tx);
                             let finished = util::spawn_on(
                                 &self.rt,
-                                me.start_compile_task(c, hasher, cmd, cwd, env_vars, storage),
+                                me.start_compile_task(c, hasher, cmd, cwd, env_vars, basedirs),
                             );
                             rx.map(|chunk| Ok(Response::ArtifactNotification(chunk)))
                                 .chain(futures::stream::once(async move {
@@ -1555,7 +1561,7 @@ where
                         } else {
                             futures::stream::once(
                                 self.clone()
-                                    .start_compile_task(c, hasher, cmd, cwd, env_vars, storage)
+                                    .start_compile_task(c, hasher, cmd, cwd, env_vars, basedirs)
                                     .map_ok(Response::CompileFinished),
                             )
                             .boxed()
@@ -1602,7 +1608,7 @@ where
         arguments: Vec<OsString>,
         cwd: PathBuf,
         env_vars: Vec<(OsString, OsString)>,
-        storage: Arc<dyn Storage>,
+        basedirs: Vec<Vec<u8>>,
     ) -> Result<CompileFinished> {
         self.stats.lock().await.requests_executed += 1;
 
@@ -1643,7 +1649,8 @@ where
                     &me,
                     client,
                     me.creator.clone(),
-                    storage,
+                    me.storage.clone(),
+                    &basedirs,
                     arguments,
                     cwd,
                     env_vars,
@@ -3062,6 +3069,24 @@ mod tests {
             other => panic!("body must end with CompileFinished, got {other:?}"),
         };
         (body, finished)
+    }
+
+    #[test]
+    fn request_basedirs_override_the_fallback() {
+        #[cfg(target_os = "windows")]
+        let (fallback, request, normalized) = (b"c:/fallback/", r"C:\request", b"c:/request/");
+        #[cfg(not(target_os = "windows"))]
+        let (fallback, request, normalized) = (b"/fallback/", "/request", b"/request/");
+        let fallback = [fallback.to_vec()];
+        let env = |value: &str| vec![(OsString::from("SCCACHE_BASEDIRS"), OsString::from(value))];
+
+        assert_eq!(request_basedirs(&[], &fallback).unwrap(), fallback);
+        assert_eq!(
+            request_basedirs(&env(request), &fallback).unwrap(),
+            [normalized.to_vec()]
+        );
+        assert!(request_basedirs(&env(""), &fallback).unwrap().is_empty());
+        assert!(request_basedirs(&env("relative"), &fallback).is_err());
     }
 
     #[test]
