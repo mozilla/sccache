@@ -1474,7 +1474,8 @@ fn decode_with_codepage(codepage: u32, buf: &[u8]) -> io::Result<String> {
     String::from_utf16(&wide).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
-/// Reads the text stream as a unicode buffer, prioritizing UTF-8, UTF-16 (big and little endian), and falling back on ISO 8859-1.
+/// Reads text with a UTF-8 or UTF-16 BOM; without a BOM, uses the Windows ANSI code page
+/// (GetACP) on Windows and Windows-1252 on other platforms.
 fn read_text<R>(reader: &mut R) -> io::Result<String>
 where
     R: Read,
@@ -3388,6 +3389,13 @@ mod test {
     }
 
     #[test]
+    #[cfg(windows)]
+    fn test_responsefile_decode_with_codepage_932_invalid_sequence() {
+        assert!(decode_with_codepage(932, b"\x82").is_err());
+    }
+
+    #[test]
+    #[cfg(not(windows))]
     fn test_responsefile_encoding_win1252() {
         let td = tempfile::Builder::new()
             .prefix("sccache")
@@ -3433,6 +3441,15 @@ mod test {
         assert!(preprocessor_args.is_empty());
         assert!(common_args.is_empty());
         assert!(!msvc_show_includes);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_responsefile_encoding_win1252_windows() {
+        assert_eq!(
+            decode_with_codepage(1252, b"-c foo\x80.c -o foo.o").unwrap(),
+            "-c foo€.c -o foo.o"
+        );
     }
 
     #[test]
