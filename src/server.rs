@@ -1308,13 +1308,12 @@ where
         let cmd = compile.args;
         let cwd: PathBuf = compile.cwd.into();
         let env_vars = compile.env_vars;
-        let basedirs = self.basedirs_for_request(&env_vars)?;
         let me = self.clone();
 
         let info = self
             .compiler_info(exe.into(), cwd.clone(), &cmd, &env_vars)
             .await;
-        Ok(me.check_compiler(info, cmd, cwd, env_vars, basedirs).await)
+        Ok(me.check_compiler(info, cmd, cwd, env_vars).await)
     }
 
     pub(crate) fn basedirs_for_request(
@@ -1525,7 +1524,6 @@ where
         cmd: Vec<OsString>,
         cwd: PathBuf,
         env_vars: Vec<(OsString, OsString)>,
-        basedirs: Vec<Vec<u8>>,
     ) -> SccacheResponse {
         match compiler {
             Err(e) => {
@@ -1542,6 +1540,20 @@ where
                 match c.parse_arguments(&cmd, &cwd, &env_vars) {
                     CompilerArguments::Ok(hasher) => {
                         debug!("parse_arguments: Ok: {:?}", cmd);
+
+                        let basedirs = match self.basedirs_for_request(&env_vars) {
+                            Ok(basedirs) => basedirs,
+                            Err(e) => {
+                                warn!("Not caching {cmd:?}: invalid SCCACHE_BASEDIRS: {e:#}");
+                                self.stats
+                                    .lock()
+                                    .await
+                                    .record_not_cacheable("SCCACHE_BASEDIRS", None);
+                                return Message::WithoutBody(Response::Compile(
+                                    CompileResponse::UnhandledCompile,
+                                ));
+                            }
+                        };
 
                         let body = if c.kind() == CompilerKind::Rust {
                             // Only rustc emits artifact notifications,
@@ -3087,6 +3099,31 @@ mod tests {
         );
         assert!(request_basedirs(&env(""), &fallback).unwrap().is_empty());
         assert!(request_basedirs(&env("relative"), &fallback).is_err());
+    }
+
+    /// An invalid request value runs the compiler uncached and shows in the stats.
+    #[test]
+    fn invalid_request_basedirs_compile_uncached() {
+        let (_f, runtime, service, mut compile) = rustc_miss_fixture();
+        compile
+            .env_vars
+            .push(("SCCACHE_BASEDIRS".into(), "relative/root".into()));
+
+        let response = runtime
+            .block_on(service.handle_compile(compile))
+            .unwrap()
+            .into_inner();
+
+        assert!(
+            matches!(
+                response,
+                Response::Compile(CompileResponse::UnhandledCompile)
+            ),
+            "unexpected response: {response:?}"
+        );
+        let stats = runtime.block_on(service.take_stats());
+        assert_eq!(stats.requests_not_cacheable, 1);
+        assert_eq!(stats.not_cached.get("SCCACHE_BASEDIRS"), Some(&1));
     }
 
     #[test]
