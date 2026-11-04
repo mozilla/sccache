@@ -797,15 +797,7 @@ fn empty_server_info(config: &Config) -> Result<ServerInfo> {
 pub fn run_command(cmd: Command) -> Result<i32> {
     // Config isn't required for all commands, but if it's broken then we should flag
     // it early and loudly.
-    let config = if matches!(
-        &cmd,
-        Command::StartServer | Command::InternalStartServer | Command::ShowStats(_, _)
-    ) {
-        Config::load_with_file_basedirs()?
-    } else {
-        Config::load()?
-    };
-    let config = &config;
+    let config = &Config::load()?;
     let startup_timeout = config.server_startup_timeout;
 
     match cmd {
