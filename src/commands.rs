@@ -752,7 +752,8 @@ where
         runtime.handle().clone(),
         tx,
         info,
-    );
+    )
+    .with_compiler_info_daemon(Arc::clone(&conn_arc));
     let compile = Compile {
         exe: exe_path.as_os_str().to_owned(),
         cwd: cwd.as_os_str().to_owned(),

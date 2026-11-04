@@ -15,7 +15,7 @@
 
 use crate::cache::{Cache, CacheWrite, DecompressionFailure, FileObjectSource, Storage};
 use crate::compiler::args::*;
-use crate::compiler::c::{CCompiler, CCompilerKind};
+use crate::compiler::c::{CCompiler, CCompilerImplDescriptor, CCompilerKind};
 use crate::compiler::cicc::Cicc;
 use crate::compiler::clang::Clang;
 use crate::compiler::cudafe::CudaFE;
@@ -510,6 +510,47 @@ where
         env_vars: &[(OsString, OsString)],
     ) -> CompilerArguments<Box<dyn CompilerHasher<T> + 'static>>;
     fn box_clone(&self) -> Box<dyn Compiler<T>>;
+    /// Return a copy of this compiler that can be sent to another process, if
+    /// the compiler supports it.
+    fn descriptor(&self) -> Option<CompilerDescriptor> {
+        None
+    }
+}
+
+/// A detected compiler, in a form that can be sent to another process.
+///
+/// Detecting a compiler runs it several times, which the daemon does once per
+/// compiler. Client-side mode processes get the result from the daemon this
+/// way instead of each detecting the compiler again.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum CompilerDescriptor {
+    C {
+        executable: PathBuf,
+        executable_digest: String,
+        compiler: CCompilerImplDescriptor,
+    },
+}
+
+impl CompilerDescriptor {
+    pub fn into_compiler<T: CommandCreatorSync>(self) -> Box<dyn Compiler<T>> {
+        match self {
+            CompilerDescriptor::C {
+                executable,
+                executable_digest,
+                compiler,
+            } => match compiler {
+                CCompilerImplDescriptor::Clang(c) => {
+                    Box::new(CCompiler::from_parts(c, executable, executable_digest))
+                }
+                CCompilerImplDescriptor::Gcc(c) => {
+                    Box::new(CCompiler::from_parts(c, executable, executable_digest))
+                }
+                CCompilerImplDescriptor::Msvc(c) => {
+                    Box::new(CCompiler::from_parts(c, executable, executable_digest))
+                }
+            },
+        }
+    }
 }
 
 impl<T: CommandCreatorSync> Clone for Box<dyn Compiler<T>> {

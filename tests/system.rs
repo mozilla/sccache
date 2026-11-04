@@ -2112,6 +2112,100 @@ fn test_assembler_affects_cache(preprocessor_cache_mode: bool) {
     stop_local_daemon();
 }
 
+/// In client-side mode each compile runs in a process of its own, but the
+/// daemon detects the compiler once for all of them, so a process doesn't run
+/// the compiler other than to preprocess or compile the input.
+#[test_case(true ; "with preprocessor cache")]
+#[test_case(false ; "without preprocessor cache")]
+#[serial]
+#[cfg(unix)]
+fn test_client_side_reuses_compiler_detection(preprocessor_cache_mode: bool) {
+    use fs_err::os::unix::fs::OpenOptionsExt;
+
+    let _ = env_logger::try_init();
+    let tempdir = tempfile::Builder::new()
+        .prefix("sccache_system_test")
+        .tempdir()
+        .unwrap();
+
+    let compiler = match find_compilers()
+        .into_iter()
+        .find(|c| c.name == "gcc" || c.name == "clang")
+    {
+        Some(compiler) => compiler,
+        None => {
+            warn!("No gcc or clang found, skipping test");
+            return;
+        }
+    };
+
+    // Log every time the compiler runs.
+    let bindir = tempdir.path().join("bin");
+    fs::create_dir_all(&bindir).unwrap();
+    let runs = tempdir.path().join("compiler-runs");
+    let exe = bindir.join(compiler.name);
+    let mut wrapper = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o777)
+        .open(&exe)
+        .unwrap();
+    writeln!(
+        wrapper,
+        "#!/bin/sh\necho \"$@\" >> {}\nexec {} \"$@\"",
+        runs.display(),
+        Path::new(&compiler.exe).display()
+    )
+    .unwrap();
+    drop(wrapper);
+
+    copy_to_tempdir(&[INPUT], tempdir.path());
+    let sccache_cfg = sccache_client_cfg(tempdir.path(), preprocessor_cache_mode);
+    write_json_cfg(tempdir.path(), "sccache-cfg.json", &sccache_cfg);
+    stop_local_daemon();
+    start_local_daemon(
+        &tempdir.path().join("sccache-cfg.json"),
+        &tempdir.path().join("sccache-cached-cfg"),
+    );
+
+    let compile = || {
+        fs::remove_file(tempdir.path().join(OUTPUT)).ok();
+        sccache_command()
+            .args(compile_cmdline(
+                compiler.name,
+                &exe,
+                INPUT,
+                OUTPUT,
+                Vec::new(),
+            ))
+            .current_dir(tempdir.path())
+            .env("SCCACHE_CLIENT_SIDE", "1")
+            .assert()
+            .success();
+    };
+
+    // The first compile has the daemon detect the compiler.
+    compile();
+    fs::remove_file(&runs).unwrap();
+    zero_stats();
+    compile();
+    get_stats(|info| assert_eq!(1, info.stats.cache_hits.all()));
+
+    let runs = fs::read_to_string(&runs).unwrap_or_default();
+    for run in runs.lines() {
+        assert!(
+            run.split(' ').any(|arg| arg == INPUT),
+            "the compiler ran for something other than {INPUT}: {run}"
+        );
+    }
+    // A hit in preprocessor cache mode doesn't even need the preprocessor.
+    if preprocessor_cache_mode {
+        assert_eq!("", runs);
+    }
+    stop_local_daemon();
+}
+
 #[cfg(target_os = "macos")]
 fn start_multiarch_server(tempdir: &Path, preprocessor_cache_mode: bool) -> Option<Compiler> {
     let compiler = match find_compilers().into_iter().find(|c| c.name == "clang") {

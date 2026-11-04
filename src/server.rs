@@ -14,6 +14,7 @@
 
 use crate::cache::readonly::ReadOnlyStorage;
 use crate::cache::{CacheMode, Storage, storage_from_config};
+use crate::client::ServerConnection;
 use crate::compiler::PreprocessorCacheEntry;
 use crate::compiler::{
     CacheControl, CompileResult, Compiler, CompilerArguments, CompilerHasher, CompilerKind,
@@ -52,7 +53,7 @@ use std::mem;
 use std::os::android::net::SocketAddrExt;
 #[cfg(target_os = "linux")]
 use std::os::linux::net::SocketAddrExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::{ExitStatus, Output};
 use std::sync::Arc;
@@ -925,6 +926,10 @@ where
     ///   rustc compile task.
     /// * `None` on the shared service and every other clone.
     notification_tx: Option<futures::channel::mpsc::UnboundedSender<Vec<u8>>>,
+
+    /// In client-side mode, the connection to the daemon, which detects the
+    /// compilers this process doesn't know yet.
+    compiler_info_daemon: Option<Arc<std::sync::Mutex<ServerConnection>>>,
 }
 
 type SccacheRequest = Message<Request, Body<()>>;
@@ -1129,6 +1134,20 @@ where
                     me.merge_stats(*delta).await;
                     Ok(Message::WithoutBody(Response::RecordStats))
                 }
+                Request::CompilerInfo(compile) => {
+                    debug!("handle_client: compiler_info");
+                    let descriptor = me
+                        .compiler_info(
+                            compile.exe.into(),
+                            compile.cwd.into(),
+                            &compile.args,
+                            &compile.env_vars,
+                        )
+                        .await
+                        .ok()
+                        .and_then(|c| c.descriptor());
+                    Ok(Message::WithoutBody(Response::CompilerInfo(descriptor)))
+                }
             }
         })
     }
@@ -1165,7 +1184,18 @@ where
             tx,
             info,
             notification_tx: None,
+            compiler_info_daemon: None,
         }
+    }
+
+    /// Get the compilers this service doesn't know yet from the daemon at the
+    /// other end of `conn`, rather than detecting them.
+    pub fn with_compiler_info_daemon(
+        mut self,
+        conn: Arc<std::sync::Mutex<ServerConnection>>,
+    ) -> SccacheService<C> {
+        self.compiler_info_daemon = Some(conn);
+        self
     }
 
     pub fn mock_with_storage(
@@ -1188,6 +1218,7 @@ where
             tx,
             info,
             notification_tx: None,
+            compiler_info_daemon: None,
         }
     }
 
@@ -1225,6 +1256,7 @@ where
             tx,
             info,
             notification_tx: None,
+            compiler_info_daemon: None,
         }
     }
 
@@ -1391,6 +1423,40 @@ where
         }
     }
 
+    /// Ask the daemon for the compiler `exe`, when this service has one.
+    ///
+    /// Returns `None` when the daemon can't tell, in which case the caller
+    /// detects the compiler itself.
+    async fn compiler_info_from_daemon(
+        &self,
+        exe: &Path,
+        cwd: &Path,
+        args: &[OsString],
+        env: &[(OsString, OsString)],
+    ) -> Option<Box<dyn Compiler<C>>> {
+        let conn = Arc::clone(self.compiler_info_daemon.as_ref()?);
+        let req = Request::CompilerInfo(Compile {
+            exe: exe.into(),
+            cwd: cwd.into(),
+            args: args.to_vec(),
+            env_vars: env.to_vec(),
+        });
+        let resp = tokio::task::spawn_blocking(move || conn.lock().unwrap().request(req))
+            .await
+            .ok()?;
+        match resp {
+            Ok(Response::CompilerInfo(descriptor)) => Some(descriptor?.into_compiler()),
+            Ok(other) => {
+                debug!("unexpected response to CompilerInfo: {other:?}");
+                None
+            }
+            Err(e) => {
+                debug!("CompilerInfo request failed: {e:#}");
+                None
+            }
+        }
+    }
+
     /// Look up compiler info from the cache for the compiler `path`.
     /// If not cached, determine the compiler type and cache the result.
     pub async fn compiler_info(
@@ -1494,16 +1560,21 @@ where
 
                 // the compiler path might be compiler proxy, so it is important to use
                 // `path` (or its clone `path1`) to resolve using that one, not using `resolved_compiler_path`
-                let info = get_compiler_info::<C>(
-                    me.creator.clone(),
-                    &path1,
-                    &cwd,
-                    args,
-                    env.as_slice(),
-                    &me.rt,
-                    dist_info.clone().map(|(p, _)| p),
-                )
-                .await;
+                let info = match me.compiler_info_from_daemon(&path1, &cwd, args, &env).await {
+                    Some(c) => Ok((c, None)),
+                    None => {
+                        get_compiler_info::<C>(
+                            me.creator.clone(),
+                            &path1,
+                            &cwd,
+                            args,
+                            env.as_slice(),
+                            &me.rt,
+                            dist_info.clone().map(|(p, _)| p),
+                        )
+                        .await
+                    }
+                };
 
                 let (c, proxy) = match info {
                     Ok((c, proxy)) => (c.clone(), proxy.clone()),

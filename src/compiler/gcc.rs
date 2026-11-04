@@ -13,7 +13,9 @@
 // limitations under the License.
 
 use crate::compiler::args::*;
-use crate::compiler::c::{ArtifactDescriptor, CCompilerImpl, CCompilerKind, ParsedArguments};
+use crate::compiler::c::{
+    ArtifactDescriptor, CCompilerImpl, CCompilerImplDescriptor, CCompilerKind, ParsedArguments,
+};
 use crate::compiler::{
     CCompileCommand, Cacheable, ColorMode, CompileCommand, CompilerArguments, Language,
     SingleCompileCommand, clang,
@@ -25,6 +27,7 @@ use async_trait::async_trait;
 use fs::File;
 use fs_err as fs;
 use log::Level::Trace;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
 use std::ffi::{OsStr, OsString};
@@ -35,7 +38,7 @@ use std::process;
 use crate::errors::*;
 
 /// A struct on which to implement `CCompilerImpl`.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Gcc {
     pub gplusplus: bool,
     pub version: Option<String>,
@@ -46,6 +49,9 @@ pub struct Gcc {
 impl CCompilerImpl for Gcc {
     fn kind(&self) -> CCompilerKind {
         CCompilerKind::Gcc
+    }
+    fn descriptor(&self) -> Option<CCompilerImplDescriptor> {
+        Some(CCompilerImplDescriptor::Gcc(self.clone()))
     }
     fn plusplus(&self) -> bool {
         self.gplusplus

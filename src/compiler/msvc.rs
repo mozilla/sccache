@@ -13,7 +13,9 @@
 // limitations under the License.
 
 use crate::compiler::args::*;
-use crate::compiler::c::{ArtifactDescriptor, CCompilerImpl, CCompilerKind, ParsedArguments};
+use crate::compiler::c::{
+    ArtifactDescriptor, CCompilerImpl, CCompilerImplDescriptor, CCompilerKind, ParsedArguments,
+};
 use crate::compiler::{
     CCompileCommand, Cacheable, ColorMode, CompileCommand, CompilerArguments, Language,
     SingleCompileCommand, clang, gcc, write_temp_file,
@@ -25,6 +27,7 @@ use async_trait::async_trait;
 use fs::File;
 use fs_err as fs;
 use log::Level::Debug;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::io::{self, BufWriter, Read, Write};
@@ -36,7 +39,7 @@ use crate::errors::*;
 /// A struct on which to implement `CCompilerImpl`.
 ///
 /// Needs a little bit of state just to persist `includes_prefix`.
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub struct Msvc {
     /// The prefix used in the output of `-showIncludes`.
     pub includes_prefix: String,
@@ -48,6 +51,9 @@ pub struct Msvc {
 impl CCompilerImpl for Msvc {
     fn kind(&self) -> CCompilerKind {
         CCompilerKind::Msvc
+    }
+    fn descriptor(&self) -> Option<CCompilerImplDescriptor> {
+        Some(CCompilerImplDescriptor::Msvc(self.clone()))
     }
     fn plusplus(&self) -> bool {
         false
