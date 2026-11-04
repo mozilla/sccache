@@ -4651,7 +4651,11 @@ foo.rs:
     fn test_hash_env_dep_equal_to_basedir_is_not_unset() {
         let f = TestFixture::new();
         let root = f.tempdir.path().to_owned();
-        let key = |val: OsString| {
+        // rustc reads `Y` from the environment, so a set `Y` is there too. Without
+        // it both compiles share a dep-info key and the second reuses the first's.
+        let key = |val: Option<OsString>| {
+            let env_vars: Vec<(OsString, OsString)> =
+                val.iter().map(|v| ("Y".into(), v.clone())).collect();
             hash_key_with(
                 &f,
                 &[
@@ -4665,13 +4669,13 @@ foo.rs:
                     "--crate-type",
                     "lib",
                 ],
-                &[],
-                &[("Y", val)],
+                &env_vars,
+                &[("Y", val.unwrap_or_default())],
                 nothing,
                 MockStorage::new(None, false).with_basedirs(vec![basedir(&root)]),
             )
         };
-        assert_ne!(key("".into()), key(root.clone().into()));
+        assert_ne!(key(None), key(Some(root.clone().into())));
     }
 
     #[test_case(true ; "with preprocessor cache")]
