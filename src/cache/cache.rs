@@ -386,8 +386,6 @@ mod test {
     #[cfg(feature = "s3")]
     fn test_operator_storage_s3_with_basedirs() {
         // Create S3 operator (doesn't need real credentials for this test)
-
-        use crate::cache::CacheMode;
         let operator = crate::cache::s3::S3Cache::new(
             "test-bucket".to_string(),
             "test-prefix".to_string(),
