@@ -87,6 +87,7 @@ opendal-layer-retry = { version = "0.58.1", optional = true }
 openssl = { version = "0.10.75", optional = true }
 rand = "0.8.4"
 regex = "1.10.3"
+reqsign-google = { version = "3.2", optional = true }
 reqwest = { version = "0.13", features = [
   "json",
   "blocking",
@@ -200,6 +201,7 @@ gcs = [
   "opendal/services-gcs",
   "opendal-layer-logging",
   "opendal-http-transport-reqwest",
+  "reqsign-google",
   "url",
   "reqwest",
 ]
