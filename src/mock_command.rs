@@ -120,6 +120,12 @@ pub trait RunCommand: fmt::Debug + Send {
     fn share_jobserver(&mut self) -> &mut Self {
         self
     }
+    /// [`share_jobserver`](RunCommand::share_jobserver), but only if our
+    /// jobserver is the build's own `fifo:` one, which costs no `pre_exec`
+    /// to hand on.
+    fn share_jobserver_if_fifo(&mut self) -> &mut Self {
+        self
+    }
     /// Execute the process and return a process object.
     async fn spawn(&mut self) -> Result<Self::C>;
 }
@@ -281,6 +287,12 @@ impl RunCommand for AsyncCommand {
     }
     fn share_jobserver(&mut self) -> &mut AsyncCommand {
         self.share_jobserver = true;
+        self
+    }
+    fn share_jobserver_if_fifo(&mut self) -> &mut AsyncCommand {
+        if self.jobserver.is_fifo() {
+            self.share_jobserver = true;
+        }
         self
     }
     async fn spawn(&mut self) -> Result<Child> {
