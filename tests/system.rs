@@ -29,6 +29,7 @@ use fs_err as fs;
 use log::Level::Trace;
 use predicates::prelude::*;
 use regex::Regex;
+use sccache::lru_disk_cache::CACHEDIR_TAG_FILE_NAME;
 use serial_test::serial;
 use std::collections::HashMap;
 use std::env;
@@ -1997,7 +1998,7 @@ fn test_sccache_command(preprocessor_cache_mode: bool) {
         let has_entries = walkdir::WalkDir::new(&entries_dir)
             .into_iter()
             .filter_map(Result::ok)
-            .any(|e| e.file_type().is_file());
+            .any(|e| e.file_type().is_file() && e.file_name() != CACHEDIR_TAG_FILE_NAME);
         if has_entries {
             sccache_command()
                 .arg("--debug-preprocessor-cache")
