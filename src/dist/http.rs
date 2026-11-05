@@ -239,10 +239,16 @@ pub mod urls {
 mod server {
     use crate::util::{new_reqwest_blocking_builder, new_reqwest_blocking_client, num_cpus};
     use byteorder::{BigEndian, ReadBytesExt};
+    use chrono::{DateTime, Datelike, Timelike, Utc};
     use flate2::read::ZlibDecoder as ZlibReadDecoder;
     use rand::{RngCore, rngs::OsRng};
+    use rcgen::{
+        CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose, IsCa, KeyPair,
+        SanType,
+    };
     use rouille::accept;
     use serde::{Deserialize, Serialize};
+    use sha2::Digest;
     use std::collections::HashMap;
     use std::convert::Infallible;
     use std::io::Read;
@@ -292,83 +298,120 @@ mod server {
     }
 
     fn create_https_cert_and_privkey(addr: SocketAddr) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
-        let rsa_key = openssl::rsa::Rsa::<openssl::pkey::Private>::generate(2048)
-            .context("failed to generate rsa privkey")?;
-        let privkey_pem = rsa_key
-            .private_key_to_pem()
-            .context("failed to create pem from rsa privkey")?;
-        let privkey: openssl::pkey::PKey<openssl::pkey::Private> =
-            openssl::pkey::PKey::from_rsa(rsa_key)
-                .context("failed to create openssl pkey from rsa privkey")?;
-        let mut builder =
-            openssl::x509::X509::builder().context("failed to create x509 builder")?;
+        create_https_cert_and_privkey_inner(Utc::now(), addr)
+    }
 
-        // Populate the certificate with the necessary parts, mostly from mkcert in openssl
-        builder
-            .set_version(2)
-            .context("failed to set x509 version")?;
-        let serial_number = openssl::bn::BigNum::from_u32(0)
-            .and_then(|bn| bn.to_asn1_integer())
-            .context("failed to create openssl asn1 0")?;
-        builder
-            .set_serial_number(serial_number.as_ref())
-            .context("failed to set x509 serial number")?;
-        let not_before = openssl::asn1::Asn1Time::days_from_now(0)
-            .context("failed to create openssl not before asn1")?;
-        builder
-            .set_not_before(not_before.as_ref())
-            .context("failed to set not before on x509")?;
-        let not_after = openssl::asn1::Asn1Time::days_from_now(365)
-            .context("failed to create openssl not after asn1")?;
-        builder
-            .set_not_after(not_after.as_ref())
-            .context("failed to set not after on x509")?;
-        builder
-            .set_pubkey(privkey.as_ref())
-            .context("failed to set pubkey for x509")?;
+    fn create_https_cert_and_privkey_inner(
+        now: DateTime<Utc>,
+        addr: SocketAddr,
+    ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+        let key = KeyPair::generate()?;
+        let mut params = CertificateParams::default();
+        params.distinguished_name = DistinguishedName::new();
+        params
+            .distinguished_name
+            .push(DnType::CommonName, addr.to_string());
+        params.subject_alt_names = vec![SanType::IpAddress(addr.ip())];
+        params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+        params.is_ca = IsCa::ExplicitNoCa;
+        let certificate_timestamp = |date: DateTime<Utc>| {
+            rcgen::date_time_ymd(date.year(), date.month() as u8, date.day() as u8)
+                + Duration::from_secs(u64::from(date.num_seconds_from_midnight()))
+        };
+        params.not_before = certificate_timestamp(now);
+        params.not_after = certificate_timestamp(now + chrono::Days::new(365));
+        let cert = params.self_signed(&key)?;
+        let digest = sha2::Sha256::digest(cert.der()).to_vec();
+        Ok((
+            digest,
+            cert.pem().into_bytes(),
+            key.serialize_pem().into_bytes(),
+        ))
+    }
 
-        let mut name = openssl::x509::X509Name::builder()?;
-        name.append_entry_by_nid(openssl::nid::Nid::COMMONNAME, &addr.to_string())?;
-        let name = name.build();
+    #[cfg(test)]
+    mod test {
+        use super::*;
+        use x509_parser::{pem::parse_x509_pem, prelude::GeneralName};
 
-        builder
-            .set_subject_name(&name)
-            .context("failed to set subject name")?;
-        builder
-            .set_issuer_name(&name)
-            .context("failed to set issuer name")?;
+        #[test]
+        fn https_certificate_has_ip_san_server_auth_eku_validity_and_matching_key() {
+            let now = DateTime::from_timestamp(1767323045, 0).unwrap();
+            for address in ["192.0.2.1:10501", "[2001:db8::1]:10501"] {
+                let addr: SocketAddr = address.parse().unwrap();
+                let (digest, cert_pem, key_pem) =
+                    create_https_cert_and_privkey_inner(now, addr).unwrap();
+                let (_, pem) = parse_x509_pem(&cert_pem).unwrap();
+                let cert = pem.parse_x509().unwrap();
+                assert_eq!(digest, sha2::Sha256::digest(&pem.contents).to_vec());
+                assert_eq!(cert.subject(), cert.issuer());
+                assert_eq!(
+                    cert.subject()
+                        .iter_common_name()
+                        .next()
+                        .unwrap()
+                        .as_str()
+                        .unwrap(),
+                    address
+                );
+                assert_eq!(cert.validity().not_before.timestamp(), now.timestamp());
+                assert_eq!(
+                    cert.validity().not_after.timestamp(),
+                    (now + chrono::Days::new(365)).timestamp()
+                );
+                assert!(!cert.basic_constraints().unwrap().unwrap().value.ca);
+                let eku = cert.extended_key_usage().unwrap().unwrap().value;
+                assert!(eku.server_auth);
+                assert!(!eku.client_auth && !eku.any);
+                let octets = match addr.ip() {
+                    std::net::IpAddr::V4(ip) => ip.octets().to_vec(),
+                    std::net::IpAddr::V6(ip) => ip.octets().to_vec(),
+                };
+                assert_eq!(
+                    cert.subject_alternative_name()
+                        .unwrap()
+                        .unwrap()
+                        .value
+                        .general_names,
+                    vec![GeneralName::IPAddress(&octets)]
+                );
+                cert.verify_signature(None).unwrap();
+                let key = KeyPair::from_pem(std::str::from_utf8(&key_pem).unwrap()).unwrap();
+                assert_eq!(
+                    key.public_key_raw(),
+                    cert.public_key().subject_public_key.data.as_ref()
+                );
+            }
+        }
 
-        // Add the SubjectAlternativeName
-        let extension = openssl::x509::extension::SubjectAlternativeName::new()
-            .ip(&addr.ip().to_string())
-            .build(&builder.x509v3_context(None, None))
-            .context("failed to build SAN extension for x509")?;
-        builder
-            .append_extension(extension)
-            .context("failed to append SAN extension for x509")?;
-
-        // Add ExtendedKeyUsage
-        let ext_key_usage = openssl::x509::extension::ExtendedKeyUsage::new()
-            .server_auth()
-            .build()
-            .context("failed to build EKU extension for x509")?;
-        builder
-            .append_extension(ext_key_usage)
-            .context("fails to append EKU extension for x509")?;
-
-        // Finish the certificate
-        builder
-            .sign(&privkey, openssl::hash::MessageDigest::sha256())
-            .context("failed to sign x509 with sha256")?;
-        let cert: openssl::x509::X509 = builder.build();
-        let cert_pem = cert.to_pem().context("failed to create pem from x509")?;
-        let cert_digest = cert
-            .digest(openssl::hash::MessageDigest::sha256())
-            .context("failed to create digest of x509 certificate")?
-            .as_ref()
-            .to_owned();
-
-        Ok((cert_digest, cert_pem, privkey_pem))
+        #[test]
+        fn https_certificate_works_with_distributed_tls_stack() {
+            let (_, cert, key) =
+                create_https_cert_and_privkey("127.0.0.1:0".parse().unwrap()).unwrap();
+            let root = reqwest::Certificate::from_pem(&cert).unwrap();
+            let server = rouille::Server::new_ssl(
+                "127.0.0.1:0",
+                |_| rouille::Response::text("ok"),
+                cert,
+                key,
+            )
+            .unwrap();
+            let addr = server.server_addr();
+            let (handle, stop) = server.stoppable();
+            let result = reqwest::blocking::Client::builder()
+                .no_proxy()
+                .add_root_certificate(root)
+                .timeout(Duration::from_secs(5))
+                .build()
+                .unwrap()
+                .get(format!("https://{addr}/"))
+                .send()
+                .and_then(|response| response.error_for_status())
+                .and_then(|response| response.text());
+            stop.send(()).unwrap();
+            handle.join().unwrap();
+            assert_eq!(result.unwrap(), "ok");
+        }
     }
 
     // Messages that are non-sensitive and can be sent to the client
@@ -726,10 +769,10 @@ mod server {
                 cert_digest: Vec<u8>,
                 cert_pem: Vec<u8>,
             ) -> Result<()> {
-                if let Some((saved_cert_digest, _)) = certs.get(&server_id) {
-                    if saved_cert_digest == &cert_digest {
-                        return Ok(());
-                    }
+                if let Some((saved_cert_digest, _)) = certs.get(&server_id)
+                    && saved_cert_digest == &cert_digest
+                {
+                    return Ok(());
                 }
                 info!(
                     "Adding new certificate for {} to scheduler",
@@ -964,11 +1007,11 @@ mod server {
                             if is_new {
                                 info!("Server connected to scheduler");
                             }
-                            thread::sleep(HEARTBEAT_INTERVAL)
+                            thread::sleep(HEARTBEAT_INTERVAL);
                         }
                         Err(e) => {
                             error!(target: "sccache_heartbeat", "Failed to send heartbeat to server: {}", e);
-                            thread::sleep(HEARTBEAT_ERROR_INTERVAL)
+                            thread::sleep(HEARTBEAT_ERROR_INTERVAL);
                         }
                     }
                 }

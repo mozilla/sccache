@@ -1111,6 +1111,233 @@ pub fn daemonize(_preserve_fds: &[std::os::windows::io::RawHandle]) -> Result<()
     Ok(())
 }
 
+#[cfg(any(feature = "dist-server", feature = "dist-client"))]
+mod reqwest_dns_resolver {
+    use std::{
+        net::SocketAddr,
+        sync::{Arc, OnceLock},
+    };
+
+    use hickory_resolver::{TokioResolver, net::NetError};
+    use reqwest::dns::{Addrs, Resolve};
+
+    #[derive(Debug, Default, Clone)]
+    pub struct HickoryResolver(Arc<OnceLock<TokioResolver>>);
+
+    impl Resolve for HickoryResolver {
+        fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+            self.resolve_with(name, || TokioResolver::builder_tokio()?.build())
+        }
+    }
+
+    impl HickoryResolver {
+        fn resolve_with(
+            &self,
+            name: reqwest::dns::Name,
+            initialize: impl FnOnce() -> Result<TokioResolver, NetError> + Send + 'static,
+        ) -> reqwest::dns::Resolving {
+            let resolver = self.clone();
+            Box::pin(async move {
+                if resolver.0.get().is_none() {
+                    let _ = resolver.0.set(initialize()?);
+                }
+                let resolver = resolver.0.get().expect("DNS resolver initialized");
+
+                let lookup = resolver.lookup_ip(name.as_str()).await?;
+                let addrs: Addrs = Box::new(lookup.into_iter().map(|ip| SocketAddr::new(ip, 0)));
+                Ok(addrs)
+            })
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use hickory_resolver::{
+            config::{
+                ConnectionConfig, LookupIpStrategy, NameServerConfig, ResolveHosts, ResolverConfig,
+                ResolverOpts,
+            },
+            net::{DnsError, runtime::TokioRuntimeProvider},
+            proto::{
+                op::{Message, ResponseCode},
+                rr::{RData, Record, RecordType, rdata::A},
+            },
+        };
+        use std::{net::Ipv4Addr, time::Duration};
+        use tokio::{net::UdpSocket, task::JoinHandle, time::timeout};
+
+        struct DnsFixture {
+            address: SocketAddr,
+            task: JoinHandle<()>,
+        }
+
+        impl DnsFixture {
+            async fn new() -> Self {
+                let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+                let address = socket.local_addr().unwrap();
+                let task = tokio::spawn(async move {
+                    let mut buffer = [0; 4096];
+                    loop {
+                        let (len, peer) = socket.recv_from(&mut buffer).await.unwrap();
+                        let request = Message::from_vec(&buffer[..len]).unwrap();
+                        let mut response =
+                            Message::response(request.metadata.id, request.metadata.op_code);
+                        response.metadata.recursion_desired = request.metadata.recursion_desired;
+                        response.metadata.recursion_available = true;
+                        for query in &request.queries {
+                            response.add_query(query.clone());
+                            if query.name().to_ascii() == "missing.fixture.test." {
+                                response.metadata.response_code = ResponseCode::NXDomain;
+                            } else if query.query_type() == RecordType::A {
+                                response.answers.push(Record::from_rdata(
+                                    query.name().clone(),
+                                    60,
+                                    RData::A(A(Ipv4Addr::new(192, 0, 2, 42))),
+                                ));
+                            }
+                        }
+                        socket
+                            .send_to(&response.to_vec().unwrap(), peer)
+                            .await
+                            .unwrap();
+                    }
+                });
+                Self { address, task }
+            }
+
+            fn lookup(&self, resolver: &HickoryResolver, name: &str) -> reqwest::dns::Resolving {
+                let mut config = ResolverConfig::default();
+                let mut connection = ConnectionConfig::udp();
+                connection.port = self.address.port();
+                config.add_name_server(NameServerConfig::new(
+                    self.address.ip(),
+                    true,
+                    vec![connection],
+                ));
+                let mut options = ResolverOpts::default();
+                options.ip_strategy = LookupIpStrategy::Ipv4Only;
+                options.use_hosts_file = ResolveHosts::Never;
+                options.attempts = 1;
+                options.timeout = Duration::from_secs(1);
+                resolver.resolve_with(name.parse().unwrap(), move || {
+                    TokioResolver::builder_with_config(config, TokioRuntimeProvider::default())
+                        .with_options(options)
+                        .build()
+                })
+            }
+        }
+
+        impl Drop for DnsFixture {
+            fn drop(&mut self) {
+                self.task.abort();
+            }
+        }
+
+        async fn addresses(lookup: reqwest::dns::Resolving) -> Vec<SocketAddr> {
+            timeout(Duration::from_secs(5), lookup)
+                .await
+                .expect("DNS lookup timed out")
+                .expect("DNS lookup failed")
+                .collect()
+        }
+
+        fn expected_addresses() -> Vec<SocketAddr> {
+            vec![SocketAddr::from(([192, 0, 2, 42], 0))]
+        }
+
+        #[tokio::test]
+        async fn successful_lookup() {
+            let fixture = DnsFixture::new().await;
+            let resolver = HickoryResolver::default();
+            assert!(resolver.0.get().is_none());
+            assert_eq!(
+                addresses(fixture.lookup(&resolver, "success.fixture.test.")).await,
+                expected_addresses()
+            );
+            assert!(resolver.0.get().is_some());
+        }
+
+        #[tokio::test]
+        async fn lookup_failure() {
+            let fixture = DnsFixture::new().await;
+            let resolver = HickoryResolver::default();
+            let error = match timeout(
+                Duration::from_secs(5),
+                fixture.lookup(&resolver, "missing.fixture.test."),
+            )
+            .await
+            .expect("DNS lookup timed out")
+            {
+                Ok(_) => panic!("NXDOMAIN lookup unexpectedly succeeded"),
+                Err(error) => error,
+            };
+            let error = error
+                .downcast_ref::<NetError>()
+                .expect("Hickory lookup error was not propagated");
+            assert!(matches!(
+                error,
+                NetError::Dns(DnsError::NoRecordsFound(records))
+                    if records.response_code == ResponseCode::NXDomain
+            ));
+        }
+
+        #[tokio::test]
+        async fn repeated_use() {
+            let fixture = DnsFixture::new().await;
+            let resolver = HickoryResolver::default();
+            addresses(fixture.lookup(&resolver, "first.fixture.test.")).await;
+            let initialized = resolver.0.get().unwrap() as *const TokioResolver;
+            let clone = resolver.clone();
+            assert!(Arc::ptr_eq(&resolver.0, &clone.0));
+            // A distinct name requires another lookup rather than a cache hit.
+            assert_eq!(
+                addresses(fixture.lookup(&clone, "second.fixture.test.")).await,
+                expected_addresses()
+            );
+            assert_eq!(initialized, clone.0.get().unwrap() as *const TokioResolver);
+            let lookup = clone.resolve_with("third.fixture.test.".parse().unwrap(), || {
+                panic!("initialized resolver must not be constructed again")
+            });
+            assert_eq!(addresses(lookup).await, expected_addresses());
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn concurrent_initialization_via_clones() {
+            let fixture = DnsFixture::new().await;
+            let resolver = HickoryResolver::default();
+            let barrier = Arc::new(tokio::sync::Barrier::new(9));
+            let mut tasks = Vec::new();
+            for index in 0..8 {
+                let clone = resolver.clone();
+                let barrier = barrier.clone();
+                let lookup = fixture.lookup(&clone, &format!("worker{index}.fixture.test."));
+                tasks.push(tokio::spawn(async move {
+                    barrier.wait().await;
+                    assert_eq!(addresses(lookup).await, expected_addresses());
+                    clone
+                }));
+            }
+            assert!(resolver.0.get().is_none());
+            barrier.wait().await;
+            for task in tasks {
+                let clone = timeout(Duration::from_secs(5), task)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert!(Arc::ptr_eq(&resolver.0, &clone.0));
+                assert!(std::ptr::eq(
+                    resolver.0.get().unwrap(),
+                    clone.0.get().unwrap()
+                ));
+            }
+        }
+    }
+}
+
+#[cfg(any(feature = "dist-server", feature = "dist-client"))]
+pub use reqwest_dns_resolver::HickoryResolver;
+
 #[cfg(all(feature = "reqwest", not(target_os = "android")))]
 fn mozilla_root_certificates() -> reqwest::Result<Vec<reqwest::Certificate>> {
     webpki_root_certs::TLS_SERVER_ROOT_CERTS

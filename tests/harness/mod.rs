@@ -243,8 +243,15 @@ fn create_server_token(server_id: ServerId, auth_token: &str) -> String {
 #[cfg(feature = "dist-server")]
 #[allow(dead_code)]
 pub enum ServerHandle {
-    Container { cid: String, url: HTTPUrl },
-    Process { pid: Pid, url: HTTPUrl },
+    Container {
+        cid: String,
+        url: HTTPUrl,
+    },
+    #[allow(dead_code)]
+    Process {
+        pid: Pid,
+        url: HTTPUrl,
+    },
 }
 
 #[cfg(feature = "dist-server")]
@@ -472,8 +479,8 @@ impl DistSystem {
                     env::set_var("SCCACHE_LOG", "sccache=trace");
                 }
                 env_logger::try_init().unwrap();
-                server.start().unwrap();
-                unreachable!();
+                #[allow(unreachable_code)]
+                match server.start().expect("Server start itself never fails") {}
             }
         };
 
@@ -498,7 +505,7 @@ impl DistSystem {
                 panic!("restart not yet implemented for pids")
             }
         }
-        self.wait_server_ready(handle)
+        self.wait_server_ready(handle);
     }
     pub fn count_toolchains_on_server(&mut self, handle: &ServerHandle) -> usize {
         match handle {
@@ -641,7 +648,7 @@ impl Drop for DistSystem {
                 nix::sys::wait::waitpid(pid, Some(WaitPidFlag::WNOHANG)).map(|ws| {
                     if ws != WaitStatus::StillAlive {
                         killagain = false;
-                        exits.push(ws)
+                        exits.push(ws);
                     }
                 })
             );
@@ -696,7 +703,7 @@ impl Drop for DistSystem {
             );
         }
         for exit in exits {
-            println!("EXIT: {:?}", exit)
+            println!("EXIT: {:?}", exit);
         }
 
         if did_err && !thread::panicking() {
@@ -740,7 +747,7 @@ fn wait_for_http(url: HTTPUrl, interval: Duration, max_wait: Duration) {
         },
         interval,
         max_wait,
-    )
+    );
 }
 
 fn wait_for<F: Fn() -> Result<(), String>>(f: F, interval: Duration, max_wait: Duration) {

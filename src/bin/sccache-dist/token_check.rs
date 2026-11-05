@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, bail};
 use base64::Engine;
+use rsa::pkcs1;
 use sccache::dist::http::{ClientAuthCheck, ClientVisibleMsg};
 use sccache::util::{BASE64_URL_SAFE_ENGINE, new_reqwest_blocking_client};
 use serde::{Deserialize, Serialize};
@@ -29,21 +30,23 @@ impl Jwk {
             bail!("Cannot handle non-RSA JWK")
         }
 
-        // JWK is big-endian, openssl bignum from_slice is big-endian
+        // JWK and PKCS#1 integers are both big-endian.
         let n = BASE64_URL_SAFE_ENGINE
             .decode(&self.n)
             .context("Failed to base64 decode n")?;
         let e = BASE64_URL_SAFE_ENGINE
             .decode(&self.e)
             .context("Failed to base64 decode e")?;
-        let n_bn = openssl::bn::BigNum::from_slice(&n)
-            .context("Failed to create openssl bignum from n")?;
-        let e_bn = openssl::bn::BigNum::from_slice(&e)
-            .context("Failed to create openssl bignum from e")?;
-        let pubkey = openssl::rsa::Rsa::from_public_components(n_bn, e_bn)
-            .context("Failed to create pubkey from n and e")?;
-        let der: Vec<u8> = pubkey
-            .public_key_to_der_pkcs1()
+
+        let n_bn = pkcs1::UintRef::new(&n).context("Failed to create pkcs1 bignum from n")?;
+        let e_bn = pkcs1::UintRef::new(&e).context("Failed to create pkcs1 bignum from e")?;
+
+        let pubkey = pkcs1::RsaPublicKey {
+            modulus: n_bn,
+            public_exponent: e_bn,
+        };
+
+        let der: Vec<u8> = pkcs1::der::Encode::to_der(&pubkey)
             .context("Failed to convert public key to der pkcs1")?;
         Ok(der)
     }
@@ -113,10 +116,10 @@ impl ProxyTokenCheck {
         if let Some(ref auth_cache) = self.maybe_auth_cache {
             let mut auth_cache = auth_cache.lock().unwrap();
             let (ref mut auth_cache, cache_duration) = *auth_cache;
-            if let Some(cached_at) = auth_cache.get(token) {
-                if cached_at.elapsed() < cache_duration {
-                    return Ok(());
-                }
+            if let Some(cached_at) = auth_cache.get(token)
+                && cached_at.elapsed() < cache_duration
+            {
+                return Ok(());
             }
             auth_cache.remove(token);
         }
@@ -205,5 +208,59 @@ impl ValidJWTCheck {
         let _tokendata = jwt::decode::<Claims>(token, &pkcs1, &validation)
             .context("Unable to validate and decode jwt")?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn jwk_to_der_pkcs1_encodes_unsigned_big_endian_integers() {
+        let jwk = Jwk {
+            kid: "test".into(),
+            kty: "RSA".into(),
+            n: BASE64_URL_SAFE_ENGINE.encode([0x80, 0x01]),
+            e: BASE64_URL_SAFE_ENGINE.encode([0x01, 0x00, 0x01]),
+        };
+        // The high bit of the modulus requires a leading zero in DER INTEGER.
+        assert_eq!(
+            jwk.to_der_pkcs1().unwrap(),
+            [
+                0x30, 0x0a, 0x02, 0x03, 0x00, 0x80, 0x01, 0x02, 0x03, 0x01, 0x00, 0x01
+            ]
+        );
+    }
+
+    #[test]
+    fn jwk_to_der_pkcs1_rejects_non_rsa_and_invalid_base64() {
+        let mut jwk = Jwk {
+            kid: "test".into(),
+            kty: "EC".into(),
+            n: BASE64_URL_SAFE_ENGINE.encode([0x80, 0x01]),
+            e: BASE64_URL_SAFE_ENGINE.encode([0x01, 0x00, 0x01]),
+        };
+        assert!(
+            jwk.to_der_pkcs1()
+                .unwrap_err()
+                .to_string()
+                .contains("non-RSA")
+        );
+        jwk.kty = "RSA".into();
+        jwk.n = "!".into();
+        assert!(
+            jwk.to_der_pkcs1()
+                .unwrap_err()
+                .to_string()
+                .contains("decode n")
+        );
+        jwk.n = BASE64_URL_SAFE_ENGINE.encode([0x80, 0x01]);
+        jwk.e = "!".into();
+        assert!(
+            jwk.to_der_pkcs1()
+                .unwrap_err()
+                .to_string()
+                .contains("decode e")
+        );
     }
 }
