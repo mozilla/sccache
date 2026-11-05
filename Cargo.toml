@@ -92,7 +92,6 @@ reqwest = { version = "0.13", features = [
   "blocking",
   "stream",
   "rustls",
-  "hickory-dns",
 ], optional = true }
 semver = "1.0"
 serde = { version = "1.0", features = ["derive"] }
