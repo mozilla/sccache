@@ -161,8 +161,8 @@ pub trait Storage: Send + Sync {
     }
     /// Return the filesystem path of the cached entry for `key`.
     /// Default impl returns [`GetPathResult::Unsupported`].
-    async fn get_path(&self, _key: &str) -> GetPathResult {
-        GetPathResult::Unsupported
+    async fn get_path(&self, _key: &str) -> Result<GetPathResult> {
+        Ok(GetPathResult::Unsupported)
     }
 
     /// Return the preprocessor cache entry for a given preprocessor key,
