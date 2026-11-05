@@ -564,6 +564,7 @@ where
         pool: &tokio::runtime::Handle,
         rewrite_includes_only: bool,
         storage: Arc<dyn Storage>,
+        basedirs: &[Vec<u8>],
         cache_control: CacheControl,
     ) -> Result<HashResult<T>>;
 
@@ -579,6 +580,7 @@ where
         dist_client: Option<Arc<dyn dist::Client>>,
         creator: T,
         storage: Arc<dyn Storage>,
+        basedirs: &[Vec<u8>],
         arguments: Vec<OsString>,
         cwd: PathBuf,
         env_vars: Vec<(OsString, OsString)>,
@@ -602,6 +604,7 @@ where
                 &pool,
                 rewrite_includes_only,
                 storage.clone(),
+                basedirs,
                 cache_control,
             )
             .await;
@@ -769,6 +772,7 @@ where
                             dist_client,
                             creator,
                             storage,
+                            basedirs,
                             arguments,
                             cwd,
                             env_vars,
@@ -2644,6 +2648,7 @@ LLVM version: 6.0",
                         pool,
                         false,
                         Arc::new(MockStorage::new(None, preprocessor_cache_mode)),
+                        &[],
                         CacheControl::Default,
                     )
                     .wait()
@@ -2652,6 +2657,72 @@ LLVM version: 6.0",
             .collect();
         assert_eq!(results.len(), 2);
         assert_ne!(results[0].key, results[1].key);
+    }
+
+    /// The basedirs passed to `generate_hash_key` key two C checkouts alike.
+    #[test]
+    fn test_basedirs_argument_reaches_c_hash() {
+        let f = TestFixture::new();
+        let clang = f.mk_bin("clang").unwrap();
+        let runtime = single_threaded_runtime();
+        let pool = runtime.handle();
+
+        let key = |root: &str, basedirs: &[Vec<u8>]| {
+            let creator = new_creator();
+            next_command(
+                &creator,
+                Ok(MockChild::new(
+                    exit_status(0),
+                    "compiler_id=clang\ncompiler_version=\"16.0.0\"",
+                    "",
+                )),
+            );
+            next_assembler(&creator, "GNU assembler (GNU Binutils) 2.42", "");
+            let c = detect_compiler(
+                creator.clone(),
+                &clang,
+                f.tempdir.path(),
+                &[],
+                &[],
+                pool,
+                None,
+            )
+            .wait()
+            .unwrap()
+            .0;
+            next_command(
+                &creator,
+                Ok(MockChild::new(
+                    exit_status(0),
+                    format!("# 1 \"{root}/foo.c\"\n"),
+                    "",
+                )),
+            );
+            let arguments = ovec!["-c", "foo.c", "-o", "foo.o", format!("-I{root}/include")];
+            let mut hasher = match c.parse_arguments(&arguments, ".".as_ref(), &[]) {
+                CompilerArguments::Ok(h) => h,
+                o => panic!("Bad result from parse_arguments: {:?}", o),
+            };
+            hasher
+                .generate_hash_key(
+                    &creator,
+                    f.tempdir.path().to_path_buf(),
+                    vec![],
+                    false,
+                    pool,
+                    false,
+                    Arc::new(MockStorage::new(None, false)),
+                    basedirs,
+                    CacheControl::Default,
+                )
+                .wait()
+                .unwrap()
+                .key
+        };
+
+        let basedirs = [b"/checkout/a/".to_vec(), b"/checkout/b/".to_vec()];
+        assert_ne!(key("/checkout/a", &[]), key("/checkout/b", &[]));
+        assert_eq!(key("/checkout/a", &basedirs), key("/checkout/b", &basedirs));
     }
 
     #[test_case(true ; "with preprocessor cache")]
@@ -2716,6 +2787,7 @@ LLVM version: 6.0",
                     pool,
                     false,
                     Arc::new(MockStorage::new(None, preprocessor_cache_mode)),
+                    &[],
                     CacheControl::Default,
                 )
                 .wait()
@@ -2793,6 +2865,7 @@ LLVM version: 6.0",
                     pool,
                     false,
                     Arc::new(MockStorage::new(None, preprocessor_cache_mode)),
+                    &[],
                     CacheControl::Default,
                 )
                 .wait()
@@ -2890,6 +2963,7 @@ LLVM version: 6.0",
                         pool,
                         false,
                         Arc::new(MockStorage::new(None, preprocessor_cache_mode)),
+                        &[],
                         CacheControl::Default,
                     )
                     .wait()
@@ -2957,6 +3031,7 @@ LLVM version: 6.0",
                         pool,
                         false,
                         Arc::new(MockStorage::new(None, preprocessor_cache_mode)),
+                        &[],
                         CacheControl::Default,
                     )
                     .wait()
@@ -3065,6 +3140,7 @@ LLVM version: 6.0",
                         None,
                         creator.clone(),
                         storage.clone(),
+                        &[],
                         arguments.clone(),
                         cwd.to_path_buf(),
                         vec![],
@@ -3102,6 +3178,7 @@ LLVM version: 6.0",
                         None,
                         creator,
                         storage,
+                        &[],
                         arguments,
                         cwd.to_path_buf(),
                         vec![],
@@ -3196,6 +3273,7 @@ LLVM version: 6.0",
                         Some(dist_client.clone()),
                         creator.clone(),
                         storage.clone(),
+                        &[],
                         arguments.clone(),
                         cwd.to_path_buf(),
                         vec![],
@@ -3233,6 +3311,7 @@ LLVM version: 6.0",
                         Some(dist_client.clone()),
                         creator,
                         storage,
+                        &[],
                         arguments,
                         cwd.to_path_buf(),
                         vec![],
@@ -3319,6 +3398,7 @@ LLVM version: 6.0",
                 None,
                 creator,
                 storage,
+                &[],
                 arguments.clone(),
                 cwd.to_path_buf(),
                 vec![],
@@ -3412,6 +3492,7 @@ LLVM version: 6.0",
                 None,
                 creator,
                 storage,
+                &[],
                 arguments.clone(),
                 cwd.to_path_buf(),
                 vec![],
@@ -3507,6 +3588,7 @@ LLVM version: 6.0",
                         None,
                         creator.clone(),
                         storage.clone(),
+                        &[],
                         arguments.clone(),
                         cwd.to_path_buf(),
                         vec![],
@@ -3536,6 +3618,7 @@ LLVM version: 6.0",
                 None,
                 creator,
                 storage,
+                &[],
                 arguments,
                 cwd.to_path_buf(),
                 vec![],
@@ -3631,6 +3714,7 @@ LLVM version: 6.0",
                         None,
                         creator,
                         storage,
+                        &[],
                         arguments,
                         cwd.to_path_buf(),
                         vec![],
@@ -3710,6 +3794,7 @@ LLVM version: 6.0",
                         Some(dist_client.clone()),
                         creator.clone(),
                         storage.clone(),
+                        &[],
                         arguments.clone(),
                         f.tempdir.path().to_path_buf(),
                         vec![],
@@ -3828,6 +3913,7 @@ LLVM version: 6.0",
                     Some(dist_client.clone()),
                     creator.clone(),
                     storage.clone(),
+                    &[],
                     arguments.clone(),
                     cwd.to_path_buf(),
                     vec![],
