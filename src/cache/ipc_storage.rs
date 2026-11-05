@@ -12,7 +12,7 @@
 
 use crate::cache::CacheMode;
 use crate::cache::GetPathResult;
-use crate::cache::cache::Storage;
+use crate::cache::storage::Storage;
 use crate::cache::cache_io::{Cache, CacheRead, CacheWrite};
 use crate::client::ServerConnection;
 use crate::compiler::PreprocessorCacheEntry;
