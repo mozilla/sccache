@@ -676,3 +676,56 @@ fn test_rust_cargo_incremental_allowed_deps_cached() -> Result<()> {
 
     Ok(())
 }
+
+#[test]
+#[serial]
+fn test_rust_cargo_basedirs_per_build() -> Result<()> {
+    test_rust_cargo_basedirs_per_build_mode(&[])
+}
+
+#[test]
+#[serial]
+fn test_rust_cargo_basedirs_per_build_client_side() -> Result<()> {
+    test_rust_cargo_basedirs_per_build_mode(&[("SCCACHE_CLIENT_SIDE", "1".into())])
+}
+
+/// Two checkouts that each name their own root in `SCCACHE_BASEDIRS`
+/// through cargo's `[env]`, with a server started without basedirs:
+/// the second checkout hits.
+fn test_rust_cargo_basedirs_per_build_mode(
+    envs: &[(&'static str, std::ffi::OsString)],
+) -> Result<()> {
+    let test_info = SccacheTest::new(Some(envs))?;
+    let tempdir = real_tempdir(&test_info)?;
+    let [a, b] = ["a", "b"].map(|name| tempdir.join(name));
+    for checkout in [&a, &b] {
+        write_out_dir_crate(checkout)?;
+        fs::create_dir_all(checkout.join(".cargo"))?;
+        fs::write(
+            checkout.join(".cargo/config.toml"),
+            "[env]\nSCCACHE_BASEDIRS = { value = \"\", relative = true }\n",
+        )?;
+    }
+
+    cargo_build(&test_info, &a)?;
+    Command::new(SCCACHE_BIN.as_os_str())
+        .arg("--zero-stats")
+        .assert()
+        .try_success()?;
+    cargo_build(&test_info, &b)?;
+
+    test_info
+        .show_stats()?
+        .try_stdout(
+            predicates::str::contains(
+                r#""cache_hits":{"counts":{"Rust":2},"adv_counts":{"rust":2}}"#,
+            )
+            .from_utf8(),
+        )?
+        .try_stdout(
+            predicates::str::contains(r#""cache_misses":{"counts":{},"adv_counts":{}}"#)
+                .from_utf8(),
+        )?
+        .try_success()?;
+    Ok(())
+}

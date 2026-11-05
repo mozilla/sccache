@@ -188,6 +188,7 @@ const INPUT_WITH_WHITESPACE_ALT: &str = "test_whitespace_alt.c";
 const INPUT_ERR: &str = "test_err.c";
 const INPUT_MACRO_EXPANSION: &str = "test_macro_expansion.c";
 const INPUT_WITH_DEFINE: &str = "test_with_define.c";
+const INPUT_FOR_BASEDIRS: &str = "test_basedirs.c";
 const INPUT_FOR_CUDA_A: &str = "test_a.cu";
 const INPUT_FOR_CUDA_B: &str = "test_b.cu";
 const INPUT_FOR_CUDA_C: &str = "test_c.cu";
@@ -686,6 +687,45 @@ fn test_compile_with_define(compiler: Compiler, tempdir: &Path) {
         .stderr(predicates::str::contains("warning:").from_utf8().not());
 }
 
+/// The same source compiled from two directories, each compile naming its own
+/// in `SCCACHE_BASEDIRS`, with none configured on the server: the second is a hit.
+fn test_basedirs_from_compile_env(compiler: Compiler, tempdir: &Path) {
+    let Compiler {
+        name,
+        exe,
+        env_vars,
+    } = compiler;
+    println!("test_basedirs_from_compile_env: {}", name);
+    zero_stats();
+    for dir in ["basedirs-a", "basedirs-b"] {
+        let dir = tempdir.join(dir);
+        fs::create_dir_all(&dir).unwrap();
+        copy_to_tempdir(&[INPUT_FOR_BASEDIRS], &dir);
+        // The absolute input and the include path name the directory. Only the
+        // preprocessor cache key holds it: the object key hashes output
+        // preprocessed without line markers (-P, or -EP for cl.exe).
+        let input = dir.join(INPUT_FOR_BASEDIRS);
+        let include = OsString::from(format!("-I{}", dir.display()));
+        sccache_command()
+            .args(compile_cmdline(
+                name,
+                &exe,
+                input.to_str().unwrap(),
+                OUTPUT,
+                vec![include],
+            ))
+            .current_dir(&dir)
+            .envs(env_vars.clone())
+            .env("SCCACHE_BASEDIRS", &dir)
+            .assert()
+            .success();
+    }
+    get_stats(|info| {
+        assert_eq!(&1, info.stats.cache_misses.get("C/C++").unwrap());
+        assert_eq!(&1, info.stats.cache_hits.get("C/C++").unwrap());
+    });
+}
+
 fn test_gcc_clang_depfile(compiler: Compiler, tempdir: &Path) {
     let Compiler {
         name,
@@ -741,6 +781,7 @@ fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path, preprocessor_ca
         test_basic_compile(compiler.clone(), tempdir);
         test_basic_compile_into_null(compiler.clone(), tempdir);
         test_basic_compile_into_dev_stdout(compiler.clone(), tempdir);
+        test_basedirs_from_compile_env(compiler.clone(), tempdir);
     }
     test_compile_with_define(compiler.clone(), tempdir);
     if compiler.name == "cl.exe" {
