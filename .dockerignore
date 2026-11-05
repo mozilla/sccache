@@ -1,0 +1,5 @@
+.git
+.github
+.gitignore
+.pre-commit-config.yaml
+.taplo.toml
