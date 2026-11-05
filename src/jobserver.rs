@@ -38,6 +38,7 @@ pub struct Client {
     helper: Option<Arc<jobserver::HelperThread>>,
     tx: Option<mpsc::UnboundedSender<oneshot::Sender<io::Result<jobserver::Acquired>>>>,
     inner: jobserver::Client,
+    fifo: bool,
 }
 
 pub struct Acquired {
@@ -70,8 +71,8 @@ impl Client {
         Client::_new(inner, false)
     }
 
-    fn _new(inner: jobserver::Client, inherited: bool) -> Client {
-        let (helper, tx) = if inherited {
+    fn _new(inner: jobserver::Client, fifo: bool) -> Client {
+        let (helper, tx) = if fifo {
             (None, None)
         } else {
             let (tx, mut rx) = mpsc::unbounded::<oneshot::Sender<_>>();
@@ -91,7 +92,18 @@ impl Client {
             (Some(Arc::new(helper)), Some(tx))
         };
 
-        Client { inner, helper, tx }
+        Client {
+            inner,
+            helper,
+            tx,
+            fifo,
+        }
+    }
+
+    /// Whether this is the build's own jobserver, opened by path (see
+    /// [`Client::from_env_fifo`]), rather than a private pool.
+    pub fn is_fifo(&self) -> bool {
+        self.fifo
     }
 
     /// Configures this jobserver to be inherited by the specified command
@@ -126,7 +138,7 @@ impl Client {
 
 /// Whether the jobserver in our environment, as `jobserver::Client::from_env`
 /// would pick it, is opened by path.
-pub fn env_names_fifo() -> bool {
+fn env_names_fifo() -> bool {
     ["CARGO_MAKEFLAGS", "MAKEFLAGS", "MFLAGS"]
         .iter()
         .find_map(std::env::var_os)
@@ -141,7 +153,7 @@ fn names_fifo(flags: &str) -> bool {
 
 #[cfg(test)]
 mod test {
-    use super::names_fifo;
+    use super::{Client, names_fifo};
 
     #[test]
     fn fifo_jobserver_flags() {
@@ -150,5 +162,10 @@ mod test {
         assert!(!names_fifo("-j8 --jobserver-fds=3,4 --jobserver-auth=3,4"));
         assert!(!names_fifo("-j8"));
         assert!(!names_fifo(""));
+    }
+
+    #[test]
+    fn private_pool_is_not_fifo() {
+        assert!(!Client::new_num(1).is_fifo());
     }
 }

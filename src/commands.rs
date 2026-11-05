@@ -641,9 +641,7 @@ where
     // a compile we run ourselves (bins, tests, proc-macros, links) gets none
     // and rustc makes its own pool of one token per CPU. When it is opened by
     // path, our jobserver is the build's own (see `Client::from_env_fifo`).
-    if crate::jobserver::env_names_fifo() {
-        cmd.share_jobserver();
-    }
+    cmd.share_jobserver_if_fifo();
     if log_enabled!(Trace) {
         trace!("running command: {:?}", cmd);
     }
@@ -1108,36 +1106,45 @@ mod test {
         }
     }
 
-    /// A compile the client runs itself gets the build's `fifo:` jobserver.
-    /// The environment is per process, so the test runs itself again in a
-    /// child with `CARGO_MAKEFLAGS` set.
+    /// A compile the client runs itself gets the build's `fifo:` jobserver,
+    /// and only through a client opened on it: if that failed and we fell
+    /// back to a private pool, the compile gets no jobserver. The environment
+    /// is per process, so the test runs itself again in a child with
+    /// `CARGO_MAKEFLAGS` set.
     #[test]
     #[cfg(unix)]
     fn local_compile_gets_fifo_jobserver() {
         const OUT: &str = "SCCACHE_TEST_FIFO_JOBSERVER_OUT";
         if let Some(out) = env::var_os(OUT) {
+            let compile = |client: &Client, out: &Path| {
+                let mut runtime = make_runtime();
+                let cmdline = vec![
+                    OsString::from("-c"),
+                    OsString::from("printf %s \"$CARGO_MAKEFLAGS\" > \"$1\""),
+                    OsString::from("sh"),
+                    out.into(),
+                ];
+                handle_compile_result(
+                    <ProcessCommandCreator as CommandCreatorSync>::new(client),
+                    &mut runtime,
+                    CompileResponse::UnhandledCompile,
+                    None,
+                    false,
+                    Path::new("/bin/sh"),
+                    cmdline,
+                    Path::new("/"),
+                    &mut vec![],
+                    &mut vec![],
+                )
+                .unwrap()
+            };
+            let out = std::path::PathBuf::from(out);
             let client = Client::from_env_fifo().expect("fifo jobserver from the environment");
-            let mut runtime = make_runtime();
-            let cmdline = vec![
-                OsString::from("-c"),
-                OsString::from("printf %s \"$CARGO_MAKEFLAGS\" > \"$1\""),
-                OsString::from("sh"),
-                out,
-            ];
-            let exit = handle_compile_result(
-                <ProcessCommandCreator as CommandCreatorSync>::new(&client),
-                &mut runtime,
-                CompileResponse::UnhandledCompile,
-                None,
-                false,
-                Path::new("/bin/sh"),
-                cmdline,
-                Path::new("/"),
-                &mut vec![],
-                &mut vec![],
-            )
-            .unwrap();
-            assert_eq!(exit, 0);
+            assert_eq!(compile(&client, &out), 0);
+            assert_eq!(
+                compile(&Client::new_num(1), &out.with_extension("private")),
+                0
+            );
             return;
         }
 
@@ -1166,6 +1173,8 @@ mod test {
             seen.contains(&format!("--jobserver-auth=fifo:{}", fifo.display())),
             "the compile got {seen:?}"
         );
+        let seen = std::fs::read_to_string(out.with_extension("private")).unwrap();
+        assert_eq!(seen, "", "a private pool is not handed on");
     }
 
     /// A mid-compile server disconnect: the server sends CompileStarted then drops the
