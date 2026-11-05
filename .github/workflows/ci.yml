@@ -386,6 +386,8 @@ jobs:
         if: ${{ env.PGO == 'true' }}
         shell: bash
         run: |
+          # Git Bash's perl lacks modules OpenSSL's Configure needs, so build it with Strawberry Perl.
+          if [ "$RUNNER_OS" = "Windows" ]; then export OPENSSL_SRC_PERL=C:/Strawberry/perl/bin/perl.exe; fi
           ./scripts/build-pgo.sh --target ${{ matrix.target }} --features openssl/vendored --train-only
           # The script writes the profile's absolute path, natively spelled on Windows.
           echo "RUSTFLAGS=${RUSTFLAGS:+${RUSTFLAGS} }-Cprofile-use=$(cat target/sccache-pgo/profdata-path.txt)" >> "$GITHUB_ENV"
