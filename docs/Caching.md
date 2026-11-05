@@ -6,6 +6,11 @@ computing some hashes to make sure the input is the same.
 Because the configuration and environment matter, the hash
 computation takes a few parameters into account.
 
+File digests can be reused while file size, modification time and change time
+remain unchanged. Windows uses the file's `ChangeTime`, not its creation time.
+Files changed within the last two seconds, or without usable timestamps, are
+read again instead of being added to the digest cache.
+
 ## How hash keys are computed.
 
 ### Rust
