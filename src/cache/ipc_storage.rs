@@ -12,8 +12,8 @@
 
 use crate::cache::CacheMode;
 use crate::cache::GetPathResult;
-use crate::cache::storage::Storage;
 use crate::cache::cache_io::{Cache, CacheRead, CacheWrite};
+use crate::cache::storage::Storage;
 use crate::client::ServerConnection;
 use crate::compiler::PreprocessorCacheEntry;
 use crate::config::PreprocessorCacheModeConfig;
