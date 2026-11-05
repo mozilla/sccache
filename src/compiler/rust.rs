@@ -4665,7 +4665,8 @@ foo.rs:
                     "--crate-type",
                     "lib",
                 ],
-                &[],
+                // rustc reports the value it sees in its environment.
+                &[("Y".into(), val.clone())],
                 &[("Y", val)],
                 nothing,
                 MockStorage::new(None, false).with_basedirs(vec![basedir(&root)]),
