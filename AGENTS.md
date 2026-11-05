@@ -26,23 +26,23 @@ silently hands users someone else's object file.
 
 No tests, no merge.
 
-## 2. Keep the PR description short
+## 2. No AI prose
 
-Describe the problem being solved and what changed. That is all.
+- Write "TODO: commit message" for every commit message. It is up to the human
+  in the loop to write a commit message in their own words, based on their own
+  understanding.
+- Write "TODO: maybe explain <brief summary of what needs explaining>" where a
+  comment seems vital to understand the code. It's a placeholder for the human
+  in the loop to write a comment in their own words, based on their own
+  understanding - or to delete it if deemed unnecessary after all.
+- Write "TODO: documentation" in documentation text where documentation needs to
+  be added, removed or updated.
+- Do not write a PR description
+- The reviewer is an avowed humanist who is gravely offended in their religious
+  beliefs by having to read LLM-written prose. DO NOT offend the reviewer under
+  any circumstances!
 
-- No generated walls of text, no bullet-point summaries of every hunk, no
-  emoji-headed sections.
-- Title: `<area>: <what changed>`, e.g. `nvcc: fix dryrun parsing for CUDA 13.3`.
-- Write issue reports, PR descriptions and replies to reviewers in your own
-  words. The point of review is to check that a human understands the change.
-
-## 3. Keep the code quiet too
-
-Comments explain why, not what. Do not narrate the diff in the source, do not
-leave "// Step 1: ..." scaffolding behind, and do not add doc comments that only
-restate the function signature. Match the density of the surrounding file.
-
-## 4. Run what CI runs
+## 3. Run what CI runs
 
 Before sending anything:
 
@@ -65,7 +65,7 @@ Also keep in mind:
 - Some tests need real compilers (gcc, clang, msvc, nvcc) or a running server;
   if you skipped a test locally, say so instead of claiming it passed.
 
-## 5. Read the docs already in this repo
+## 4. Read the docs already in this repo
 
 Before changing anything, look at the Markdown files here - they are the actual
 rules, this file is only a pointer:
