@@ -111,13 +111,13 @@ pub trait RunCommand: fmt::Debug + Send {
     fn stdout(&mut self, cfg: Stdio) -> &mut Self;
     /// Set the process' stderr from `cfg`.
     fn stderr(&mut self, cfg: Stdio) -> &mut Self;
-    /// Hand sccache's jobserver down to this child.
-    ///
-    /// Only worth doing for a child that implements the protocol -- in
-    /// practice `rustc`, which reads `CARGO_MAKEFLAGS`. It is not free: see
-    /// [`AsyncCommand::spawn`] for why sharing costs a `fork` instead of a
-    /// `posix_spawn`.
+    /// Hand sccache's private jobserver down to a Cargo/rustc-compatible child.
     fn share_jobserver(&mut self) -> &mut Self {
+        self
+    }
+
+    /// Preserve the parent build system's make-compatible jobserver for this child.
+    fn preserve_make_jobserver(&mut self) -> &mut Self {
         self
     }
     /// Execute the process and return a process object.
@@ -186,10 +186,98 @@ impl CommandChild for Child {
     }
 }
 
+#[derive(Clone, Copy, Default)]
+enum JobserverInheritance {
+    #[default]
+    None,
+    Sccache,
+    ParentMake,
+}
+
 pub struct AsyncCommand {
     inner: Option<Command>,
     jobserver: Client,
-    share_jobserver: bool,
+    jobserver_inheritance: JobserverInheritance,
+}
+
+#[cfg(unix)]
+fn parse_make_jobserver_fds(flags: &OsStr) -> Option<(libc::c_int, libc::c_int)> {
+    use std::os::unix::ffi::OsStrExt;
+
+    fn value_after_prefix<'a>(
+        mut fields: impl Iterator<Item = &'a [u8]>,
+        prefix: &[u8],
+    ) -> Option<&'a [u8]> {
+        fields.find_map(|field| field.strip_prefix(prefix))
+    }
+
+    let bytes = flags.as_bytes();
+    let fields = || {
+        bytes
+            .split(|byte| byte.is_ascii_whitespace())
+            .filter(|field| !field.is_empty())
+    };
+    let value = if let Some(auth) = value_after_prefix(fields(), b"--jobserver-auth=") {
+        // GNU make 4.4 can advertise a named FIFO instead of descriptor pairs.
+        // No descriptor inheritance fixup is needed for that protocol.
+        if auth.starts_with(b"fifo:") {
+            return None;
+        }
+        auth
+    } else {
+        value_after_prefix(fields(), b"--jobserver-fds=")?
+    };
+
+    let value = std::str::from_utf8(value).ok()?;
+    let (read, write) = value.split_once(',')?;
+    Some((read.parse().ok()?, write.parse().ok()?))
+}
+
+#[cfg(unix)]
+fn preserve_parent_make_jobserver_fds(cmd: &mut Command) {
+    use std::os::unix::process::CommandExt;
+
+    let Some(flags) = std::env::var_os("MAKEFLAGS").or_else(|| std::env::var_os("CARGO_MAKEFLAGS"))
+    else {
+        return;
+    };
+    let Some((read_fd, write_fd)) = parse_make_jobserver_fds(&flags) else {
+        return;
+    };
+
+    // A normal make recipe can advertise a jobserver while deliberately not
+    // passing its descriptors. Only install a pre-exec hook when both of the
+    // advertised descriptors are actually open in this process.
+    if [read_fd, write_fd].into_iter().any(|fd| {
+        // SAFETY: fcntl only inspects the descriptor number; failure is handled below.
+        (unsafe { libc::fcntl(fd, libc::F_GETFD) }) == -1
+    }) {
+        return;
+    }
+
+    // Rust's spawn path is free to use posix_spawn, which need not preserve
+    // arbitrary make jobserver descriptors. Registering pre_exec forces the
+    // fork/exec path and clears CLOEXEC on the exact descriptors advertised by
+    // the parent build system. Do not clone or renumber them: MAKEFLAGS is the
+    // parent's protocol contract and must continue to name the same FDs.
+    // SAFETY: this hook only calls async-signal-safe fcntl operations on the
+    // already-validated descriptor numbers before exec.
+    unsafe {
+        cmd.pre_exec(move || {
+            for fd in [read_fd, write_fd] {
+                let flags = libc::fcntl(fd, libc::F_GETFD);
+                if flags == -1 {
+                    return Err(io::Error::last_os_error());
+                }
+                if flags & libc::FD_CLOEXEC != 0
+                    && libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) == -1
+                {
+                    return Err(io::Error::last_os_error());
+                }
+            }
+            Ok(())
+        });
+    }
 }
 
 impl AsyncCommand {
@@ -197,7 +285,7 @@ impl AsyncCommand {
         AsyncCommand {
             inner: Some(Command::new(program)),
             jobserver,
-            share_jobserver: false,
+            jobserver_inheritance: JobserverInheritance::None,
         }
     }
 
@@ -258,22 +346,45 @@ impl RunCommand for AsyncCommand {
         self
     }
     fn share_jobserver(&mut self) -> &mut AsyncCommand {
-        self.share_jobserver = true;
+        self.jobserver_inheritance = JobserverInheritance::Sccache;
+        self
+    }
+    fn preserve_make_jobserver(&mut self) -> &mut AsyncCommand {
+        self.jobserver_inheritance = JobserverInheritance::ParentMake;
         self
     }
     async fn spawn(&mut self) -> Result<Child> {
         let mut inner = self.inner.take().unwrap();
-        inner.env_remove("MAKEFLAGS");
-        inner.env_remove("MFLAGS");
-        inner.env_remove("CARGO_MAKEFLAGS");
-        // `configure` registers a `pre_exec` closure to clear `CLOEXEC` on the
-        // jobserver's file descriptors, and any `pre_exec` makes `std` fall
-        // back from `posix_spawn` to `fork`+`exec`. Almost nothing sccache
-        // spawns can use a jobserver -- preprocessors, version probes and
-        // C/C++ compilers all ignore it -- so the default is not to share,
-        // and the callers that spawn `rustc` ask for it.
-        if self.share_jobserver {
-            self.jobserver.configure(&mut inner);
+        match self.jobserver_inheritance {
+            JobserverInheritance::None => {
+                inner.env_remove("MAKEFLAGS");
+                inner.env_remove("MFLAGS");
+                inner.env_remove("CARGO_MAKEFLAGS");
+            }
+            JobserverInheritance::Sccache => {
+                inner.env_remove("MAKEFLAGS");
+                inner.env_remove("MFLAGS");
+                inner.env_remove("CARGO_MAKEFLAGS");
+                // `configure` registers a `pre_exec` closure to clear `CLOEXEC`
+                // on sccache's private jobserver descriptors. This is reserved
+                // for children such as rustc that consume `CARGO_MAKEFLAGS`.
+                self.jobserver.configure(&mut inner);
+            }
+            JobserverInheritance::ParentMake => {
+                // Preserve the exact parent MAKEFLAGS when available: GNU make's
+                // jobserver syntax and descriptors are its contract, not ours to
+                // reconstruct. Cargo exposes the same contract through
+                // CARGO_MAKEFLAGS, so only translate that spelling when MAKEFLAGS
+                // itself is absent.
+                if std::env::var_os("MAKEFLAGS").is_none()
+                    && let Some(flags) = std::env::var_os("CARGO_MAKEFLAGS")
+                {
+                    inner.env("MAKEFLAGS", &flags);
+                    inner.env("MFLAGS", &flags);
+                }
+                #[cfg(unix)]
+                preserve_parent_make_jobserver_fds(&mut inner);
+            }
         }
 
         // The token is acquired either way: it rate-limits how many children
@@ -710,6 +821,32 @@ mod test {
             .block_on(async { crate::util::run_input_output(cmd, None).await })
             .unwrap();
         !output.stdout.is_empty()
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn parse_make_jobserver_descriptor_forms() {
+        assert_eq!(
+            parse_make_jobserver_fds(OsStr::new(" -j2 --jobserver-auth=3,4 --no-print-directory")),
+            Some((3, 4))
+        );
+        assert_eq!(
+            parse_make_jobserver_fds(OsStr::new("-j --jobserver-fds=7,9")),
+            Some((7, 9))
+        );
+        assert_eq!(
+            parse_make_jobserver_fds(OsStr::new("-j2 --jobserver-fds=7,9 --jobserver-auth=11,12")),
+            Some((11, 12)),
+            "new-style auth must take precedence over the compatibility spelling"
+        );
+        assert_eq!(
+            parse_make_jobserver_fds(OsStr::new("-j2 --jobserver-auth=fifo:/tmp/make-jobserver")),
+            None
+        );
+        assert_eq!(
+            parse_make_jobserver_fds(OsStr::new("-j2 --jobserver-auth=broken")),
+            None
+        );
     }
 
     #[test]
