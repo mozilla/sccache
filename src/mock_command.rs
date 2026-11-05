@@ -197,6 +197,8 @@ pub struct AsyncCommand {
 /// unlike inherited pipe descriptors, any process can reopen.
 fn names_fifo_jobserver(cmd: &Command) -> bool {
     // The variables `jobserver::Client::from_env` reads, in its order.
+    // `CARGO_MAKEFLAGS` never reaches the server: the client drops it from the
+    // environment it sends, so in practice the fifo comes through `MAKEFLAGS`.
     ["CARGO_MAKEFLAGS", "MAKEFLAGS", "MFLAGS"]
         .iter()
         .find_map(|var| {
@@ -283,12 +285,11 @@ impl RunCommand for AsyncCommand {
     }
     async fn spawn(&mut self) -> Result<Child> {
         let mut inner = self.inner.take().unwrap();
-        if self.share_jobserver && names_fifo_jobserver(&inner) {
-            // The build that asked for this compile named its jobserver by
-            // path, so the child can open it the way it would have without
-            // sccache, and stays within that build's (or a system-wide)
-            // limit instead of getting our private pool.
-        } else {
+        // If the build that asked for this compile named its jobserver by
+        // path, the child keeps it and opens it the way it would have without
+        // sccache, so it stays within that build's (or a system-wide) limit
+        // instead of getting our private pool.
+        if !(self.share_jobserver && names_fifo_jobserver(&inner)) {
             inner.env_remove("MAKEFLAGS");
             inner.env_remove("MFLAGS");
             inner.env_remove("CARGO_MAKEFLAGS");
@@ -757,45 +758,65 @@ mod test {
         );
     }
 
-    /// `CARGO_MAKEFLAGS` as the child sees it, when the compile's own
-    /// environment (as the server sets it from the client's) carries `flags`.
+    /// `(CARGO_MAKEFLAGS, MAKEFLAGS)` as the child sees them, when the
+    /// compile's own environment (as the server sets it from the client's)
+    /// has `var` set to `flags`.
     #[cfg(unix)]
-    fn child_cargo_makeflags_given(flags: &str, share: bool) -> String {
+    fn child_makeflags_given(var: &str, flags: &str, share: bool) -> (String, String) {
         let client = Client::new_num(1);
         let mut creator = <ProcessCommandCreator as CommandCreator>::new(&client);
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let mut cmd = creator.new_command("/bin/sh");
-        cmd.args(&["-c", "printf %s \"$CARGO_MAKEFLAGS\""])
+        cmd.args(&["-c", "printf '%s\\n%s' \"$CARGO_MAKEFLAGS\" \"$MAKEFLAGS\""])
             .env_clear()
-            .env("CARGO_MAKEFLAGS", flags);
+            .env(var, flags);
         if share {
             cmd.share_jobserver();
         }
         let output: std::process::Output = runtime
             .block_on(async { crate::util::run_input_output(cmd, None).await })
             .unwrap();
-        String::from_utf8(output.stdout).unwrap()
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let (cargo_makeflags, makeflags) = stdout.split_once('\n').unwrap();
+        (cargo_makeflags.to_owned(), makeflags.to_owned())
     }
 
     #[test]
     #[cfg(unix)]
     fn share_jobserver_keeps_a_fifo_jobserver() {
         let flags = "-j8 --jobserver-auth=fifo:/tmp/GMfifo1234";
-        assert_eq!(child_cargo_makeflags_given(flags, true), flags);
+        // The client strips `CARGO_MAKEFLAGS`, so the fifo normally arrives
+        // through `MAKEFLAGS`; both are honoured.
         assert_eq!(
-            child_cargo_makeflags_given(flags, false),
-            "",
-            "a child that doesn't ask for a jobserver still gets none"
+            child_makeflags_given("MAKEFLAGS", flags, true),
+            (String::new(), flags.to_owned())
         );
+        assert_eq!(
+            child_makeflags_given("CARGO_MAKEFLAGS", flags, true),
+            (flags.to_owned(), String::new())
+        );
+        for var in ["MAKEFLAGS", "CARGO_MAKEFLAGS"] {
+            assert_eq!(
+                child_makeflags_given(var, flags, false),
+                (String::new(), String::new()),
+                "a child that doesn't ask for a jobserver still gets none"
+            );
+        }
     }
 
     #[test]
     #[cfg(unix)]
     fn share_jobserver_replaces_an_inherited_pipe_jobserver() {
         let flags = "-j8 --jobserver-fds=1000,1001 --jobserver-auth=1000,1001";
-        let seen = child_cargo_makeflags_given(flags, true);
-        assert!(!seen.is_empty());
-        assert_ne!(seen, flags);
+        for var in ["MAKEFLAGS", "CARGO_MAKEFLAGS"] {
+            let (cargo_makeflags, makeflags) = child_makeflags_given(var, flags, true);
+            assert_eq!(makeflags, "", "the inherited MAKEFLAGS is dropped");
+            let auth = cargo_makeflags
+                .split_ascii_whitespace()
+                .find_map(|arg| arg.strip_prefix("--jobserver-auth="))
+                .unwrap_or_else(|| panic!("no --jobserver-auth in {cargo_makeflags:?}"));
+            assert_ne!(auth, "1000,1001", "the child gets our jobserver instead");
+        }
     }
 
     #[test]
