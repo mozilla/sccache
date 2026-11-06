@@ -853,11 +853,16 @@ pub fn run_command(cmd: Command) -> Result<i32> {
             if env::var("SCCACHE_ERROR_LOG").is_ok() {
                 let f = create_error_log()?;
                 #[cfg(not(windows))]
-                let preserve = [f.as_raw_fd()];
+                let preserve: Vec<_> = std::iter::once(f.as_raw_fd())
+                    .chain(crate::logging::error_log_fd())
+                    .collect();
                 #[cfg(windows)]
                 let preserve = [f.as_raw_handle()];
                 // Can't report failure here, we're already daemonized.
                 daemonize(&preserve)?;
+                // A per-process log path named the file after the pid this
+                // process had before daemonizing.
+                let f = crate::logging::reopen_error_log()?.unwrap_or(f);
                 redirect_error_log(f)?;
             } else {
                 // We aren't asking for a log file

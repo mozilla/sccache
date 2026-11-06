@@ -42,6 +42,58 @@ use crate::errors::*;
 /// Environment variable naming a file to append log output to.
 pub const ERROR_LOG_ENV: &str = "SCCACHE_ERROR_LOG";
 
+/// The descriptor of the error log opened by [`init`], which the daemon has to
+/// keep open when it closes the descriptors it inherited.
+#[cfg(unix)]
+static ERROR_LOG_FD: std::sync::OnceLock<std::os::unix::io::RawFd> = std::sync::OnceLock::new();
+
+/// The descriptor log records are written to, if they go to the error log.
+#[cfg(unix)]
+pub fn error_log_fd() -> Option<std::os::unix::io::RawFd> {
+    ERROR_LOG_FD.get().copied()
+}
+
+/// Where log records go, and the error log it is, if any: the daemon swaps it
+/// for a file named after its own pid once it has forked.
+static SINK: std::sync::Mutex<Option<(Box<dyn Write + Send>, Option<PathBuf>)>> =
+    std::sync::Mutex::new(None);
+
+/// What `env_logger` writes to: whatever [`SINK`] holds at the time.
+struct Sink;
+
+impl Write for Sink {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match &mut *SINK.lock().unwrap_or_else(|e| e.into_inner()) {
+            Some((sink, _)) => sink.write(buf),
+            None => Ok(buf.len()),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match &mut *SINK.lock().unwrap_or_else(|e| e.into_inner()) {
+            Some((sink, _)) => sink.flush(),
+            None => Ok(()),
+        }
+    }
+}
+
+/// Switch to the error log this process should write to, when that is not the
+/// one it opened: a per-process path (`%p`, or a directory) resolves to another
+/// file once the daemon has forked. Returns the newly opened file, if any.
+pub fn reopen_error_log() -> Result<Option<File>> {
+    let Some(path) = error_log_path() else {
+        return Ok(None);
+    };
+    let mut sink = SINK.lock().unwrap_or_else(|e| e.into_inner());
+    match &*sink {
+        Some((_, Some(opened))) if *opened != path => {}
+        _ => return Ok(None),
+    }
+    let file = open_error_log(&path)?;
+    *sink = Some((Box::new(file.try_clone()?), Some(path)));
+    Ok(Some(file))
+}
+
 /// Initialise logging from the `SCCACHE_LOG` environment variable.
 ///
 /// Does nothing if `SCCACHE_LOG` is unset, and panics if a logger has already
@@ -52,29 +104,39 @@ pub fn init() {
     }
 
     let millis = std::env::var_os("SCCACHE_LOG_MILLIS").is_some();
-    let pid = std::process::id();
 
     // Note that only the log output is redirected, never file descriptor 2
     // itself: a CLI process passes the compiler's diagnostics through its own
     // stderr, and those have to reach the build.  The daemon has no such
     // constraint and additionally redirects its stderr (see
     // `commands::run_command`), which is what catches panics and backtraces.
-    let sink: Box<dyn Write + Send> = match error_log_path() {
+    let sink: (Box<dyn Write + Send>, Option<PathBuf>) = match error_log_path() {
         Some(path) => match open_error_log(&path) {
-            Ok(file) => Box::new(file),
+            Ok(file) => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::io::AsRawFd;
+                    let _ = ERROR_LOG_FD.set(file.as_raw_fd());
+                }
+                (Box::new(file), Some(path))
+            }
             Err(e) => {
                 // No logger yet, so this cannot go through `log`.
                 eprintln!("sccache: {e}, logging to stderr instead");
-                Box::new(io::stderr())
+                (Box::new(io::stderr()), None)
             }
         },
-        None => Box::new(io::stderr()),
+        None => (Box::new(io::stderr()), None),
     };
+    *SINK.lock().unwrap_or_else(|e| e.into_inner()) = Some(sink);
 
     let mut builder = env_logger::Builder::from_env(crate::LOGGING_ENV);
     builder
-        .format(move |buf, record| format_record(buf, record, pid, millis))
-        .target(env_logger::Target::Pipe(Box::new(LineWriter::new(sink))));
+        // The pid is read for each record: the daemon forks after this.
+        .format(move |buf, record| format_record(buf, record, std::process::id(), millis))
+        .target(env_logger::Target::Pipe(Box::new(LineWriter::new(
+            Box::new(Sink),
+        ))));
 
     match builder.try_init() {
         Ok(_) => (),
