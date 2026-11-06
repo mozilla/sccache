@@ -931,7 +931,10 @@ where
     let dist_client = match dist_compile_cmd.clone().and(dist_client) {
         Some(dc) => dc,
         None => {
-            debug!("[{}]: Compiling locally", out_pretty);
+            info!(
+                "[{}]: Compiling locally (not eligible for distributed compilation)",
+                out_pretty
+            );
             return compile_cmd
                 .execute(service, &creator)
                 .await
@@ -939,8 +942,9 @@ where
         }
     };
 
-    debug!("[{}]: Attempting distributed compilation", out_pretty);
+    info!("[{}]: Attempting distributed compilation", out_pretty);
     let out_pretty2 = out_pretty.clone();
+    let fallback_enabled = dist_client.fallback_enabled();
 
     let local_executable = compile_cmd.get_executable();
     let local_executable2 = compile_cmd.get_executable();
@@ -952,6 +956,28 @@ where
         let dist_output_paths = compilation
             .outputs()
             .map(|output| path_transformer.as_dist_abs(&cwd.join(output.path)))
+            .collect::<Option<_>>()
+            .context("Failed to adapt an output path for distributed compile")?;
+        // The local paths every declared output must occupy once the compile
+        // finishes. Captured before `compilation` is moved into the packagers
+        // below so a remote compile that drops a declared output can be detected
+        // and salvaged (see the missing-output check after the run completes).
+        //
+        // Each entry pairs the output's dist path with its local path. The dist
+        // path is matched against what the server returned, because a stale file
+        // from an earlier build at the local path would pass a bare existence
+        // check. gcc's dependency file (key `d`) is written by the local
+        // preprocessor and the server never returns it, so it keeps the
+        // existence check.
+        let expected_outputs: Vec<(String, PathBuf, bool)> = compilation
+            .outputs()
+            .filter(|output| !output.optional)
+            .map(|output| {
+                let local = cwd.join(output.path);
+                path_transformer
+                    .as_dist_abs(&local)
+                    .map(|dist| (dist, local, output.key == "d"))
+            })
             .collect::<Option<_>>()
             .context("Failed to adapt an output path for distributed compile")?;
         let (inputs_packager, toolchain_packager, outputs_rewriter) =
@@ -1056,6 +1082,8 @@ where
             }};
         }
 
+        let returned_outputs: std::collections::HashSet<String> =
+            jc.outputs.iter().map(|(p, _)| p.clone()).collect();
         for (path, output_data) in jc.outputs {
             let len = output_data.lens().actual;
             let local_path = try_or_cleanup!(
@@ -1089,7 +1117,66 @@ where
                 .with_context(|| "failed to rewrite outputs from compile")
         );
 
+        if jc.output.code != 0 && fallback_enabled {
+            // The one-line reason above is logged by the caller at warn; the
+            // remote compiler's own stdout/stderr is the only place the actual
+            // failure (a missing target std, an unshipped input) is visible, and
+            // the local fallback discards it. Emit it at debug so SCCACHE_LOG=debug
+            // surfaces the remote error without a rebuild, while a normal
+            // SCCACHE_LOG=info run stays quiet.
+            debug!(
+                "[{}]: distributed compile on {} exited {}; remote stderr:\n{}\nremote stdout:\n{}",
+                out_pretty,
+                server_id.addr(),
+                jc.output.code,
+                String::from_utf8_lossy(&jc.output.stderr),
+                String::from_utf8_lossy(&jc.output.stdout),
+            );
+            // A non-zero remote result is frequently a distribution artifact
+            // rather than a genuine compiler error: e.g. an object that
+            // .incbin's a binary the inputs packager did not ship (the kernel's
+            // vdso/dtb/embedded-config wrappers), which the build-server cannot
+            // assemble. Fall back to a local recompile via the or_else below - it
+            // either succeeds (confirming a dist-only artifact) or reproduces the
+            // real error locally, so a remote failure never breaks a build that
+            // would compile fine locally. This only affects failing dist
+            // compiles; successful ones are returned unchanged above.
+            bail!(
+                "distributed compile on {} returned exit code {}; recompiling locally",
+                server_id.addr(),
+                jc.output.code
+            );
+        }
+
+        // The remote compile returned exit 0 but may have dropped a declared
+        // output: glibc's ldconfig.o/sprof.o omit their `.o.dt` dep file, which
+        // the build-server does not return. Zipping the outputs later would then
+        // fail fatally with no recourse. Treat a missing declared output as a
+        // distribution artifact and fall back to a local recompile via the
+        // or_else below, which reproduces the full output set. Compiles whose
+        // dist output set is complete are unaffected.
+        if fallback_enabled
+            && let Some((_, missing, _)) =
+                expected_outputs
+                    .iter()
+                    .find(|(dist, local, locally_produced)| {
+                        if *locally_produced {
+                            !local.exists()
+                        } else {
+                            !returned_outputs.contains(dist)
+                        }
+                    })
+        {
+            bail!(
+                "distributed compile on {} did not return expected output {}; recompiling locally",
+                server_id.addr(),
+                missing.display()
+            );
+        }
+
         if jc.output.code != 0 {
+            // Reached only with the fallback switch off, where the remote result is
+            // reported to the client as release 0.19.0 does.
             // Add server info to help diagnose host-specific failures, e.g. due to flaky hardware.
             // Failed builds are not cached so this tampering should not cause too much trouble.
             let server_info = format!("sccache: Job failed on server {}:\n", server_id.addr());
@@ -1098,6 +1185,11 @@ where
                 .splice(0..0, server_info.as_bytes().to_vec());
         }
 
+        info!(
+            "[{}]: Distributed compilation finished on {}",
+            out_pretty,
+            server_id.addr()
+        );
         Ok((DistType::Ok(server_id), jc.output.into()))
     };
 
@@ -3691,7 +3783,9 @@ LLVM version: 6.0",
             Ok(MockChild::new(exit_status(0), "preprocessor output", "")),
         );
         const COMPILER_STDERR: &[u8] = b"foo.c:1: error: expected ';'";
-        let dist_client = test_dist::OneshotClient::new(1, vec![], COMPILER_STDERR.to_owned());
+        // Release behaviour: the remote result reaches the client, no local recompile.
+        let dist_client =
+            test_dist::OneshotClient::with_fallback(1, vec![], COMPILER_STDERR.to_owned(), false);
         let service = server::SccacheService::mock_with_dist_client(
             dist_client.clone(),
             storage.clone(),
@@ -3732,6 +3826,293 @@ LLVM version: 6.0",
         assert!(res.stderr.ends_with(COMPILER_STDERR));
     }
 
+    /// Runs one distributed compile whose remote result is exit 1 and returns
+    /// the fixture, the runtime (kept alive so the cache write can finish), the
+    /// compile result and the process output.
+    #[cfg(feature = "dist-client")]
+    fn run_dist_failed_compile(
+        fallback: bool,
+        local_result: Option<&'static [u8]>,
+    ) -> (TestFixture, Runtime, CompileResult, process::Output) {
+        drop(env_logger::try_init());
+        let creator = new_creator();
+        let f = TestFixture::new();
+        let gcc = f.mk_bin("gcc").unwrap();
+        let runtime = Runtime::new().unwrap();
+        let pool = runtime.handle().clone();
+        let storage = DiskCache::new(
+            f.tempdir.path().join("cache"),
+            u64::MAX,
+            &pool,
+            PreprocessorCacheModeConfig::default(),
+            CacheMode::ReadWrite,
+            vec![],
+        );
+        let storage = Arc::new(storage);
+        next_command(
+            &creator,
+            Ok(MockChild::new(exit_status(0), "compiler_id=gcc", "")),
+        );
+        next_assembler(&creator, "GNU assembler (GNU Binutils) 2.42", "");
+        let c = get_compiler_info(
+            creator.clone(),
+            &gcc,
+            f.tempdir.path(),
+            &[],
+            &[],
+            &pool,
+            None,
+        )
+        .wait()
+        .unwrap()
+        .0;
+        next_command(
+            &creator,
+            Ok(MockChild::new(exit_status(0), "preprocessor output", "")),
+        );
+        if let Some(contents) = local_result {
+            let obj = f.tempdir.path().join("foo.o");
+            next_command_calls(&creator, move |_| {
+                let mut o = File::create(&obj)?;
+                o.write_all(contents)?;
+                Ok(MockChild::new(
+                    exit_status(0),
+                    "local stdout",
+                    "local stderr",
+                ))
+            });
+        }
+        let dist_client =
+            test_dist::OneshotClient::with_fallback(1, vec![], b"remote stderr".to_vec(), fallback);
+        let service = server::SccacheService::mock_with_dist_client(
+            dist_client.clone(),
+            storage.clone(),
+            pool.clone(),
+        );
+        let arguments = ovec!["-c", "foo.c", "-o", "foo.o"];
+        let mut hasher = match c.parse_arguments(&arguments, ".".as_ref(), &[]) {
+            CompilerArguments::Ok(h) => h,
+            o => panic!("Bad result from parse_arguments: {:?}", o),
+        };
+        let (cached, res) = runtime
+            .block_on(async {
+                hasher
+                    .get_cached_or_compile(
+                        &service,
+                        Some(dist_client.clone()),
+                        creator.clone(),
+                        storage.clone(),
+                        arguments.clone(),
+                        f.tempdir.path().to_path_buf(),
+                        vec![],
+                        CacheControl::Default,
+                        pool.clone(),
+                    )
+                    .await
+            })
+            .unwrap();
+        (f, runtime, cached, res)
+    }
+
+    #[test]
+    #[cfg(feature = "dist-client")]
+    fn test_compiler_get_cached_or_compile_dist_failed_compile_fallback_true() {
+        let (f, _runtime, cached, res) = run_dist_failed_compile(true, Some(b"local object"));
+        match cached {
+            CompileResult::CacheMiss(MissType::Normal, DistType::Error, _, fut) => {
+                fut.wait().unwrap();
+            }
+            _ => panic!("Unexpected compile result: {:?}", cached),
+        }
+        assert_eq!(res.status.code(), Some(0));
+        assert_eq!(res.stdout.as_slice(), b"local stdout");
+        assert_eq!(res.stderr.as_slice(), b"local stderr");
+        assert_eq!(
+            fs::read(f.tempdir.path().join("foo.o")).unwrap(),
+            b"local object"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "dist-client")]
+    fn test_compiler_get_cached_or_compile_dist_failed_compile_fallback_false() {
+        let (_f, _runtime, cached, res) = run_dist_failed_compile(false, None);
+        match cached {
+            CompileResult::CompileFailed(DistType::Ok(_), _) => {}
+            _ => panic!("Unexpected compile result: {:?}", cached),
+        }
+        assert_eq!(res.status.code(), Some(1));
+        assert!(res.stderr.ends_with(b"remote stderr"));
+        // As in 0.19.0, a reported remote failure names the server that produced it.
+        assert!(res.stderr.starts_with(b"sccache: Job failed on server "));
+    }
+
+    // A stale object from an earlier build sits at the output path. When the build
+    // server returns exit 0 but drops that output, the path still exists, so a
+    // bare existence check would accept the stale file and cache it as the result.
+    #[test]
+    #[cfg(feature = "dist-client")]
+    fn test_compiler_dist_dropped_output_not_masked_by_stale_file() {
+        drop(env_logger::try_init());
+        let creator = new_creator();
+        let f = TestFixture::new();
+        let gcc = f.mk_bin("gcc").unwrap();
+        let runtime = Runtime::new().unwrap();
+        let pool = runtime.handle().clone();
+        std::fs::write(f.tempdir.path().join("foo.c"), "whatever").unwrap();
+        let storage = Arc::new(DiskCache::new(
+            f.tempdir.path().join("cache"),
+            u64::MAX,
+            &pool,
+            PreprocessorCacheModeConfig::default(),
+            CacheMode::ReadWrite,
+            vec![],
+        ));
+        next_command(
+            &creator,
+            Ok(MockChild::new(exit_status(0), "compiler_id=gcc", "")),
+        );
+        next_assembler(&creator, "GNU assembler (GNU Binutils) 2.42", "");
+        let c = get_compiler_info(
+            creator.clone(),
+            &gcc,
+            f.tempdir.path(),
+            &[],
+            &[],
+            &pool,
+            None,
+        )
+        .wait()
+        .unwrap()
+        .0;
+        let obj = f.tempdir.path().join("foo.o");
+        std::fs::write(&obj, b"STALE OBJECT").unwrap();
+        next_command(
+            &creator,
+            Ok(MockChild::new(exit_status(0), "preprocessor output", "")),
+        );
+        let o = obj.clone();
+        next_command_calls(&creator, move |_| {
+            let mut f = File::create(&o)?;
+            f.write_all(b"FRESH LOCAL")?;
+            Ok(MockChild::new(exit_status(0), "", ""))
+        });
+        let cwd = f.tempdir.path();
+        let arguments = ovec!["-c", "foo.c", "-o", "foo.o"];
+        let mut hasher = match c.parse_arguments(&arguments, ".".as_ref(), &[]) {
+            CompilerArguments::Ok(h) => h,
+            o => panic!("Bad result from parse_arguments: {:?}", o),
+        };
+        let dist_client = test_dist::IncompleteOutputsClient::new();
+        let service = server::SccacheService::mock_with_dist_client(
+            dist_client.clone(),
+            storage.clone(),
+            pool.clone(),
+        );
+        let (_cached, res) = hasher
+            .get_cached_or_compile(
+                &service,
+                Some(dist_client),
+                creator,
+                storage,
+                arguments,
+                cwd.to_path_buf(),
+                vec![],
+                CacheControl::ForceRecache,
+                pool,
+            )
+            .wait()
+            .unwrap();
+        assert_eq!(exit_status(0), res.status);
+        assert_eq!(
+            b"FRESH LOCAL".as_slice(),
+            fs::read(&obj).unwrap().as_slice()
+        );
+    }
+    // gcc's dependency file is written by the local preprocessor and the build
+    // server never returns it. A distributed compile that returns only the object
+    // must still be accepted, with no local recompile.
+    #[test]
+    #[cfg(feature = "dist-client")]
+    fn test_compiler_dist_locally_written_dep_file_is_not_a_dropped_output() {
+        drop(env_logger::try_init());
+        let creator = new_creator();
+        let f = TestFixture::new();
+        let gcc = f.mk_bin("gcc").unwrap();
+        let runtime = Runtime::new().unwrap();
+        let pool = runtime.handle().clone();
+        std::fs::write(f.tempdir.path().join("foo.c"), "whatever").unwrap();
+        let storage = Arc::new(DiskCache::new(
+            f.tempdir.path().join("cache"),
+            u64::MAX,
+            &pool,
+            PreprocessorCacheModeConfig::default(),
+            CacheMode::ReadWrite,
+            vec![],
+        ));
+        next_command(
+            &creator,
+            Ok(MockChild::new(exit_status(0), "compiler_id=gcc", "")),
+        );
+        next_assembler(&creator, "GNU assembler (GNU Binutils) 2.42", "");
+        let c = get_compiler_info(
+            creator.clone(),
+            &gcc,
+            f.tempdir.path(),
+            &[],
+            &[],
+            &pool,
+            None,
+        )
+        .wait()
+        .unwrap()
+        .0;
+        let dep = f.tempdir.path().join("foo.d");
+        let d = dep.clone();
+        // The preprocessor invocation writes the dependency file. No compiler
+        // invocation is queued: a local recompile would find none and fail.
+        next_command_calls(&creator, move |_| {
+            std::fs::write(&d, b"foo.o: foo.c\n")?;
+            Ok(MockChild::new(exit_status(0), "preprocessor output", ""))
+        });
+        let cwd = f.tempdir.path();
+        let arguments = ovec!["-c", "foo.c", "-o", "foo.o", "-MD", "-MF", "foo.d"];
+        let mut hasher = match c.parse_arguments(&arguments, ".".as_ref(), &[]) {
+            CompilerArguments::Ok(h) => h,
+            o => panic!("Bad result from parse_arguments: {:?}", o),
+        };
+        let dist_client = test_dist::IncompleteOutputsClient::dropping(".d");
+        let service = server::SccacheService::mock_with_dist_client(
+            dist_client.clone(),
+            storage.clone(),
+            pool.clone(),
+        );
+        let (_cached, res) = hasher
+            .get_cached_or_compile(
+                &service,
+                Some(dist_client),
+                creator,
+                storage,
+                arguments,
+                cwd.to_path_buf(),
+                vec![],
+                CacheControl::ForceRecache,
+                pool,
+            )
+            .wait()
+            .unwrap();
+        assert_eq!(exit_status(0), res.status);
+        assert!(
+            fs::read(f.tempdir.path().join("foo.o"))
+                .unwrap()
+                .starts_with(b"some data in ")
+        );
+        assert_eq!(
+            b"foo.o: foo.c\n".as_slice(),
+            fs::read(&dep).unwrap().as_slice()
+        );
+    }
+
     #[test_case(true ; "with preprocessor cache")]
     #[test_case(false ; "without preprocessor cache")]
     #[cfg(feature = "dist-client")]
@@ -3747,6 +4128,7 @@ LLVM version: 6.0",
             test_dist::ErrorAllocJobClient::new(),
             test_dist::ErrorSubmitToolchainClient::new(),
             test_dist::ErrorRunJobClient::new(),
+            test_dist::IncompleteOutputsClient::new(),
         ];
         // Write a dummy input file so the preprocessor cache mode can work
         std::fs::write(f.tempdir.path().join("foo.c"), "whatever").unwrap();
@@ -4122,17 +4504,28 @@ mod test_dist {
         has_started: AtomicBool,
         tc: Toolchain,
         output: ProcessOutput,
+        fallback: bool,
     }
 
     impl OneshotClient {
         #[allow(clippy::new_ret_no_self)]
         pub fn new(code: i32, stdout: Vec<u8>, stderr: Vec<u8>) -> Arc<dyn dist::Client> {
+            Self::with_fallback(code, stdout, stderr, true)
+        }
+
+        pub fn with_fallback(
+            code: i32,
+            stdout: Vec<u8>,
+            stderr: Vec<u8>,
+            fallback: bool,
+        ) -> Arc<dyn dist::Client> {
             Arc::new(Self {
                 has_started: AtomicBool::default(),
                 tc: Toolchain {
                     archive_id: "somearchiveid".to_owned(),
                 },
                 output: ProcessOutput::fake_output(code, stdout, stderr),
+                fallback,
             })
         }
     }
@@ -4181,6 +4574,137 @@ mod test_dist {
 
             let mut inputs = vec![];
             let path_transformer = inputs_packager.write_inputs(&mut inputs).unwrap();
+            let outputs = outputs
+                .into_iter()
+                .map(|name| {
+                    let data = format!("some data in {}", name);
+                    let data = OutputData::try_from_reader(data.as_bytes()).unwrap();
+                    (name, data)
+                })
+                .collect();
+            let result = RunJobResult::Complete(JobComplete {
+                output: self.output.clone(),
+                outputs,
+            });
+            Ok((result, path_transformer))
+        }
+        async fn put_toolchain(
+            &self,
+            _: PathBuf,
+            _: String,
+            _: Box<dyn pkg::ToolchainPackager>,
+        ) -> Result<(Toolchain, Option<(String, PathBuf)>)> {
+            Ok((
+                self.tc.clone(),
+                Some((
+                    "/overridden/compiler".to_owned(),
+                    PathBuf::from("somearchiveid"),
+                )),
+            ))
+        }
+        fn rewrite_includes_only(&self) -> bool {
+            false
+        }
+        fn fallback_enabled(&self) -> bool {
+            self.fallback
+        }
+        fn get_custom_toolchain(&self, _exe: &Path) -> Option<PathBuf> {
+            None
+        }
+    }
+
+    /// A dist client whose remote compile succeeds (exit 0) but whose returned
+    /// output set drops a declared output - the glibc `.o.dt` failure mode,
+    /// where the build-server runs the compile fine yet does not return every
+    /// declared output. The client must detect the missing output and fall back
+    /// to a local recompile rather than failing the build.
+    pub struct IncompleteOutputsClient {
+        has_started: AtomicBool,
+        tc: Toolchain,
+        output: ProcessOutput,
+        /// Name suffix of the one output to drop; the last output when `None`.
+        drop_suffix: Option<&'static str>,
+    }
+
+    impl IncompleteOutputsClient {
+        #[allow(clippy::new_ret_no_self)]
+        pub fn new() -> Arc<dyn dist::Client> {
+            Arc::new(Self {
+                has_started: AtomicBool::default(),
+                tc: Toolchain {
+                    archive_id: "somearchiveid".to_owned(),
+                },
+                output: ProcessOutput::fake_output(0, vec![], vec![]),
+                drop_suffix: None,
+            })
+        }
+
+        #[allow(clippy::new_ret_no_self)]
+        pub fn dropping(suffix: &'static str) -> Arc<dyn dist::Client> {
+            Arc::new(Self {
+                has_started: AtomicBool::default(),
+                tc: Toolchain {
+                    archive_id: "somearchiveid".to_owned(),
+                },
+                output: ProcessOutput::fake_output(0, vec![], vec![]),
+                drop_suffix: Some(suffix),
+            })
+        }
+    }
+
+    #[async_trait]
+    impl dist::Client for IncompleteOutputsClient {
+        async fn do_alloc_job(&self, tc: Toolchain) -> Result<AllocJobResult> {
+            assert!(
+                !self
+                    .has_started
+                    .swap(true, std::sync::atomic::Ordering::AcqRel)
+            );
+            assert_eq!(self.tc, tc);
+
+            Ok(AllocJobResult::Success {
+                job_alloc: JobAlloc {
+                    auth: "abcd".to_owned(),
+                    job_id: JobId(0),
+                    server_id: ServerId::new(([0, 0, 0, 0], 1).into()),
+                },
+                need_toolchain: true,
+            })
+        }
+        async fn do_get_status(&self) -> Result<SchedulerStatusResult> {
+            unreachable!("fn do_get_status is not used for this test. qed")
+        }
+        async fn do_submit_toolchain(
+            &self,
+            job_alloc: JobAlloc,
+            tc: Toolchain,
+        ) -> Result<SubmitToolchainResult> {
+            assert_eq!(job_alloc.job_id, JobId(0));
+            assert_eq!(self.tc, tc);
+
+            Ok(SubmitToolchainResult::Success)
+        }
+        async fn do_run_job(
+            &self,
+            job_alloc: JobAlloc,
+            command: CompileCommand,
+            outputs: Vec<String>,
+            inputs_packager: Box<dyn pkg::InputsPackager>,
+        ) -> Result<(RunJobResult, PathTransformer)> {
+            assert_eq!(job_alloc.job_id, JobId(0));
+            assert_eq!(command.executable, "/overridden/compiler");
+
+            let mut inputs = vec![];
+            let path_transformer = inputs_packager.write_inputs(&mut inputs).unwrap();
+            // Drop one declared output to mimic a build-server that returned a
+            // successful compile with an incomplete output set.
+            let mut outputs = outputs;
+            match self.drop_suffix {
+                Some(suffix) => outputs.retain(|name| !name.ends_with(suffix)),
+                None => {
+                    outputs.pop();
+                }
+            }
             let outputs = outputs
                 .into_iter()
                 .map(|name| {
