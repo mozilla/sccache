@@ -135,6 +135,12 @@ impl Daemon {
             .unwrap_or(0)
     }
 
+    fn cache_hits(&self) -> u64 {
+        self.stats()["stats"]["cache_hits"]["counts"]["C/C++"]
+            .as_u64()
+            .unwrap_or(0)
+    }
+
     fn cache_write_errors(&self) -> u64 {
         self.stats()["stats"]["cache_write_errors"]
             .as_u64()
@@ -189,12 +195,12 @@ fn test_client_side_records_cache_misses() {
 // never reached `--show-stats`. Rust hit this constantly, since rlibs dwarfed
 // the old 8 MiB default limit.
 //
-// The limit is now well above any real entry, and a client that somehow still
-// has an oversized payload declines to send it. The entry goes uncached, and
-// nothing else about the invocation is affected.
+// The limit is now well above any real entry, and a client that still has an
+// oversized payload hands it to the daemon through a file rather than in the
+// frame. The entry is cached like any other.
 #[test]
 #[serial_test::serial]
-fn test_client_side_survives_an_entry_larger_than_the_frame_limit() {
+fn test_client_side_caches_an_entry_larger_than_the_frame_limit() {
     if find_c_compiler().is_none() {
         eprintln!("No C compiler found, skipping test");
         return;
@@ -202,9 +208,8 @@ fn test_client_side_survives_an_entry_larger_than_the_frame_limit() {
 
     let daemon = Daemon::start(Some("4096"));
 
-    // The compile succeeds; only the cache write is skipped.
     assert!(daemon.compile("oversized").success());
-    // The connection is still good, so a second invocation works the same way.
+    // The connection is still good, and the entry was stored.
     assert!(daemon.compile("oversized").success());
 
     assert_eq!(
@@ -212,8 +217,9 @@ fn test_client_side_survives_an_entry_larger_than_the_frame_limit() {
         0,
         "the daemon dropped a connection over an oversized frame"
     );
-    assert_eq!(daemon.cache_misses(), 2);
-    assert_eq!(daemon.cache_write_errors(), 2);
+    assert_eq!(daemon.cache_misses(), 1);
+    assert_eq!(daemon.cache_hits(), 1);
+    assert_eq!(daemon.cache_write_errors(), 0);
 
     daemon.stop();
 }

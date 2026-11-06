@@ -163,14 +163,15 @@ connection if the compile's connection turns out to be unusable, since otherwise
 an invocation's whole delta — the cache miss it counted included — would be lost
 without a trace.
 
-A cache entry crosses IPC in a single message on the write side, so
-`SCCACHE_MAX_FRAME_LENGTH` bounds the size of an entry that can be stored. It
-defaults to 1 GiB, above anything a compile produces in practice. The daemon
-reports its limit during `StorageHandshake` and the CLI declines to send a
-payload over it: a message that exceeds the limit cannot be resynchronised by
-the transport, so the daemon would have to drop the connection, failing every
-later RPC on it rather than just the one cache write. An entry that does not fit
-is therefore reported as a cache write error and left uncached.
+A cache entry normally crosses IPC in a single message, bounded by
+`SCCACHE_MAX_FRAME_LENGTH`. It defaults to 1 GiB, above anything a compile
+produces in practice. A message that exceeds the limit cannot be resynchronised
+by the transport, so the daemon would have to drop the connection, failing every
+later RPC on it rather than just the one cache operation. The daemon therefore
+reports its limit during `StorageHandshake`, and an entry that does not fit is
+written to a temporary file whose path is sent instead: `StoragePutRawFile` from
+the CLI for a store, `StorageGetRawFile` from the daemon for a hit on a backend
+without a local path (S3, GCS, Redis). The side that reads the file removes it.
 
 Client-side mode is enabled with the `SCCACHE_CLIENT_SIDE` environment variable
 (or the `client_side_mode` config key). It is expected to become the only
