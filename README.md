@@ -265,7 +265,7 @@ rustup component add llvm-tools
 
 ### Building portable binaries
 
-When building with the `dist-server` feature, `sccache` will depend on OpenSSL, which can be an annoyance if you want to distribute portable binaries. It is possible to statically link against OpenSSL using the `openssl/vendored` feature.
+`sccache` uses Rust-based TLS and cryptography, including with the `dist-server` feature, and does not depend on OpenSSL. The `vendored-openssl` feature is retained as a no-op for backwards compatibility.
 
 #### Linux
 
