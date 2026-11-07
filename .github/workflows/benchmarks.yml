@@ -48,5 +48,5 @@ jobs:
           CODSPEED_LOG: debug
         with:
           mode: ${{ matrix.mode }}
-          run: cargo codspeed run > /dev/null
+          run: cargo codspeed run
           token: ${{ secrets.CODSPEED_TOKEN }}
