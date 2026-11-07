@@ -13,12 +13,16 @@
 // limitations under the License.
 
 use bytes::Bytes;
+use futures::FutureExt;
+use std::future::Future;
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use tokio::sync::{Notify, Semaphore};
 
 use crate::cache::build_single_cache;
 use crate::cache::disk::DiskCache;
@@ -309,6 +313,55 @@ impl MultiLevelStats {
     }
 }
 
+const DEFAULT_SLOW_LEVEL_WRITE_CONCURRENCY: usize = 4;
+
+#[derive(Default)]
+struct BackgroundTasks {
+    pending: AtomicUsize,
+    idle: Notify,
+}
+
+struct BackgroundTaskGuard {
+    tasks: Arc<BackgroundTasks>,
+}
+
+impl Drop for BackgroundTaskGuard {
+    fn drop(&mut self) {
+        if self.tasks.pending.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.tasks.idle.notify_one();
+        }
+    }
+}
+
+impl BackgroundTasks {
+    fn spawn<F>(self: &Arc<Self>, future: F)
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        self.pending.fetch_add(1, Ordering::AcqRel);
+        let guard = BackgroundTaskGuard {
+            tasks: Arc::clone(self),
+        };
+
+        tokio::spawn(async move {
+            // Create the guard before spawning so cancellation before the first poll
+            // still decrements the pending count when the task future is dropped.
+            let _guard = guard;
+            if AssertUnwindSafe(future).catch_unwind().await.is_err() {
+                debug!("Background cache task panicked");
+            }
+        });
+    }
+
+    async fn drain(&self) {
+        loop {
+            if self.pending.load(Ordering::Acquire) == 0 {
+                return;
+            }
+            self.idle.notified().await;
+        }
+    }
+}
 /// A multi-level cache storage that checks multiple storage backends in order.
 ///
 /// This enables hierarchical caching similar to CPU L1/L2/L3 caches:
@@ -326,6 +379,10 @@ pub struct MultiLevelStorage {
     atomic_stats: Vec<Arc<AtomicLevelStats>>,
     /// Base directories for path normalization, propagated to compiler pipeline
     basedirs: Vec<Vec<u8>>,
+    /// Bounds asynchronous traffic to slower cache levels.
+    slow_level_semaphore: Arc<Semaphore>,
+    /// Tracks detached work so graceful shutdown can drain it deterministically.
+    background_tasks: Arc<BackgroundTasks>,
 }
 
 impl MultiLevelStorage {
@@ -355,6 +412,18 @@ impl MultiLevelStorage {
         levels: Vec<Arc<dyn Storage>>,
         write_error_policy: WriteErrorPolicy,
     ) -> Self {
+        Self::with_write_error_policy_and_concurrency(
+            levels,
+            write_error_policy,
+            DEFAULT_SLOW_LEVEL_WRITE_CONCURRENCY,
+        )
+    }
+
+    fn with_write_error_policy_and_concurrency(
+        levels: Vec<Arc<dyn Storage>>,
+        write_error_policy: WriteErrorPolicy,
+        slow_write_concurrency: usize,
+    ) -> Self {
         let atomic_stats = AtomicLevelStats::from_levels(&levels);
         let basedirs = Self::collect_basedirs(&levels);
 
@@ -363,6 +432,8 @@ impl MultiLevelStorage {
             write_error_policy,
             atomic_stats,
             basedirs,
+            slow_level_semaphore: Arc::new(Semaphore::new(slow_write_concurrency)),
+            background_tasks: Arc::new(BackgroundTasks::default()),
         }
     }
 
@@ -392,6 +463,10 @@ impl MultiLevelStorage {
 
         let levels = &ml_config.chain;
         let write_error_policy = ml_config.write_error_policy;
+        let slow_write_concurrency = ml_config.slow_write_concurrency;
+        if slow_write_concurrency == 0 {
+            bail!("multi-level slow_write_concurrency must be at least 1");
+        }
 
         let mut storages: Vec<Arc<dyn Storage>> = Vec::new();
 
@@ -451,10 +526,13 @@ impl MultiLevelStorage {
             storages.len()
         );
 
-        Ok(Some(MultiLevelStorage::with_write_error_policy(
-            storages,
-            write_error_policy,
-        )))
+        Ok(Some(
+            MultiLevelStorage::with_write_error_policy_and_concurrency(
+                storages,
+                write_error_policy,
+                slow_write_concurrency,
+            ),
+        ))
     }
 
     /// Helper to write cache entry from raw bytes.
@@ -504,8 +582,19 @@ impl MultiLevelStorage {
             let raw_bytes = raw_bytes.clone();
             let level = Arc::clone(&self.levels[backfill_idx]);
             let stats = self.atomic_stats.get(backfill_idx).map(Arc::clone);
+            let semaphore = (backfill_idx > 0).then(|| Arc::clone(&self.slow_level_semaphore));
+            let background_tasks = Arc::clone(&self.background_tasks);
 
-            tokio::spawn(async move {
+            background_tasks.spawn(async move {
+                let _permit = if let Some(semaphore) = semaphore {
+                    match semaphore.acquire_owned().await {
+                        Ok(permit) => Some(permit),
+                        Err(_) => return,
+                    }
+                } else {
+                    None
+                };
+
                 match Self::write_entry_from_bytes(&level, &key, &raw_bytes).await {
                     Ok(_) => {
                         trace!(
@@ -525,10 +614,9 @@ impl MultiLevelStorage {
         }
     }
 
-    /// Write to levels starting from `start_idx` asynchronously
+    /// Write to levels starting from `start_idx` asynchronously.
     async fn write_remaining_levels_async(&self, key: &str, data: &Bytes, start_idx: usize) {
         for (idx, level) in self.levels.iter().enumerate().skip(start_idx) {
-            // Check if level is read-only before spawning task
             if matches!(level.check().await, Ok(CacheMode::ReadOnly)) {
                 debug!("Level {} is read-only, skipping write", idx);
                 continue;
@@ -538,13 +626,23 @@ impl MultiLevelStorage {
             let key = key.to_string();
             let level = Arc::clone(level);
             let stats_arc = self.atomic_stats.get(idx).map(Arc::clone);
+            let semaphore = (idx > 0).then(|| Arc::clone(&self.slow_level_semaphore));
+            let background_tasks = Arc::clone(&self.background_tasks);
 
-            tokio::spawn(async move {
+            background_tasks.spawn(async move {
+                let _permit = if let Some(semaphore) = semaphore {
+                    match semaphore.acquire_owned().await {
+                        Ok(permit) => Some(permit),
+                        Err(_) => return,
+                    }
+                } else {
+                    None
+                };
+
                 let start = Instant::now();
                 match Self::write_entry_from_bytes(&level, &key, &data).await {
                     Ok(_) => {
                         let duration = start.elapsed();
-                        trace!("Backfilled cache level {} on write in {:?}", idx, duration);
                         inc_stat!(stats_arc.as_deref(), writes, 1);
                         inc_stat!(
                             stats_arc.as_deref(),
@@ -709,17 +807,28 @@ impl Storage for MultiLevelStorage {
                     let level = Arc::clone(level);
                     let tx = tx.clone();
                     let stats_arc = self.atomic_stats.get(idx).map(Arc::clone);
+                    let semaphore = (idx > 0).then(|| Arc::clone(&self.slow_level_semaphore));
 
                     let write_task = async move {
+                        let _permit = if let Some(semaphore) = semaphore {
+                            Some(
+                                semaphore
+                                    .acquire_owned()
+                                    .await
+                                    .map_err(|_| anyhow!("slow-level write semaphore closed"))?,
+                            )
+                        } else {
+                            None
+                        };
                         let start = Instant::now();
                         let result = Self::write_entry_from_bytes(&level, &key_str, &data).await;
                         let duration = start.elapsed();
-                        (idx, result, level, duration, stats_arc)
+                        Ok::<_, anyhow::Error>((idx, result, level, duration, stats_arc))
                     };
 
                     if idx == 0 {
                         // L0 synchronous
-                        let (idx, result, level, duration, stats_arc) = write_task.await;
+                        let (idx, result, level, duration, stats_arc) = write_task.await?;
                         if let Err(e) = result {
                             // Check if read-only before failing
                             if !matches!(level.check().await, Ok(CacheMode::ReadOnly)) {
@@ -739,17 +848,19 @@ impl Storage for MultiLevelStorage {
                             );
                         }
                     } else {
-                        // L1+ async
-                        tokio::spawn(async move {
-                            let result = write_task.await;
-                            let _ = tx.send(result).await;
+                        // L1+ async. Keep the task registered so an early error from another
+                        // level cannot leave this write detached at shutdown.
+                        let background_tasks = Arc::clone(&self.background_tasks);
+                        background_tasks.spawn(async move {
+                            let _ = tx.send(write_task.await).await;
                         });
                     }
                 }
                 drop(tx);
 
                 // Check async results
-                while let Some((idx, result, level, duration, stats_arc)) = rx.recv().await {
+                while let Some(write_result) = rx.recv().await {
+                    let (idx, result, level, duration, stats_arc) = write_result?;
                     if let Err(e) = result {
                         // Check if read-only before failing
                         if !matches!(level.check().await, Ok(CacheMode::ReadOnly)) {
@@ -769,6 +880,10 @@ impl Storage for MultiLevelStorage {
                 Ok(Duration::ZERO)
             }
         }
+    }
+
+    async fn drain_background(&self) {
+        self.background_tasks.drain().await;
     }
 
     async fn check(&self) -> Result<CacheMode> {
@@ -878,8 +993,17 @@ impl Storage for MultiLevelStorage {
                 let key = key.to_string();
                 let entry = preprocessor_cache_entry.clone();
                 let level = Arc::clone(level);
+                let semaphore = (idx > 0).then(|| Arc::clone(&self.slow_level_semaphore));
 
                 tokio::spawn(async move {
+                    let _permit = if let Some(semaphore) = semaphore {
+                        match semaphore.acquire_owned().await {
+                            Ok(permit) => Some(permit),
+                            Err(_) => return,
+                        }
+                    } else {
+                        None
+                    };
                     if let Err(e) = level.put_preprocessor_cache_entry(&key, entry).await {
                         warn!(
                             "Failed to write preprocessor cache entry to level {}: {}",
