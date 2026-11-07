@@ -42,7 +42,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use strip_ansi_escapes::Writer;
 use tokio::io::AsyncReadExt;
-use tokio::runtime::{Builder, Runtime};
+use tokio::runtime::Runtime;
 use walkdir::WalkDir;
 use which::which_in;
 
@@ -1014,13 +1014,10 @@ pub fn run_command(cmd: Command) -> Result<i32> {
             let jobserver = Client::from_env_fifo().unwrap_or_else(Client::new);
             let conn = connect_or_start_server(&get_addr(), startup_timeout)?;
             if config.client_side_mode {
-                // Under make -jN each CLI process gets only 2 worker threads;
-                // one for preprocessing/compilation and one for IPC.  The
-                // blocking thread pool absorbs zstd/zip work.
-                let mut runtime = Builder::new_multi_thread()
-                    .worker_threads(2)
-                    .enable_all()
-                    .build()?;
+                // One compile needs no worker threads of its own: starting two
+                // in every invocation cost about 1ms per cache hit. The
+                // blocking thread pool still absorbs zstd/zip work.
+                let mut runtime = new_client_runtime()?;
                 let res = do_compile_client_side::<ProcessCommandCreator>(
                     &jobserver,
                     &mut runtime,
