@@ -213,39 +213,34 @@ pub fn try_parse() -> Result<Command> {
                 _ => {
                     if let (Some(path), Some(exe_filename)) = (env::var_os("PATH"), exe.file_name())
                     {
+                        let self_exe = env::current_exe()?.canonicalize()?;
+                        // Without a real $name to wrap, we would end up wrapping
+                        // ourselves and recursing forever (e.g. via `$name -vV`).
+                        let not_found = || {
+                            anyhow!(
+                                "`{}` not found in PATH (`{}` is {} itself and cannot wrap itself)",
+                                exe_filename.display(),
+                                exe.display(),
+                                env!("CARGO_PKG_NAME"),
+                            )
+                        };
                         match which_in(exe_filename, Some(&path), &cwd) {
-                            Ok(ref full_path)
-                                if full_path.canonicalize()?
-                                    == env::current_exe()?.canonicalize()? =>
-                            {
-                                if let Some(dir) = full_path.parent() {
-                                    let path = env::join_paths(
-                                        env::split_paths(&path).filter(|p| p != dir),
-                                    )
-                                    .ok();
-                                    if let Ok(full_path) = which_in(exe_filename, path, &cwd) {
+                            Ok(ref full_path) if full_path.canonicalize()? == self_exe => {
+                                let path = full_path.parent().and_then(|dir| {
+                                    env::join_paths(env::split_paths(&path).filter(|p| p != dir))
+                                        .ok()
+                                });
+                                match which_in(exe_filename, path, &cwd) {
+                                    Ok(full_path) if full_path.canonicalize()? != self_exe => {
                                         args[0] = full_path.into();
                                     }
+                                    _ => return Err(not_found()),
                                 }
                             }
                             Ok(full_path) => args[0] = full_path.into(),
-                            Err(_) => {}
+                            Err(_) => return Err(not_found()),
                         }
-
-                        // If $name resolves back to sccache itself, masquerading would
-                        // make it wrap itself and recurse forever (`<compiler> -vV`). Warn
-                        // and run as plain sccache instead of prepending the name.
-                        if PathBuf::from(&args[0]).canonicalize().ok()
-                            == env::current_exe().ok().and_then(|p| p.canonicalize().ok())
-                        {
-                            warn!(
-                                "sccache invoked as `{}`, which resolves to sccache itself; running as sccache (put a real `{}` on PATH to wrap it)",
-                                exe.display(),
-                                exe_filename.to_string_lossy()
-                            );
-                        } else {
-                            args.insert(0, env!("CARGO_PKG_NAME").into());
-                        }
+                        args.insert(0, env!("CARGO_PKG_NAME").into());
                     }
                 }
             }
