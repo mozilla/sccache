@@ -1,9 +1,11 @@
 use crate::cache::{CacheMode, GetPathResult};
 use crate::compiler::ColorMode;
+use crate::compiler::preprocessor_cache::CachedFileDigest;
 use crate::config::PreprocessorCacheModeConfig;
 use crate::server::{DistInfo, ServerInfo, ServerStats};
 use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
+use std::path::PathBuf;
 
 /// A client request.
 #[derive(Serialize, Deserialize, Debug)]
@@ -29,6 +31,10 @@ pub enum Request {
     StorageGetRaw { key: String },
     /// Store raw (zip) bytes under `key`.
     StoragePutRaw { key: String, data: Vec<u8> },
+    /// The file digests the daemon remembers for `paths`.
+    FileDigests { paths: Vec<PathBuf> },
+    /// File digests a CLI process computed, for the daemon to remember.
+    StoreFileDigests(Vec<(PathBuf, CachedFileDigest)>),
     /// Retrieve the preprocessor cache entry for `key`.
     StorageGetPreprocessorEntry { key: String },
     /// Store or overwrite the preprocessor cache entry for `key`.
@@ -62,6 +68,11 @@ pub enum Response {
     StorageGetRaw(Option<Vec<u8>>),
     /// Response for `Request::StoragePutRaw`.
     StoragePutRaw(Result<(), String>),
+    /// Response for `Request::FileDigests`: the paths the daemon has a digest
+    /// for, which the client still checks against the files.
+    FileDigests(Vec<(PathBuf, CachedFileDigest)>),
+    /// Response for `Request::StoreFileDigests`.
+    StoreFileDigests,
     /// Response for `Request::StorageGetPreprocessorEntry`.
     StorageGetPreprocessorEntry(Result<Option<Vec<u8>>, String>),
     /// Response for `Request::StoragePutPreprocessorEntry`.
