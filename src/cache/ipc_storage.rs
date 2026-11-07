@@ -47,6 +47,9 @@ impl IpcStorage {
             Response::StorageHandshake(info) => info,
             other => bail!("IpcStorage: unexpected handshake response: {other:?}"),
         };
+        // Every request on this connection, not only the cache entries, has to
+        // fit: `CompilerInfo` carries the whole environment, for one.
+        conn.set_max_frame_length(handshake.max_frame_length);
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             handshake,

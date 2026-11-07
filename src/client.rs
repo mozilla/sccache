@@ -26,6 +26,9 @@ pub struct ServerConnection {
     reader: BufReader<Box<dyn Connection>>,
     /// A writer for the socket connected to the server.
     writer: BufWriter<Box<dyn Connection>>,
+    /// The server's frame limit, once known. A request over it is refused
+    /// here: the server could not read it, and would drop the connection.
+    max_frame_length: Option<usize>,
 }
 
 impl ServerConnection {
@@ -35,12 +38,24 @@ impl ServerConnection {
         Ok(ServerConnection {
             reader: BufReader::new(conn),
             writer: BufWriter::new(write_conn),
+            max_frame_length: None,
         })
+    }
+
+    /// Refuse requests larger than `len` from now on, rather than send them.
+    pub fn set_max_frame_length(&mut self, len: usize) {
+        self.max_frame_length = Some(len);
     }
 
     /// Send `request` to the server, read and return a `Response`.
     pub fn request(&mut self, request: Request) -> Result<Response> {
         trace!("ServerConnection::request");
+        if let Some(limit) = self.max_frame_length {
+            let len = bincode::serialized_size(&request)?;
+            if len > limit as u64 {
+                bail!("a {len} bytes request does not fit the server's frame limit of {limit}");
+            }
+        }
         util::write_length_prefixed_bincode(&mut self.writer, request)?;
         trace!("ServerConnection::request: sent request");
         self.read_one_response()
