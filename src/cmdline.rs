@@ -286,8 +286,10 @@ pub fn try_parse() -> Result<Command> {
             bail!("`{ENV_VAR_INTERNAL_START_SERVER}=1` can't be used with other commands");
         }
         (false, Ok(matches)) => {
-            // Not `Arg::requires`: `--monitor` is a `SetTrue` flag, whose implicit
-            // `false` default counts as present, so clap would never complain.
+            // Not `Arg::requires`: clap considers `requires("monitor")` met as
+            // soon as any member of the `one_and_only_one` group `--monitor` is
+            // in is present, so e.g. `--show-stats --monitor-interval 2` would
+            // be accepted.
             if matches.value_source("monitor-interval") == Some(ValueSource::CommandLine)
                 && !matches.get_flag("monitor")
             {
