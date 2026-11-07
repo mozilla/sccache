@@ -26,7 +26,8 @@ use crate::dist;
 use crate::jobserver::Client;
 use crate::mock_command::{CommandCreatorSync, ProcessCommandCreator};
 use crate::protocol::{
-    Compile, CompileFinished, CompileResponse, Request, Response, StorageHandshakeInfo,
+    Compile, CompileFinished, CompileResponse, PreprocessorEntryReply, Request, Response,
+    StorageHandshakeInfo,
 };
 use crate::util;
 #[cfg(feature = "dist-client")]
@@ -206,6 +207,21 @@ fn get_signal(status: ExitStatus) -> i32 {
 #[cfg(windows)]
 fn get_signal(_status: ExitStatus) -> i32 {
     panic!("no signals on windows")
+}
+
+/// Without the digests remembered here, a client-side process would re-read
+/// and re-hash every file the entry includes to check it.
+fn preprocessor_entry_reply(entry_bytes: Vec<u8>) -> PreprocessorEntryReply {
+    let file_digests = match PreprocessorCacheEntry::read(&entry_bytes) {
+        Ok(entry) => {
+            crate::compiler::preprocessor_cache::remembered_file_digests(&entry.include_paths())
+        }
+        Err(_) => Vec::new(),
+    };
+    PreprocessorEntryReply {
+        entry_bytes,
+        file_digests,
+    }
 }
 
 pub struct DistClientContainer {
@@ -1048,7 +1064,7 @@ where
                                 use std::io::Read;
                                 let mut buf = vec![];
                                 seekable.read_to_end(&mut buf).ok()?;
-                                Some(buf)
+                                Some(preprocessor_entry_reply(buf))
                             })
                         })
                         .map_err(|e| format!("{e:#}"));
@@ -1071,8 +1087,9 @@ where
                         result,
                     )))
                 }
-                Request::RecordStats(delta) => {
+                Request::RecordStats(delta, file_digests) => {
                     debug!("handle_client: record_stats");
+                    crate::compiler::preprocessor_cache::remember_file_digests(file_digests);
                     me.merge_stats(*delta).await;
                     Ok(Message::WithoutBody(Response::RecordStats))
                 }

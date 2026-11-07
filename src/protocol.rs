@@ -1,9 +1,11 @@
 use crate::cache::{CacheMode, GetPathResult};
 use crate::compiler::ColorMode;
+use crate::compiler::preprocessor_cache::CachedFileDigest;
 use crate::config::PreprocessorCacheModeConfig;
 use crate::server::{DistInfo, ServerInfo, ServerStats};
 use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
+use std::path::PathBuf;
 
 /// A client request.
 #[derive(Serialize, Deserialize, Debug)]
@@ -33,8 +35,9 @@ pub enum Request {
     StorageGetPreprocessorEntry { key: String },
     /// Store or overwrite the preprocessor cache entry for `key`.
     StoragePutPreprocessorEntry { key: String, entry_bytes: Vec<u8> },
-    /// Merge per-invocation stats into the daemon's running totals.
-    RecordStats(Box<ServerStats>),
+    /// Merge per-invocation stats into the daemon's running totals, and
+    /// remember the file digests the client computed.
+    RecordStats(Box<ServerStats>, Vec<(PathBuf, CachedFileDigest)>),
 }
 
 /// A server response.
@@ -63,7 +66,7 @@ pub enum Response {
     /// Response for `Request::StoragePutRaw`.
     StoragePutRaw(Result<(), String>),
     /// Response for `Request::StorageGetPreprocessorEntry`.
-    StorageGetPreprocessorEntry(Result<Option<Vec<u8>>, String>),
+    StorageGetPreprocessorEntry(Result<Option<PreprocessorEntryReply>, String>),
     /// Response for `Request::StoragePutPreprocessorEntry`.
     StoragePutPreprocessorEntry(Result<(), String>),
     /// Response for `Request::RecordStats`.
@@ -76,6 +79,14 @@ pub enum Response {
     ///
     /// Currently only `.rmeta` notifications are sent (for Cargo pipelining).
     ArtifactNotification(Vec<u8>),
+}
+
+/// A preprocessor cache entry, with the digests the daemon remembers for the
+/// files it includes. The client still checks those against the files.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct PreprocessorEntryReply {
+    pub entry_bytes: Vec<u8>,
+    pub file_digests: Vec<(PathBuf, CachedFileDigest)>,
 }
 
 /// Possible responses from the server for a `Compile` request.
@@ -126,4 +137,31 @@ pub struct StorageHandshakeInfo {
     pub preprocessor_cache_mode_config: PreprocessorCacheModeConfig,
     pub cache_mode: CacheMode,
     pub max_size: Option<u64>,
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    fn variant_index<T: Serialize>(value: &T) -> u32 {
+        let bytes = bincode::serialize(value).unwrap();
+        u32::from_le_bytes(bytes[..4].try_into().unwrap())
+    }
+
+    // bincode sends the variant index: inserting a variant anywhere but at the
+    // end breaks every client and daemon built before it.
+    #[test]
+    fn test_variant_indices_are_stable() {
+        assert_eq!(variant_index(&Request::ZeroStats), 0);
+        assert_eq!(variant_index(&Request::Shutdown), 3);
+        assert_eq!(variant_index(&Request::StorageHandshake), 5);
+        assert_eq!(
+            variant_index(&Request::RecordStats(Box::default(), vec![])),
+            11
+        );
+        assert_eq!(variant_index(&Response::ZeroStats), 1);
+        assert_eq!(variant_index(&Response::StoragePutRaw(Ok(()))), 9);
+        assert_eq!(variant_index(&Response::RecordStats), 12);
+        assert_eq!(variant_index(&Response::ArtifactNotification(vec![])), 13);
+    }
 }
