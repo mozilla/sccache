@@ -102,7 +102,12 @@ impl Acceptor for tokio::net::TcpListener {
 
     #[inline]
     fn accept(&self) -> impl Future<Output = tokio::io::Result<Self::Socket>> + Send {
-        tokio::net::TcpListener::accept(self).and_then(|(s, _)| futures::future::ok(s))
+        tokio::net::TcpListener::accept(self).and_then(|(s, _)| {
+            // Failing here would end the accept loop: a connection the peer
+            // already reset can refuse it.
+            set_nodelay(&s, s.set_nodelay(true));
+            futures::future::ok(s)
+        })
     }
 
     #[inline]
@@ -124,12 +129,23 @@ impl Connection for std::net::TcpStream {
     }
 }
 
+/// Report a failure to disable Nagle's algorithm on `stream`, which is not worth
+/// failing the connection over. Without it, the last segment of a message
+/// spanning several waits on the peer's delayed ACK.
+fn set_nodelay(stream: &impl std::fmt::Debug, result: std::io::Result<()>) {
+    if let Err(e) = result {
+        warn!("failed to set TCP_NODELAY on {stream:?}: {e}");
+    }
+}
+
 // Helper function to create a stream. Uses dynamic dispatch to make code more
 // readable.
 pub fn connect(addr: &SocketAddr) -> std::io::Result<Box<dyn Connection>> {
     match addr {
         SocketAddr::Net(addr) => {
-            std::net::TcpStream::connect(addr).map(|s| Box::new(s) as Box<dyn Connection>)
+            let stream = std::net::TcpStream::connect(addr)?;
+            set_nodelay(&stream, stream.set_nodelay(true));
+            Ok(Box::new(stream) as Box<dyn Connection>)
         }
         #[cfg(unix)]
         SocketAddr::Unix(p) => {
