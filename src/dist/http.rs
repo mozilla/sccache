@@ -50,7 +50,7 @@ mod common {
         }
     }
 
-    #[cfg(any(feature = "dist-server", feature = "dist-client"))]
+    #[cfg(any(feature = "dist-client", test))]
     pub async fn bincode_req_fut<T: serde::de::DeserializeOwned + 'static>(
         req: reqwest::RequestBuilder,
     ) -> Result<T> {
@@ -234,7 +234,7 @@ mod server {
 
     use super::common::{
         AllocJobHttpResponse, HeartbeatServerHttpRequest, ReqwestRequestBuilderExt,
-        RunJobHttpRequest, ServerCertificateHttpResponse, bincode_req_fut,
+        RunJobHttpRequest, ServerCertificateHttpResponse,
     };
     use super::urls;
     use crate::dist::{
@@ -248,6 +248,27 @@ mod server {
     pub const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(90);
     use async_trait::async_trait;
     use tokio::sync::Mutex;
+
+    async fn bincode_req<T: serde::de::DeserializeOwned>(
+        req: reqwest::RequestBuilder,
+    ) -> Result<T> {
+        let res = req
+            .header(reqwest::header::CONNECTION, "close")
+            .send()
+            .await?;
+        let status = res.status();
+        let headers = res.headers().clone();
+        let body = res.bytes().await.context("error reading response body")?;
+        if !status.is_success() {
+            bail!(
+                "Error {} (Headers={:?}): {}",
+                status.as_u16(),
+                headers,
+                String::from_utf8_lossy(&body)
+            );
+        }
+        Ok(bincode::deserialize(&body)?)
+    }
 
     pub(crate) fn create_https_cert_and_privkey(
         addr: SocketAddr,
@@ -450,14 +471,16 @@ mod server {
 
         #[derive(Error, Debug)]
         pub enum Error {
-            #[error("failed to assign job")]
-            AssignJob,
-            #[error("authorization header is wrong")]
+            #[error(transparent)]
+            Internal(anyhow::Error),
+            #[error("no Authorization header")]
             AuthorizationHeaderBroken,
-            #[error("bearer_auth_failed")]
-            BearerAuthFailed,
-            #[error("a bincode error has occured")]
-            Bincode,
+            #[error(transparent)]
+            BearerAuthFailed(anyhow::Error),
+            #[error("the request didn't have a binary content type")]
+            WrongContentType,
+            #[error("error while parsing the bincode body")]
+            Bincode(#[source] bincode::Error),
         }
 
         impl warp::reject::Reject for Error {}
@@ -468,7 +491,7 @@ mod server {
             use warp::{
                 Filter, Rejection, Reply,
                 http::{
-                    HeaderValue, StatusCode,
+                    HeaderMap, HeaderValue, StatusCode,
                     header::{
                         ACCEPT, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, WWW_AUTHENTICATE,
                     },
@@ -481,6 +504,7 @@ mod server {
                 self, JobAuthorizer, JobId, ServerIncoming,
                 http::server::{ClientVisibleMsg, ErrJson},
             };
+            use crate::errors::{Context, anyhow};
 
             fn bearer_http_auth(auth_header: &HeaderValue) -> Result<String, Error> {
                 let header = auth_header
@@ -504,13 +528,16 @@ mod server {
             async fn authorize(
                 job_id: JobId,
                 authorizer: Arc<dyn JobAuthorizer>,
-                auth_header: HeaderValue,
+                headers: HeaderMap,
             ) -> Result<JobId, Rejection> {
-                let token = bearer_http_auth(&auth_header)?;
+                let auth_header = headers
+                    .get(AUTHORIZATION)
+                    .ok_or(Error::AuthorizationHeaderBroken)?;
+                let token = bearer_http_auth(auth_header)?;
 
                 authorizer
                     .verify_token(job_id, &token)
-                    .map_err(|_| Error::BearerAuthFailed)?;
+                    .map_err(Error::BearerAuthFailed)?;
 
                 Ok(job_id)
             }
@@ -548,12 +575,14 @@ mod server {
                         Ok(warp::reply::json(&content).into_response())
                     }
                     _ => {
-                        let data = bincode::serialize(&content).map_err(|_| Error::Bincode)?;
+                        let data = bincode::serialize(&content)
+                            .context("Failed to serialize response body")
+                            .map_err(Error::Internal)?;
                         Ok(warp::http::Response::builder()
                             .header(CONTENT_TYPE, "application/octet-stream")
                             .header(CONTENT_LENGTH, data.len())
                             .body(warp::hyper::Body::from(data))
-                            .map_err(|_| Error::Bincode)?)
+                            .map_err(|e| Error::Internal(e.into()))?)
                     }
                 }
             }
@@ -570,7 +599,7 @@ mod server {
                 warp::path!("api" / "v1" / "distserver" / "assign_job" / JobId)
                     .and(warp::post())
                     .and(with_job_authorizer(job_authorizer))
-                    .and(warp::header::value(AUTHORIZATION.as_str()))
+                    .and(warp::header::headers_cloned())
                     .and_then(authorize)
                     .and(toolchain())
                     .and(with_server_incoming_handler(handler))
@@ -590,7 +619,7 @@ mod server {
                 warp::path!("api" / "v1" / "distserver" / "submit_toolchain" / JobId)
                     .and(warp::post())
                     .and(with_job_authorizer(job_authorizer))
-                    .and(warp::header::value(AUTHORIZATION.as_str()))
+                    .and(warp::header::headers_cloned())
                     .and_then(authorize)
                     .and(with_server_incoming_handler(handler))
                     .and(with_requester(requester))
@@ -610,7 +639,7 @@ mod server {
                 warp::path!("api" / "v1" / "distserver" / "run_job" / JobId)
                     .and(warp::post())
                     .and(with_job_authorizer(job_authorizer))
-                    .and(warp::header::value(AUTHORIZATION.as_str()))
+                    .and(warp::header::headers_cloned())
                     .and_then(authorize)
                     .and(with_server_incoming_handler(handler))
                     .and(with_requester(requester))
@@ -649,20 +678,22 @@ mod server {
             }
 
             fn make_401_with_body(short_err: &str, body: Option<ClientVisibleMsg>) -> Response {
-                let body = reply::with_status(
+                let mut response = Response::new(warp::hyper::Body::from(
                     body.map(|b| b.0).unwrap_or_default(),
-                    StatusCode::UNAUTHORIZED,
-                );
-
-                reply::with_header(
-                    body,
+                ));
+                *response.status_mut() = StatusCode::UNAUTHORIZED;
+                response.headers_mut().insert(
                     WWW_AUTHENTICATE,
-                    format!("Bearer error=\"{}\"", short_err),
-                )
-                .into_response()
+                    HeaderValue::from_str(&format!("Bearer error=\"{}\"", short_err))
+                        .expect("static auth challenge"),
+                );
+                response
             }
 
-            fn err_and_log<E: std::error::Error>(err: E, status: StatusCode) -> Response {
+            fn err_and_log(
+                err: &(dyn std::error::Error + 'static),
+                status: StatusCode,
+            ) -> Response {
                 let mut err_msg = err.to_string();
                 let mut maybe_cause = err.source();
                 while let Some(cause) = maybe_cause {
@@ -672,52 +703,48 @@ mod server {
                 }
 
                 warn!("Res error: {}", err_msg);
-                let err: Box<dyn std::error::Error> = err.into();
-                let json = ErrJson::from_err(&*err);
+                let json = ErrJson::from_err(err);
 
                 reply::with_status(warp::reply::json(&json), status).into_response()
             }
 
-            async fn handle_rejection(err: Rejection) -> Result<impl Reply, Infallible> {
-                trace!("Rejeceted");
-                if err.is_not_found() {
-                    Ok(reply::with_status(warp::reply(), StatusCode::NOT_FOUND).into_response())
-                } else if let Some(e) = err.find::<warp::reject::MissingHeader>() {
-                    if e.name() == AUTHORIZATION.as_str() {
-                        let err: Box<dyn std::error::Error> = e.into();
-                        let json = ErrJson::from_err(&*err);
-
-                        Ok(make_401_with_body(
-                            "invalid_jwt",
-                            Some(ClientVisibleMsg(json.into_data())),
-                        )
-                        .into_response())
-                    } else {
-                        Ok(
-                            warp::reply::with_status(warp::reply(), StatusCode::NOT_FOUND)
-                                .into_response(),
-                        )
-                    }
-                } else if let Some(e) = err.find::<Error>() {
+            async fn handle_rejection(err: Rejection) -> Result<Response, Infallible> {
+                let response = if let Some(e) = err.find::<Error>() {
                     match e {
-                        Error::AuthorizationHeaderBroken | Error::BearerAuthFailed => {
-                            let err: Box<dyn std::error::Error> = e.into();
-                            let json = ErrJson::from_err(&*err);
-                            Ok(make_401_with_body(
+                        Error::AuthorizationHeaderBroken | Error::BearerAuthFailed(_) => {
+                            let json = ErrJson::from_err(e);
+                            make_401_with_body(
                                 "invalid_jwt",
                                 Some(ClientVisibleMsg(json.into_data())),
                             )
-                            .into_response())
                         }
-                        Error::Bincode => Ok(err_and_log(e, StatusCode::BAD_REQUEST)),
-                        Error::AssignJob => Ok(err_and_log(e, StatusCode::INTERNAL_SERVER_ERROR)),
+                        Error::WrongContentType | Error::Bincode(_) => {
+                            err_and_log(e, StatusCode::BAD_REQUEST)
+                        }
+                        Error::Internal(_) => err_and_log(e, StatusCode::INTERNAL_SERVER_ERROR),
                     }
+                } else if let Some(e) = err.find::<warp::reject::InvalidHeader>() {
+                    err_and_log(e, StatusCode::BAD_REQUEST)
+                } else if let Some(e) = err.find::<warp::reject::MissingHeader>() {
+                    err_and_log(e, StatusCode::BAD_REQUEST)
+                } else if let Some(e) = err.find::<warp::filters::body::BodyDeserializeError>() {
+                    err_and_log(e, StatusCode::BAD_REQUEST)
+                } else if let Some(e) = err.find::<warp::reject::PayloadTooLarge>() {
+                    err_and_log(e, StatusCode::PAYLOAD_TOO_LARGE)
+                } else if let Some(e) = err.find::<warp::reject::LengthRequired>() {
+                    err_and_log(e, StatusCode::LENGTH_REQUIRED)
+                } else if let Some(e) = err.find::<warp::reject::UnsupportedMediaType>() {
+                    err_and_log(e, StatusCode::UNSUPPORTED_MEDIA_TYPE)
+                } else if err.is_not_found()
+                    || err.find::<warp::reject::MethodNotAllowed>().is_some()
+                {
+                    warn!("Unknown request: {:?}", err);
+                    reply::with_status(warp::reply(), StatusCode::NOT_FOUND).into_response()
                 } else {
-                    Ok(
-                        warp::reply::with_status(warp::reply(), StatusCode::NOT_FOUND)
-                            .into_response(),
-                    )
-                }
+                    let error = anyhow!("Unhandled HTTP rejection: {:?}", err);
+                    err_and_log(error.as_ref(), StatusCode::INTERNAL_SERVER_ERROR)
+                };
+                Ok(response)
             }
 
             async fn from_bytes<O>(bytes: bytes::Bytes) -> Result<O, Rejection>
@@ -725,19 +752,444 @@ mod server {
                 O: serde::de::DeserializeOwned,
             {
                 let a = bincode::deserialize_from::<_, O>(bytes.as_ref())
-                    .map_err(|_| Error::Bincode)
+                    .map_err(Error::Bincode)
                     .map_err(warp::reject::custom)?;
 
                 Ok(a)
             }
 
             fn toolchain() -> impl Filter<Extract = (dist::Toolchain,), Error = Rejection> + Clone {
-                warp::body::bytes().and_then(from_bytes)
+                warp::header::headers_cloned()
+                    .and_then(|headers: warp::http::HeaderMap| async move {
+                        if headers
+                            .get(CONTENT_TYPE)
+                            .and_then(|value| value.to_str().ok())
+                            .is_some_and(|value| value.starts_with("application/octet-stream"))
+                        {
+                            Ok(())
+                        } else {
+                            Err(warp::reject::custom(Error::WrongContentType))
+                        }
+                    })
+                    .untuple_one()
+                    .and(warp::body::bytes())
+                    .and_then(from_bytes)
             }
 
             #[cfg(test)]
             mod test {
                 use super::*;
+
+                use crate::dist::http::server::{JWTJobAuthorizer, RunJobHttpRequest, Server};
+                use crate::dist::{
+                    AssignJobResult, CompileCommand, InputsReader, RunJobResult, ServerOutgoing,
+                    SubmitToolchainResult, Toolchain, ToolchainReader, UpdateJobStateResult,
+                };
+                use async_trait::async_trait;
+                use serde_json::{Value, json};
+
+                struct FailingServer;
+
+                fn failure(operation: &str) -> anyhow::Error {
+                    anyhow!("root cause")
+                        .context("middle cause")
+                        .context(operation.to_owned())
+                }
+
+                fn expected_failure(operation: &str) -> Value {
+                    json!({"description": operation, "cause": {
+                        "description": "middle cause", "cause": {
+                            "description": "root cause", "cause": null
+                        }
+                    }})
+                }
+
+                #[async_trait]
+                impl ServerIncoming for FailingServer {
+                    async fn handle_assign_job(
+                        &self,
+                        _: JobId,
+                        _: Toolchain,
+                    ) -> anyhow::Result<AssignJobResult> {
+                        Err(failure("assign failed"))
+                    }
+                    async fn handle_submit_toolchain(
+                        &self,
+                        _: &dyn ServerOutgoing,
+                        _: JobId,
+                        _: ToolchainReader<'_>,
+                    ) -> anyhow::Result<SubmitToolchainResult> {
+                        Err(failure("submit failed"))
+                    }
+                    async fn handle_run_job(
+                        &self,
+                        _: &dyn ServerOutgoing,
+                        _: JobId,
+                        _: CompileCommand,
+                        _: Vec<String>,
+                        _: InputsReader<'_>,
+                    ) -> anyhow::Result<RunJobResult> {
+                        Err(failure("run failed"))
+                    }
+                }
+
+                struct UnusedRequester;
+                #[async_trait]
+                impl ServerOutgoing for UnusedRequester {
+                    async fn do_update_job_state(
+                        &self,
+                        _: JobId,
+                        _: dist::JobState,
+                    ) -> anyhow::Result<UpdateJobStateResult> {
+                        panic!("unexpected outgoing request")
+                    }
+                }
+
+                fn routes() -> impl Filter<Extract = impl Reply, Error = Infallible> + Clone {
+                    api(
+                        Arc::new(JWTJobAuthorizer::new(vec![1, 2, 3])),
+                        Arc::new(FailingServer),
+                        Arc::new(UnusedRequester),
+                    )
+                }
+
+                fn authorization(job_id: JobId) -> String {
+                    format!(
+                        "Bearer {}",
+                        JWTJobAuthorizer::new(vec![1, 2, 3])
+                            .generate_token(job_id)
+                            .unwrap()
+                    )
+                }
+
+                fn toolchain_body() -> Vec<u8> {
+                    bincode::serialize(&Toolchain {
+                        archive_id: "0".repeat(64),
+                    })
+                    .unwrap()
+                }
+
+                fn run_body() -> Vec<u8> {
+                    let request = RunJobHttpRequest {
+                        command: CompileCommand {
+                            executable: "cc".into(),
+                            arguments: vec![],
+                            env_vars: vec![],
+                            cwd: "/".into(),
+                        },
+                        outputs: vec![],
+                    };
+                    let body = bincode::serialize(&request).unwrap();
+                    let mut framed = (body.len() as u32).to_be_bytes().to_vec();
+                    framed.extend(body);
+                    framed
+                }
+
+                #[tokio::test]
+                async fn test_handler_error_chains() {
+                    let api = routes();
+                    for (endpoint, body, description) in [
+                        ("assign_job", toolchain_body(), "assign failed"),
+                        ("submit_toolchain", vec![], "submit failed"),
+                        ("run_job", run_body(), "run failed"),
+                    ] {
+                        let response = warp::test::request()
+                            .method("POST")
+                            .path(&format!("/api/v1/distserver/{endpoint}/1"))
+                            .header(AUTHORIZATION, authorization(JobId(1)))
+                            .header(CONTENT_TYPE, "application/octet-stream")
+                            .body(body)
+                            .reply(&api)
+                            .await;
+                        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+                        assert_eq!(response.headers()[CONTENT_TYPE], "application/json");
+                        assert_eq!(
+                            serde_json::from_slice::<Value>(response.body()).unwrap(),
+                            expected_failure(description)
+                        );
+                    }
+                }
+
+                #[tokio::test]
+                async fn test_job_auth_responses() {
+                    let api = routes();
+                    for endpoint in ["assign_job", "submit_toolchain", "run_job"] {
+                        for header in [
+                            None,
+                            Some("Basic token".to_owned()),
+                            Some("Bearer".to_owned()),
+                            Some("Bearer invalid".to_owned()),
+                            Some(authorization(JobId(2))),
+                        ] {
+                            let mut request = warp::test::request()
+                                .method("POST")
+                                .path(&format!("/api/v1/distserver/{endpoint}/1"));
+                            if let Some(header) = &header {
+                                request = request.header(AUTHORIZATION, header);
+                            }
+                            let response = request.reply(&api).await;
+                            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+                            assert_eq!(
+                                response.headers()[WWW_AUTHENTICATE],
+                                "Bearer error=\"invalid_jwt\""
+                            );
+                            assert!(!response.headers().contains_key(CONTENT_TYPE));
+                            let error: Value = serde_json::from_slice(response.body()).unwrap();
+                            let description = error["description"].as_str().unwrap();
+                            match header.as_deref() {
+                                Some("Bearer invalid") => {
+                                    assert!(description.starts_with("JWT decode failed: "));
+                                }
+                                Some(header) if header.starts_with("Bearer ") => {
+                                    assert_eq!(description, "mismatched claims");
+                                }
+                                _ => assert_eq!(description, "no Authorization header"),
+                            }
+                            assert_eq!(error["cause"], Value::Null);
+                        }
+                    }
+                }
+
+                #[tokio::test]
+                async fn test_job_auth_error_chain() {
+                    struct FailingAuthorizer;
+                    impl JobAuthorizer for FailingAuthorizer {
+                        fn generate_token(&self, _: JobId) -> anyhow::Result<String> {
+                            panic!("unexpected token generation")
+                        }
+                        fn verify_token(&self, _: JobId, _: &str) -> anyhow::Result<()> {
+                            Err(failure("verification failed"))
+                        }
+                    }
+                    let api = api(
+                        Arc::new(FailingAuthorizer),
+                        Arc::new(FailingServer),
+                        Arc::new(UnusedRequester),
+                    );
+                    let response = warp::test::request()
+                        .method("POST")
+                        .path("/api/v1/distserver/assign_job/1")
+                        .header(AUTHORIZATION, "Bearer token")
+                        .reply(&api)
+                        .await;
+                    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+                    assert_eq!(
+                        response.headers()[WWW_AUTHENTICATE],
+                        "Bearer error=\"invalid_jwt\""
+                    );
+                    assert!(!response.headers().contains_key(CONTENT_TYPE));
+                    assert_eq!(
+                        serde_json::from_slice::<Value>(response.body()).unwrap(),
+                        expected_failure("verification failed")
+                    );
+                }
+
+                #[tokio::test]
+                async fn test_assign_binary_input() {
+                    let api = routes();
+                    for content_type in [
+                        None,
+                        Some("text/plain"),
+                        Some("Application/Octet-Stream"),
+                        Some("application/octet-stream"),
+                        Some("application/octet-stream; version=1"),
+                        Some("application/octet-stream-suffix"),
+                    ] {
+                        let mut request = warp::test::request()
+                            .method("POST")
+                            .path("/api/v1/distserver/assign_job/1")
+                            .header(AUTHORIZATION, authorization(JobId(1)))
+                            .body(toolchain_body());
+                        if let Some(content_type) = content_type {
+                            request = request.header(CONTENT_TYPE, content_type);
+                        }
+                        let response = request.reply(&api).await;
+                        let error: Value = serde_json::from_slice(response.body()).unwrap();
+                        if content_type.is_some_and(|v| v.starts_with("application/octet-stream")) {
+                            assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+                            assert_eq!(error, expected_failure("assign failed"));
+                        } else {
+                            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+                            assert_eq!(
+                                error,
+                                json!({"description": "the request didn't have a binary content type", "cause": null})
+                            );
+                        }
+                    }
+                    let response = warp::test::request()
+                        .method("POST")
+                        .path("/api/v1/distserver/assign_job/1")
+                        .header(AUTHORIZATION, authorization(JobId(1)))
+                        .header(CONTENT_TYPE, "application/octet-stream")
+                        .body([0])
+                        .reply(&api)
+                        .await;
+                    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+                    let error: Value = serde_json::from_slice(response.body()).unwrap();
+                    assert_eq!(error["description"], "error while parsing the bincode body");
+                    assert!(error["cause"]["description"].as_str().is_some());
+                }
+
+                #[tokio::test]
+                async fn test_malformed_run_job_is_internal_error() {
+                    let api = routes();
+                    for (body, description) in [
+                        (vec![0], "failed to read run job input length"),
+                        (
+                            0u32.to_be_bytes().to_vec(),
+                            "failed to deserialize run job request",
+                        ),
+                    ] {
+                        let response = warp::test::request()
+                            .method("POST")
+                            .path("/api/v1/distserver/run_job/1")
+                            .header(AUTHORIZATION, authorization(JobId(1)))
+                            .body(body)
+                            .reply(&api)
+                            .await;
+                        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+                        let error: Value = serde_json::from_slice(response.body()).unwrap();
+                        assert_eq!(error["description"], description);
+                        assert!(error["cause"]["description"].as_str().is_some());
+                    }
+                }
+
+                #[tokio::test]
+                async fn test_response_serialization_failure() {
+                    struct Unserializable;
+                    impl serde::Serialize for Unserializable {
+                        fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+                            Err(serde::ser::Error::custom("injected serialization failure"))
+                        }
+                    }
+                    let route = warp::any()
+                        .and_then(|| prepare_response(Unserializable, None))
+                        .recover(handle_rejection);
+                    let response = warp::test::request().reply(&route).await;
+                    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+                    assert_eq!(
+                        serde_json::from_slice::<Value>(response.body()).unwrap(),
+                        json!({
+                            "description": "Failed to serialize response body", "cause": {
+                                "description": "injected serialization failure", "cause": null
+                            }
+                        })
+                    );
+                }
+
+                #[tokio::test]
+                async fn test_not_found_and_framework_rejections() {
+                    let api = routes();
+                    for (method, path) in [
+                        ("GET", "/unknown"),
+                        ("GET", "/api/v1/distserver/run_job/1"),
+                        ("POST", "/api/v1/distserver/run_job/not-a-job"),
+                    ] {
+                        let response = warp::test::request()
+                            .method(method)
+                            .path(path)
+                            .reply(&api)
+                            .await;
+                        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+                        assert!(response.body().is_empty());
+                    }
+                    let invalid_header = warp::header::<u64>("number")
+                        .map(|_| warp::reply())
+                        .recover(handle_rejection);
+                    assert_eq!(
+                        warp::test::request()
+                            .header("number", "invalid")
+                            .reply(&invalid_header)
+                            .await
+                            .status(),
+                        StatusCode::BAD_REQUEST
+                    );
+                    #[derive(Debug)]
+                    struct Unexpected;
+                    impl warp::reject::Reject for Unexpected {}
+                    let unexpected = warp::any()
+                        .and_then(|| async { Err::<Response, _>(warp::reject::custom(Unexpected)) })
+                        .recover(handle_rejection);
+                    let response = warp::test::request().reply(&unexpected).await;
+                    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+                    assert!(
+                        serde_json::from_slice::<Value>(response.body()).unwrap()["description"]
+                            .as_str()
+                            .unwrap()
+                            .contains("Unexpected")
+                    );
+                }
+
+                #[tokio::test]
+                async fn test_server_startup_errors_are_results() {
+                    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+                    let address = listener.local_addr().unwrap();
+                    let server = Server::new(
+                        address,
+                        None,
+                        "http://127.0.0.1:1".parse().unwrap(),
+                        "token".into(),
+                        FailingServer,
+                    )
+                    .unwrap();
+                    let error = server.start().await.unwrap_err();
+                    assert!(
+                        error
+                            .to_string()
+                            .starts_with("Failed to start http server for sccache server: ")
+                    );
+                    let mut server = Server::new(
+                        "127.0.0.1:0".parse().unwrap(),
+                        None,
+                        "http://127.0.0.1:1".parse().unwrap(),
+                        "token".into(),
+                        FailingServer,
+                    )
+                    .unwrap();
+                    server.privkey_pem = vec![];
+                    let error = server.start().await.unwrap_err();
+                    assert!(
+                        error
+                            .to_string()
+                            .starts_with("Failed to start http server for sccache server: ")
+                    );
+                }
+
+                #[tokio::test]
+                async fn test_server_and_client_outgoing_errors() {
+                    let route = warp::any().map(|| {
+                        reply::with_header(
+                            reply::with_status("denied", StatusCode::UNAUTHORIZED),
+                            "x-diagnostic",
+                            "present",
+                        )
+                    });
+                    let (address, server) = warp::serve(route).bind_ephemeral(([127, 0, 0, 1], 0));
+                    let server = tokio::spawn(server);
+                    let client = crate::util::new_reqwest_client().unwrap();
+                    let url = format!("http://{address}/");
+                    let error = crate::dist::http::server::bincode_req::<u64>(client.get(&url))
+                        .await
+                        .unwrap_err();
+                    assert!(
+                        error
+                            .downcast_ref::<crate::errors::HttpClientError>()
+                            .is_none()
+                    );
+                    let message = error.to_string();
+                    assert!(message.starts_with("Error 401 (Headers="));
+                    assert!(message.contains("x-diagnostic"));
+                    assert!(message.ends_with(": denied"));
+                    let error = crate::dist::http::common::bincode_req_fut::<u64>(client.get(url))
+                        .await
+                        .unwrap_err();
+                    assert!(
+                        error
+                            .downcast_ref::<crate::errors::HttpClientError>()
+                            .is_some()
+                    );
+                    server.abort();
+                }
 
                 #[tokio::test]
                 async fn test_response_formats() {
@@ -781,7 +1233,7 @@ mod server {
                 let res = handler
                     .handle_assign_job(job_id, toolchain)
                     .await
-                    .map_err(|_| warp::reject::custom(Error::AssignJob))?;
+                    .map_err(Error::Internal)?;
 
                 Ok(res)
             }
@@ -796,7 +1248,7 @@ mod server {
                 let res = handler
                     .handle_submit_toolchain(requester.as_ref(), job_id, toolchain_rdr)
                     .await
-                    .map_err(|_| warp::reject::custom(Error::AssignJob))?;
+                    .map_err(Error::Internal)?;
 
                 Ok(res)
             }
@@ -807,17 +1259,19 @@ mod server {
                 requester: Arc<dyn ServerOutgoing>,
                 body: bytes::Bytes,
             ) -> Result<RunJobResult, Rejection> {
+                use crate::errors::Context;
                 use std::io::Read;
 
                 let mut body = body.as_ref();
                 let bincode_length = body
                     .read_u32::<BigEndian>()
-                    .map_err(|_| warp::reject::custom(Error::AssignJob))?
-                    as u64;
+                    .context("failed to read run job input length")
+                    .map_err(Error::Internal)? as u64;
 
                 let mut bincode_reader = body.take(bincode_length);
                 let runjob = bincode::deserialize_from(&mut bincode_reader)
-                    .map_err(|_| warp::reject::custom(Error::AssignJob))?;
+                    .context("failed to deserialize run job request")
+                    .map_err(Error::Internal)?;
 
                 let RunJobHttpRequest { command, outputs } = runjob;
 
@@ -830,7 +1284,7 @@ mod server {
                 let res = handler
                     .handle_run_job(requester.as_ref(), job_id, command, outputs, inputs_rdr)
                     .await
-                    .map_err(|_| warp::reject::custom(Error::AssignJob))?;
+                    .map_err(Error::Internal)?;
 
                 Ok(res)
             }
@@ -845,18 +1299,16 @@ mod server {
 
         #[derive(Error, Debug)]
         pub enum Error {
-            #[error("no Authorization header")]
-            NoAuthorizationHeader,
-            #[error("authorization header is wrong")]
+            #[error("no_bearer_auth")]
             AuthorizationHeaderBroken,
             #[error("bearer_auth_failed")]
             BearerAuthFailed(ClientVisibleMsg),
-            #[error("bincode error")]
-            Bincode,
-            #[error("failed to alloc job")]
-            AllocJob,
-            #[error("failed to get status")]
-            Status,
+            #[error("the request didn't have a binary content type")]
+            WrongContentType,
+            #[error("error while parsing the bincode body")]
+            Bincode(#[source] bincode::Error),
+            #[error(transparent)]
+            Internal(anyhow::Error),
             #[error("server cert not available")]
             ServerCertificateUnavailable,
             #[error("bad request")]
@@ -865,16 +1317,6 @@ mod server {
             InvalidBearerTokenMismatchedAddress,
             #[error("invalid_bearer_token")]
             InvalidBearerToken,
-            #[error("update certs")]
-            UpdateCerts,
-            #[error("failed to interpret pem as certificate")]
-            BadCertificate,
-            #[error("failed to create a HTTP client")]
-            NoHTTPClient,
-            #[error("failed to process heartbeat")]
-            Heartbeat,
-            #[error("failed to update job state")]
-            UpdateJobState,
         }
 
         impl warp::reject::Reject for Error {}
@@ -886,7 +1328,7 @@ mod server {
             use super::{Error, handlers};
             use crate::dist;
             use crate::dist::{JobId, ServerId};
-            use bytes::Buf;
+            use crate::errors::{Context, anyhow};
             use std::collections::HashMap;
             use std::convert::Infallible;
             use std::net::SocketAddr;
@@ -905,16 +1347,20 @@ mod server {
             };
 
             fn make_401_with_body(short_err: &str, body: ClientVisibleMsg) -> Response {
-                let body = reply::with_status(body.0, StatusCode::UNAUTHORIZED);
-                reply::with_header(
-                    body,
+                let mut response = Response::new(warp::hyper::Body::from(body.0));
+                *response.status_mut() = StatusCode::UNAUTHORIZED;
+                response.headers_mut().insert(
                     WWW_AUTHENTICATE,
-                    format!("Bearer error=\"{}\"", short_err),
-                )
-                .into_response()
+                    HeaderValue::from_str(&format!("Bearer error=\"{}\"", short_err))
+                        .expect("static auth challenge"),
+                );
+                response
             }
 
-            fn err_and_log<E: std::error::Error>(err: E, status: StatusCode) -> Response {
+            fn err_and_log(
+                err: &(dyn std::error::Error + 'static),
+                status: StatusCode,
+            ) -> Response {
                 let mut err_msg = err.to_string();
                 let mut maybe_cause = err.source();
                 while let Some(cause) = maybe_cause {
@@ -924,66 +1370,65 @@ mod server {
                 }
 
                 warn!("Res error: {}", err_msg);
-                let err: Box<dyn std::error::Error> = err.into();
-                let json = ErrJson::from_err(&*err);
+                let json = ErrJson::from_err(err);
 
                 reply::with_status(warp::reply::json(&json), status).into_response()
             }
 
-            async fn handle_rejection(
-                err: Rejection,
-            ) -> Result<impl Reply, std::convert::Infallible> {
-                if err.is_not_found() {
-                    Ok(reply::with_status(warp::reply(), StatusCode::NOT_FOUND).into_response())
-                } else if let Some(e) = err.find::<warp::reject::MissingHeader>() {
-                    if e.name() == AUTHORIZATION.as_str() {
-                        let err: Box<dyn std::error::Error> = e.into();
-                        let json = ErrJson::from_err(&*err);
-
-                        Ok(
-                            make_401_with_body("invalid_jwt", ClientVisibleMsg(json.into_data()))
-                                .into_response(),
-                        )
-                    } else {
-                        Ok(
-                            warp::reply::with_status(warp::reply(), StatusCode::NOT_FOUND)
-                                .into_response(),
-                        )
-                    }
-                } else if let Some(e) = err.find::<Error>() {
+            async fn handle_rejection(err: Rejection) -> Result<Response, Infallible> {
+                let response = if let Some(e) = err.find::<Error>() {
                     match e {
-                        Error::BearerAuthFailed(msg) => Ok(make_401_with_body(
-                            "bearer_auth_failed",
-                            ClientVisibleMsg(msg.0.clone()),
-                        )),
-                        Error::NoAuthorizationHeader
-                        | Error::AuthorizationHeaderBroken
-                        | Error::InvalidBearerTokenMismatchedAddress
-                        | Error::InvalidBearerToken => {
-                            let err: Box<dyn std::error::Error> = e.into();
-                            let json = ErrJson::from_err(&*err);
-                            Ok(make_401_with_body(
-                                "invalid_jwt",
-                                ClientVisibleMsg(json.into_data()),
+                        Error::BearerAuthFailed(msg) => {
+                            warn!("Bearer auth failed: {:?}", msg);
+                            make_401_with_body(
+                                "bearer_auth_failed",
+                                ClientVisibleMsg(msg.0.clone()),
                             )
-                            .into_response())
                         }
-                        Error::Bincode | Error::BadRequest | Error::BadCertificate => {
-                            Ok(err_and_log(e, StatusCode::BAD_REQUEST))
+                        Error::AuthorizationHeaderBroken => {
+                            make_401_with_body("no_bearer_auth", ClientVisibleMsg(String::new()))
                         }
-                        Error::AllocJob
-                        | Error::Heartbeat
-                        | Error::UpdateJobState
-                        | Error::Status
-                        | Error::ServerCertificateUnavailable
-                        | Error::UpdateCerts
-                        | Error::NoHTTPClient => {
-                            Ok(err_and_log(e, StatusCode::INTERNAL_SERVER_ERROR))
+                        Error::InvalidBearerToken => make_401_with_body(
+                            "invalid_bearer_token",
+                            ClientVisibleMsg(String::new()),
+                        ),
+                        Error::InvalidBearerTokenMismatchedAddress => make_401_with_body(
+                            "invalid_bearer_token_mismatched_address",
+                            ClientVisibleMsg(String::new()),
+                        ),
+                        Error::BadRequest => {
+                            reply::with_status(warp::reply(), StatusCode::BAD_REQUEST)
+                                .into_response()
+                        }
+                        Error::WrongContentType | Error::Bincode(_) => {
+                            err_and_log(e, StatusCode::BAD_REQUEST)
+                        }
+                        Error::Internal(_) | Error::ServerCertificateUnavailable => {
+                            err_and_log(e, StatusCode::INTERNAL_SERVER_ERROR)
                         }
                     }
+                } else if let Some(e) = err.find::<warp::reject::InvalidHeader>() {
+                    err_and_log(e, StatusCode::BAD_REQUEST)
+                } else if let Some(e) = err.find::<warp::reject::MissingHeader>() {
+                    err_and_log(e, StatusCode::BAD_REQUEST)
+                } else if let Some(e) = err.find::<warp::filters::body::BodyDeserializeError>() {
+                    err_and_log(e, StatusCode::BAD_REQUEST)
+                } else if let Some(e) = err.find::<warp::reject::PayloadTooLarge>() {
+                    err_and_log(e, StatusCode::PAYLOAD_TOO_LARGE)
+                } else if let Some(e) = err.find::<warp::reject::LengthRequired>() {
+                    err_and_log(e, StatusCode::LENGTH_REQUIRED)
+                } else if let Some(e) = err.find::<warp::reject::UnsupportedMediaType>() {
+                    err_and_log(e, StatusCode::UNSUPPORTED_MEDIA_TYPE)
+                } else if err.is_not_found()
+                    || err.find::<warp::reject::MethodNotAllowed>().is_some()
+                {
+                    warn!("Unknown request: {:?}", err);
+                    reply::with_status(warp::reply(), StatusCode::NOT_FOUND).into_response()
                 } else {
-                    Ok(reply::with_status(warp::reply(), StatusCode::NOT_FOUND).into_response())
-                }
+                    let error = anyhow!("Unhandled HTTP rejection: {:?}", err);
+                    err_and_log(error.as_ref(), StatusCode::INTERNAL_SERVER_ERROR)
+                };
+                Ok(response)
             }
 
             pub fn api(
@@ -1022,7 +1467,7 @@ mod server {
                 warp::path!("api" / "v1" / "scheduler" / "alloc_job")
                     .and(warp::post())
                     .and(with_client_authorizer(auth))
-                    .and(warp::header::value(AUTHORIZATION.as_str()))
+                    .and(warp::header::headers_cloned())
                     .and_then(authorize)
                     .untuple_one()
                     .and(with_handler(s))
@@ -1105,14 +1550,21 @@ mod server {
             where
                 T: serde::de::DeserializeOwned + std::marker::Send,
             {
-                warp::header::exact_ignore_case(CONTENT_TYPE.as_str(), "application/octet-stream")
-                    .and(
-                        warp::body::bytes().and_then(|body: bytes::Bytes| async move {
-                            let mut reader = body.reader();
-                            bincode::deserialize_from::<_, T>(&mut reader)
-                                .map_err(|_| warp::reject::custom(Error::Bincode))
-                        }),
-                    )
+                warp::header::headers_cloned()
+                    .and_then(|headers: warp::http::HeaderMap| async move {
+                        if headers
+                            .get(CONTENT_TYPE)
+                            .and_then(|value| value.to_str().ok())
+                            .is_some_and(|value| value.starts_with("application/octet-stream"))
+                        {
+                            Ok(())
+                        } else {
+                            Err(warp::reject::custom(Error::WrongContentType))
+                        }
+                    })
+                    .untuple_one()
+                    .and(warp::body::bytes())
+                    .and_then(from_bytes)
             }
 
             async fn prepare_response<T>(
@@ -1127,12 +1579,14 @@ mod server {
                         Ok(warp::reply::json(&content).into_response())
                     }
                     _ => {
-                        let data = bincode::serialize(&content).map_err(|_| Error::Bincode)?;
+                        let data = bincode::serialize(&content)
+                            .context("Failed to serialize response body")
+                            .map_err(Error::Internal)?;
                         Ok(warp::http::Response::builder()
                             .header(CONTENT_TYPE, "application/octet-stream")
                             .header(CONTENT_LENGTH, data.len())
                             .body(warp::hyper::Body::from(data))
-                            .map_err(|_| Error::Bincode)?)
+                            .map_err(|e| Error::Internal(e.into()))?)
                     }
                 }
             }
@@ -1194,9 +1648,12 @@ mod server {
 
             async fn authorize(
                 check_client_auth: Arc<dyn ClientAuthCheck>,
-                auth_header: HeaderValue,
+                headers: HeaderMap,
             ) -> Result<(), Rejection> {
-                let bearer_auth = bearer_http_auth(&auth_header)?;
+                let auth_header = headers
+                    .get(AUTHORIZATION)
+                    .ok_or(Error::AuthorizationHeaderBroken)?;
+                let bearer_auth = bearer_http_auth(auth_header)?;
 
                 check_client_auth
                     .check(&bearer_auth)
@@ -1213,13 +1670,17 @@ mod server {
             ) -> Result<ServerId, Rejection> {
                 let auth_header = headers
                     .get(AUTHORIZATION.as_str())
-                    .ok_or(Error::NoAuthorizationHeader)?;
+                    .ok_or(Error::InvalidBearerToken)?;
 
-                match check_server_auth(&bearer_http_auth(auth_header)?) {
+                match check_server_auth(
+                    &bearer_http_auth(auth_header).map_err(|_| Error::InvalidBearerToken)?,
+                ) {
                     Some(server_id) => {
                         let origin_ip = if let Some(header_val) = headers.get("X-Real-IP") {
                             trace!("X-Real-IP: {:?}", header_val);
-                            match header_val.to_str().map_err(|_| Error::BadRequest)?.parse() {
+                            match header_val.to_str().map_err(anyhow::Error::from).and_then(
+                                |value| value.parse::<std::net::IpAddr>().map_err(Into::into),
+                            ) {
                                 Ok(ip) => ip,
                                 Err(err) => {
                                     warn!(
@@ -1252,19 +1713,415 @@ mod server {
                 O: serde::de::DeserializeOwned,
             {
                 let a = bincode::deserialize_from::<_, O>(bytes.as_ref())
-                    .map_err(|_| Error::Bincode)
+                    .map_err(Error::Bincode)
                     .map_err(warp::reject::custom)?;
 
                 Ok(a)
             }
 
             fn toolchain() -> impl Filter<Extract = (dist::Toolchain,), Error = Rejection> + Clone {
-                warp::body::bytes().and_then(from_bytes)
+                bincode_input()
             }
 
             #[cfg(test)]
             mod test {
                 use super::*;
+
+                use crate::dist::http::server::{
+                    HeartbeatServerHttpRequest, Scheduler, create_https_cert_and_privkey,
+                };
+                use crate::dist::{
+                    AllocJobResult, HeartbeatServerResult, JobAuthorizer, JobState,
+                    SchedulerIncoming, SchedulerOutgoing, SchedulerStatusResult, ServerNonce,
+                    Toolchain, UpdateJobStateResult,
+                };
+                use async_trait::async_trait;
+                use serde_json::{Value, json};
+
+                struct ClientAuth;
+                #[async_trait]
+                impl ClientAuthCheck for ClientAuth {
+                    async fn check(&self, token: &str) -> Result<(), ClientVisibleMsg> {
+                        if token == "allowed" {
+                            Ok(())
+                        } else {
+                            Err(ClientVisibleMsg::from_nonsensitive(
+                                "permission denied".into(),
+                            ))
+                        }
+                    }
+                }
+
+                struct FailingScheduler;
+                fn failure(operation: &str) -> anyhow::Error {
+                    anyhow!("root cause")
+                        .context("middle cause")
+                        .context(operation.to_owned())
+                }
+                fn expected_failure(operation: &str) -> Value {
+                    json!({"description": operation, "cause": {
+                        "description": "middle cause", "cause": {
+                            "description": "root cause", "cause": null
+                        }
+                    }})
+                }
+                #[async_trait]
+                impl SchedulerIncoming for FailingScheduler {
+                    async fn handle_alloc_job(
+                        &self,
+                        _: &dyn SchedulerOutgoing,
+                        _: Toolchain,
+                    ) -> anyhow::Result<AllocJobResult> {
+                        Err(failure("allocation failed"))
+                    }
+                    fn handle_heartbeat_server(
+                        &self,
+                        _: ServerId,
+                        _: ServerNonce,
+                        _: usize,
+                        _: Box<dyn JobAuthorizer>,
+                    ) -> anyhow::Result<HeartbeatServerResult> {
+                        Err(failure("heartbeat failed"))
+                    }
+                    fn handle_update_job_state(
+                        &self,
+                        _: JobId,
+                        _: ServerId,
+                        _: JobState,
+                    ) -> anyhow::Result<UpdateJobStateResult> {
+                        Err(failure("state update failed"))
+                    }
+                    fn handle_status(&self) -> anyhow::Result<SchedulerStatusResult> {
+                        Err(failure("status failed"))
+                    }
+                }
+
+                fn server_auth() -> ServerAuthCheck {
+                    Arc::new(|token| {
+                        (token == "server")
+                            .then(|| ServerId::new("127.0.0.1:10000".parse().unwrap()))
+                    })
+                }
+                fn routes() -> impl Filter<Extract = impl Reply, Error = Infallible> + Clone {
+                    api(
+                        Arc::new(SchedulerRequester {
+                            client: Mutex::new(crate::util::new_reqwest_client().unwrap()),
+                        }),
+                        Arc::new(ClientAuth),
+                        Arc::new(FailingScheduler),
+                        Arc::new(Mutex::new(HashMap::new())),
+                        server_auth(),
+                    )
+                }
+                fn toolchain_body() -> Vec<u8> {
+                    bincode::serialize(&Toolchain {
+                        archive_id: "0".repeat(64),
+                    })
+                    .unwrap()
+                }
+                fn heartbeat_body(pem: Vec<u8>) -> Vec<u8> {
+                    bincode::serialize(&HeartbeatServerHttpRequest {
+                        jwt_key: vec![1, 2, 3],
+                        num_cpus: 1,
+                        server_nonce: ServerNonce::new(),
+                        cert_digest: vec![1],
+                        cert_pem: pem,
+                    })
+                    .unwrap()
+                }
+
+                #[tokio::test]
+                async fn test_handler_error_chains() {
+                    let api = routes();
+                    let (_, pem, _) =
+                        create_https_cert_and_privkey("127.0.0.1:0".parse().unwrap()).unwrap();
+                    for (method, endpoint, token, body, description) in [
+                        (
+                            "POST",
+                            "alloc_job",
+                            "allowed",
+                            toolchain_body(),
+                            "allocation failed",
+                        ),
+                        (
+                            "POST",
+                            "heartbeat_server",
+                            "server",
+                            heartbeat_body(pem),
+                            "heartbeat failed",
+                        ),
+                        (
+                            "POST",
+                            "job_state/1",
+                            "server",
+                            bincode::serialize(&JobState::Ready).unwrap(),
+                            "state update failed",
+                        ),
+                        ("GET", "status", "allowed", vec![], "status failed"),
+                    ] {
+                        let response = warp::test::request()
+                            .method(method)
+                            .path(&format!("/api/v1/scheduler/{endpoint}"))
+                            .remote_addr("127.0.0.1:12345".parse().unwrap())
+                            .header(AUTHORIZATION, format!("Bearer {token}"))
+                            .header(CONTENT_TYPE, "application/octet-stream")
+                            .body(body)
+                            .reply(&api)
+                            .await;
+                        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+                        assert_eq!(
+                            serde_json::from_slice::<Value>(response.body()).unwrap(),
+                            expected_failure(description)
+                        );
+                    }
+                }
+
+                #[tokio::test]
+                async fn test_auth_response_matrix() {
+                    let api = routes();
+                    for endpoint in ["alloc_job", "heartbeat_server", "job_state/1"] {
+                        for header in [
+                            None,
+                            Some("Basic token"),
+                            Some("Bearer"),
+                            Some("Bearer rejected"),
+                        ] {
+                            let mut request = warp::test::request()
+                                .method("POST")
+                                .path(&format!("/api/v1/scheduler/{endpoint}"));
+                            if let Some(header) = header {
+                                request = request.header(AUTHORIZATION, header);
+                            }
+                            let response = request.reply(&api).await;
+                            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+                            assert!(!response.headers().contains_key(CONTENT_TYPE));
+                            let (challenge, body) = if endpoint == "alloc_job" {
+                                if header == Some("Bearer rejected") {
+                                    ("bearer_auth_failed", "permission denied")
+                                } else {
+                                    ("no_bearer_auth", "")
+                                }
+                            } else {
+                                ("invalid_bearer_token", "")
+                            };
+                            assert_eq!(
+                                response.headers()[WWW_AUTHENTICATE],
+                                format!("Bearer error=\"{challenge}\"")
+                            );
+                            assert_eq!(response.body().as_ref(), body.as_bytes());
+                        }
+                    }
+                }
+
+                #[tokio::test]
+                async fn test_server_origin_errors() {
+                    let api = routes();
+                    for endpoint in ["heartbeat_server", "job_state/1"] {
+                        for origin in [
+                            None,
+                            Some(HeaderValue::from_static("not-an-ip")),
+                            Some(HeaderValue::from_bytes(&[0xff]).unwrap()),
+                        ] {
+                            let mut request = warp::test::request()
+                                .method("POST")
+                                .path(&format!("/api/v1/scheduler/{endpoint}"))
+                                .header(AUTHORIZATION, "Bearer server");
+                            if let Some(origin) = origin {
+                                request = request.header("x-real-ip", origin);
+                            }
+                            let response = request.reply(&api).await;
+                            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+                            assert!(response.body().is_empty());
+                        }
+                        for forwarded in [false, true] {
+                            let mut request = warp::test::request()
+                                .method("POST")
+                                .path(&format!("/api/v1/scheduler/{endpoint}"))
+                                .header(AUTHORIZATION, "Bearer server");
+                            if forwarded {
+                                request = request.header("x-real-ip", "127.0.0.2");
+                            } else {
+                                request = request.remote_addr("127.0.0.2:12345".parse().unwrap());
+                            }
+                            let response = request.reply(&api).await;
+                            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+                            assert_eq!(
+                                response.headers()[WWW_AUTHENTICATE],
+                                "Bearer error=\"invalid_bearer_token_mismatched_address\""
+                            );
+                            assert!(!response.headers().contains_key(CONTENT_TYPE));
+                            assert!(response.body().is_empty());
+                        }
+                    }
+                }
+
+                #[tokio::test]
+                async fn test_binary_input_errors() {
+                    let api = routes();
+                    for (endpoint, token, body, description) in [
+                        (
+                            "alloc_job",
+                            "allowed",
+                            toolchain_body(),
+                            "allocation failed",
+                        ),
+                        (
+                            "heartbeat_server",
+                            "server",
+                            vec![],
+                            "error while parsing the bincode body",
+                        ),
+                        (
+                            "job_state/1",
+                            "server",
+                            bincode::serialize(&JobState::Ready).unwrap(),
+                            "state update failed",
+                        ),
+                    ] {
+                        for content_type in [
+                            None,
+                            Some("text/plain"),
+                            Some("Application/Octet-Stream"),
+                            Some("application/octet-stream"),
+                            Some("application/octet-stream; version=1"),
+                            Some("application/octet-stream-suffix"),
+                        ] {
+                            let mut request = warp::test::request()
+                                .method("POST")
+                                .path(&format!("/api/v1/scheduler/{endpoint}"))
+                                .remote_addr("127.0.0.1:12345".parse().unwrap())
+                                .header(AUTHORIZATION, format!("Bearer {token}"))
+                                .body(body.clone());
+                            if let Some(content_type) = content_type {
+                                request = request.header(CONTENT_TYPE, content_type);
+                            }
+                            let response = request.reply(&api).await;
+                            let error: Value = serde_json::from_slice(response.body()).unwrap();
+                            if content_type
+                                .is_some_and(|v| v.starts_with("application/octet-stream"))
+                            {
+                                assert_eq!(error["description"], description);
+                                assert_eq!(
+                                    response.status(),
+                                    if endpoint == "heartbeat_server" {
+                                        StatusCode::BAD_REQUEST
+                                    } else {
+                                        StatusCode::INTERNAL_SERVER_ERROR
+                                    }
+                                );
+                            } else {
+                                assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+                                assert_eq!(
+                                    error,
+                                    json!({"description": "the request didn't have a binary content type", "cause": null})
+                                );
+                            }
+                        }
+                        let response = warp::test::request()
+                            .method("POST")
+                            .path(&format!("/api/v1/scheduler/{endpoint}"))
+                            .remote_addr("127.0.0.1:12345".parse().unwrap())
+                            .header(AUTHORIZATION, format!("Bearer {token}"))
+                            .header(CONTENT_TYPE, "application/octet-stream")
+                            .body([0])
+                            .reply(&api)
+                            .await;
+                        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+                        let error: Value = serde_json::from_slice(response.body()).unwrap();
+                        assert_eq!(error["description"], "error while parsing the bincode body");
+                        assert!(error["cause"]["description"].as_str().is_some());
+                    }
+                }
+
+                #[tokio::test]
+                async fn test_certificate_errors() {
+                    let api = routes();
+                    let response = warp::test::request()
+                        .path("/api/v1/scheduler/server_certificate/127.0.0.1:10000")
+                        .reply(&api)
+                        .await;
+                    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+                    assert_eq!(
+                        serde_json::from_slice::<Value>(response.body()).unwrap(),
+                        json!({"description": "server cert not available", "cause": null})
+                    );
+                    let pem =
+                        b"-----BEGIN CERTIFICATE-----\n!\n-----END CERTIFICATE-----\n".to_vec();
+                    let description = if reqwest::Certificate::from_pem(&pem).is_err() {
+                        "failed to interpret pem as certificate"
+                    } else {
+                        // With rustls, reqwest defers PEM validation until client construction.
+                        "failed to create a HTTP client"
+                    };
+                    let response = warp::test::request()
+                        .method("POST")
+                        .path("/api/v1/scheduler/heartbeat_server")
+                        .header(AUTHORIZATION, "Bearer server")
+                        .header("x-real-ip", "127.0.0.1")
+                        .header(CONTENT_TYPE, "application/octet-stream")
+                        .body(heartbeat_body(pem))
+                        .reply(&api)
+                        .await;
+                    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+                    let error: Value = serde_json::from_slice(response.body()).unwrap();
+                    assert_eq!(error["description"], description);
+                    assert!(error["cause"]["description"].as_str().is_some());
+                }
+
+                #[tokio::test]
+                async fn test_response_serialization_failure() {
+                    struct Unserializable;
+                    impl serde::Serialize for Unserializable {
+                        fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+                            Err(serde::ser::Error::custom("injected serialization failure"))
+                        }
+                    }
+                    let route = warp::any()
+                        .and_then(|| prepare_response(Unserializable, None))
+                        .recover(handle_rejection);
+                    let response = warp::test::request().reply(&route).await;
+                    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+                    assert_eq!(
+                        serde_json::from_slice::<Value>(response.body()).unwrap(),
+                        json!({"description": "Failed to serialize response body", "cause": {"description": "injected serialization failure", "cause": null}})
+                    );
+                }
+
+                #[tokio::test]
+                async fn test_unknown_routes_and_methods() {
+                    let api = routes();
+                    for (method, path) in [
+                        ("GET", "/unknown"),
+                        ("POST", "/api/v1/scheduler/status"),
+                        ("POST", "/api/v1/scheduler/job_state/not-a-job"),
+                        ("GET", "/api/v1/scheduler/server_certificate/not-an-address"),
+                    ] {
+                        let response = warp::test::request()
+                            .method(method)
+                            .path(path)
+                            .reply(&api)
+                            .await;
+                        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+                        assert!(response.body().is_empty());
+                    }
+                }
+
+                #[tokio::test]
+                async fn test_scheduler_bind_failure_is_result() {
+                    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+                    let scheduler = Scheduler::new(
+                        listener.local_addr().unwrap(),
+                        FailingScheduler,
+                        Box::new(ClientAuth),
+                        server_auth(),
+                    );
+                    let error = scheduler.start().await.unwrap_err();
+                    assert!(
+                        error
+                            .to_string()
+                            .starts_with("Failed to start http server for sccache scheduler: ")
+                    );
+                }
 
                 #[tokio::test]
                 async fn test_response_formats() {
@@ -1314,10 +2171,11 @@ mod server {
             use crate::dist::{
                 HeartbeatServerResult, JobState, SchedulerStatusResult, UpdateJobStateResult,
             };
+            use crate::errors::Context;
             use std::collections::HashMap;
             use std::sync::Arc;
             use tokio::sync::Mutex;
-            use warp::reject::{self, Rejection};
+            use warp::reject::Rejection;
 
             pub async fn alloc_job(
                 handler: Arc<dyn dist::SchedulerIncoming>,
@@ -1328,7 +2186,7 @@ mod server {
                 let alloc_job_res = handler
                     .handle_alloc_job(requester.as_ref(), toolchain)
                     .await
-                    .map_err(|_| reject::custom(Error::AllocJob))?;
+                    .map_err(Error::Internal)?;
 
                 let certs = certs.lock().await;
                 let res = AllocJobHttpResponse::from_alloc_job_result(alloc_job_res, &certs);
@@ -1375,13 +2233,13 @@ mod server {
                     let mut certs = server_certificates.lock().await;
                     maybe_update_certs(&mut client, &mut certs, server_id, cert_digest, cert_pem)
                         .await
-                        .map_err(|_| Error::UpdateCerts)?;
+                        .map_err(Error::Internal)?;
                 }
 
                 let job_authorizer = Box::new(JWTJobAuthorizer::new(jwt_key));
                 let res: HeartbeatServerResult = handler
                     .handle_heartbeat_server(server_id, server_nonce, num_cpus, job_authorizer)
-                    .map_err(|_| Error::Heartbeat)?;
+                    .map_err(Error::Internal)?;
 
                 Ok(res)
             }
@@ -1394,7 +2252,7 @@ mod server {
             ) -> Result<UpdateJobStateResult, Rejection> {
                 let res = handler
                     .handle_update_job_state(job_id, server_id, job_state)
-                    .map_err(|_| Error::UpdateJobState)?;
+                    .map_err(Error::Internal)?;
 
                 Ok(res)
             }
@@ -1403,7 +2261,7 @@ mod server {
                 handler: Arc<dyn dist::SchedulerIncoming>,
             ) -> Result<SchedulerStatusResult, Rejection> {
                 let res: SchedulerStatusResult =
-                    handler.handle_status().map_err(|_| Error::Status)?;
+                    handler.handle_status().map_err(Error::Internal)?;
                 Ok(res)
             }
 
@@ -1413,7 +2271,7 @@ mod server {
                 server_id: ServerId,
                 cert_digest: Vec<u8>,
                 cert_pem: Vec<u8>,
-            ) -> Result<(), Error> {
+            ) -> crate::errors::Result<()> {
                 if let Some((saved_cert_digest, _)) = certs.get(&server_id)
                     && saved_cert_digest == &cert_digest
                 {
@@ -1424,16 +2282,15 @@ mod server {
                     server_id.addr()
                 );
 
-                let mut client_builder =
-                    crate::util::new_reqwest_client_builder().map_err(|_| Error::NoHTTPClient)?;
+                let mut client_builder = crate::util::new_reqwest_client_builder()?;
                 // Add all the certificates we know about
                 client_builder = client_builder
                     .tls_certs_merge([reqwest::Certificate::from_pem(&cert_pem)
-                        .map_err(|_| Error::BadCertificate)?]);
+                        .context("failed to interpret pem as certificate")?]);
                 for (_, cert_pem) in certs.values() {
                     client_builder = client_builder
                         .tls_certs_merge([reqwest::Certificate::from_pem(cert_pem)
-                            .map_err(|_| Error::BadCertificate)?]);
+                            .context("failed to interpret pem as certificate")?]);
                 }
                 // Finish the client
                 let new_client = client_builder
@@ -1442,7 +2299,7 @@ mod server {
                     // between runtime
                     .pool_max_idle_per_host(0)
                     .build()
-                    .map_err(|_| Error::NoHTTPClient)?;
+                    .context("failed to create a HTTP client")?;
                 // Use the updated certificates
                 *client = new_client;
                 certs.insert(server_id, (cert_digest, cert_pem));
@@ -1557,7 +2414,10 @@ mod server {
                 check_server_auth,
             );
             info!("Scheduler listening for clients on {}", public_addr);
-            warp::serve(api).run(public_addr).await;
+            let (_, server) = warp::serve(api)
+                .try_bind_with_graceful_shutdown(public_addr, std::future::pending::<()>())
+                .map_err(|e| anyhow!("Failed to start http server for sccache scheduler: {}", e))?;
+            server.await;
 
             panic!("Warp server terminated")
         }
@@ -1577,7 +2437,7 @@ mod server {
         ) -> Result<AssignJobResult> {
             let url = urls::server_assign_job(server_id, job_id);
             let req = self.client.lock().await.post(url);
-            bincode_req_fut(req.bearer_auth(auth).bincode(&tc)?)
+            bincode_req(req.bearer_auth(auth).bincode(&tc)?)
                 .await
                 .context("POST to scheduler assign_job failed")
         }
@@ -1661,12 +2521,19 @@ mod server {
 
             let api = distserver_api_v1::api(job_authorizer, handler, requester);
 
-            tokio::spawn(async move {
+            let (_, server) = warp::serve(api)
+                .tls()
+                .cert(cert_pem)
+                .key(privkey_pem)
+                .try_bind_with_graceful_shutdown(bind_address, std::future::pending::<()>())
+                .map_err(|e| anyhow!("Failed to start http server for sccache server: {}", e))?;
+
+            let heartbeat = async move {
                 use tokio::time;
 
                 loop {
                     trace!(target: "sccache_heartbeat", "Performing heartbeat");
-                    match bincode_req_fut(
+                    match bincode_req(
                         heartbeat_client
                             .post(heartbeat_url.clone())
                             .bearer_auth(scheduler_auth.clone())
@@ -1689,15 +2556,13 @@ mod server {
                         }
                     }
                 }
-            });
+            };
 
             info!("Server listening for clients on {}", bind_address);
-            warp::serve(api)
-                .tls()
-                .cert(cert_pem)
-                .key(privkey_pem)
-                .run(bind_address)
-                .await;
+            tokio::select! {
+                () = server => {},
+                () = heartbeat => {},
+            }
 
             panic!("Warp server terminated")
         }
@@ -1717,7 +2582,7 @@ mod server {
             state: JobState,
         ) -> Result<UpdateJobStateResult> {
             let url = urls::scheduler_job_state(&self.scheduler_url, job_id);
-            bincode_req_fut(
+            bincode_req(
                 self.client
                     .post(url)
                     .bearer_auth(self.scheduler_auth.clone())
@@ -1880,6 +2745,7 @@ mod client {
                         res.cert_digest,
                         res.cert_pem,
                     )
+                    .context("Failed to update certificate")
                     .unwrap_or_else(|e| warn!("Failed to update certificate: {:?}", e));
 
                     alloc_job_res
