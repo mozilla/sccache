@@ -8,7 +8,7 @@ This cache type will need tokens like `ACTIONS_RESULTS_URL` and `ACTIONS_RUNTIME
 
 ```yaml
 - name: Configure sccache
-  uses: actions/github-script@v7
+  uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
   with:
     script: |
       core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
