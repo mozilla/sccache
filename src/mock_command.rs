@@ -489,7 +489,7 @@ pub enum ChildOrCall {
         dead_code,
         reason = "Read in the async_trait below, but rustc doesn't see it as used"
     )]
-    Call(Box<dyn Fn(&[OsString]) -> Result<MockChild> + Send>),
+    Call(Box<dyn Fn(&MockCommand) -> Result<MockChild> + Send>),
 }
 
 impl fmt::Debug for ChildOrCall {
@@ -573,7 +573,7 @@ impl RunCommand for MockCommand {
     async fn spawn(&mut self) -> Result<MockChild> {
         match self.child.take().unwrap() {
             ChildOrCall::Child(c) => c,
-            ChildOrCall::Call(f) => f(&self.args),
+            ChildOrCall::Call(f) => f(self),
         }
     }
 }
@@ -598,6 +598,16 @@ impl MockCommandCreator {
     pub fn next_command_calls<C>(&mut self, call: C)
     where
         C: Fn(&[OsString]) -> Result<MockChild> + Send + 'static,
+    {
+        self.next_command_inspects(move |cmd| call(&cmd.args));
+    }
+
+    /// Like `next_command_calls`, but `call` sees the whole command, including
+    /// its environment and working directory.
+    #[allow(dead_code)]
+    pub fn next_command_inspects<C>(&mut self, call: C)
+    where
+        C: Fn(&MockCommand) -> Result<MockChild> + Send + 'static,
     {
         self.children.push(ChildOrCall::Call(Box::new(call)));
     }
