@@ -31,8 +31,7 @@ use crate::cache::redis::RedisCache;
 #[cfg(feature = "s3")]
 use crate::cache::s3::S3Cache;
 #[cfg(any_cache_remote)]
-use crate::cache::storage::RemoteStorage;
-use crate::cache::storage::Storage;
+use crate::cache::storage::{RemoteStorage, Storage};
 #[cfg(feature = "webdav")]
 use crate::cache::webdav::WebdavCache;
 use crate::config::Config;
