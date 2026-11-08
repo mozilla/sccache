@@ -20,9 +20,9 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::cache::build_single_cache;
 use crate::cache::disk::DiskCache;
-use crate::cache::{Cache, CacheMode, CacheWrite, Storage};
+use crate::cache::{Cache, CacheMode, CacheStorage, CacheWrite, Storage};
+use crate::cache::{PreprocessorCacheStorage, build_single_cache};
 use crate::compiler::PreprocessorCacheEntry;
 use crate::config::{Config, PreprocessorCacheModeConfig, WriteErrorPolicy};
 use crate::errors::*;
@@ -563,7 +563,7 @@ impl MultiLevelStorage {
 }
 
 #[async_trait]
-impl Storage for MultiLevelStorage {
+impl CacheStorage for MultiLevelStorage {
     async fn get(&self, key: &str) -> Result<Cache> {
         for (idx, level) in self.levels.iter().enumerate() {
             let start = Instant::now();
@@ -839,15 +839,18 @@ impl Storage for MultiLevelStorage {
         Some(self.stats())
     }
 
+    fn basedirs(&self) -> &[Vec<u8>] {
+        &self.basedirs
+    }
+}
+
+#[async_trait]
+impl PreprocessorCacheStorage for MultiLevelStorage {
     fn preprocessor_cache_mode_config(&self) -> PreprocessorCacheModeConfig {
         self.levels
             .first()
             .map(|level| level.preprocessor_cache_mode_config())
             .unwrap_or_default()
-    }
-
-    fn basedirs(&self) -> &[Vec<u8>] {
-        &self.basedirs
     }
 
     async fn get_preprocessor_cache_entry(
@@ -896,6 +899,9 @@ impl Storage for MultiLevelStorage {
         Ok(())
     }
 }
+
+#[async_trait]
+impl Storage for MultiLevelStorage {}
 
 #[cfg(test)]
 #[path = "multilevel_test.rs"]
