@@ -2210,6 +2210,37 @@ mod test {
     }
 
     #[test]
+    fn test_preprocess_uses_only_client_env() {
+        let parsed_args = match parse_arguments_(stringvec!["-c", "foo.c"], false) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        let env_vars = vec![(OsString::from("CPATH"), OsString::from("/inc"))];
+        let creator = new_creator();
+        let expected_env = env_vars.clone();
+        creator.lock().unwrap().next_command_inspects(move |cmd| {
+            assert!(cmd.env_cleared);
+            assert_eq!(cmd.env, expected_env);
+            assert_eq!(cmd.cwd.as_deref(), Some(Path::new("/build")));
+            Ok(MockChild::new(exit_status(0), "", ""))
+        });
+        single_threaded_runtime()
+            .block_on(preprocess(
+                &creator,
+                Path::new("gcc"),
+                &parsed_args,
+                Path::new("/build"),
+                &env_vars,
+                true,
+                CCompilerKind::Gcc,
+                true,
+                vec![],
+                language_to_gcc_arg,
+            ))
+            .unwrap();
+    }
+
+    #[test]
     fn test_preprocess_passes_per_arch() {
         let single = |arch_args: Vec<OsString>| {
             let mut args = ovec!["-x", "c", "-E", "-fdirectives-only"];

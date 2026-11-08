@@ -490,6 +490,11 @@ pub enum ChildOrCall {
         reason = "Read in the async_trait below, but rustc doesn't see it as used"
     )]
     Call(Box<dyn Fn(&[OsString]) -> Result<MockChild> + Send>),
+    #[allow(
+        dead_code,
+        reason = "Read in the async_trait below, but rustc doesn't see it as used"
+    )]
+    Inspect(Box<dyn Fn(&MockCommand) -> Result<MockChild> + Send>),
 }
 
 impl fmt::Debug for ChildOrCall {
@@ -497,6 +502,7 @@ impl fmt::Debug for ChildOrCall {
         match *self {
             ChildOrCall::Child(ref r) => write!(f, "ChildOrCall::Child({:?}", r),
             ChildOrCall::Call(_) => write!(f, "ChildOrCall::Call(...)"),
+            ChildOrCall::Inspect(_) => write!(f, "ChildOrCall::Inspect(...)"),
         }
     }
 }
@@ -574,6 +580,7 @@ impl RunCommand for MockCommand {
         match self.child.take().unwrap() {
             ChildOrCall::Child(c) => c,
             ChildOrCall::Call(f) => f(&self.args),
+            ChildOrCall::Inspect(f) => f(self),
         }
     }
 }
@@ -600,6 +607,16 @@ impl MockCommandCreator {
         C: Fn(&[OsString]) -> Result<MockChild> + Send + 'static,
     {
         self.children.push(ChildOrCall::Call(Box::new(call)));
+    }
+
+    /// Like `next_command_calls`, but `call` sees the whole command, including
+    /// its environment and working directory.
+    #[allow(dead_code)]
+    pub fn next_command_inspects<C>(&mut self, call: C)
+    where
+        C: Fn(&MockCommand) -> Result<MockChild> + Send + 'static,
+    {
+        self.children.push(ChildOrCall::Inspect(Box::new(call)));
     }
 }
 
