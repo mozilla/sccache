@@ -95,7 +95,10 @@ impl CCompilerImpl for Nvhpc {
         }?;
 
         let initialize_cmd_and_args = || {
-            let mut command = creator.clone().new_command_sync(executable);
+            let mut command = creator
+                .clone()
+                .new_command_with_env(executable, env_vars.iter().cloned());
+            command.current_dir(cwd);
             command.args(&parsed_args.preprocessor_args);
             command.args(&parsed_args.common_args);
             command.arg("-x").arg(language).arg(&parsed_args.input);
@@ -118,11 +121,7 @@ impl CCompilerImpl for Nvhpc {
                     transformed_deps.push(item.clone());
                 }
             }
-            dep_cmd
-                .args(&transformed_deps)
-                .env_clear()
-                .envs(env_vars.to_vec())
-                .current_dir(cwd);
+            dep_cmd.args(&transformed_deps);
 
             if log_enabled!(Trace) {
                 trace!("dep-gen command: {:?}", dep_cmd);
@@ -134,10 +133,7 @@ impl CCompilerImpl for Nvhpc {
         let mut cmd = initialize_cmd_and_args();
 
         //NVHPC doesn't support disabling line info when outputting to console
-        cmd.arg("-E")
-            .env_clear()
-            .envs(env_vars.to_vec())
-            .current_dir(cwd);
+        cmd.arg("-E");
         if log_enabled!(Trace) {
             trace!("preprocess: {:?}", cmd);
         }

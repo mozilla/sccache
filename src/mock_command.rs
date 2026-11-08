@@ -52,7 +52,7 @@ use std::boxed::Box;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Output, Stdio};
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -153,6 +153,20 @@ pub trait CommandCreatorSync: Clone + Send + Sync + 'static {
     fn new(client: &Client) -> Self;
 
     fn new_command_sync<S: AsRef<OsStr>>(&mut self, program: S) -> Self::Cmd;
+
+    /// Create a command that sees exactly `env`, rather than `env` layered
+    /// over the server's own environment.
+    fn new_command_with_env<S, I, K, V>(&mut self, program: S, env: I) -> Self::Cmd
+    where
+        S: AsRef<OsStr>,
+        I: IntoIterator<Item = (K, V)>,
+        K: AsRef<OsStr>,
+        V: AsRef<OsStr>,
+    {
+        let mut cmd = self.new_command_sync(program);
+        cmd.env_clear().envs(env);
+        cmd
+    }
 }
 
 pub struct Child {
@@ -489,10 +503,22 @@ impl fmt::Debug for ChildOrCall {
 
 /// A mocked command that simply returns its `child` from `spawn`.
 #[allow(dead_code)]
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct MockCommand {
     pub child: Option<ChildOrCall>,
     pub args: Vec<OsString>,
+    /// Whether the command was cut off from the inherited environment.
+    pub env_cleared: bool,
+    pub env: Vec<(OsString, OsString)>,
+    pub cwd: Option<PathBuf>,
+}
+
+impl MockCommand {
+    #[allow(dead_code)]
+    fn set_env(&mut self, key: &OsStr, val: &OsStr) {
+        self.env.retain(|(k, _)| k != key);
+        self.env.push((key.to_owned(), val.to_owned()));
+    }
 }
 
 #[async_trait]
@@ -507,26 +533,32 @@ impl RunCommand for MockCommand {
         self.args.extend(args.iter().map(|a| a.as_ref().to_owned()));
         self
     }
-    fn env<K, V>(&mut self, _key: K, _val: V) -> &mut MockCommand
+    fn env<K, V>(&mut self, key: K, val: V) -> &mut MockCommand
     where
         K: AsRef<OsStr>,
         V: AsRef<OsStr>,
     {
+        self.set_env(key.as_ref(), val.as_ref());
         self
     }
-    fn envs<I, K, V>(&mut self, _vars: I) -> &mut Self
+    fn envs<I, K, V>(&mut self, vars: I) -> &mut Self
     where
         I: IntoIterator<Item = (K, V)>,
         K: AsRef<OsStr>,
         V: AsRef<OsStr>,
     {
+        for (key, val) in vars {
+            self.set_env(key.as_ref(), val.as_ref());
+        }
         self
     }
     fn env_clear(&mut self) -> &mut MockCommand {
+        self.env_cleared = true;
+        self.env.clear();
         self
     }
-    fn current_dir<P: AsRef<Path>>(&mut self, _dir: P) -> &mut MockCommand {
-        //TODO: assert value of dir
+    fn current_dir<P: AsRef<Path>>(&mut self, dir: P) -> &mut MockCommand {
+        self.cwd = Some(dir.as_ref().to_owned());
         self
     }
     fn stdin(&mut self, _cfg: Stdio) -> &mut MockCommand {
@@ -588,7 +620,7 @@ impl CommandCreator for MockCommandCreator {
         //TODO: assert value of program
         MockCommand {
             child: Some(self.children.remove(0)),
-            args: vec![],
+            ..Default::default()
         }
     }
 }
@@ -732,6 +764,48 @@ mod test {
             Ok(MockChild::new(exit_status(0), "hello", "error")),
         );
         assert_eq!(exit_status(0), spawn_on_thread(creator, true));
+    }
+
+    #[test]
+    fn test_new_command_with_env_mock() {
+        let client = Client::new_num(1);
+        let mut creator = Arc::new(Mutex::new(MockCommandCreator::new(&client)));
+        next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
+        let env = vec![
+            (OsString::from("A"), OsString::from("1")),
+            (OsString::from("B"), OsString::from("2")),
+        ];
+        let mut cmd = creator.new_command_with_env("foo", env.iter().cloned());
+        assert!(cmd.env_cleared);
+        assert_eq!(cmd.env, env);
+
+        cmd.env("A", "3");
+        assert_eq!(
+            cmd.env,
+            vec![
+                (OsString::from("B"), OsString::from("2")),
+                (OsString::from("A"), OsString::from("3")),
+            ]
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_new_command_with_env_hides_server_env() {
+        let client = Client::new_num(1);
+        let mut creator = <ProcessCommandCreator as CommandCreator>::new(&client);
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        // PATH is always set for the test process, so it would leak if the
+        // environment weren't cleared.
+        assert!(std::env::var_os("PATH").is_some());
+        let cmd = creator.new_command_with_env("/usr/bin/env", [("SCCACHE_TEST_ONLY", "1")]);
+        let output = runtime
+            .block_on(crate::util::run_input_output(cmd, None))
+            .unwrap();
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            "SCCACHE_TEST_ONLY=1\n"
+        );
     }
 
     /// The jobserver reaches a child through `CARGO_MAKEFLAGS`, so reading it

@@ -332,14 +332,14 @@ pub async fn preprocess<T>(
 where
     T: CommandCreatorSync,
 {
-    let mut cmd = creator.clone().new_command_sync(executable);
+    let mut cmd = creator
+        .clone()
+        .new_command_with_env(executable, env_vars.iter().cloned());
     cmd.arg("-E")
         .arg(&parsed_args.input)
         .args(&parsed_args.dependency_args)
         .args(&parsed_args.preprocessor_args)
         .args(&parsed_args.common_args)
-        .env_clear()
-        .envs(env_vars.to_vec())
         .current_dir(cwd);
 
     if log_enabled!(Trace) {

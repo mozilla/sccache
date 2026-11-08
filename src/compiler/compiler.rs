@@ -212,11 +212,10 @@ impl CompileCommandImpl for SingleCompileCommand {
         } = self;
         // Resolve compiler avoiding ccache wrappers to prevent double-caching.
         let resolved_executable = resolve_compiler_avoiding_wrapper(executable, env_vars);
-        let mut cmd = creator.clone().new_command_sync(&resolved_executable);
-        cmd.args(arguments)
-            .env_clear()
-            .envs(env_vars.clone())
-            .current_dir(cwd);
+        let mut cmd = creator
+            .clone()
+            .new_command_with_env(&resolved_executable, env_vars.iter().cloned());
+        cmd.args(arguments).current_dir(cwd);
         if *share_jobserver {
             cmd.share_jobserver();
         }
@@ -1581,14 +1580,16 @@ async fn resolve_rust_compiler<T>(
 where
     T: CommandCreatorSync,
 {
-    let mut child = creator.clone().new_command_sync(executable);
+    let mut child = creator
+        .clone()
+        .new_command_with_env(executable, env.iter().cloned());
     // We're wrapping rustc if the executable doesn't match the detected rustc_executable. In this case the wrapper
     // expects rustc as the first argument.
     if rustc_executable != executable {
         child.arg(&rustc_executable);
     }
 
-    child.env_clear().envs(env.to_vec()).args(&["-vV"]);
+    child.args(&["-vV"]);
 
     let rustc_vv = run_input_output(child, None).await.map(|output| {
         if let Ok(stdout) = String::from_utf8(output.stdout.clone())

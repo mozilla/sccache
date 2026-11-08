@@ -829,7 +829,6 @@ fn preprocess_cmd<F, T>(
     parsed_args: &ParsedArguments,
     arch_args: &[OsString],
     cwd: &Path,
-    env_vars: &[(OsString, OsString)],
     may_dist: bool,
     kind: CCompilerKind,
     rewrite_includes_only: bool,
@@ -876,10 +875,7 @@ fn preprocess_cmd<F, T>(
     if parsed_args.double_dash_input {
         cmd.arg("--");
     }
-    cmd.arg(&parsed_args.input)
-        .env_clear()
-        .envs(env_vars.to_vec())
-        .current_dir(cwd);
+    cmd.arg(&parsed_args.input).current_dir(cwd);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -901,13 +897,14 @@ where
 {
     trace!("preprocess");
     let run_pass = |parsed_args: &ParsedArguments, arch_args: &[OsString], may_dist: bool| {
-        let mut cmd = creator.clone().new_command_sync(executable);
+        let mut cmd = creator
+            .clone()
+            .new_command_with_env(executable, env_vars.iter().cloned());
         preprocess_cmd(
             &mut cmd,
             parsed_args,
             arch_args,
             cwd,
-            env_vars,
             may_dist,
             kind.clone(),
             rewrite_includes_only,
@@ -2419,16 +2416,12 @@ mod test {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
-        let mut cmd = MockCommand {
-            child: None,
-            args: vec![],
-        };
+        let mut cmd = MockCommand::default();
         preprocess_cmd(
             &mut cmd,
             &parsed_args,
             &parsed_args.arch_args,
-            Path::new(""),
-            &[],
+            Path::new("/build"),
             true,
             CCompilerKind::Clang,
             true,
@@ -2437,6 +2430,7 @@ mod test {
         );
         let expected_args = ovec!["-x", "c", "-E", "-frewrite-includes", "--", "foo.c"];
         assert_eq!(cmd.args, expected_args);
+        assert_eq!(cmd.cwd.as_deref(), Some(Path::new("/build")));
     }
 
     #[test]
@@ -2446,16 +2440,12 @@ mod test {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
-        let mut cmd = MockCommand {
-            child: None,
-            args: vec![],
-        };
+        let mut cmd = MockCommand::default();
         preprocess_cmd(
             &mut cmd,
             &parsed_args,
             &parsed_args.arch_args,
             Path::new(""),
-            &[],
             true,
             CCompilerKind::Gcc,
             true,
@@ -2473,16 +2463,12 @@ mod test {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
-        let mut cmd = MockCommand {
-            child: None,
-            args: vec![],
-        };
+        let mut cmd = MockCommand::default();
         preprocess_cmd(
             &mut cmd,
             &parsed_args,
             &parsed_args.arch_args,
             Path::new(""),
-            &[],
             true,
             CCompilerKind::Gcc,
             true,
@@ -2500,16 +2486,12 @@ mod test {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
-        let mut cmd = MockCommand {
-            child: None,
-            args: vec![],
-        };
+        let mut cmd = MockCommand::default();
         preprocess_cmd(
             &mut cmd,
             &parsed_args,
             &parsed_args.arch_args,
             Path::new(""),
-            &[],
             true,
             CCompilerKind::Gcc,
             true,
@@ -3305,16 +3287,12 @@ mod test {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
-        let mut cmd = MockCommand {
-            child: None,
-            args: vec![],
-        };
+        let mut cmd = MockCommand::default();
         preprocess_cmd(
             &mut cmd,
             &parsed_args,
             &parsed_args.arch_args,
             Path::new(""),
-            &[],
             true,
             CCompilerKind::Gcc,
             true,
@@ -3331,16 +3309,12 @@ mod test {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
-        let mut cmd = MockCommand {
-            child: None,
-            args: vec![],
-        };
+        let mut cmd = MockCommand::default();
         preprocess_cmd(
             &mut cmd,
             &parsed_args,
             &parsed_args.arch_args,
             Path::new(""),
-            &[],
             true,
             CCompilerKind::Gcc,
             true,
@@ -3357,16 +3331,12 @@ mod test {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
-        let mut cmd = MockCommand {
-            child: None,
-            args: vec![],
-        };
+        let mut cmd = MockCommand::default();
         preprocess_cmd(
             &mut cmd,
             &parsed_args,
             &parsed_args.arch_args,
             Path::new(""),
-            &[],
             true,
             CCompilerKind::Gcc,
             true,
