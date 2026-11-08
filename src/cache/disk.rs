@@ -14,6 +14,7 @@
 
 use crate::cache::{
     Cache, CacheMode, CacheRead, CacheStorage, CacheWrite, GetPathResult, PreprocessorCacheStorage,
+    Storage,
 };
 use crate::compiler::PreprocessorCacheEntry;
 use crate::lru_disk_cache::{Error as LruError, LruDiskCache, ReadSeek, Result as LruResult};
@@ -281,6 +282,9 @@ impl PreprocessorCacheStorage for DiskCache {
             .commit(f)?)
     }
 }
+
+#[async_trait]
+impl Storage for DiskCache {}
 
 #[cfg(test)]
 mod tests {

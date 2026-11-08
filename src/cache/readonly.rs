@@ -108,6 +108,9 @@ impl PreprocessorCacheStorage for ReadOnlyStorage {
     }
 }
 
+#[async_trait]
+impl Storage for ReadOnlyStorage {}
+
 #[cfg(test)]
 mod test {
     use futures::FutureExt;

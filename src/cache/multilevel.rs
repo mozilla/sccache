@@ -900,6 +900,9 @@ impl PreprocessorCacheStorage for MultiLevelStorage {
     }
 }
 
+#[async_trait]
+impl Storage for MultiLevelStorage {}
+
 #[cfg(test)]
 #[path = "multilevel_test.rs"]
 mod test;
