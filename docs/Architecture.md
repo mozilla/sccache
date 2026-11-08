@@ -177,8 +177,9 @@ attributable and atomic (see `src/logging.rs`):
 - each line carries the pid of the emitting process, right after the level, and
   each invocation logs its own argv at `debug` level, so a pid can be matched
   back to what it was compiling;
-- each line is written with a single `write_all`, which is one `write` syscall to
-  stderr or to a file, so concurrent writers never tear each other's lines; and
+- each record is written with a single `write_all`, which is one `write` syscall
+  to stderr or to a file, or line by line when it is longer than a pipe writes
+  atomically, so concurrent writers never tear each other's lines; and
 - `SCCACHE_ERROR_LOG` is honored by every process, not just the daemon. The file
   is opened with `O_APPEND`, so appends from concurrent processes are serialised
   by the kernel. Only log output is redirected: a CLI process keeps its stderr

@@ -20,14 +20,15 @@
 //!
 //! * every physical line carries the pid of the process that emitted it, so a
 //!   line can be attributed and `grep`ed for, and
-//! * every physical line is emitted with exactly one `write_all` call, so lines
-//!   are never torn in half by a concurrent writer.
+//! * every record is emitted with one `write_all` call, or every line of it for
+//!   a record too long to be written atomically, so lines are never torn in
+//!   half by a concurrent writer.
 //!
 //! `SCCACHE_ERROR_LOG` names a file that log output is appended to instead of
 //! going to stderr.  It is honoured by every process: in client-side mode the
 //! CLI, not the daemon, is where the compile pipeline logs from.  Appends to a
 //! file opened with `O_APPEND` are serialised by the kernel, so a shared file
-//! is safe for concurrent processes as long as each line is one write.
+//! is safe for concurrent processes as long as each line is in one write.
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -134,7 +135,7 @@ pub fn init() {
     builder
         // The pid is read for each record: the daemon forks after this.
         .format(move |buf, record| format_record(buf, record, std::process::id(), millis))
-        .target(env_logger::Target::Pipe(Box::new(LineWriter::new(
+        .target(env_logger::Target::Pipe(Box::new(RecordWriter::new(
             Box::new(Sink),
         ))));
 
@@ -224,54 +225,55 @@ fn write_lines(out: &mut dyn Write, prefix: &str, message: &str) -> io::Result<(
     Ok(())
 }
 
-/// A log sink that issues exactly one `write_all` per physical line.
+/// Atomic writes to a pipe only go up to this many bytes (`PIPE_BUF` on Linux;
+/// POSIX only guarantees 512, but no platform sccache runs on is that small).
+const ATOMIC_WRITE_LEN: usize = 4096;
+
+/// A log sink that writes each record in one `write_all`, or each of its lines
+/// in one if the record is too long for that.
 ///
-/// `env_logger` hands a whole formatted record to its target in a single
-/// `write_all`; this splits that back into lines so that a record spanning
-/// several lines cannot be interleaved line-wise with another process'.  One
-/// `write_all` of a line-sized buffer is a single `write` syscall for both
-/// unbuffered stderr and a regular file, which is what keeps concurrent
-/// writers from tearing each other's lines.
-struct LineWriter {
+/// `env_logger` hands a whole formatted record over and then flushes. One write
+/// of it keeps a multi-line record together, but a write to a pipe is only
+/// atomic up to [`ATOMIC_WRITE_LEN`]: past that, a concurrent writer can tear a
+/// line in half, so a longer record is written line by line instead.
+struct RecordWriter {
     inner: Box<dyn Write + Send>,
-    /// Bytes of an as-yet unterminated line.
+    /// The record being written, until the flush that ends it.
     pending: Vec<u8>,
 }
 
-impl LineWriter {
+impl RecordWriter {
     fn new(inner: Box<dyn Write + Send>) -> Self {
-        LineWriter {
+        RecordWriter {
             inner,
             pending: Vec::new(),
         }
     }
 }
 
-impl Write for LineWriter {
+impl Write for RecordWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.pending.extend_from_slice(buf);
-
-        let mut written = 0;
-        while let Some(pos) = self.pending[written..].iter().position(|&b| b == b'\n') {
-            let end = written + pos + 1;
-            self.inner.write_all(&self.pending[written..end])?;
-            written = end;
-        }
-        self.pending.drain(..written);
-
         Ok(buf.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        // `env_logger` flushes after every record, by which point the formatter
-        // has always terminated the last line; a leftover only happens if a
-        // record was written by some other means.  Terminate it rather than
-        // letting the next line be appended to it.
-        if !self.pending.is_empty() {
-            self.pending.push(b'\n');
-            self.inner.write_all(&self.pending)?;
-            self.pending.clear();
+        if self.pending.is_empty() {
+            return self.inner.flush();
         }
+        // The formatter always terminates the last line; terminate a record
+        // written by other means rather than letting the next one join it.
+        if !self.pending.ends_with(b"\n") {
+            self.pending.push(b'\n');
+        }
+        if self.pending.len() <= ATOMIC_WRITE_LEN {
+            self.inner.write_all(&self.pending)?;
+        } else {
+            for line in self.pending.split_inclusive(|&b| b == b'\n') {
+                self.inner.write_all(line)?;
+            }
+        }
+        self.pending.clear();
         self.inner.flush()
     }
 }
@@ -360,25 +362,33 @@ mod tests {
     }
 
     #[test]
-    fn one_write_per_line() {
+    fn one_write_per_record() {
         let recorder = Recorder::default();
-        let mut writer = LineWriter::new(Box::new(recorder.clone()));
+        let mut writer = RecordWriter::new(Box::new(recorder.clone()));
         // A whole multi-line record, as `env_logger` would hand it over.
         writer.write_all(b"one\ntwo\nthree\n").unwrap();
+        assert!(recorder.writes().is_empty());
         writer.flush().unwrap();
-        assert_eq!(recorder.writes(), vec!["one\n", "two\n", "three\n"]);
+        assert_eq!(recorder.writes(), vec!["one\ntwo\nthree\n"]);
     }
 
     #[test]
-    fn partial_lines_are_held_until_terminated() {
+    fn long_records_are_written_line_by_line() {
         let recorder = Recorder::default();
-        let mut writer = LineWriter::new(Box::new(recorder.clone()));
-        writer.write_all(b"beginning").unwrap();
-        assert!(recorder.writes().is_empty());
-        writer.write_all(b" and end\nnext").unwrap();
-        assert_eq!(recorder.writes(), vec!["beginning and end\n"]);
-        // Flush terminates whatever is left over.
+        let mut writer = RecordWriter::new(Box::new(recorder.clone()));
+        let line = format!("{}\n", "x".repeat(ATOMIC_WRITE_LEN / 2));
+        writer.write_all(line.repeat(3).as_bytes()).unwrap();
         writer.flush().unwrap();
-        assert_eq!(recorder.writes(), vec!["beginning and end\n", "next\n"]);
+        assert_eq!(recorder.writes(), vec![line.clone(), line.clone(), line]);
+    }
+
+    #[test]
+    fn unterminated_records_are_terminated() {
+        let recorder = Recorder::default();
+        let mut writer = RecordWriter::new(Box::new(recorder.clone()));
+        writer.write_all(b"beginning").unwrap();
+        writer.write_all(b" and end").unwrap();
+        writer.flush().unwrap();
+        assert_eq!(recorder.writes(), vec!["beginning and end\n"]);
     }
 }
