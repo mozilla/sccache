@@ -3851,6 +3851,29 @@ LLVM version: 6.0",
             assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
         }
     }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_single_compile_command_uses_only_client_env() {
+        let runtime = Runtime::new().unwrap();
+        let storage = Arc::new(MockStorage::new(None, false));
+        let service: server::SccacheService<ProcessCommandCreator> =
+            server::SccacheService::mock_with_storage(storage, runtime.handle().clone());
+        let client = crate::jobserver::Client::new_num(1);
+        let creator = <ProcessCommandCreator as CommandCreator>::new(&client);
+        let cmd = SingleCompileCommand {
+            executable: "/usr/bin/env".into(),
+            arguments: vec![],
+            env_vars: vec![("SCCACHE_TEST_ONLY".into(), "1".into())],
+            cwd: std::env::temp_dir(),
+            share_jobserver: false,
+        };
+        let output = runtime.block_on(cmd.execute(&service, &creator)).unwrap();
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            "SCCACHE_TEST_ONLY=1\n"
+        );
+    }
 }
 
 #[cfg(test)]
