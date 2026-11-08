@@ -13,7 +13,7 @@
 use crate::cache::CacheMode;
 use crate::cache::GetPathResult;
 use crate::cache::cache_io::{Cache, CacheRead, CacheWrite};
-use crate::cache::storage::{CacheStorage, PreprocessorCacheStorage, Storage};
+use crate::cache::storage::{CacheStorage, PreprocessorCacheStorage};
 use crate::client::ServerConnection;
 use crate::compiler::PreprocessorCacheEntry;
 use crate::config::PreprocessorCacheModeConfig;
@@ -214,6 +214,3 @@ impl PreprocessorCacheStorage for IpcStorage {
         }
     }
 }
-
-#[async_trait]
-impl Storage for IpcStorage {}
