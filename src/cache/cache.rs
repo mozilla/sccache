@@ -31,8 +31,7 @@ use crate::cache::redis::RedisCache;
 #[cfg(feature = "s3")]
 use crate::cache::s3::S3Cache;
 #[cfg(any_cache_remote)]
-use crate::cache::storage::RemoteStorage;
-use crate::cache::storage::Storage;
+use crate::cache::storage::{RemoteStorage, Storage};
 #[cfg(feature = "webdav")]
 use crate::cache::webdav::WebdavCache;
 use crate::config::Config;
@@ -298,6 +297,7 @@ pub fn storage_from_config(
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::cache::CacheStorage;
     use crate::{
         PreprocessorCacheEntry, cache::CacheMode, cache::CacheWrite, config::CacheModeConfig,
     };
@@ -487,7 +487,6 @@ mod test {
     #[cfg(feature = "redis")]
     fn test_operator_storage_redis_with_read_only() {
         // Create Redis operator
-
         use crate::test::utils::Waiter;
         let operator = crate::cache::redis::RedisCache::build_single(
             "redis://localhost:6379",

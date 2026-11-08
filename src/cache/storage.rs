@@ -373,9 +373,11 @@ impl CacheStorage for RemoteStorage {
     }
 }
 
+#[cfg(any_cache_remote)]
 #[async_trait]
 impl PreprocessorCacheStorage for RemoteStorage {}
 
+#[cfg(any_cache_remote)]
 #[async_trait]
 impl Storage for RemoteStorage {}
 
