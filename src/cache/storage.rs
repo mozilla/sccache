@@ -175,6 +175,8 @@ pub trait PreprocessorCacheStorage: Send + Sync {
 #[async_trait]
 pub trait Storage: CacheStorage + PreprocessorCacheStorage {}
 
+impl<T: CacheStorage + PreprocessorCacheStorage> Storage for T {}
+
 /// Wrapper for opendal::Operator that adds basedirs support
 #[cfg(any_cache_remote)]
 pub struct RemoteStorage {
@@ -376,10 +378,6 @@ impl CacheStorage for RemoteStorage {
 #[cfg(any_cache_remote)]
 #[async_trait]
 impl PreprocessorCacheStorage for RemoteStorage {}
-
-#[cfg(any_cache_remote)]
-#[async_trait]
-impl Storage for RemoteStorage {}
 
 #[cfg(test)]
 mod test {

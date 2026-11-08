@@ -295,9 +295,6 @@ impl CacheStorage for InMemoryStorage {
 #[async_trait]
 impl PreprocessorCacheStorage for InMemoryStorage {}
 
-#[async_trait]
-impl Storage for InMemoryStorage {}
-
 #[test]
 fn test_multilevel_raw_hit_reads_backend_once() {
     let runtime = RuntimeBuilder::new_multi_thread()
@@ -1106,9 +1103,6 @@ impl CacheStorage for CheckFailingStorage {
 #[async_trait]
 impl PreprocessorCacheStorage for CheckFailingStorage {}
 
-#[async_trait]
-impl Storage for CheckFailingStorage {}
-
 #[test]
 fn test_unavailable_l1_does_not_block_healthy_l0() {
     let runtime = RuntimeBuilder::new_current_thread()
@@ -1405,9 +1399,6 @@ impl PreprocessorCacheStorage for FailingStorage {
     }
 }
 
-#[async_trait]
-impl Storage for FailingStorage {}
-
 #[test]
 fn test_put_mode_ignore() {
     let runtime = RuntimeBuilder::new_multi_thread()
@@ -1657,9 +1648,6 @@ impl CacheStorage for NoRawStorage {
 
 #[async_trait]
 impl PreprocessorCacheStorage for NoRawStorage {}
-
-#[async_trait]
-impl Storage for NoRawStorage {}
 
 #[test]
 fn test_multilevel_get_raw_finds_first_hit() {

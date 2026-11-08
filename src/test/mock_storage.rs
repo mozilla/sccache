@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cache::{Cache, CacheStorage, CacheWrite, PreprocessorCacheStorage, Storage};
+use crate::cache::{Cache, CacheStorage, CacheWrite, PreprocessorCacheStorage};
 use crate::config::PreprocessorCacheModeConfig;
 use crate::errors::*;
 use async_trait::async_trait;
@@ -96,6 +96,3 @@ impl PreprocessorCacheStorage for MockStorage {
         }
     }
 }
-
-#[async_trait]
-impl Storage for MockStorage {}
