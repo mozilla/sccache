@@ -80,6 +80,21 @@ fn test_s3_invalid_args() -> Result<()> {
     Ok(())
 }
 
+/// `--monitor-interval` only makes sense with `--monitor`; it is rejected
+/// before any server is contacted.
+#[test]
+fn test_monitor_interval_requires_monitor() -> Result<()> {
+    Command::new(SCCACHE_BIN.as_os_str())
+        .args(["--show-stats", "--monitor-interval", "2"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains(
+            "`--monitor-interval` can only be used with `--monitor`",
+        ));
+
+    Ok(())
+}
+
 /// An empty entry file reads as a valid, empty entry.
 fn write_empty_preprocessor_entry(cache_dir: &Path) -> Result<String> {
     let entries_dir = cache_dir.join("preprocessor");

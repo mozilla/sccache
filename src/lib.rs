@@ -43,6 +43,8 @@ pub mod dist;
 mod jobserver;
 pub mod lru_disk_cache;
 mod mock_command;
+#[cfg(feature = "monitor")]
+mod monitor;
 mod net;
 mod protocol;
 pub mod server;
