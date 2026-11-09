@@ -3119,6 +3119,41 @@ fn server_toml_parse() {
 }
 
 #[test]
+#[cfg(feature = "dist-server")]
+fn scheduler_toml_parse_check_server_ip_default() {
+    const CONFIG_STR: &str = r#"
+    public_addr = "192.168.1.1:10600"
+
+    [client_auth]
+    type = "DANGEROUSLY_INSECURE"
+
+    [server_auth]
+    type = "DANGEROUSLY_INSECURE"
+    "#;
+
+    let config: scheduler::Config = toml::from_str(CONFIG_STR).expect("Is valid toml.");
+    assert!(config.check_server_ip);
+}
+
+#[test]
+#[cfg(feature = "dist-server")]
+fn scheduler_toml_parse_check_server_ip_disabled() {
+    const CONFIG_STR: &str = r#"
+    public_addr = "192.168.1.1:10600"
+    check_server_ip = false
+
+    [client_auth]
+    type = "DANGEROUSLY_INSECURE"
+
+    [server_auth]
+    type = "DANGEROUSLY_INSECURE"
+    "#;
+
+    let config: scheduler::Config = toml::from_str(CONFIG_STR).expect("Is valid toml.");
+    assert!(!config.check_server_ip);
+}
+
+#[test]
 fn human_units_parse() {
     const CONFIG_STR: &str = r#"
 [dist]
