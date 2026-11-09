@@ -1149,7 +1149,16 @@ fn fold_env_vars_or_split_into_exe_and_args(
     let env_path = env_vars
         .iter()
         .chain(inherited_env_vars)
-        .find(|(k, _)| k == "PATH")
+        .find(|(k, _)| {
+            #[cfg(windows)]
+            {
+                k.eq_ignore_ascii_case("PATH")
+            }
+            #[cfg(not(windows))]
+            {
+                k == "PATH"
+            }
+        })
         .map(|(_, p)| p);
 
     let exe = which_in(exe, env_path, cwd)?;
