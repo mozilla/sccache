@@ -472,8 +472,7 @@ impl DistSystem {
                     env::set_var("SCCACHE_LOG", "sccache=trace");
                 }
                 env_logger::try_init().unwrap();
-                server.start().unwrap();
-                unreachable!();
+                match server.start().unwrap() {}
             }
         };
 
