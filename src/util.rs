@@ -41,6 +41,71 @@ pub const BASE64_URL_SAFE_ENGINE: base64::engine::GeneralPurpose =
 
 pub const HASH_BUFFER_SIZE: usize = 128 * 1024;
 
+const TEMP_ENTRY_PREFIX: &str = "sccache-entry-";
+
+/// Whether `path` is a file [`write_temp_entry`] could have written.
+fn is_temp_entry(path: &Path) -> bool {
+    path.parent() == Some(std::env::temp_dir().as_path())
+        && path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with(TEMP_ENTRY_PREFIX))
+}
+
+/// Remove the files [`write_temp_entry`] left behind more than `age` ago, for a
+/// process that died or a response that could not be sent before the other end
+/// read them. The age keeps it from removing a file another daemon is still
+/// handing over.
+pub fn remove_stale_temp_entries(age: Duration) {
+    let Ok(dir) = std::fs::read_dir(std::env::temp_dir()) else {
+        return;
+    };
+    let limit = SystemTime::now().checked_sub(age);
+    for entry in dir.flatten() {
+        let path = entry.path();
+        let stale = entry
+            .metadata()
+            .and_then(|meta| meta.modified())
+            .is_ok_and(|modified| limit.is_some_and(|limit| modified < limit));
+        if stale && is_temp_entry(&path) {
+            match std::fs::remove_file(&path) {
+                Ok(()) => debug!("removed the stale cache entry file {}", path.display()),
+                Err(e) => warn!("failed to remove {}: {e}", path.display()),
+            }
+        }
+    }
+}
+
+/// Write a cache entry too large for a message to a file of its own, for the
+/// other side of the connection to [`take_temp_entry`].
+pub fn write_temp_entry(data: &[u8]) -> Result<PathBuf> {
+    let mut file = tempfile::Builder::new()
+        .prefix(TEMP_ENTRY_PREFIX)
+        .tempfile()
+        .context("failed to create a file for a cache entry")?;
+    file.write_all(data)
+        .context("failed to write a cache entry to a file")?;
+    let (_, path) = file
+        .keep()
+        .context("failed to keep the file of a cache entry")?;
+    Ok(path)
+}
+
+/// Read and remove the file [`write_temp_entry`] wrote.
+///
+/// The path comes from the other end of the connection, so anything that does
+/// not look like one of those files is refused rather than read and removed.
+pub fn take_temp_entry(path: &Path) -> Result<Vec<u8>> {
+    if !is_temp_entry(path) {
+        bail!("{} is not a cache entry file", path.display());
+    }
+    let data = fs::read(path);
+    if let Err(e) = fs::remove_file(path) {
+        warn!("failed to remove {}: {e}", path.display());
+    }
+    data.with_context(|| format!("failed to read the cache entry in {}", path.display()))
+}
+
 /// Reads `reader` to the end, passing each chunk read to `f`.
 ///
 /// Goes through `std::io::copy`, whose buffer lives on the stack and is not
@@ -1689,8 +1754,8 @@ pub fn resolve_compiler_avoiding_wrapper(
 #[cfg(test)]
 mod tests {
     use super::{
-        Digest, OsStrExt, TimeMacroFinder, exit_status_from_code, hash_all_externs,
-        resolve_compiler_avoiding_wrapper,
+        Digest, OsStrExt, TEMP_ENTRY_PREFIX, TimeMacroFinder, exit_status_from_code,
+        hash_all_externs, resolve_compiler_avoiding_wrapper, take_temp_entry, write_temp_entry,
     };
     use crate::test::utils::single_threaded_runtime;
     use object::write::Object as WriteObject;
@@ -1698,6 +1763,32 @@ mod tests {
     use std::env::consts::DLL_EXTENSION;
     use std::ffi::{OsStr, OsString};
     use std::path::Path;
+
+    #[test]
+    fn test_take_temp_entry_only_takes_entry_files() {
+        let path = write_temp_entry(b"entry").unwrap();
+        assert_eq!(take_temp_entry(&path).unwrap(), b"entry");
+        assert!(!path.exists(), "the entry file was not removed");
+
+        // Anything else the other end of the connection names is left alone.
+        let other = tempfile::Builder::new()
+            .prefix("not-an-entry-")
+            .tempfile()
+            .unwrap();
+        assert!(take_temp_entry(other.path()).is_err());
+        assert!(
+            other.path().exists(),
+            "a file that is not an entry was removed"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let elsewhere = dir.path().join(format!("{TEMP_ENTRY_PREFIX}x"));
+        std::fs::write(&elsewhere, b"x").unwrap();
+        assert!(take_temp_entry(&elsewhere).is_err());
+        assert!(
+            elsewhere.exists(),
+            "a file outside the temp dir was removed"
+        );
+    }
 
     fn object_with(metadata: &[u8], code: &[u8]) -> Vec<u8> {
         let mut obj = WriteObject::new(BinaryFormat::Elf, Architecture::X86_64, Endianness::Little);

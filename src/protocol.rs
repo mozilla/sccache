@@ -4,6 +4,7 @@ use crate::config::PreprocessorCacheModeConfig;
 use crate::server::{DistInfo, ServerInfo, ServerStats};
 use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
+use std::path::PathBuf;
 
 /// A client request.
 #[derive(Serialize, Deserialize, Debug)]
@@ -29,6 +30,9 @@ pub enum Request {
     StorageGetRaw { key: String },
     /// Store raw (zip) bytes under `key`.
     StoragePutRaw { key: String, data: Vec<u8> },
+    /// Store the raw (zip) bytes in the file at `path` under `key`, for an
+    /// entry too large to send as `StoragePutRaw`. The daemon removes the file.
+    StoragePutRawFile { key: String, path: PathBuf },
     /// Retrieve the preprocessor cache entry for `key`.
     StorageGetPreprocessorEntry { key: String },
     /// Store or overwrite the preprocessor cache entry for `key`.
@@ -60,6 +64,10 @@ pub enum Response {
     StorageGetPath(GetPathResult),
     /// Response for `Request::StorageGetRaw`: zip bytes on hit, `None` on miss.
     StorageGetRaw(Option<Vec<u8>>),
+    /// Response for `Request::StorageGetRaw` on a hit too large to send as
+    /// `StorageGetRaw`: the file holding the raw (zip) bytes, which the client
+    /// removes.
+    StorageGetRawFile(PathBuf),
     /// Response for `Request::StoragePutRaw`.
     StoragePutRaw(Result<(), String>),
     /// Response for `Request::StorageGetPreprocessorEntry`.
@@ -126,4 +134,7 @@ pub struct StorageHandshakeInfo {
     pub preprocessor_cache_mode_config: PreprocessorCacheModeConfig,
     pub cache_mode: CacheMode,
     pub max_size: Option<u64>,
+    /// The daemon's transport frame limit, so that a client can avoid sending a
+    /// request the daemon would have to drop the connection over.
+    pub max_frame_length: usize,
 }

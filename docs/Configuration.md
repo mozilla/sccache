@@ -197,9 +197,9 @@ Note that some env variables may need sccache server restart to take effect.
 * `SCCACHE_DIST_CLIENT_CACHE_DIR` distributed toolchain cache directory; overrides `[dist].cache_dir` from the configuration file.
 * `SCCACHE_IDLE_TIMEOUT` how long the local daemon process waits for more client requests before exiting, in seconds. Set to `0` to run sccache permanently
 * `SCCACHE_STARTUP_NOTIFY` specify a path to a socket which will be used for server completion notification
-* `SCCACHE_MAX_FRAME_LENGTH` how much data can be transferred between client and server
+* `SCCACHE_MAX_FRAME_LENGTH` the largest single message that can be transferred between client and server, in bytes. Defaults to 1 GiB, and is capped at 4 GiB by the wire format. In client-side mode one message carries a whole cache entry, and an entry over the limit goes through a temporary file instead. The daemon's value is the one that counts, so restart the server after changing it.
 * `SCCACHE_NO_DAEMON` set to `1` to disable putting the server to the background
-* `SCCACHE_CLIENT_SIDE` set to `1` to run the compile in the client process and use the daemon only as a gateway to the cache storage (see [the architecture doc](Architecture.md#client-side-mode-sccache_client_side)). This is the recommended mode and is expected to become the only supported configuration in the future. Ignored when `SCCACHE_LOG` or distributed compilation is in use.
+* `SCCACHE_CLIENT_SIDE` set to `1` to run the compile in the client process and use the daemon only as a gateway to the cache storage (see [the architecture doc](Architecture.md#client-side-mode-sccache_client_side)). This is the recommended mode and is expected to become the only supported configuration in the future. Ignored when distributed compilation is in use.
 * `SCCACHE_CACHE_READ_TIMEOUT_SECS` how long, in seconds, a cache lookup may take before sccache gives up on it and compiles locally. Defaults to `60`. A lower value helps when the storage backend is slow or unresponsive rather than failing outright, for example in CI.
 * `SCCACHE_SKIP_CACHE_CHECK` set to `true`, `on`, or `1` to skip remote cache capability checks. The configured backend `rw_mode` is used without reading or writing `.sccache_check`. The user is responsible for ensuring that the cache is reachable and grants the configured access.
 * `SCCACHE_CACHE_MULTIARCH` set (to any value, even `0`) to enable caching of builds with several different `-arch` flags, which are not cached by default. See [the caching doc](Caching.md#cc-compiler).
@@ -208,7 +208,8 @@ Note that some env variables may need sccache server restart to take effect.
   - This option will only applied to newly compressed cache and don't affect existing cache.
   - If you want to be apply to all cache, you should reset cache and make new cache.
 * `SCCACHE_LOG_MILLIS` when set (to any value), enables millisecond precision timestamps in log output instead of the default second precision.
-* `SCCACHE_ERROR_LOG` path to a file where sccache will log errors
+* `SCCACHE_ERROR_LOG` path to a file that log output is appended to instead of being written to stderr. Honored by every sccache process, and safe to share between them: each line is appended with a single write, and carries the pid of the process that emitted it. Use an absolute path — a relative one is resolved against each process' working directory, which under a build means several different files. The daemon additionally redirects its stderr to this file, so that panics and backtraces are captured too.
+  - To give each process its own file instead of sharing one, put `%p` in the path (it is replaced with the pid, e.g. `SCCACHE_ERROR_LOG=/tmp/sccache.%p.log`), or point the variable at an existing directory, in which case each process writes `sccache.<pid>.log` inside it.
 * `SCCACHE_LOG` log level, accepting standard env_logger values, see [env_logger documentation](https://docs.rs/env_logger/latest/env_logger/#enabling-logging) for details
 
 ### cache configs

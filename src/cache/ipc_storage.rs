@@ -66,6 +66,23 @@ impl IpcStorage {
             .await
             .context("spawn_blocking panicked")?
     }
+
+    /// Refuse a payload the daemon's transport would reject.
+    ///
+    /// A frame over the daemon's limit doesn't just fail its own request: the
+    /// codec can't resynchronise, so the daemon drops the connection and every
+    /// later RPC on it — including the stats hand-off — goes with it. Failing
+    /// here costs one uncached entry and leaves the connection usable.
+    fn check_frame_size(&self, what: &str, len: usize) -> Result<()> {
+        let limit = self.handshake.max_frame_length;
+        if !crate::server::fits_in_frame(len, limit) {
+            bail!(
+                "{what}: {len} bytes does not fit the daemon's frame limit of {limit}; raise \
+                 SCCACHE_MAX_FRAME_LENGTH and restart the server to cache entries this large"
+            );
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -116,17 +133,46 @@ impl Storage for IpcStorage {
             .await?;
         match resp {
             Response::StorageGetRaw(opt) => Ok(opt.map(Bytes::from)),
+            Response::StorageGetRawFile(path) => {
+                let data = tokio::task::spawn_blocking(move || crate::util::take_temp_entry(&path))
+                    .await
+                    .context("spawn_blocking panicked")??;
+                Ok(Some(data.into()))
+            }
             other => bail!("IpcStorage::get_raw: unexpected response: {other:?}"),
         }
     }
 
     async fn put_raw(&self, key: &str, data: Bytes) -> Result<Duration> {
-        let resp = self
-            .rpc(Request::StoragePutRaw {
+        // An entry the daemon's transport would reject goes through a file.
+        let req = if crate::server::fits_in_frame(data.len(), self.handshake.max_frame_length) {
+            Request::StoragePutRaw {
                 key: key.to_owned(),
                 data: data.to_vec(),
-            })
-            .await?;
+            }
+        } else {
+            let path = tokio::task::spawn_blocking(move || crate::util::write_temp_entry(&data))
+                .await
+                .context("spawn_blocking panicked")??;
+            Request::StoragePutRawFile {
+                key: key.to_owned(),
+                path,
+            }
+        };
+        let file = match &req {
+            Request::StoragePutRawFile { path, .. } => Some(path.clone()),
+            _ => None,
+        };
+        let resp = match self.rpc(req).await {
+            Ok(resp) => resp,
+            Err(e) => {
+                // The daemon removes the file once it gets the request.
+                if let Some(path) = file {
+                    let _ = std::fs::remove_file(path);
+                }
+                return Err(e);
+            }
+        };
         match resp {
             Response::StoragePutRaw(Ok(())) => Ok(Duration::ZERO),
             Response::StoragePutRaw(Err(e)) => bail!("IpcStorage::put_raw: daemon error: {e}"),
@@ -194,6 +240,7 @@ impl Storage for IpcStorage {
         entry
             .serialize_to(&mut buf)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
+        self.check_frame_size("IpcStorage::put_preprocessor_cache_entry", buf.len())?;
         let resp = self
             .rpc(Request::StoragePutPreprocessorEntry {
                 key: key.to_owned(),
