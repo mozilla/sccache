@@ -279,7 +279,9 @@ appropriate `https://` address. The scheduler will verify the server's IP in thi
 configuration by inspecting the `X-Real-IP` header's value, if present. The webserver
 used in this case should be configured to set this header to the appropriate value.
 This verification is enabled by default and can be disabled by setting
-`check_server_ip = false` in the scheduler config.
+`check_server_ip = false` in the scheduler config. Disabling this option will decrease security
+when using JWT authentication, because JWTs contain the IP of the server they should be used with.
+If this is disabled, any stolen JWT could be used from any IP, not just the IP of the original server.
 
 Securing communication with the server is performed automatically - HTTPS certificates
 are generated dynamically on server startup and communicated to the scheduler during
