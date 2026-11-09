@@ -20,6 +20,7 @@ use base64::prelude::BASE64_STANDARD;
 use opendal::Operator;
 use opendal::{OperationContext, services::Gcs};
 use opendal_layer_logging::LoggingLayer;
+use reqsign_google::{FileCredentialProvider, ServiceAccountTokenCredentialProvider};
 use serde::Deserialize;
 use url::Url;
 
@@ -59,9 +60,21 @@ impl GCSCache {
             .ok()
             .filter(|s| !s.is_empty());
         if let Some(path) = cred_path.or(env_cred_path.as_deref()) {
-            builder = match credential_with_default_format(path) {
-                Some(credential) => builder.credential(&credential),
-                None => builder.credential_path(path),
+            builder = if is_service_account_key(path) {
+                // Given the key, reqsign exchanges it for a new token on every
+                // request (https://github.com/apache/reqsign/issues/931): hand
+                // it the token instead, which it keeps until it expires.
+                builder.credential_provider(
+                    ServiceAccountTokenCredentialProvider::from_provider(
+                        FileCredentialProvider::new(path),
+                    )
+                    .with_scope(rw_to_scope(rw_mode)),
+                )
+            } else {
+                match credential_with_default_format(path) {
+                    Some(credential) => builder.credential(&credential),
+                    None => builder.credential_path(path),
+                }
             };
         }
 
@@ -84,6 +97,13 @@ impl GCSCache {
             .layer(LoggingLayer::default());
         Ok(op)
     }
+}
+
+fn is_service_account_key(path: &str) -> bool {
+    std::fs::read(path)
+        .ok()
+        .and_then(|content| serde_json::from_slice::<serde_json::Value>(&content).ok())
+        .is_some_and(|credential| credential["type"] == "service_account")
 }
 
 // Default omitted file/URL formats to text per AIP-4117 until OpenDAL ships
@@ -317,6 +337,104 @@ mod tests {
                 credential_with_default_format(path.to_str().unwrap()).is_none(),
                 "{credential}"
             );
+        }
+    }
+
+    struct ServiceAccountTransport {
+        scope: &'static str,
+        exchanges: Arc<AtomicUsize>,
+    }
+
+    impl HttpTransport for ServiceAccountTransport {
+        async fn fetch(
+            &self,
+            req: http::Request<Buffer>,
+        ) -> opendal::Result<http::Response<HttpBody>> {
+            let (status, body) = match req.uri().to_string().as_str() {
+                "https://oauth2.googleapis.com/token" => {
+                    assert_eq!(req.method(), http::Method::POST);
+                    let body = req.body().to_bytes();
+                    let form: HashMap<_, _> = url::form_urlencoded::parse(&body).collect();
+                    assert_eq!(
+                        form["grant_type"],
+                        "urn:ietf:params:oauth:grant-type:jwt-bearer"
+                    );
+                    let claims = form["assertion"].split('.').nth(1).unwrap();
+                    let claims: serde_json::Value = serde_json::from_slice(
+                        &base64::prelude::BASE64_URL_SAFE_NO_PAD
+                            .decode(claims)
+                            .unwrap(),
+                    )
+                    .unwrap();
+                    assert_eq!(claims["scope"], self.scope);
+                    self.exchanges.fetch_add(1, Ordering::SeqCst);
+                    (
+                        200,
+                        json!({
+                            "access_token": "test-access-token",
+                            "token_type": "Bearer",
+                            "expires_in": 3600
+                        })
+                        .to_string(),
+                    )
+                }
+                url if url.starts_with("https://storage.googleapis.com/") => {
+                    assert_eq!(req.headers()["authorization"], "Bearer test-access-token");
+                    (404, String::new())
+                }
+                url => panic!("unexpected request, including credential fallback: {url}"),
+            };
+            let size = body.len() as u64;
+            let stream = futures::stream::iter([Ok(Buffer::from(body))]);
+            Ok(http::Response::builder()
+                .status(status)
+                .body(HttpBody::new(stream, Some(size)))
+                .unwrap())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_service_account_key_exchanged_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("service-account.json");
+        std::fs::write(
+            &key_path,
+            json!({
+                "type": "service_account",
+                "client_email": "sccache@test.iam.gserviceaccount.com",
+                "private_key": include_str!("../../tests/test-service-account-key.pem"),
+            })
+            .to_string(),
+        )
+        .unwrap();
+        for mode in [CacheMode::ReadOnly, CacheMode::ReadWrite] {
+            for from_env in [false, true] {
+                let (env_path, cred_path) = if from_env {
+                    (Some(key_path.clone()), None)
+                } else {
+                    (None, key_path.to_str())
+                };
+                let exchanges = Arc::new(AtomicUsize::new(0));
+                let op = temp_env::with_var("GOOGLE_APPLICATION_CREDENTIALS", env_path, || {
+                    GCSCache::build("test-bucket", "", cred_path, None, mode, None)
+                })
+                .unwrap()
+                .with_context(
+                    OperationContext::new().with_http_transport(HttpTransporter::new(
+                        ServiceAccountTransport {
+                            scope: rw_to_scope(mode),
+                            exchanges: exchanges.clone(),
+                        },
+                    )),
+                );
+
+                for _ in 0..2 {
+                    let err = op.read(".sccache_check").await.unwrap_err();
+                    assert_eq!(err.kind(), opendal::ErrorKind::NotFound, "{err:?}");
+                }
+                // Repeated requests reuse the exchanged access token.
+                assert_eq!(exchanges.load(Ordering::SeqCst), 1);
+            }
         }
     }
 

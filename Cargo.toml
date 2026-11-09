@@ -60,7 +60,7 @@ flate2 = { version = "1.0", optional = true, default-features = false, features 
   "rust_backend",
 ] }
 fs-err = "3"
-futures = "0.3"
+futures = "0.3.32"
 gzp = { version = "2", default-features = false, features = ["deflate_rust"] }
 http = "1.0"
 http-body-util = { version = "0.1", optional = true }
@@ -87,12 +87,12 @@ opendal-layer-retry = { version = "0.58.1", optional = true }
 openssl = { version = "0.10.75", optional = true }
 rand = "0.8.4"
 regex = "1.10.3"
+reqsign-google = { version = "3.2", optional = true }
 reqwest = { version = "0.13", features = [
   "json",
   "blocking",
   "stream",
   "rustls",
-  "hickory-dns",
 ], optional = true }
 semver = "1.0"
 serde = { version = "1.0", features = ["derive"] }
@@ -101,7 +101,7 @@ sha2 = { version = "0.10.8", optional = true }
 shlex = "2.0.1"
 strip-ansi-escapes = "0.2"
 tar = "0.4.45"
-tempfile = "3"
+tempfile = "3.20"
 tokio = { version = "1", features = [
   "rt-multi-thread",
   "io-util",
@@ -147,11 +147,15 @@ cc = "1.9"
 chrono = "0.4.42"
 divan = { package = "codspeed-divan-compat", version = "4" }
 filetime = "0.2"
+object = { version = "0.37", features = ["write"] }
 predicates = "=3.1.0"
 serial_test = "3.1"
 temp-env = "0.3.6"
 test-case = "3.3.1"
-thirtyfour = "0.36"
+thirtyfour = { version = "0.38.1", default-features = false, features = [
+  "reqwest",
+  "rustls",
+] }
 
 [target.'cfg(unix)'.dependencies]
 daemonix = "0.1"
@@ -201,6 +205,7 @@ gcs = [
   "opendal/services-gcs",
   "opendal-layer-logging",
   "opendal-http-transport-reqwest",
+  "reqsign-google",
   "url",
   "reqwest",
 ]
@@ -289,7 +294,6 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(pgo_training)'] }
 cloned_instead_of_copied = "warn"
 cloned_ref_to_slice_refs = "warn"
 explicit_into_iter_loop = "warn"
-from_iter_instead_of_collect = "warn"
 implicit_clone = "warn"
 manual_string_new = "warn"
 ptr_as_ptr = "warn"

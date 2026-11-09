@@ -1466,13 +1466,28 @@ impl Iterator for ExpandIncludeFile<'_> {
     }
 }
 
-/// Reads the text stream as a unicode buffer, prioritizing UTF-8, UTF-16 (big and little endian), and falling back on ISO 8859-1.
+#[cfg(windows)]
+fn decode_with_codepage(codepage: u32, buf: &[u8]) -> io::Result<String> {
+    use windows_sys::Win32::Globalization::MB_ERR_INVALID_CHARS;
+
+    let wide = crate::util::multi_byte_to_wide_char(codepage, MB_ERR_INVALID_CHARS, buf)?;
+    String::from_utf16(&wide).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+}
+
+/// Reads text with a UTF-8 or UTF-16 BOM; without a BOM, uses the Windows ANSI code page
+/// (GetACP) on Windows and Windows-1252 on other platforms.
 fn read_text<R>(reader: &mut R) -> io::Result<String>
 where
     R: Read,
 {
     let mut buf = Vec::new();
     reader.read_to_end(&mut buf)?;
+
+    // Without a BOM, cl.exe reads response files in the system ANSI code page.
+    #[cfg(windows)]
+    if encoding_rs::Encoding::for_bom(&buf).is_none() {
+        return decode_with_codepage(windows_sys::Win32::Globalization::CP_ACP, &buf);
+    }
 
     let (result, _, has_error) = encoding_rs::WINDOWS_1252.decode(&buf);
 
@@ -3363,6 +3378,24 @@ mod test {
     }
 
     #[test]
+    #[cfg(windows)]
+    fn test_responsefile_decode_with_codepage_932() {
+        // `-ID:\tmp\depbug\日本語` encoded as Shift-JIS (code page 932), no BOM
+        let content = b"-ID:\\tmp\\depbug\\\x93\xfa\x96\x7b\x8c\xea";
+        assert_eq!(
+            decode_with_codepage(932, content).unwrap(),
+            r"-ID:\tmp\depbug\日本語"
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_responsefile_decode_with_codepage_932_invalid_sequence() {
+        assert!(decode_with_codepage(932, b"\x82").is_err());
+    }
+
+    #[test]
+    #[cfg(not(windows))]
     fn test_responsefile_encoding_win1252() {
         let td = tempfile::Builder::new()
             .prefix("sccache")
@@ -3408,6 +3441,15 @@ mod test {
         assert!(preprocessor_args.is_empty());
         assert!(common_args.is_empty());
         assert!(!msvc_show_includes);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_responsefile_encoding_win1252_windows() {
+        assert_eq!(
+            decode_with_codepage(1252, b"-c foo\x80.c -o foo.o").unwrap(),
+            "-c foo€.c -o foo.o"
+        );
     }
 
     #[test]
