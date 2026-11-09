@@ -473,7 +473,7 @@ impl DistSystem {
                 }
                 env_logger::try_init().unwrap();
                 server.start().unwrap();
-                unreachable();
+                unreachable!();
             }
         };
 
