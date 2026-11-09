@@ -243,15 +243,8 @@ fn create_server_token(server_id: ServerId, auth_token: &str) -> String {
 #[cfg(feature = "dist-server")]
 #[allow(dead_code)]
 pub enum ServerHandle {
-    Container {
-        cid: String,
-        url: HTTPUrl,
-    },
-    #[allow(dead_code)]
-    Process {
-        pid: Pid,
-        url: HTTPUrl,
-    },
+    Container { cid: String, url: HTTPUrl },
+    Process { pid: Pid, url: HTTPUrl },
 }
 
 #[cfg(feature = "dist-server")]
@@ -479,8 +472,8 @@ impl DistSystem {
                     env::set_var("SCCACHE_LOG", "sccache=trace");
                 }
                 env_logger::try_init().unwrap();
-                #[allow(unreachable_code)]
-                match server.start().expect("Server start itself never fails") {}
+                server.start().unwrap();
+                unreachable();
             }
         };
 
