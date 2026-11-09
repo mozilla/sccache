@@ -733,7 +733,7 @@ impl SchedulerIncoming for Scheduler {
             let mut server_details = servers.get_mut(&server_id);
             if let Some(ref mut details) = server_details {
                 details.last_seen = now;
-            };
+            }
 
             match (job_detail.state, job_state) {
                 (JobState::Pending, JobState::Ready) => entry.get_mut().state = job_state,
@@ -741,14 +741,14 @@ impl SchedulerIncoming for Scheduler {
                     if let Some(details) = server_details {
                         details.jobs_unclaimed.remove(&job_id);
                     } else {
-                        warn!("Job state updated, but server is not known to scheduler")
+                        warn!("Job state updated, but server is not known to scheduler");
                     }
-                    entry.get_mut().state = job_state
+                    entry.get_mut().state = job_state;
                 }
                 (JobState::Started, JobState::Complete) => {
                     let (job_id, _) = entry.remove_entry();
                     if let Some(entry) = server_details {
-                        assert!(entry.jobs_assigned.remove(&job_id))
+                        assert!(entry.jobs_assigned.remove(&job_id));
                     } else {
                         bail!("Job was marked as finished, but server is not known to scheduler")
                     }
