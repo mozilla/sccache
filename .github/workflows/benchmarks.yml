@@ -43,10 +43,10 @@ jobs:
         run: cargo codspeed build
 
       - name: Run benchmarks
-        uses: CodSpeedHQ/action@v4
+        uses: CodSpeedHQ/action@v5
         env:
           CODSPEED_LOG: debug
         with:
           mode: ${{ matrix.mode }}
-          run: cargo codspeed run > /dev/null
+          run: cargo codspeed run
           token: ${{ secrets.CODSPEED_TOKEN }}
