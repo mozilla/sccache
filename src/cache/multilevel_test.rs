@@ -2008,8 +2008,12 @@ fn a_fully_stalled_chain_probes_every_level_once_and_misses() {
 #[test]
 fn local_hits_keep_serving_while_the_remote_level_is_in_cooldown() {
     // THE multilevel case from the proposal: L0 (local) holds the entry,
-    // L1 (remote) stalls. After the remote trips its gate, lookups must
-    // still hit L0 — and must not pay the remote's timeout.
+    // L1 (remote) has tripped its gate. Lookups must still hit L0, the
+    // skipped remote must not be contacted, and a lookup that cannot check
+    // L1 reports as a timed-out lookup (the marker), never a clean miss.
+    // The gate state is seeded directly: the process-wide read deadline is
+    // 60 s by default, so no sleep-based stall inside a unit test can trip
+    // a gate through real timeouts.
     let runtime = RuntimeBuilder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -2017,36 +2021,47 @@ fn local_hits_keep_serving_while_the_remote_level_is_in_cooldown() {
         .unwrap();
 
     let l0 = ChainCountingLevel::new();
-    let l1 = ChainSlowLevel::new(Duration::from_millis(300));
+    let l1 = ChainCountingLevel::new();
     l0.put_entry("hit_key");
 
-    let build_slow = |inner: Arc<dyn Storage>| -> Arc<dyn Storage> {
-        Arc::new(crate::cache::backend_backoff::BackoffStorage::with_policy(
-            inner,
-            3,
-            Duration::from_secs(60),
-            crate::cache::backend_backoff::TimeBudget::CallerOwned,
-        ))
-    };
-    let wrapped: Vec<Arc<dyn Storage>> = vec![
-        build_slow(l0.clone() as Arc<dyn Storage>),
-        build_slow(l1.clone() as Arc<dyn Storage>),
-    ];
+    let build_slow =
+        |inner: Arc<dyn Storage>| -> Arc<crate::cache::backend_backoff::BackoffStorage> {
+            Arc::new(crate::cache::backend_backoff::BackoffStorage::with_policy(
+                inner,
+                3,
+                Duration::from_secs(60),
+                crate::cache::backend_backoff::TimeBudget::CallerOwned,
+            ))
+        };
+    let l1_wrapped = build_slow(l1.clone() as Arc<dyn Storage>);
+    // Seed the trip: three consecutive timed-out reads opened L1's gate.
+    for _ in 0..3 {
+        l1_wrapped.gate().record_timed_out();
+    }
+    let wrapped: Vec<Arc<dyn Storage>> =
+        vec![build_slow(l0.clone() as Arc<dyn Storage>), l1_wrapped];
     let storage = MultiLevelStorage::new(wrapped);
 
     runtime.block_on(async {
-        // Three missing keys: each lookup hits the fast L0 miss, then pays
-        // the stalled L1's share. The third timeout trips L1's gate.
+        // Missing keys: L0 misses, L1 is skipped by its open gate — the
+        // lookup reports as a timed-out lookup (marker), never a clean miss.
         for i in 0..3 {
-            match storage.get(&format!("missing_{i}")).await.unwrap() {
-                Cache::Miss => {}
-                _ => panic!("expected a miss for missing_{i}"),
+            match storage.get(&format!("missing_{i}")).await {
+                Err(error) if error.is::<crate::cache::backend_backoff::LevelSkipped>() => {}
+                other => panic!(
+                    "expected the skip marker for missing_{i}, got {:?}",
+                    other.map(|_| ()).map_err(|e| e.to_string())
+                ),
             }
         }
-        assert_eq!(l1.reads(), 3, "the stalled remote was probed three times");
+        assert_eq!(
+            l1.reads.load(Ordering::SeqCst),
+            0,
+            "the gated remote was never contacted"
+        );
 
-        // The gate is now open: a HIT key must be served from L0 instantly,
-        // with no probe reaching L1.
+        // A HIT key must be served from L0 instantly, with no probe
+        // reaching L1 behind it.
         let start = std::time::Instant::now();
         match storage.get("hit_key").await.unwrap() {
             Cache::Hit(_) => {}
@@ -2054,12 +2069,12 @@ fn local_hits_keep_serving_while_the_remote_level_is_in_cooldown() {
         }
         assert!(
             start.elapsed() < Duration::from_millis(50),
-            "the hit must not wait behind the stalled remote: {:?}",
+            "the hit must not wait behind the gated remote: {:?}",
             start.elapsed()
         );
         assert_eq!(
-            l1.reads(),
-            3,
+            l1.reads.load(Ordering::SeqCst),
+            0,
             "the skipped remote level was not contacted again"
         );
     });

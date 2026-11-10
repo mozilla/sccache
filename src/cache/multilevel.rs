@@ -594,6 +594,11 @@ impl Storage for MultiLevelStorage {
         let lookup_start = Instant::now();
         let level_count = self.levels.len();
         let mut probed = Vec::with_capacity(level_count);
+        // Whether any level this lookup could not actually check — a gate
+        // skip or a level that outlasted its budget. The lookup then ends as
+        // a timed-out lookup (the same reporting path the standalone backend
+        // uses), never as a clean miss: the backend was not proven to miss.
+        let mut unchecked = None;
 
         for (idx, level) in self.levels.iter().enumerate() {
             let levels_left = (level_count - idx) as u32;
@@ -635,6 +640,9 @@ impl Storage for MultiLevelStorage {
                     "Cache level {} is in backoff, skipping it for this lookup",
                     idx
                 );
+                unchecked = unchecked.or(Some(anyhow::Error::new(
+                    crate::cache::backend_backoff::LevelSkipped,
+                )));
                 continue;
             }
 
@@ -661,6 +669,9 @@ impl Storage for MultiLevelStorage {
                     idx,
                     start.elapsed()
                 );
+                unchecked = unchecked.or(Some(anyhow::Error::new(
+                    crate::cache::backend_backoff::LevelTimedOut,
+                )));
                 continue;
             }
 
@@ -704,6 +715,15 @@ impl Storage for MultiLevelStorage {
 
         self.record_read_misses(&probed);
 
+        // A lookup that could not check every level reports the way a
+        // timed-out lookup reports (the caller maps the markers to
+        // `MissType::TimedOut`), so the stats keep counting the lookups the
+        // backend never answered — the pre-backoff behavior for a stalled
+        // chain.
+        if let Some(error) = unchecked {
+            return Err(error);
+        }
+
         Ok(Cache::Miss)
     }
 
@@ -715,6 +735,9 @@ impl Storage for MultiLevelStorage {
         let lookup_start = Instant::now();
         let level_count = self.levels.len();
         let mut probed = Vec::with_capacity(level_count);
+        // Same contract as `get`: a lookup that could not actually check a
+        // level is a timed-out lookup, never a clean miss.
+        let mut unchecked = None;
 
         for (idx, level) in self.levels.iter().enumerate() {
             let levels_left = (level_count - idx) as u32;
@@ -741,6 +764,9 @@ impl Storage for MultiLevelStorage {
                         idx,
                         start.elapsed()
                     );
+                    unchecked = unchecked.or(Some(anyhow::Error::new(
+                        crate::cache::backend_backoff::LevelTimedOut,
+                    )));
                     continue;
                 }
             };
@@ -751,6 +777,9 @@ impl Storage for MultiLevelStorage {
                 .is_some_and(|e| e.is::<crate::cache::backend_backoff::LevelSkipped>())
             {
                 debug!("Cache level {} is in backoff, skipping its raw read", idx);
+                unchecked = unchecked.or(Some(anyhow::Error::new(
+                    crate::cache::backend_backoff::LevelSkipped,
+                )));
                 continue;
             }
 
@@ -773,6 +802,9 @@ impl Storage for MultiLevelStorage {
         }
 
         self.record_read_misses(&probed);
+        if let Some(error) = unchecked {
+            return Err(error);
+        }
         Ok(None)
     }
 
