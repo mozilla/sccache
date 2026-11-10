@@ -250,6 +250,10 @@ pub(crate) struct BackoffStorage {
     inner: Arc<dyn Storage>,
     backoff: BackendBackoff,
     budget: TimeBudget,
+    /// Test-only: replaces the process-wide read timeout in Full mode so a
+    /// test can reach the Elapsed arm without racing the LazyLock env read.
+    #[cfg(test)]
+    timeout_override: Option<Duration>,
 }
 
 impl BackoffStorage {
@@ -260,6 +264,8 @@ impl BackoffStorage {
             inner,
             backoff: BackendBackoff::from_env(),
             budget: TimeBudget::CallerOwned,
+            #[cfg(test)]
+            timeout_override: None,
         })
     }
 
@@ -272,6 +278,8 @@ impl BackoffStorage {
             inner,
             backoff: BackendBackoff::from_env(),
             budget: TimeBudget::Full,
+            #[cfg(test)]
+            timeout_override: None,
         })
     }
 
@@ -286,6 +294,24 @@ impl BackoffStorage {
             inner,
             backoff: BackendBackoff::new(threshold, cooldown),
             budget,
+            timeout_override: None,
+        }
+    }
+
+    /// Full mode with an explicit read timeout, so a test can drive the
+    /// wrapper's own Elapsed arm deterministically.
+    #[cfg(test)]
+    pub(crate) fn with_full_policy_and_timeout(
+        inner: Arc<dyn Storage>,
+        threshold: u32,
+        cooldown: Duration,
+        timeout: Duration,
+    ) -> Self {
+        Self {
+            inner,
+            backoff: BackendBackoff::new(threshold, cooldown),
+            budget: TimeBudget::Full,
+            timeout_override: Some(timeout),
         }
     }
 
@@ -314,18 +340,29 @@ impl BackoffStorage {
             backoff: &self.backoff,
             answered: false,
         };
-        let result = match self.budget {
+        // `None` = the read ran out of its time budget (Full mode): the
+        // guard stays armed, so its Drop records the timeout and the
+        // counter is NOT reset. `Some` = the level answered (hit, miss or
+        // fast error): disarm and reset.
+        let outcome = match self.budget {
             TimeBudget::Full => {
-                match tokio::time::timeout(read_timeout(), self.inner.get(key)).await {
-                    Ok(result) => result,
-                    Err(_elapsed) => Err(anyhow::Error::new(LevelTimedOut)),
-                }
+                #[cfg(test)]
+                let budget = self.timeout_override.unwrap_or_else(read_timeout);
+                #[cfg(not(test))]
+                let budget = read_timeout();
+                let outcome = tokio::time::timeout(budget, self.inner.get(key)).await;
+                outcome.ok()
             }
-            TimeBudget::CallerOwned => self.inner.get(key).await,
+            TimeBudget::CallerOwned => Some(self.inner.get(key).await),
         };
-        guard.answered = true;
-        self.backoff.record_response();
-        result
+        match outcome {
+            Some(result) => {
+                guard.answered = true;
+                self.backoff.record_response();
+                result
+            }
+            None => Err(anyhow::Error::new(LevelTimedOut)),
+        }
     }
 
     async fn gated_get_with_raw(&self, key: &str) -> Result<(Cache, Option<Bytes>)> {
@@ -337,18 +374,25 @@ impl BackoffStorage {
             backoff: &self.backoff,
             answered: false,
         };
-        let result = match self.budget {
+        let outcome = match self.budget {
             TimeBudget::Full => {
-                match tokio::time::timeout(read_timeout(), self.inner.get_with_raw(key)).await {
-                    Ok(result) => result,
-                    Err(_elapsed) => Err(anyhow::Error::new(LevelTimedOut)),
-                }
+                #[cfg(test)]
+                let budget = self.timeout_override.unwrap_or_else(read_timeout);
+                #[cfg(not(test))]
+                let budget = read_timeout();
+                let outcome = tokio::time::timeout(budget, self.inner.get_with_raw(key)).await;
+                outcome.ok()
             }
-            TimeBudget::CallerOwned => self.inner.get_with_raw(key).await,
+            TimeBudget::CallerOwned => Some(self.inner.get_with_raw(key).await),
         };
-        guard.answered = true;
-        self.backoff.record_response();
-        result
+        match outcome {
+            Some(result) => {
+                guard.answered = true;
+                self.backoff.record_response();
+                result
+            }
+            None => Err(anyhow::Error::new(LevelTimedOut)),
+        }
     }
 }
 
@@ -742,6 +786,52 @@ mod test {
             Some(_) => {}
             None => panic!("write must reach a gated level"),
         }
+    }
+
+    #[test]
+    fn a_full_mode_timeout_moves_the_gate_and_does_not_reset_it() {
+        // The wrapper's OWN Elapsed arm end-to-end: each timed-out read must
+        // move the gate counter (the guard stays armed on the None path) and
+        // must NOT reset it — a timeout is not an answer. This is the exact
+        // shape a regression broke: an earlier draft reset the counter on
+        // every timeout, so the gate never tripped.
+        let runtime = RuntimeBuilder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let level = SlowMissingLevel::new(Duration::from_millis(500));
+        let storage = BackoffStorage::with_full_policy_and_timeout(
+            level.clone() as Arc<dyn Storage>,
+            3,
+            Duration::from_secs(60),
+            Duration::from_millis(100),
+        );
+
+        runtime.block_on(async {
+            for round in 1..=3 {
+                let result = storage.get("k").await;
+                let err = result.unwrap_err();
+                assert!(
+                    err.is::<LevelTimedOut>(),
+                    "round {round}: the read outlasts the budget"
+                );
+                let state = storage.backoff.state.lock().unwrap();
+                assert_eq!(
+                    state.consecutive_timeouts, round,
+                    "each timeout moves the counter; a timeout never resets it"
+                );
+            }
+            // The gate is open: the next lookup skips without contact.
+            let start = Instant::now();
+            let err = storage.get("k").await.unwrap_err();
+            assert!(err.is::<LevelSkipped>());
+            assert!(start.elapsed() < Duration::from_millis(50));
+        });
+        assert_eq!(
+            level.reads(),
+            3,
+            "the skipped lookup never reached the level"
+        );
     }
 
     /// A waker that does nothing: the cancelled-read test polls a future
