@@ -105,6 +105,21 @@ impl CCompilerImpl for Msvc {
         .await
     }
 
+    fn cached_stdout(
+        &self,
+        parsed_args: &ParsedArguments,
+        stdout: Vec<u8>,
+        preprocessor_stderr: &[u8],
+    ) -> Vec<u8> {
+        if !parsed_args.msvc_show_includes {
+            return stdout;
+        }
+        // Include paths are not part of the cache key, so the entry may come
+        // from a compile in another directory. Report the includes that this
+        // compile's own preprocessor run found instead of the stored ones.
+        replace_show_includes(&stdout, preprocessor_stderr, &self.includes_prefix)
+    }
+
     fn generate_compile_commands<T>(
         &self,
         path_transformer: &mut dist::PathTransformer,
@@ -262,6 +277,37 @@ where
     );
 
     bail!("Failed to detect showIncludes prefix")
+}
+
+fn replace_show_includes(
+    stdout: &[u8],
+    preprocessor_stderr: &[u8],
+    includes_prefix: &str,
+) -> Vec<u8> {
+    let is_include =
+        |line: &[u8]| from_local_codepage(line).is_ok_and(|line| line.starts_with(includes_prefix));
+
+    let current_includes = preprocessor_stderr
+        .split_inclusive(|&b| b == b'\n')
+        .filter(|line| is_include(line))
+        .collect::<Vec<_>>();
+
+    let mut output = Vec::with_capacity(stdout.len());
+    let mut replaced = false;
+    for line in stdout.split_inclusive(|&b| b == b'\n') {
+        if is_include(line) {
+            if !replaced {
+                for include in &current_includes {
+                    output.extend_from_slice(include);
+                }
+                replaced = true;
+            }
+        } else {
+            output.extend_from_slice(line);
+        }
+    }
+
+    if replaced { output } else { stdout.to_vec() }
 }
 
 ArgData! {
@@ -1663,6 +1709,22 @@ mod test {
             detect_showincludes_prefix(&creator, "cl.exe".as_ref(), false, Vec::new(), &pool)
                 .wait()
                 .unwrap()
+        );
+    }
+
+    #[test]
+    fn test_replace_show_includes() {
+        let stdout = b"foo.c\r\nNote: including file: C:\\a\\inc\\h.h\r\nwarning text\r\n";
+        let preprocessor_stderr = b"foo.c\r\nNote: including file: C:\\b\\inc\\h.h\r\n";
+        let includes_prefix = "Note: including file: ";
+        assert_eq!(
+            replace_show_includes(stdout, preprocessor_stderr, includes_prefix),
+            b"foo.c\r\nNote: including file: C:\\b\\inc\\h.h\r\nwarning text\r\n".to_vec()
+        );
+        let stdout = b"foo.c\r\nwarning text\r\n";
+        assert_eq!(
+            replace_show_includes(stdout, preprocessor_stderr, includes_prefix),
+            stdout.to_vec()
         );
     }
 

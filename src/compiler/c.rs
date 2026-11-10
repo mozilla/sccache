@@ -158,6 +158,7 @@ impl ParsedArguments {
 struct CCompilation<I: CCompilerImpl> {
     parsed_args: ParsedArguments,
     is_locally_preprocessed: bool,
+    preprocessor_stderr: Vec<u8>,
     #[cfg(feature = "dist-client")]
     preprocessed_input: Vec<u8>,
     executable: PathBuf,
@@ -204,6 +205,15 @@ pub trait CCompilerImpl: Clone + fmt::Debug + Send + Sync + 'static {
     /// runs one at all.
     fn assembler_digest(&self) -> Option<String> {
         None
+    }
+    /// Adjust the stdout replayed from a cache hit.
+    fn cached_stdout(
+        &self,
+        _parsed_args: &ParsedArguments,
+        stdout: Vec<u8>,
+        _preprocessor_stderr: &[u8],
+    ) -> Vec<u8> {
+        stdout
     }
     /// Determine whether `arguments` are supported by this compiler.
     fn parse_arguments(
@@ -496,7 +506,7 @@ where
             None
         };
 
-        let (preprocessor_output, include_files) = if needs_preprocessing {
+        let (preprocessor_output, preprocessor_stderr, include_files) = if needs_preprocessing {
             if let Some(preprocessor_key) = &preprocessor_key
                 && cache_control == CacheControl::Default
                 && let Some(mut seekable) = storage
@@ -543,6 +553,7 @@ where
                             compilation: Box::new(CCompilation {
                                 parsed_args: self.parsed_args.clone(),
                                 is_locally_preprocessed: false,
+                                preprocessor_stderr: Vec::new(),
                                 #[cfg(feature = "dist-client")]
                                 preprocessed_input: PREPROCESSING_SKIPPED_COMPILE_POISON.to_vec(),
                                 executable: self.executable.clone(),
@@ -640,11 +651,16 @@ where
                 preprocessor_result.stdout.len()
             );
 
-            (preprocessor_result.stdout, include_files)
+            (
+                preprocessor_result.stdout,
+                preprocessor_result.stderr,
+                include_files,
+            )
         } else {
             // No preprocessing is supported - input is already preprocessed
             (
                 std::fs::read(absolute_input_path.as_path())?,
+                Vec::new(),
                 HashMap::new(),
             )
         };
@@ -704,6 +720,7 @@ where
             compilation: Box::new(CCompilation {
                 parsed_args: self.parsed_args.clone(),
                 is_locally_preprocessed: true,
+                preprocessor_stderr,
                 #[cfg(feature = "dist-client")]
                 preprocessed_input: preprocessor_output,
                 executable: self.executable.clone(),
@@ -1279,6 +1296,14 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I>
 
     fn is_locally_preprocessed(&self) -> bool {
         self.is_locally_preprocessed
+    }
+
+    fn cached_stdout(&self, stdout: Vec<u8>) -> Vec<u8> {
+        if !self.is_locally_preprocessed {
+            return stdout;
+        }
+        self.compiler
+            .cached_stdout(&self.parsed_args, stdout, &self.preprocessor_stderr)
     }
 
     fn outputs<'a>(&'a self) -> Box<dyn Iterator<Item = FileObjectSource> + 'a> {
