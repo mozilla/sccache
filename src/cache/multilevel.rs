@@ -655,8 +655,9 @@ impl Storage for MultiLevelStorage {
                         .is_some())
             {
                 // This level ran out of its own budget: count the
-                // timeout on the level (and move its gate, since the
-                // caller-owned timeout never reaches the wrapper).
+                // timeout on the level's stats (the gate itself is moved
+                // by the wrapper's drop guard when this timer cancels
+                // the read).
                 inc_stat!(self.atomic_stats.get(idx), timeouts, 1);
                 warn!(
                     "Cache level {} timed out after {:?}, trying next level",

@@ -127,9 +127,8 @@ impl BackendBackoff {
         state.open_until.is_some_and(|until| Instant::now() < until)
     }
 
-    /// Record a read that ran out of time. The multi-level chain calls this
-    /// when its caller-owned per-level timeout fires (the wrapper's future
-    /// is dropped and cannot record for itself).
+    /// Record a read that ran out of time. Called only by `ReadGuard::drop`
+    /// when a gated read is cancelled before it answers.
     pub(crate) fn record_timed_out(&self) {
         if self.threshold == 0 {
             return;
