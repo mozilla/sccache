@@ -996,10 +996,11 @@ where
 
     let mut lines = Vec::<(usize, PathBuf, Vec<String>)>::new();
 
-    #[cfg(unix)]
-    let reader = std::io::BufReader::new(&nvcc_dryrun_output.stderr[..]);
-    #[cfg(windows)]
-    let reader = std::io::BufReader::new(&nvcc_dryrun_output.stdout[..]);
+    let reader = if cfg!(target_os = "windows") {
+        std::io::BufReader::new(&nvcc_dryrun_output.stdout[..])
+    } else {
+        std::io::BufReader::new(&nvcc_dryrun_output.stderr[..])
+    };
 
     for pair in reader.lines().enumerate() {
         let (idx, line) = pair;
