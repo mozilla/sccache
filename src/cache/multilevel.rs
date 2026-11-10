@@ -658,12 +658,6 @@ impl Storage for MultiLevelStorage {
                 // timeout on the level (and move its gate, since the
                 // caller-owned timeout never reaches the wrapper).
                 inc_stat!(self.atomic_stats.get(idx), timeouts, 1);
-                let as_any: Arc<dyn std::any::Any + Send + Sync> = Arc::clone(level) as _;
-                if let Ok(gated) =
-                    as_any.downcast::<crate::cache::backend_backoff::BackoffStorage>()
-                {
-                    gated.gate().record_timed_out();
-                }
                 warn!(
                     "Cache level {} timed out after {:?}, trying next level",
                     idx,
@@ -753,12 +747,6 @@ impl Storage for MultiLevelStorage {
                 Ok(result) => result,
                 Err(_) => {
                     inc_stat!(self.atomic_stats.get(idx), timeouts, 1);
-                    let as_any: Arc<dyn std::any::Any + Send + Sync> = Arc::clone(level) as _;
-                    if let Ok(gated) =
-                        as_any.downcast::<crate::cache::backend_backoff::BackoffStorage>()
-                    {
-                        gated.gate().record_timed_out();
-                    }
                     warn!(
                         "Cache level {} timed out after {:?} on the raw read, trying next level",
                         idx,
