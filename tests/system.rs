@@ -461,6 +461,69 @@ fn test_msvc_responsefile(compiler: Compiler, tempdir: &Path) {
     fs::remove_file(&out_file).unwrap();
 }
 
+fn test_msvc_show_includes_cache_hit(compiler: Compiler, tempdir: &Path) {
+    let Compiler {
+        name,
+        exe,
+        env_vars,
+    } = compiler;
+    zero_stats();
+
+    let dirs = [
+        tempdir.join("show_includes_a"),
+        tempdir.join("show_includes_b"),
+    ];
+    for dir in &dirs {
+        fs::create_dir_all(dir.join("inc")).unwrap();
+        write_source(dir, "inc/header.h", "#pragma once\nint f(void);\n");
+        write_source(
+            dir,
+            "src.c",
+            "#include \"header.h\"\nint g(void) { return f(); }\n",
+        );
+    }
+
+    let header = |dir: &Path| {
+        dir.join("inc")
+            .join("header.h")
+            .display()
+            .to_string()
+            .to_lowercase()
+    };
+
+    for (i, dir) in dirs.iter().enumerate() {
+        let inc_dir = dir.join("inc");
+        let args = compile_cmdline(
+            name,
+            &exe,
+            "src.c",
+            "src.obj",
+            vec_from!(
+                OsString,
+                "/showIncludes",
+                format!("/I{}", inc_dir.display())
+            ),
+        );
+        let output = sccache_command()
+            .args(&args)
+            .current_dir(dir)
+            .envs(env_vars.clone())
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout).to_lowercase();
+        assert!(stdout.contains(&header(dir)), "{stdout}");
+        if i == 1 {
+            assert!(!stdout.contains(&header(&dirs[0])), "{stdout}");
+        }
+    }
+
+    get_stats(|info| {
+        assert_eq!(1, info.stats.cache_hits.all());
+        assert_eq!(1, info.stats.cache_misses.all());
+    });
+}
+
 fn test_gcc_mp_werror(compiler: Compiler, tempdir: &Path) {
     let Compiler {
         name,
@@ -747,6 +810,7 @@ fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path, preprocessor_ca
     if compiler.name == "cl.exe" {
         test_msvc_deps(compiler.clone(), tempdir);
         test_msvc_responsefile(compiler.clone(), tempdir);
+        test_msvc_show_includes_cache_hit(compiler.clone(), tempdir);
     }
     if compiler.name == "gcc" {
         test_gcc_mp_werror(compiler.clone(), tempdir);
