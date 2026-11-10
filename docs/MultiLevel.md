@@ -116,6 +116,12 @@ SCCACHE_CACHE_SIZE="5G"  # Keep disk small
 
 **Result**: Unlimited cloud storage, fast local hits.
 
+## Unhealthy Backends
+
+When a remote level stalls (reads that never answer rather than fast errors), every lookup would pay the full read timeout on that level before compiling locally. Each level has its own backoff: after `SCCACHE_BACKEND_BACKOFF_THRESHOLD` (default 3, `0` disables) consecutive timed-out reads, that level's reads are skipped for `SCCACHE_BACKEND_BACKOFF_COOLDOWN_SECS` (default 60) and reported the same way a timed-out lookup is. Faster levels keep serving while a remote level is skipped, and any read the level answers resets its counter. Reads only — writes never skip.
+
+The lookup deadline is also shared across levels (each level is tried with its share of the remaining `SCCACHE_CACHE_READ_TIMEOUT_SECS` time), so one stalled level cannot consume the whole budget before the later levels are tried, and a hung first level no longer starves the rest of the chain. Per-level timeouts are visible in `--show-stats` (`L<index> timeouts`).
+
 ## Configuration
 
 ### Via Environment Variables
