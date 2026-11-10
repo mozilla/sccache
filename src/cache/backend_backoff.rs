@@ -216,6 +216,28 @@ pub(crate) enum TimeBudget {
     CallerOwned,
 }
 
+/// Records a timeout if the read it guards is dropped before it answers.
+/// Every timer that can cancel a gated read — the wrapper's own (Full
+/// mode), a chain level's share of the lookup deadline, or the lookup-level
+/// timeout, which can land within microseconds of an inner deadline and
+/// win on poll order — drops this future mid-await, so the Drop impl is
+/// the one recording path that cannot lose a timeout to a timer race. A
+/// read cancelled for another reason (a client disconnect) also counts as
+/// a timeout; one answered read resets the counter, so the cost of that
+/// is one extra cooldown probe later, never a stuck gate.
+struct ReadGuard<'a> {
+    backoff: &'a BackendBackoff,
+    answered: bool,
+}
+
+impl Drop for ReadGuard<'_> {
+    fn drop(&mut self) {
+        if !self.answered {
+            self.backoff.record_timed_out();
+        }
+    }
+}
+
 /// Wraps one cache level with the per-level backoff gate.
 ///
 /// Reads only: every other operation is forwarded untouched, so a level in
@@ -267,8 +289,10 @@ impl BackoffStorage {
         }
     }
 
-    /// The gate handle the multi-level chain uses to move this level's
-    /// state when the caller-owned per-level timeout fires.
+    /// The gate handle, for tests and introspection only. The gate state is
+    /// moved by the wrapper's own read guard (a read that is dropped before
+    /// it answers records a timeout), never by a caller reaching in.
+    #[cfg(test)]
     pub(crate) fn gate(&self) -> &BackendBackoff {
         &self.backoff
     }
@@ -277,55 +301,54 @@ impl BackoffStorage {
         if self.backoff.lookup_blocked() {
             return Err(anyhow::Error::new(LevelSkipped));
         }
-        match self.budget {
+        // Any timer that cancels this read — this wrapper's own (Full mode),
+        // a chain level's share of the lookup deadline, or the lookup-level
+        // timeout, which can land within microseconds of the inner one and
+        // win on poll order — drops this future before it answers. The guard
+        // turns every such cancellation into a recorded timeout, so the
+        // gate's counter cannot miss one to a timer race. A read cancelled
+        // for another reason (a client disconnect) also counts as a timeout;
+        // one answered read resets the counter, so the cost of that is one
+        // extra cooldown probe later, not a stuck gate.
+        let mut guard = ReadGuard {
+            backoff: &self.backoff,
+            answered: false,
+        };
+        let result = match self.budget {
             TimeBudget::Full => {
                 match tokio::time::timeout(read_timeout(), self.inner.get(key)).await {
-                    Ok(result) => {
-                        self.backoff.record_response();
-                        result
-                    }
-                    Err(_elapsed) => {
-                        self.backoff.record_timed_out();
-                        Err(anyhow::Error::new(LevelTimedOut))
-                    }
+                    Ok(result) => result,
+                    Err(_elapsed) => Err(anyhow::Error::new(LevelTimedOut)),
                 }
             }
-            TimeBudget::CallerOwned => {
-                // The caller owns this level's timeout; a caller-owned
-                // timeout drops this future without a result, so anything
-                // that reaches here is a read the level answered (hit,
-                // miss or fast error).
-                let result = self.inner.get(key).await;
-                self.backoff.record_response();
-                result
-            }
-        }
+            TimeBudget::CallerOwned => self.inner.get(key).await,
+        };
+        guard.answered = true;
+        self.backoff.record_response();
+        result
     }
 
     async fn gated_get_with_raw(&self, key: &str) -> Result<(Cache, Option<Bytes>)> {
         if self.backoff.lookup_blocked() {
             return Err(anyhow::Error::new(LevelSkipped));
         }
-        match self.budget {
+        // See `gated_get` for the guard contract.
+        let mut guard = ReadGuard {
+            backoff: &self.backoff,
+            answered: false,
+        };
+        let result = match self.budget {
             TimeBudget::Full => {
                 match tokio::time::timeout(read_timeout(), self.inner.get_with_raw(key)).await {
-                    Ok(result) => {
-                        self.backoff.record_response();
-                        result
-                    }
-                    Err(_elapsed) => {
-                        self.backoff.record_timed_out();
-                        Err(anyhow::Error::new(LevelTimedOut))
-                    }
+                    Ok(result) => result,
+                    Err(_elapsed) => Err(anyhow::Error::new(LevelTimedOut)),
                 }
             }
-            TimeBudget::CallerOwned => {
-                // See `gated_get`: anything that reaches here was answered.
-                let result = self.inner.get_with_raw(key).await;
-                self.backoff.record_response();
-                result
-            }
-        }
+            TimeBudget::CallerOwned => self.inner.get_with_raw(key).await,
+        };
+        guard.answered = true;
+        self.backoff.record_response();
+        result
     }
 }
 
@@ -719,5 +742,74 @@ mod test {
             Some(_) => {}
             None => panic!("write must reach a gated level"),
         }
+    }
+
+    /// A waker that does nothing: the cancelled-read test polls a future
+    /// once and drops it, so nothing ever needs waking.
+    struct NoopWake;
+
+    impl std::task::Wake for NoopWake {
+        fn wake(self: Arc<Self>) {}
+    }
+
+    #[test]
+    fn a_cancelled_read_records_a_timeout_and_can_trip_the_gate() {
+        // The timer-race fix, pinned deterministically: a gated read that is
+        // dropped before it answers (a caller-owned timeout winning on poll
+        // order, a client disconnect) must move the gate's counter. No sleep
+        // racing — the read is polled once, left pending, and dropped.
+        let runtime = RuntimeBuilder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let level = SlowMissingLevel::new(Duration::from_secs(60));
+        let wrapped = BackoffStorage::with_policy(
+            level.clone() as Arc<dyn Storage>,
+            3,
+            Duration::from_secs(60),
+            TimeBudget::CallerOwned,
+        );
+        let waker = std::task::Waker::from(Arc::new(NoopWake));
+        let mut cx = std::task::Context::from_waker(&waker);
+
+        runtime.block_on(async {
+            for round in 0..3 {
+                // The future is dropped at the end of this block; the guard
+                // inside it records the timeout (drop_non_drop fires on an
+                // explicit drop of the Pin<&mut>, but the boxed future under
+                // it is the Drop-able value and drops at scope end).
+                let fut = wrapped.get("k");
+                tokio::pin!(fut);
+                assert!(fut.as_mut().poll(&mut cx).is_pending());
+                assert_eq!(
+                    level.reads(),
+                    round + 1,
+                    "the read must have started before the drop"
+                );
+            }
+        });
+
+        assert!(
+            wrapped.gate().lookup_blocked(),
+            "three cancelled reads must trip the gate"
+        );
+
+        // A read the level answers resets the counter (the guard is
+        // disarmed, the answered-read path records the response).
+        let level2 = CountingLevel::new();
+        let wrapped2 = BackoffStorage::with_policy(
+            level2.clone() as Arc<dyn Storage>,
+            3,
+            Duration::from_secs(60),
+            TimeBudget::CallerOwned,
+        );
+        wrapped2.gate().record_timed_out();
+        wrapped2.gate().record_timed_out();
+        runtime.block_on(async {
+            let result = wrapped2.get("k").await.unwrap();
+            assert!(matches!(result, Cache::Miss));
+        });
+        assert!(!wrapped2.gate().lookup_blocked());
+        assert_eq!(level2.reads(), 1);
     }
 }
