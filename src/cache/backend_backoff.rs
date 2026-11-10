@@ -21,7 +21,7 @@
 //!
 //! The gate is per cache level, not per lookup. Each level wrapped in
 //! [`BackoffStorage`] tracks its own consecutive timed-out reads; once a
-//! level has timed out more than the threshold in a row, reads to that level
+//! level has timed out at least the threshold in a row, reads to that level
 //! are skipped outright for a cooldown window (reported as a timed-out
 //! lookup, so builds proceed without paying the wait), and any read the
 //! level answers (hit, miss or fast error) resets its counter. In a
@@ -394,6 +394,39 @@ impl BackoffStorage {
             None => Err(anyhow::Error::new(LevelTimedOut)),
         }
     }
+    async fn gated_get_raw(&self, key: &str) -> Result<Option<Bytes>> {
+        if self.backoff.lookup_blocked() {
+            return Err(anyhow::Error::new(LevelSkipped));
+        }
+        // Same contract as `gated_get`: the guard records a timeout when a
+        // timer (this wrapper's, a chain level's, or the lookup-level one)
+        // cancels the read before it answers, and one answered read resets
+        // the counter. Client-side mode serves compile lookups through this
+        // path, so a stalled standalone backend trips the gate here too.
+        let mut guard = ReadGuard {
+            backoff: &self.backoff,
+            answered: false,
+        };
+        let outcome = match self.budget {
+            TimeBudget::Full => {
+                #[cfg(test)]
+                let budget = self.timeout_override.unwrap_or_else(read_timeout);
+                #[cfg(not(test))]
+                let budget = read_timeout();
+                let outcome = tokio::time::timeout(budget, self.inner.get_raw(key)).await;
+                outcome.ok()
+            }
+            TimeBudget::CallerOwned => Some(self.inner.get_raw(key).await),
+        };
+        match outcome {
+            Some(result) => {
+                guard.answered = true;
+                self.backoff.record_response();
+                result
+            }
+            None => Err(anyhow::Error::new(LevelTimedOut)),
+        }
+    }
 }
 
 #[async_trait]
@@ -411,10 +444,7 @@ impl Storage for BackoffStorage {
     }
 
     async fn get_raw(&self, key: &str) -> Result<Option<Bytes>> {
-        if self.backoff.lookup_blocked() {
-            return Err(anyhow::Error::new(LevelSkipped));
-        }
-        self.inner.get_raw(key).await
+        self.gated_get_raw(key).await
     }
 
     async fn put_raw(&self, key: &str, data: Bytes) -> Result<Duration> {
@@ -831,6 +861,112 @@ mod test {
             level.reads(),
             3,
             "the skipped lookup never reached the level"
+        );
+    }
+
+    /// A level whose RAW reads stall for a fixed delay and return None
+    /// (the client-side fault shape), counting how many raw reads reached it.
+    struct SlowRawLevel {
+        delay: Duration,
+        reads: AtomicU32,
+    }
+
+    impl SlowRawLevel {
+        fn new(delay: Duration) -> Arc<Self> {
+            Arc::new(Self {
+                delay,
+                reads: AtomicU32::new(0),
+            })
+        }
+
+        fn reads(&self) -> u32 {
+            self.reads.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl Storage for SlowRawLevel {
+        async fn get(&self, _key: &str) -> Result<Cache> {
+            Ok(Cache::Miss)
+        }
+
+        async fn get_raw(&self, _key: &str) -> Result<Option<Bytes>> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            tokio::time::sleep(self.delay).await;
+            Ok(None)
+        }
+
+        async fn put(&self, _key: &str, _entry: CacheWrite) -> Result<Duration> {
+            Ok(Duration::ZERO)
+        }
+
+        fn location(&self) -> String {
+            "slow-raw".to_owned()
+        }
+
+        async fn current_size(&self) -> Result<Option<u64>> {
+            Ok(None)
+        }
+
+        async fn max_size(&self) -> Result<Option<u64>> {
+            Ok(None)
+        }
+    }
+
+    #[test]
+    fn raw_reads_carry_the_same_gate_contract_as_cache_reads() {
+        // Client-side mode serves lookups through get_raw: the raw path must
+        // bound the read, move the gate on a timeout, reset on an answered
+        // read, and skip while the gate is open - the same contract the
+        // compile path has.
+        let runtime = RuntimeBuilder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let stalled = SlowRawLevel::new(Duration::from_millis(500));
+        let storage = BackoffStorage::with_full_policy_and_timeout(
+            stalled.clone() as Arc<dyn Storage>,
+            2,
+            Duration::from_secs(60),
+            Duration::from_millis(100),
+        );
+
+        runtime.block_on(async {
+            for round in 1..=2 {
+                let result = storage.get_raw("k").await;
+                let err = result.unwrap_err();
+                assert!(err.is::<LevelTimedOut>(), "raw round {round} times out");
+                let state = storage.backoff.state.lock().unwrap();
+                assert_eq!(state.consecutive_timeouts, round);
+            }
+            let err = storage.get_raw("k").await.unwrap_err();
+            assert!(
+                err.is::<LevelSkipped>(),
+                "the open gate skips raw reads too"
+            );
+        });
+        assert_eq!(
+            stalled.reads(),
+            2,
+            "the skipped raw read never reached the level"
+        );
+
+        // An answered raw read resets the counter.
+        let healthy = CountingLevel::new();
+        let storage2 = BackoffStorage::with_policy(
+            healthy.clone() as Arc<dyn Storage>,
+            2,
+            Duration::from_secs(60),
+            TimeBudget::CallerOwned,
+        );
+        storage2.gate().record_timed_out();
+        runtime.block_on(async {
+            let result = storage2.get_raw("k").await.unwrap();
+            assert_eq!(result, None);
+        });
+        assert!(
+            !storage2.gate().lookup_blocked(),
+            "one answered raw read resets"
         );
     }
 
