@@ -209,6 +209,7 @@ pub(crate) fn level_budget(total: Duration, elapsed: Duration, levels_left: u32)
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum TimeBudget {
     /// The level applies the full read timeout itself (a standalone backend).
+    #[cfg_attr(not(any_cache_remote), allow(dead_code))]
     Full,
     /// The caller applies the per-level timeout (a level of a multi-level
     /// chain, which shares the lookup deadline across levels).
@@ -241,7 +242,9 @@ impl BackoffStorage {
     }
 
     /// Wrap a standalone (single) cache backend. The wrapper applies the
-    /// full read timeout itself.
+    /// full read timeout itself. (No remote cache, no standalone backend —
+    /// the wrapper is chain-levels only in that posture.)
+    #[cfg_attr(not(any_cache_remote), allow(dead_code))]
     pub(crate) fn standalone(inner: Arc<dyn Storage>) -> Arc<dyn Storage> {
         Arc::new(Self {
             inner,
