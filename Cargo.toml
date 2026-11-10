@@ -79,7 +79,7 @@ memchr = "2"
 memmap2 = "0.9.4"
 mime = "0.3"
 number_prefix = "0.4"
-object = "0.37"
+object = "0.40"
 opendal = { version = "0.58.1", optional = true, default-features = false }
 opendal-http-transport-reqwest = { version = "0.58.1", optional = true }
 opendal-layer-logging = { version = "0.58.1", optional = true }
@@ -147,7 +147,7 @@ cc = "1.9"
 chrono = "0.4.42"
 divan = { package = "codspeed-divan-compat", version = "4" }
 filetime = "0.2"
-object = { version = "0.37", features = ["write"] }
+object = { version = "0.40", features = ["write"] }
 predicates = "=3.1.0"
 serial_test = "3.1"
 temp-env = "0.3.6"
