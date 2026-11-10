@@ -14,6 +14,7 @@
 
 #[cfg(feature = "azure")]
 pub mod azure;
+pub mod backend_backoff;
 #[allow(clippy::module_inception)]
 pub mod cache;
 pub mod cache_io;

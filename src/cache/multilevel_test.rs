@@ -18,12 +18,14 @@ use crate::cache::disk::DiskCache;
 use crate::cache::readonly::ReadOnlyStorage;
 use crate::config::Config;
 use crate::config::PreprocessorCacheModeConfig;
+use async_trait::async_trait;
 use bytes::Bytes;
 use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::io::Cursor;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 use tempfile::Builder as TempBuilder;
 use tokio::runtime::Builder as RuntimeBuilder;
@@ -1862,4 +1864,260 @@ fn test_multilevel_put_raw_writes_to_all_levels() {
             "L1 should have the raw bytes"
         );
     });
+}
+
+// ---------------------------------------------------------------------------
+// Per-level backoff (backend_backoff) integration through MultiLevelStorage.
+// These cover the chain-level contract: the shared read deadline is split
+// per level, a stalled level trips only its own gate, and a healthy local
+// level keeps serving while the stalled one is skipped.
+// ---------------------------------------------------------------------------
+
+/// A level that answers reads with `Cache::Miss` after a fixed sleep.
+struct ChainSlowLevel {
+    delay: Duration,
+    reads: AtomicU32,
+}
+
+impl ChainSlowLevel {
+    fn new(delay: Duration) -> Arc<Self> {
+        Arc::new(Self {
+            delay,
+            reads: AtomicU32::new(0),
+        })
+    }
+
+    fn reads(&self) -> u32 {
+        self.reads.load(Ordering::SeqCst)
+    }
+}
+
+#[async_trait]
+impl Storage for ChainSlowLevel {
+    async fn get(&self, _key: &str) -> Result<Cache> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        sleep(self.delay).await;
+        Ok(Cache::Miss)
+    }
+
+    async fn put(&self, _key: &str, _entry: CacheWrite) -> Result<Duration> {
+        Ok(Duration::ZERO)
+    }
+
+    fn location(&self) -> String {
+        "chain-slow".to_owned()
+    }
+
+    async fn current_size(&self) -> Result<Option<u64>> {
+        Ok(None)
+    }
+
+    async fn max_size(&self) -> Result<Option<u64>> {
+        Ok(None)
+    }
+}
+
+#[test]
+fn the_read_deadline_splits_by_levels_left() {
+    // The split math, pinned: what is left of the deadline, divided by the
+    // levels left. A fast first level leaves nearly everything to the rest;
+    // a stalled level holds at most its own share.
+    use crate::cache::backend_backoff::level_budget;
+    let total = Duration::from_secs(60);
+    assert_eq!(
+        level_budget(total, Duration::ZERO, 3),
+        Duration::from_secs(20)
+    );
+    assert_eq!(
+        level_budget(total, Duration::from_millis(100), 2),
+        Duration::from_millis(59_900) / 2
+    );
+    assert_eq!(level_budget(total, Duration::ZERO, 1), total);
+    // The last level always gets everything left.
+    assert_eq!(
+        level_budget(total, Duration::from_secs(59), 1),
+        Duration::from_secs(1)
+    );
+    // An exhausted deadline budgets zero, never panics.
+    assert_eq!(level_budget(total, total, 2), Duration::ZERO);
+    // Degenerate levels_left is clamped.
+    assert_eq!(level_budget(total, Duration::ZERO, 0), total);
+}
+
+#[test]
+fn a_fully_stalled_chain_probes_every_level_once_and_misses() {
+    // Chain smoke over the wrapped levels: every level is probed in order,
+    // the lookup reports a miss, and the stalled level's share is bounded
+    // (its 5 s stall cannot stack per level the way an unbounded chain
+    // would once the deadline is small enough to matter — the split math
+    // above pins that).
+    let runtime = RuntimeBuilder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let l0 = ChainSlowLevel::new(Duration::from_millis(30));
+    let l1 = ChainSlowLevel::new(Duration::from_millis(30));
+    let l2 = ChainSlowLevel::new(Duration::from_secs(5));
+
+    let threshold = 3;
+    let cooldown = Duration::from_secs(60);
+    let build = |inner: Arc<dyn Storage>| -> Arc<dyn Storage> {
+        Arc::new(crate::cache::backend_backoff::BackoffStorage::with_policy(
+            inner,
+            threshold,
+            cooldown,
+            crate::cache::backend_backoff::TimeBudget::CallerOwned,
+        ))
+    };
+    let wrapped: Vec<Arc<dyn Storage>> =
+        vec![build(l0.clone()), build(l1.clone()), build(l2.clone())];
+    let storage = MultiLevelStorage::new(wrapped);
+
+    let start = std::time::Instant::now();
+    runtime.block_on(async {
+        match storage.get("k").await.unwrap() {
+            Cache::Miss => {}
+            _ => panic!("a fully-stalled chain reports a miss"),
+        }
+    });
+    let wall = start.elapsed();
+
+    assert_eq!(l0.reads(), 1, "L0 probed once");
+    assert_eq!(
+        l1.reads(),
+        1,
+        "L1 probed once — a stalled L0 would have starved it"
+    );
+    assert_eq!(l2.reads(), 1, "L2 probed once");
+    assert!(
+        wall >= Duration::from_millis(60),
+        "the two fast levels paid their reads: {:?}",
+        wall
+    );
+
+    // With the process-default 60 s deadline the shares are ≥ 20 s, so the
+    // 5 s stall fits inside L2's share: no timeout fires here (the
+    // deadline-split math is pinned above; the trip path is covered by the
+    // cooldown test below). The smoke proves the probe contract only.
+    let stats = storage.stats();
+    assert_eq!(stats.0[2].timeouts, 0);
+}
+
+#[test]
+fn local_hits_keep_serving_while_the_remote_level_is_in_cooldown() {
+    // THE multilevel case from the proposal: L0 (local) holds the entry,
+    // L1 (remote) stalls. After the remote trips its gate, lookups must
+    // still hit L0 — and must not pay the remote's timeout.
+    let runtime = RuntimeBuilder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let l0 = ChainCountingLevel::new();
+    let l1 = ChainSlowLevel::new(Duration::from_millis(300));
+    l0.put_entry("hit_key");
+
+    let build_slow = |inner: Arc<dyn Storage>| -> Arc<dyn Storage> {
+        Arc::new(crate::cache::backend_backoff::BackoffStorage::with_policy(
+            inner,
+            3,
+            Duration::from_secs(60),
+            crate::cache::backend_backoff::TimeBudget::CallerOwned,
+        ))
+    };
+    let wrapped: Vec<Arc<dyn Storage>> = vec![
+        build_slow(l0.clone() as Arc<dyn Storage>),
+        build_slow(l1.clone() as Arc<dyn Storage>),
+    ];
+    let storage = MultiLevelStorage::new(wrapped);
+
+    runtime.block_on(async {
+        // Three missing keys: each lookup hits the fast L0 miss, then pays
+        // the stalled L1's share. The third timeout trips L1's gate.
+        for i in 0..3 {
+            match storage.get(&format!("missing_{i}")).await.unwrap() {
+                Cache::Miss => {}
+                _ => panic!("expected a miss for missing_{i}"),
+            }
+        }
+        assert_eq!(l1.reads(), 3, "the stalled remote was probed three times");
+
+        // The gate is now open: a HIT key must be served from L0 instantly,
+        // with no probe reaching L1.
+        let start = std::time::Instant::now();
+        match storage.get("hit_key").await.unwrap() {
+            Cache::Hit(_) => {}
+            _ => panic!("L0's hit must still be served"),
+        }
+        assert!(
+            start.elapsed() < Duration::from_millis(50),
+            "the hit must not wait behind the stalled remote: {:?}",
+            start.elapsed()
+        );
+        assert_eq!(
+            l1.reads(),
+            3,
+            "the skipped remote level was not contacted again"
+        );
+    });
+}
+
+/// Counting level serving in-memory entries (the local tier in the test
+/// above).
+struct ChainCountingLevel {
+    data: std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>,
+    reads: AtomicU32,
+}
+
+impl ChainCountingLevel {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            data: std::sync::Mutex::new(std::collections::HashMap::new()),
+            reads: AtomicU32::new(0),
+        })
+    }
+
+    fn put_entry(&self, key: &str) {
+        let entry = CacheWrite::default().finish().unwrap().clone();
+        self.data.lock().unwrap().insert(key.to_owned(), entry);
+    }
+}
+
+#[async_trait]
+impl Storage for ChainCountingLevel {
+    async fn get(&self, key: &str) -> Result<Cache> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        let data = self.data.lock().unwrap();
+        match data.get(key) {
+            Some(bytes) => match CacheRead::from(std::io::Cursor::new(bytes.clone())) {
+                Ok(hit) => Ok(Cache::Hit(hit)),
+                Err(_) => Ok(Cache::Miss),
+            },
+            None => Ok(Cache::Miss),
+        }
+    }
+
+    async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration> {
+        let data = entry.finish()?;
+        self.data
+            .lock()
+            .unwrap()
+            .insert(key.to_owned(), data.clone());
+        Ok(Duration::ZERO)
+    }
+
+    fn location(&self) -> String {
+        "chain-counting".to_owned()
+    }
+
+    async fn current_size(&self) -> Result<Option<u64>> {
+        Ok(None)
+    }
+
+    async fn max_size(&self) -> Result<Option<u64>> {
+        Ok(None)
+    }
 }

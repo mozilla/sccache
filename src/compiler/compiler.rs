@@ -253,7 +253,7 @@ const DEFAULT_CACHE_READ_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// How long a cache lookup may take before the compilation runs locally
 /// instead, from `SCCACHE_CACHE_READ_TIMEOUT_SECS`.
-fn cache_read_timeout() -> Duration {
+pub(crate) fn cache_read_timeout() -> Duration {
     static TIMEOUT: LazyLock<Duration> = LazyLock::new(|| {
         parse_cache_read_timeout(env::var("SCCACHE_CACHE_READ_TIMEOUT_SECS").ok().as_deref())
     });
@@ -727,6 +727,22 @@ where
                     fmt_duration_as_secs(&duration)
                 );
                 Ok(CacheLookupResult::Miss(MissType::ForcedRecache))
+            }
+            (Ok(Err(err)), _) if err.is::<crate::cache::backend_backoff::LevelSkipped>() => {
+                debug!(
+                    "[{}]: Cache read skipped (backend backoff) in {}",
+                    out_pretty,
+                    fmt_duration_as_secs(&start.elapsed())
+                );
+                Ok(CacheLookupResult::Miss(MissType::TimedOut))
+            }
+            (Ok(Err(err)), _) if err.is::<crate::cache::backend_backoff::LevelTimedOut>() => {
+                debug!(
+                    "[{}]: Cache read timed out (backend backoff) in {}",
+                    out_pretty,
+                    fmt_duration_as_secs(&start.elapsed())
+                );
+                Ok(CacheLookupResult::Miss(MissType::TimedOut))
             }
             (Ok(Err(err)), duration) => {
                 error!(

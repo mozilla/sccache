@@ -40,7 +40,7 @@ pub enum GetPathResult {
 
 /// An interface to cache storage.
 #[async_trait]
-pub trait Storage: Send + Sync {
+pub trait Storage: Send + Sync + std::any::Any {
     /// Get a cache entry by `key`.
     ///
     /// If an error occurs, this method should return a `Cache::Error`.
