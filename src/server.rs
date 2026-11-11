@@ -38,7 +38,6 @@ use fs_err as fs;
 use futures::channel::mpsc;
 use futures::future::FutureExt;
 use futures::{Sink, SinkExt, Stream, StreamExt, TryFutureExt, future};
-use number_prefix::NumberPrefix;
 use serde::{Deserialize, Serialize};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -71,6 +70,7 @@ use tokio::{
 use tokio_serde::Framed;
 use tokio_util::codec::{LengthDelimitedCodec, length_delimited};
 use tower_service::Service;
+use unit_prefix::NumberPrefix;
 
 use crate::errors::*;
 

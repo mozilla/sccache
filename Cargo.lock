@@ -2156,12 +2156,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "number_prefix"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "830b246a0e5f20af87141b25c173cd1b609bd7779a4617d6ec582abaf90870f3"
-
-[[package]]
 name = "object"
 version = "0.40.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3481,7 +3475,6 @@ dependencies = [
  "memmap2",
  "mime",
  "nix 0.30.1",
- "number_prefix",
  "object",
  "opendal",
  "opendal-http-transport-reqwest",
@@ -3513,6 +3506,7 @@ dependencies = [
  "toml",
  "tower-service",
  "typed-path",
+ "unit-prefix",
  "url",
  "uuid",
  "version-compare",
@@ -4450,6 +4444,12 @@ name = "unicode-xid"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
+
+[[package]]
+name = "unit-prefix"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "81e544489bf3d8ef66c953931f56617f423cd4b5494be343d9b9d3dda037b9a3"
 
 [[package]]
 name = "untrusted"
