@@ -1704,7 +1704,8 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
     // We don't actually save the input value, but there needs to be one.
     req!(input);
     drop(input);
-    req!(output_dir);
+    // Without --out-dir, rustc writes outputs to the current directory.
+    let output_dir = output_dir.unwrap_or_default();
     req!(emit);
     req!(crate_name);
     // We won't cache invocations that are not producing
@@ -3369,13 +3370,14 @@ LLVM version: 15.0.2
             "--crate-name=foo",
             "--crate-type=lib"
         );
-        fails!(
+        let h = parses!(
             "--emit",
             "link",
             "foo.rs",
             "--crate-name=foo",
             "--crate-type=lib"
         );
+        assert_eq!(h.output_dir, PathBuf::new());
         fails!(
             "--emit",
             "asm",
@@ -4469,6 +4471,58 @@ foo.rs:
                 rlib = out_dir.join("libfoo-abc.rlib").display(),
                 rmeta = out_dir.join("libfoo-abc.rmeta").display(),
             )
+        );
+    }
+
+    #[test]
+    fn test_generate_hash_key_no_out_dir() {
+        let f = TestFixture::new();
+        f.touch("foo.rs").unwrap();
+        let mut hasher = test_hasher(
+            &f,
+            parses!(
+                "--crate-type=rlib",
+                "--crate-name=foo",
+                "--emit=dep-info,link,metadata",
+                "foo.rs"
+            ),
+        );
+        let creator = new_creator();
+        mock_dep_info(&creator, &["foo.rs"]);
+        mock_file_names(&creator, &["libfoo.rlib"]);
+        let runtime = single_threaded_runtime();
+        let pool = runtime.handle().clone();
+        let res = hasher
+            .generate_hash_key(
+                &creator,
+                f.tempdir.path().to_owned(),
+                vec![],
+                false,
+                &pool,
+                false,
+                Arc::new(MockStorage::new(None, false)),
+                CacheControl::Default,
+            )
+            .wait()
+            .unwrap();
+
+        // Like rustc, everything goes to the current directory.
+        let mut out = res
+            .compilation
+            .outputs()
+            .map(|o| (o.key, o.path))
+            .collect::<Vec<_>>();
+        out.sort();
+        assert_eq!(
+            out,
+            [
+                ("libfoo.rlib".to_owned(), "libfoo.rlib".into()),
+                ("libfoo.rmeta".to_owned(), "libfoo.rmeta".into()),
+            ]
+        );
+        assert_eq!(
+            fs::read_to_string(f.tempdir.path().join("foo.d")).unwrap(),
+            "foo.d: foo.rs\n\nlibfoo.rlib: foo.rs\n\nlibfoo.rmeta: foo.rs\n\nfoo.rs:\n"
         );
     }
 

@@ -2,7 +2,6 @@ sccache includes support for caching Rust compilation. This includes many caveat
 * `--emit` is required.
 * `--crate-name` is required.
 * Only `link`, `metadata` and `dep-info` are supported as `--emit` values, and `link` must be present.
-* `--out-dir` is required.
 * `-o file` is not supported.
 * Compilation from stdin is not supported, a source file must be provided.
 * Values from `env!` require Rust >= 1.46 to be tracked in caching.
