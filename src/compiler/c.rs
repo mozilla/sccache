@@ -1004,6 +1004,9 @@ fn starts_asm_statement(bytes: &[u8], pos: usize) -> bool {
 /// That is the caller's job, since it is the one reading the files.
 fn find_asm_dependencies(bytes: &[u8]) -> Vec<AsmDependency> {
     let mut dependencies = Vec::new();
+    let mut lexed = 0;
+    let mut in_string = false;
+    let mut comment_end = 0;
     let mut offset = 0;
     while let Some(pos) = memchr::memchr(b'.', &bytes[offset..]) {
         let start = offset + pos;
@@ -1011,6 +1014,42 @@ fn find_asm_dependencies(bytes: &[u8]) -> Vec<AsmDependency> {
             // Resume past the operand, so a file name that itself contains
             // ".incbin" or ".include" is not mistaken for another directive.
             Some((dependency, spanned)) if starts_asm_statement(bytes, start) => {
+                if dependency == AsmDependency::Unparsable {
+                    // -frewrite-includes and -fdirectives-only keep comments, and
+                    // these can look like valid include directives. This lexer knows
+                    // nothing of character literals or raw strings, so a directive that
+                    // names a file is always kept wherever it appears.
+                    while lexed < start {
+                        match bytes[lexed] {
+                            b'\\' if in_string => {
+                                lexed += 2;
+                                continue;
+                            }
+                            // A line break ends a string too, so a stray quote
+                            // cannot hide comment markers on later lines.
+                            b'"' | b'\n' if in_string => in_string = false,
+                            b'"' => in_string = true,
+                            b'/' if !in_string && bytes.get(lexed + 1) == Some(&b'*') => {
+                                lexed = memchr::memmem::find(&bytes[lexed + 2..], b"*/")
+                                    .map_or(bytes.len(), |end| lexed + 2 + end + 2);
+                                comment_end = lexed;
+                                continue;
+                            }
+                            b'/' if !in_string && bytes.get(lexed + 1) == Some(&b'/') => {
+                                lexed = memchr::memchr(b'\n', &bytes[lexed..])
+                                    .map_or(bytes.len(), |end| lexed + end);
+                                comment_end = lexed;
+                                continue;
+                            }
+                            _ => {}
+                        }
+                        lexed += 1;
+                    }
+                    if start < comment_end {
+                        offset = start + spanned;
+                        continue;
+                    }
+                }
                 dependencies.push(dependency);
                 offset = start + spanned;
             }
@@ -2506,6 +2545,75 @@ mod test {
             asm_dependency("printf(\".include %s\\n\", path);\n"),
             Some(AsmDependency::Unparsable)
         );
+    }
+
+    #[test]
+    fn test_asm_dependency_without_file_name_in_comment_is_ignored() {
+        // -frewrite-includes keeps comments, and the kernel's nospec-branch.h has
+        // one that spells an .include with a <...> operand. A comment reaches the
+        // assembler as nothing, so it must not stop caching.
+        assert!(
+            find_asm_dependencies(
+                b"/*\n * from C via asm(\".include <asm/nospec-branch.h>\") but no\n */\nint x;\n"
+            )
+            .is_empty()
+        );
+        assert!(find_asm_dependencies(b"int x; // .incbin BLOB_PATH\n").is_empty());
+        assert!(find_asm_dependencies(b"/* .incbin A then .include B */\nint x;\n").is_empty());
+        assert_eq!(
+            find_asm_dependencies(b"/* .include <x> */\n\t.incbin \"blob.bin\"\n"),
+            vec![AsmDependency::Embedded(b"blob.bin".to_vec())]
+        );
+        assert_eq!(
+            find_asm_dependencies(b"\t.incbin \"blob.bin\"\n/* never closed .include <x>\n"),
+            vec![AsmDependency::Embedded(b"blob.bin".to_vec())]
+        );
+    }
+
+    #[test]
+    fn test_asm_dependency_without_file_name_outside_comment_is_kept() {
+        assert_eq!(
+            find_asm_dependencies(b"/* note */\n\t.incbin BLOB_PATH\n// note\n\t.include X\n"),
+            vec![AsmDependency::Unparsable, AsmDependency::Unparsable]
+        );
+        // Inline assembly can contain "/*" or "//" in a string, which starts no
+        // comment, also after an escaped quote.
+        for source in [
+            &b"__asm__(\"/* x \\n.incbin BLOB_PATH\");\n"[..],
+            b"__asm__(\"// x \\n.incbin BLOB_PATH\");\n",
+            b"__asm__(\"\\\" /* \\n.incbin BLOB_PATH\");\n",
+            // The escape skip steps over the directive's first byte, which does
+            // not put it in a comment.
+            b"__asm__(\"\\.incbin BLOB_PATH\");\n",
+        ] {
+            assert_eq!(
+                find_asm_dependencies(source),
+                vec![AsmDependency::Unparsable],
+                "{:?}",
+                String::from_utf8_lossy(source)
+            );
+        }
+    }
+
+    #[test]
+    fn test_asm_dependency_with_file_name_is_kept_where_a_comment_seems_to_be() {
+        // What looks like a comment is not always one, because a character literal or a
+        // raw string defeats the string tracking, and missing the directive after
+        // it would serve a stale object.
+        for source in [
+            &b"if (c == '\"') puts(\"/*\");\n__asm__(\".incbin \\\"blob.bin\\\"\");\n"[..],
+            b"if (c == '\"') puts(\"//\"); __asm__(\".incbin \\\"blob.bin\\\"\");\n",
+            b"const char *help = R\"(usage:\n  rm build/*.o\n)\";\n__asm__(\".incbin \\\"blob.bin\\\"\");\n",
+            b"\tcmpb $'\", %al; .ascii \"/*\"\n\t.incbin \"blob.bin\"\n",
+            b"/* .incbin \"blob.bin\" */ int x;\n",
+        ] {
+            assert_eq!(
+                find_asm_dependencies(source),
+                vec![AsmDependency::Embedded(b"blob.bin".to_vec())],
+                "{:?}",
+                String::from_utf8_lossy(source)
+            );
+        }
     }
 
     #[test]
