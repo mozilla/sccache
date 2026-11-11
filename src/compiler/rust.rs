@@ -4190,6 +4190,45 @@ hash 42fac6f0 stable_crate_id StableCrateId(12206970385906972588)
         );
     }
 
+    /// Arguments for an rlib named `foo`, for tests to adjust.
+    fn test_parsed_args(emit: &[&str]) -> ParsedArguments {
+        ParsedArguments {
+            arguments: vec![],
+            output_dir: PathBuf::new(),
+            externs: vec![],
+            crate_link_paths: vec![],
+            staticlibs: vec![],
+            crate_name: "foo".into(),
+            crate_types: CrateTypes {
+                rlib: true,
+                staticlib: false,
+            },
+            dep_info: None,
+            emit: emit.iter().map(|kind| kind.to_string()).collect(),
+            color_mode: ColorMode::Auto,
+            has_json: false,
+            profile: None,
+            gcno: None,
+            target_json: None,
+        }
+    }
+
+    fn test_hasher(f: &TestFixture, parsed_args: ParsedArguments) -> RustHasher {
+        RustHasher {
+            executable: "rustc".into(),
+            host: "x86-64-unknown-unknown-unknown".to_owned(),
+            version: TEST_RUSTC_VERSION.to_string(),
+            sysroot: f.tempdir.path().join("sysroot"),
+            #[cfg(feature = "dist-client")]
+            target_libdir: f.tempdir.path().join("sysroot/lib/rustlib/fake-target/lib"),
+            compiler_shlibs_digests: vec![],
+            dist_archive: None,
+            #[cfg(feature = "dist-client")]
+            rlib_dep_reader: None,
+            parsed_args,
+        }
+    }
+
     #[test_case(true ; "with preprocessor cache")]
     #[test_case(false ; "without preprocessor cache")]
     fn test_generate_hash_key(preprocessor_cache_mode: bool) {
@@ -4215,53 +4254,32 @@ hash 42fac6f0 stable_crate_id StableCrateId(12206970385906972588)
         m.update(&vec![0; BAZ_O_SIZE as usize]);
         let libbaz_a_digest = m.finish();
 
-        let mut emit = HashSet::new();
-        emit.insert("link".to_string());
-        emit.insert("metadata".to_string());
-        let mut hasher = Box::new(RustHasher {
-            executable: "rustc".into(),
-            host: "x86-64-unknown-unknown-unknown".to_owned(),
-            version: TEST_RUSTC_VERSION.to_string(),
-            sysroot: f.tempdir.path().join("sysroot"),
-            #[cfg(feature = "dist-client")]
-            target_libdir: f.tempdir.path().join("sysroot/lib/rustlib/fake-target/lib"),
+        let mut hasher = RustHasher {
             compiler_shlibs_digests: vec![FAKE_DIGEST.to_owned()],
-            dist_archive: None,
-            #[cfg(feature = "dist-client")]
-            rlib_dep_reader: None,
-            parsed_args: ParsedArguments {
-                arguments: vec![
-                    Argument::Raw("a".into()),
-                    Argument::WithValue(
-                        "--cfg",
-                        ArgData::PassThrough("xyz".into()),
-                        ArgDisposition::Separated,
-                    ),
-                    Argument::Raw("b".into()),
-                    Argument::WithValue(
-                        "--cfg",
-                        ArgData::PassThrough("abc".into()),
-                        ArgDisposition::Separated,
-                    ),
-                ],
-                output_dir: "foo/".into(),
-                externs: vec!["bar.rlib".into()],
-                crate_link_paths: vec![],
-                staticlibs: vec![f.tempdir.path().join("libbaz.a")],
-                crate_name: "foo".into(),
-                crate_types: CrateTypes {
-                    rlib: true,
-                    staticlib: false,
+            ..test_hasher(
+                &f,
+                ParsedArguments {
+                    arguments: vec![
+                        Argument::Raw("a".into()),
+                        Argument::WithValue(
+                            "--cfg",
+                            ArgData::PassThrough("xyz".into()),
+                            ArgDisposition::Separated,
+                        ),
+                        Argument::Raw("b".into()),
+                        Argument::WithValue(
+                            "--cfg",
+                            ArgData::PassThrough("abc".into()),
+                            ArgDisposition::Separated,
+                        ),
+                    ],
+                    output_dir: "foo/".into(),
+                    externs: vec!["bar.rlib".into()],
+                    staticlibs: vec![f.tempdir.path().join("libbaz.a")],
+                    ..test_parsed_args(&["link", "metadata"])
                 },
-                dep_info: None,
-                emit,
-                color_mode: ColorMode::Auto,
-                has_json: false,
-                profile: None,
-                gcno: None,
-                target_json: None,
-            },
-        });
+            )
+        };
         let creator = new_creator();
         mock_dep_info(&creator, &["foo.rs", "bar.rs"]);
         mock_file_names(&creator, &["foo.rlib", "foo.a"]);
@@ -4335,38 +4353,17 @@ hash 42fac6f0 stable_crate_id StableCrateId(12206970385906972588)
         for s in ["foo.rs", "bar.rs", "bar.rlib"] {
             f.touch(s).unwrap();
         }
-        let hasher = || {
-            Box::new(RustHasher {
-                executable: "rustc".into(),
-                host: "x86-64-unknown-unknown-unknown".to_owned(),
-                version: TEST_RUSTC_VERSION.to_string(),
-                sysroot: f.tempdir.path().join("sysroot"),
-                #[cfg(feature = "dist-client")]
-                target_libdir: f.tempdir.path().join("sysroot/lib/rustlib/fake-target/lib"),
-                compiler_shlibs_digests: vec!["abcd1234".to_owned()],
-                dist_archive: None,
-                #[cfg(feature = "dist-client")]
-                rlib_dep_reader: None,
-                parsed_args: ParsedArguments {
+        let hasher = || RustHasher {
+            compiler_shlibs_digests: vec!["abcd1234".to_owned()],
+            ..test_hasher(
+                &f,
+                ParsedArguments {
                     arguments: vec![Argument::Raw("a".into())],
                     output_dir: "foo/".into(),
                     externs: vec!["bar.rlib".into()],
-                    crate_link_paths: vec![],
-                    staticlibs: vec![],
-                    crate_name: "foo".into(),
-                    crate_types: CrateTypes {
-                        rlib: true,
-                        staticlib: false,
-                    },
-                    dep_info: None,
-                    emit: ["link".to_string()].into_iter().collect(),
-                    color_mode: ColorMode::Auto,
-                    has_json: false,
-                    profile: None,
-                    gcno: None,
-                    target_json: None,
+                    ..test_parsed_args(&["link"])
                 },
-            })
+            )
         };
         let runtime = single_threaded_runtime();
         let pool = runtime.handle().clone();
@@ -4422,41 +4419,17 @@ hash 42fac6f0 stable_crate_id StableCrateId(12206970385906972588)
         let f = TestFixture::new();
         f.touch("foo.rs").unwrap();
         fs::create_dir(f.tempdir.path().join("out")).unwrap();
-        let emit = ["dep-info", "link", "metadata"]
-            .into_iter()
-            .map(str::to_owned)
-            .collect();
-        let mut hasher = Box::new(RustHasher {
-            executable: "rustc".into(),
-            host: "x86-64-unknown-unknown-unknown".to_owned(),
-            version: TEST_RUSTC_VERSION.to_string(),
-            sysroot: f.tempdir.path().join("sysroot"),
-            #[cfg(feature = "dist-client")]
-            target_libdir: f.tempdir.path().join("sysroot/lib/rustlib/fake-target/lib"),
-            compiler_shlibs_digests: vec![],
+        let mut hasher = RustHasher {
             dist_archive: Some("/toolchains/rust.tar.gz".into()),
-            #[cfg(feature = "dist-client")]
-            rlib_dep_reader: None,
-            parsed_args: ParsedArguments {
-                arguments: vec![],
-                output_dir: "out".into(),
-                externs: vec![],
-                crate_link_paths: vec![],
-                staticlibs: vec![],
-                crate_name: "foo".into(),
-                crate_types: CrateTypes {
-                    rlib: true,
-                    staticlib: false,
+            ..test_hasher(
+                &f,
+                ParsedArguments {
+                    output_dir: "out".into(),
+                    dep_info: Some("foo-abc.d".into()),
+                    ..test_parsed_args(&["dep-info", "link", "metadata"])
                 },
-                dep_info: Some("foo-abc.d".into()),
-                emit,
-                color_mode: ColorMode::Auto,
-                has_json: false,
-                profile: None,
-                gcno: None,
-                target_json: None,
-            },
-        });
+            )
+        };
         let creator = new_creator();
         mock_dep_info(&creator, &["foo.rs"]);
         mock_file_names(&creator, &["libfoo-abc.rlib"]);
@@ -4551,19 +4524,7 @@ foo.rs:
             f.touch(e.to_str().unwrap()).expect(&s);
         }
         pre_func(f.tempdir.path()).expect("Failed to execute pre_func");
-        let mut hasher = Box::new(RustHasher {
-            executable: "rustc".into(),
-            host: "x86-64-unknown-unknown-unknown".to_owned(),
-            version: TEST_RUSTC_VERSION.to_string(),
-            sysroot: f.tempdir.path().join("sysroot"),
-            #[cfg(feature = "dist-client")]
-            target_libdir: f.tempdir.path().join("sysroot/lib/rustlib/fake-target/lib"),
-            compiler_shlibs_digests: vec![],
-            dist_archive: None,
-            #[cfg(feature = "dist-client")]
-            rlib_dep_reader: None,
-            parsed_args,
-        });
+        let mut hasher = test_hasher(f, parsed_args);
 
         let creator = new_creator();
         let runtime = single_threaded_runtime();
