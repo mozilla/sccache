@@ -1501,7 +1501,7 @@ fn hashed_input_file_name(language: Language, input: &Path) -> Option<&OsStr> {
 }
 
 /// The cache is versioned by the inputs to `HashKeyParams::compute`.
-pub const CACHE_VERSION: &[u8] = b"14";
+pub const CACHE_VERSION: &[u8] = b"15";
 
 /// Environment variables that are factored into the cache key.
 static CACHED_ENV_VARS: LazyLock<HashSet<&'static OsStr>> = LazyLock::new(|| {
@@ -1511,6 +1511,15 @@ static CACHED_ENV_VARS: LazyLock<HashSet<&'static OsStr>> = LazyLock::new(|| {
         // One can set it to different values for different invocations
         // to prevent cache reuse between them.
         "SCCACHE_C_CUSTOM_CACHE_BUSTER",
+        // These select the include search path, so two builds that differ only
+        // in one of them can resolve the same `#include` to different headers.
+        // The preprocessor cache already keys on them (see
+        // `preprocessor_cache::CACHED_ENV_VARS`); the object cache must agree.
+        "CPATH",
+        "C_INCLUDE_PATH",
+        "CPLUS_INCLUDE_PATH",
+        "OBJC_INCLUDE_PATH",
+        "OBJCPLUS_INCLUDE_PATH",
         "MACOSX_DEPLOYMENT_TARGET",
         "IPHONEOS_DEPLOYMENT_TARGET",
         "TVOS_DEPLOYMENT_TARGET",
@@ -1844,6 +1853,39 @@ mod test {
 
             assert_neq!(h1, h2);
             assert_neq!(h2, h3);
+        }
+    }
+
+    #[test]
+    fn test_include_path_env_var_differs() {
+        let args = ovec!["a", "b", "c"];
+        // Assert the names explicitly: the loop above iterates whatever the set
+        // happens to hold, so dropping one of these from it would otherwise go
+        // unnoticed by the test suite.
+        for var in [
+            "CPATH",
+            "C_INCLUDE_PATH",
+            "CPLUS_INCLUDE_PATH",
+            "OBJC_INCLUDE_PATH",
+            "OBJCPLUS_INCLUDE_PATH",
+        ] {
+            assert!(
+                CACHED_ENV_VARS.contains(OsStr::new(var)),
+                "{var} must be part of the object cache key"
+            );
+
+            let h1 = HashKeyParams::new("abcd", Language::C, &args, b"hello world")
+                .with_env_vars(&[(OsString::from(var), OsString::from("/first/include"))])
+                .compute();
+            let h2 = HashKeyParams::new("abcd", Language::C, &args, b"hello world")
+                .with_env_vars(&[(OsString::from(var), OsString::from("/second/include"))])
+                .compute();
+            let h3 = HashKeyParams::new("abcd", Language::C, &args, b"hello world")
+                .with_env_vars(&[(OsString::from(var), OsString::from("/first/include"))])
+                .compute();
+
+            assert_neq!(h1, h2);
+            assert_eq!(h1, h3);
         }
     }
 
