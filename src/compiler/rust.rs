@@ -29,7 +29,7 @@ use crate::mock_command::{CommandCreatorSync, RunCommand};
 use crate::util::{
     Digest, fmt_duration_as_secs, hash_all, hash_all_archives, hash_all_externs, run_input_output,
 };
-use crate::util::{HashToDigest, OsStrExt, strip_basedirs_from_arg};
+use crate::util::{HashToDigest, OsStrExt, env_var_name_matches, strip_basedirs_from_arg};
 use crate::{counted_array, dist};
 use async_trait::async_trait;
 use filetime::FileTime;
@@ -1823,6 +1823,25 @@ fn strip_basedirs_os<'a>(value: &'a OsStr, basedirs: &[Vec<u8>]) -> Cow<'a, OsSt
     }
 }
 
+/// Whether an env-dep is listed in `SCCACHE_BASEDIRS_VERBATIM_ENV_DEPS`. rustc lists the
+/// name as the crate wrote it, which on Windows can differ in case from the listed one.
+fn basedirs_verbatim_env_deps<'a>(
+    env_vars: &'a [(OsString, OsString)],
+    basedirs: &[Vec<u8>],
+) -> impl Fn(&OsStr) -> bool + 'a {
+    const VAR: &str = "SCCACHE_BASEDIRS_VERBATIM_ENV_DEPS";
+    let mut names = vec![];
+    if !basedirs.is_empty()
+        && let Some((_, value)) = env_vars.iter().find(|(k, _)| env_var_name_matches(k, VAR))
+    {
+        match value.to_str() {
+            Some(value) => names.extend(value.split(',').map(str::trim).filter(|n| !n.is_empty())),
+            None => warn!("Ignoring {VAR}: not valid UTF-8: {value:?}"),
+        }
+    }
+    move |var| names.iter().any(|name| env_var_name_matches(var, name))
+}
+
 #[allow(clippy::suspicious_else_formatting)] // False positive
 #[async_trait]
 impl<T> CompilerHasher<T> for RustHasher
@@ -2059,11 +2078,18 @@ where
         // 8. Environment variables: Hash all environment variables listed in the rustc dep-info
         //    output. Additionally also has all environment variables starting with `CARGO_`,
         //    since those are not listed in dep-info but affect cacheability.
+        //    A crate that bakes a listed env-dep such as `env!("CARGO_MANIFEST_DIR")` into its
+        //    outputs must not hit across checkouts. Stripped values start with a NUL, unlike these.
         env_deps.sort();
+        let verbatim = basedirs_verbatim_env_deps(&env_vars, basedirs);
         for (var, val) in env_deps.iter() {
             var.hash(&mut HashToDigest { digest: &mut m });
             m.update(b"=");
-            strip_basedirs_os(val, basedirs).hash(&mut HashToDigest { digest: &mut m });
+            if verbatim(var) {
+                val.hash(&mut HashToDigest { digest: &mut m });
+            } else {
+                strip_basedirs_os(val, basedirs).hash(&mut HashToDigest { digest: &mut m });
+            }
         }
         let mut env_vars: Vec<_> = env_vars
             .iter()
@@ -4678,6 +4704,87 @@ foo.rs:
             )
         };
         assert_ne!(key(None), key(Some(root.clone().into())));
+    }
+
+    /// SCCACHE_BASEDIRS_VERBATIM_ENV_DEPS keeps a crate that read a listed env-dep keyed
+    /// per checkout; other crates still share their key across checkouts.
+    #[test]
+    fn test_hash_basedirs_verbatim_env_deps() {
+        // `reads` is the name the crate read `CARGO_MANIFEST_DIR` under, if any.
+        fn key(
+            f: &TestFixture,
+            verbatim: Option<(&str, &OsStr)>,
+            reads: Option<&'static str>,
+            basedirs: &[Vec<u8>],
+        ) -> String {
+            let root = f.tempdir.path();
+            let mut env_vars: Vec<(OsString, OsString)> = vec![
+                ("CARGO_MANIFEST_DIR".into(), root.into()),
+                // Keeps the remembered dep-info of the kinds of crate apart.
+                ("READS".into(), reads.unwrap_or_default().into()),
+            ];
+            env_vars.extend(verbatim.map(|(var, v)| (var.into(), v.into())));
+            let mut env_deps = vec![("OUT_DIR", root.join("target").join("out").into())];
+            env_deps.extend(reads.map(|name| (name, root.into())));
+            hash_key_with(
+                f,
+                &[
+                    "--emit",
+                    "link",
+                    "foo.rs",
+                    "--out-dir",
+                    "out",
+                    "--crate-name",
+                    "foo",
+                    "--crate-type",
+                    "lib",
+                ],
+                &env_vars,
+                &env_deps,
+                nothing,
+                MockStorage::new(None, false).with_basedirs(basedirs.to_vec()),
+            )
+        }
+
+        let a = TestFixture::new();
+        let b = TestFixture::new();
+        let both = [basedir(a.tempdir.path()), basedir(b.tempdir.path())];
+        const VAR: &str = "SCCACHE_BASEDIRS_VERBATIM_ENV_DEPS";
+        let list = OsStr::new(" CARGO_MANIFEST_DIR,,CARGO_MANIFEST_PATH");
+        let names = Some((VAR, list));
+        let reads = Some("CARGO_MANIFEST_DIR");
+        // Unset, the env-dep is stripped and the checkouts share a key.
+        assert_eq!(key(&a, None, reads, &both), key(&b, None, reads, &both));
+        // Listed, a crate that read it is keyed per checkout...
+        assert_ne!(key(&a, names, reads, &both), key(&b, names, reads, &both));
+        // ...one that did not keeps the key it has when unset, as does every crate
+        // without basedirs.
+        assert_eq!(key(&a, names, None, &both), key(&b, None, None, &both));
+        assert_eq!(key(&a, names, reads, &[]), key(&a, None, reads, &[]));
+        // `env!("cargo_manifest_dir")` reads the same variable on Windows only.
+        let lower = Some("cargo_manifest_dir");
+        assert_eq!(
+            key(&a, names, lower, &both) != key(&b, names, lower, &both),
+            cfg!(windows)
+        );
+        // On Windows the list's own variable also matches in lowercase.
+        let lower_var = Some(("sccache_basedirs_verbatim_env_deps", list));
+        assert_eq!(
+            key(&a, lower_var, reads, &both) != key(&b, lower_var, reads, &both),
+            cfg!(windows)
+        );
+        // An empty or invalid value is ignored.
+        #[cfg(unix)]
+        let invalid = <OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(&[0xff]);
+        #[cfg(windows)]
+        let invalid: &OsStr =
+            &<OsString as std::os::windows::ffi::OsStringExt>::from_wide(&[0xd800]);
+        for value in [OsStr::new(""), invalid] {
+            assert_eq!(
+                key(&a, Some((VAR, value)), reads, &both),
+                key(&b, None, reads, &both)
+            );
+        }
     }
 
     #[test_case(true ; "with preprocessor cache")]
