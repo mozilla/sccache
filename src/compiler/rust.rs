@@ -15,8 +15,8 @@
 use crate::cache::{FileObjectSource, Storage};
 use crate::compiler::args::*;
 use crate::compiler::{
-    CCompileCommand, Cacheable, ColorMode, Compilation, CompileCommand, Compiler,
-    CompilerArguments, CompilerHasher, CompilerKind, CompilerProxy, HashResult, Language,
+    CCompileCommand, Cacheable, ColorMode, Compilation, CompileCommand, CompileCommandImpl,
+    Compiler, CompilerArguments, CompilerHasher, CompilerKind, CompilerProxy, HashResult, Language,
     SingleCompileCommand, c::ArtifactDescriptor,
 };
 #[cfg(feature = "dist-client")]
@@ -455,11 +455,18 @@ where
         .tempdir()
         .context("Failed to create temp dir")?;
     let dep_file = temp_dir.path().join("deps.d");
+    let mut dep_info_arguments = arguments.to_vec();
+    dep_info_arguments.extend([
+        OsString::from("--emit"),
+        OsString::from("dep-info"),
+        OsString::from("-o"),
+        dep_file.clone().into_os_string(),
+    ]);
+    // The response file lives until rustc has run, see `arguments_for_spawn`.
+    let (dep_info_arguments, _response_file) =
+        arguments_for_spawn(executable, &dep_info_arguments, COMMAND_LINE_LIMIT)?;
     let mut cmd = creator.clone().new_command_sync(executable);
-    cmd.args(arguments)
-        .args(&["--emit", "dep-info"])
-        .arg("-o")
-        .arg(&dep_file)
+    cmd.args(&dep_info_arguments)
         .env_clear()
         .envs(env_vars.to_vec())
         .current_dir(cwd);
@@ -791,9 +798,13 @@ where
     T: Clone + CommandCreatorSync,
 {
     let start = time::Instant::now();
+    let mut arguments = arguments;
+    arguments.extend([OsString::from("--print"), OsString::from("file-names")]);
+    // The response file lives until rustc has run, see `arguments_for_spawn`.
+    let (arguments, _response_file) =
+        arguments_for_spawn(executable, &arguments, COMMAND_LINE_LIMIT)?;
     let mut cmd = creator.clone().new_command_sync(executable);
     cmd.args(&arguments)
-        .args(&["--print", "file-names"])
         .env_clear()
         .envs(env_vars.to_vec())
         .current_dir(cwd);
@@ -1538,6 +1549,109 @@ impl Iterator for ExpandResponseFile<'_> {
             let new_args = split_rust_response_file_args(&contents);
             self.stack.extend(new_args.into_iter().rev());
         }
+    }
+}
+
+/// Windows takes 32,767 characters with the nul (os error 206); this leaves some room.
+#[cfg(windows)]
+const COMMAND_LINE_LIMIT: Option<usize> = Some(32_000);
+
+/// Unix's `ARG_MAX` is megabytes, far above what a rustc command line reaches.
+#[cfg(not(windows))]
+const COMMAND_LINE_LIMIT: Option<usize> = None;
+
+/// An upper bound: every `\` and `"` counts as escaped, which overcounts paths a lot.
+fn command_line_len(executable: &Path, arguments: &[OsString]) -> usize {
+    let len = |arg: &OsStr| {
+        let bytes = arg.as_encoded_bytes();
+        bytes.len() + 3 + bytes.iter().filter(|b| matches!(b, b'"' | b'\\')).count()
+    };
+    len(executable.as_os_str()) + arguments.iter().map(|arg| len(arg)).sum::<usize>()
+}
+
+/// A response file rustc reads `arguments` back from unchanged, if any: rustc trims and
+/// skips empty lines and does not expand `@file` inside one.
+fn response_file_contents(arguments: &[OsString]) -> Option<String> {
+    let mut contents = String::new();
+    for arg in arguments {
+        let arg = arg.to_str()?;
+        if arg.starts_with('@') {
+            return None;
+        }
+        contents.push_str(arg);
+        contents.push('\n');
+    }
+    (split_rust_response_file_args(&contents) == arguments).then_some(contents)
+}
+
+/// Like cargo, passes a command line too long to spawn as one `@file`, which must live
+/// until rustc has run. Arguments a response file would change are left as they are.
+fn arguments_for_spawn(
+    executable: &Path,
+    arguments: &[OsString],
+    limit: Option<usize>,
+) -> Result<(Vec<OsString>, Option<tempfile::NamedTempFile>)> {
+    let len = command_line_len(executable, arguments);
+    if !matches!(limit, Some(limit) if len > limit) {
+        return Ok((arguments.to_vec(), None));
+    }
+    let Some(contents) = response_file_contents(arguments) else {
+        warn!(
+            "a command line of {len} characters is too long for this platform, and holds an \
+             argument no response file can pass to rustc"
+        );
+        return Ok((arguments.to_vec(), None));
+    };
+    use std::io::Write;
+    let mut file = tempfile::Builder::new()
+        .prefix("sccache-args")
+        .suffix(".rsp")
+        .tempfile()
+        .context("Failed to create a response file")?;
+    file.write_all(contents.as_bytes())
+        .and_then(|()| file.flush())
+        .context("Failed to write a response file")?;
+    debug!(
+        "a command line of {len} characters is too long for this platform: rustc reads its \
+         {} arguments from {}",
+        arguments.len(),
+        file.path().display()
+    );
+    let mut arg = OsString::from("@");
+    arg.push(file.path());
+    Ok((vec![arg], Some(file)))
+}
+
+/// Keeps the response file of [`arguments_for_spawn`] until the compile has run.
+struct WithResponseFile<C> {
+    inner: C,
+    _response_file: Option<tempfile::NamedTempFile>,
+}
+
+#[async_trait]
+impl<C: CompileCommandImpl> CompileCommandImpl for WithResponseFile<C> {
+    fn get_executable(&self) -> PathBuf {
+        self.inner.get_executable()
+    }
+    fn get_arguments(&self) -> Vec<OsString> {
+        self.inner.get_arguments()
+    }
+    fn get_env_vars(&self) -> Vec<(OsString, OsString)> {
+        self.inner.get_env_vars()
+    }
+    fn get_cwd(&self) -> PathBuf {
+        self.inner.get_cwd()
+    }
+
+    async fn execute<T>(
+        &self,
+        service: &crate::server::SccacheService<T>,
+        creator: &T,
+    ) -> Result<process::Output>
+    where
+        T: CommandCreatorSync,
+    {
+        self.inner.execute(service, creator).await
     }
 }
 
@@ -2301,12 +2415,16 @@ impl<T: CommandCreatorSync> Compilation<T> for RustCompilation {
 
         trace!("[{}]: compile", crate_name);
 
+        let spawn_arguments: Vec<OsString> = arguments
+            .iter()
+            .flat_map(|arg| arg.iter_os_strings())
+            .collect();
+        // The response file lives as long as the command, see `arguments_for_spawn`.
+        let (spawn_arguments, response_file) =
+            arguments_for_spawn(executable, &spawn_arguments, COMMAND_LINE_LIMIT)?;
         let command = SingleCompileCommand {
             executable: executable.to_owned(),
-            arguments: arguments
-                .iter()
-                .flat_map(|arg| arg.iter_os_strings())
-                .collect(),
+            arguments: spawn_arguments,
             env_vars: env_vars.to_owned(),
             cwd: cwd.to_owned(),
             // rustc reads `CARGO_MAKEFLAGS` and runs codegen on a thread pool
@@ -2421,6 +2539,10 @@ impl<T: CommandCreatorSync> Compilation<T> for RustCompilation {
             })
         })();
 
+        let command = WithResponseFile {
+            inner: command,
+            _response_file: response_file,
+        };
         Ok((CCompileCommand::new(command), dist_command, Cacheable::Yes))
     }
 
@@ -4157,6 +4279,8 @@ hash 42fac6f0 stable_crate_id StableCrateId(12206970385906972588)
             .map(|(var, val)| format!("# env-dep:{var}={}", escape_dep_env(val)))
             .collect::<Vec<String>>();
         next_command_calls(creator, move |args| {
+            // A long command line comes as a response file, see `arguments_for_spawn`.
+            let args: Vec<OsString> = ExpandResponseFile::new(Path::new(""), args).collect();
             let mut dep_info_path = None;
             let mut it = args.iter();
             while let Some(a) = it.next() {
@@ -4531,6 +4655,21 @@ foo.rs:
         A: AsRef<OsStr>,
         F: Fn(&Path) -> Result<()>,
     {
+        hash_result_with(f, args, env_vars, env_deps, pre_func, storage).key
+    }
+
+    fn hash_result_with<A, F>(
+        f: &TestFixture,
+        args: &[A],
+        env_vars: &[(OsString, OsString)],
+        env_deps: &[(&str, OsString)],
+        pre_func: F,
+        storage: MockStorage,
+    ) -> HashResult<Arc<Mutex<MockCommandCreator>>>
+    where
+        A: AsRef<OsStr>,
+        F: Fn(&Path) -> Result<()>,
+    {
         let oargs = args
             .iter()
             .map(|a| a.as_ref().to_owned())
@@ -4584,7 +4723,6 @@ foo.rs:
             )
             .wait()
             .unwrap()
-            .key
     }
 
     #[allow(clippy::unnecessary_unwrap)]
@@ -5069,6 +5207,155 @@ foo.rs:
             ovec!["--emit", "foo.rs"],
             split_rust_response_file_args("--emit\r\nfoo.rs\r\n")
         );
+    }
+
+    #[test]
+    fn test_command_line_len() {
+        let len = |args: &[&str]| {
+            command_line_len(
+                Path::new("rustc"),
+                &args.iter().map(OsString::from).collect::<Vec<_>>(),
+            )
+        };
+        // The executable alone: its own bytes, a separator and both quotes.
+        assert_eq!(len(&[]), "rustc".len() + 3);
+        // An argument adds its bytes, a separator and both quotes...
+        assert_eq!(len(&["--crate-name"]), len(&[]) + "--crate-name".len() + 3);
+        // ...and an escape for every byte Windows may have to escape.
+        assert_eq!(len(&[r"a\b"]), len(&["axb"]) + 1);
+        assert_eq!(len(&["a\"b"]), len(&["axb"]) + 1);
+    }
+
+    fn long_arguments() -> Vec<OsString> {
+        (0..1000)
+            .map(|i| OsString::from(format!("--cfg=feature=\"some-feature-{i}\"")))
+            .collect()
+    }
+
+    #[test]
+    fn test_arguments_for_spawn() {
+        let rustc = Path::new("rustc");
+        let short = ovec!["--emit", "link", "foo.rs"];
+        let long = long_arguments();
+        let spawn = |arguments: &[OsString], limit: Option<usize>| {
+            arguments_for_spawn(rustc, arguments, limit).unwrap()
+        };
+        // Under the limit, and with no limit at all, the arguments are spawned as they are.
+        let (arguments, file) = spawn(&short, Some(100));
+        assert_eq!(arguments, short);
+        assert!(file.is_none());
+        let (arguments, file) = spawn(&long, None);
+        assert_eq!(arguments, long);
+        assert!(file.is_none());
+        // Over the limit, rustc reads the same arguments back from one `@file`.
+        assert!(command_line_len(rustc, &long) > 32_000);
+        let (arguments, file) = spawn(&long, Some(32_000));
+        let file = file.expect("the arguments went in a response file");
+        assert_eq!(arguments.len(), 1);
+        let path = arguments[0]
+            .to_str()
+            .unwrap()
+            .strip_prefix('@')
+            .expect("the argument names the response file")
+            .to_owned();
+        assert_eq!(Path::new(&path), file.path());
+        let contents = fs::read_to_string(file.path()).unwrap();
+        assert_eq!(split_rust_response_file_args(&contents), long);
+        assert!(command_line_len(rustc, &arguments) <= 32_000);
+    }
+
+    /// An argument a response file would change leaves the command line as it is.
+    #[test]
+    fn test_arguments_for_spawn_keeps_arguments_a_response_file_would_change() {
+        let rustc = Path::new("rustc");
+        let long = long_arguments();
+        let with = |arg: OsString| {
+            let mut arguments = long.clone();
+            arguments.push(arg.clone());
+            let (spawned, file) = arguments_for_spawn(rustc, &arguments, Some(32_000)).unwrap();
+            assert!(file.is_none(), "{arg:?} went in a response file");
+            assert!(spawned == arguments, "{arg:?} was not spawned as it is");
+        };
+        // rustc splits on newlines, trims, skips empty lines and does not expand `@file`.
+        with(OsString::from("--cfg=feature=\"a\nb\""));
+        with(OsString::from("--cfg=feature=\"a\"\r"));
+        with(OsString::from(" --cfg=feature=\"a\""));
+        with(OsString::from("--cfg=feature=\"a\" "));
+        with(OsString::from(""));
+        with(OsString::from("@more-args"));
+        // It reads the file as UTF-8.
+        #[cfg(unix)]
+        with({
+            use std::os::unix::ffi::OsStringExt;
+            OsString::from_vec(vec![b'-', b'-', 0x80])
+        });
+        #[cfg(windows)]
+        with({
+            use std::os::windows::ffi::OsStringExt;
+            OsString::from_wide(&[0x2d, 0x2d, 0xd800])
+        });
+        // The same arguments without the one that cannot be written do get a response file.
+        let (_, file) = arguments_for_spawn(rustc, &long, Some(32_000)).unwrap();
+        assert!(file.is_some());
+    }
+
+    /// A crate with a thousand features compiles through a response file that is deleted
+    /// with the command.
+    #[cfg(windows)]
+    #[test]
+    fn test_generate_compile_commands_response_file() {
+        let f = TestFixture::new();
+        let mut args: Vec<OsString> = ovec![
+            "--emit",
+            "link",
+            "foo.rs",
+            "--out-dir",
+            "out",
+            "--crate-name",
+            "foo",
+            "--crate-type",
+            "lib"
+        ];
+        let cfgs: Vec<String> = (0..1000)
+            .map(|i| format!("feature=\"some-feature-{i}\""))
+            .collect();
+        for cfg in &cfgs {
+            args.push(OsString::from("--cfg"));
+            args.push(OsString::from(cfg));
+        }
+        let result = hash_result_with(&f, &args, &[], &[], nothing, MockStorage::new(None, false));
+        let (command, _, _) = result
+            .compilation
+            .generate_compile_commands(&mut dist::PathTransformer::new(), false)
+            .unwrap();
+        let arguments = command.get_arguments();
+        assert_eq!(
+            arguments.len(),
+            1,
+            "spawned with one @file rather than {} arguments",
+            arguments.len()
+        );
+        let path = PathBuf::from(
+            arguments[0]
+                .to_str()
+                .unwrap()
+                .strip_prefix('@')
+                .expect("the argument names a response file"),
+        );
+        let read_back = split_rust_response_file_args(&fs::read_to_string(&path).unwrap());
+        // What rustc reads is the command line that could not be spawned.
+        assert!(command_line_len(Path::new("rustc"), &read_back) > 32_000);
+        for cfg in &cfgs {
+            assert!(
+                read_back.contains(&OsString::from(cfg)),
+                "the compile asked for --cfg {cfg}"
+            );
+        }
+        assert!(read_back.contains(&OsString::from("foo.rs")));
+        assert!(read_back.contains(&OsString::from("foo")));
+        // The file lives as long as the command that names it, and no longer.
+        drop(command);
+        assert!(!path.exists());
     }
 
     #[test]
