@@ -289,25 +289,21 @@ fn replace_show_includes(
 
     let current_includes = preprocessor_stderr
         .split_inclusive(|&b| b == b'\n')
-        .filter(|line| is_include(line))
-        .collect::<Vec<_>>();
+        .filter(|line| is_include(line));
 
-    let mut output = Vec::with_capacity(stdout.len());
-    let mut replaced = false;
-    for line in stdout.split_inclusive(|&b| b == b'\n') {
-        if is_include(line) {
-            if !replaced {
-                for include in &current_includes {
-                    output.extend_from_slice(include);
-                }
-                replaced = true;
-            }
-        } else {
-            output.extend_from_slice(line);
-        }
-    }
-
-    if replaced { output } else { stdout.to_vec() }
+    let mut lines = stdout.split_inclusive(|&b| b == b'\n').collect::<Vec<_>>();
+    // cl.exe echoes the source file name before the includes, both when
+    // compiling and when preprocessing. clang-cl does not.
+    let position = lines
+        .iter()
+        .position(|line| is_include(line))
+        .unwrap_or_else(|| {
+            let first_stderr_line = preprocessor_stderr.split_inclusive(|&b| b == b'\n').next();
+            usize::from(!lines.is_empty() && lines.first() == first_stderr_line.as_ref())
+        });
+    lines.retain(|line| !is_include(line));
+    lines.splice(position..position, current_includes);
+    lines.concat()
 }
 
 ArgData! {
@@ -1724,7 +1720,12 @@ mod test {
         let stdout = b"foo.c\r\nwarning text\r\n";
         assert_eq!(
             replace_show_includes(stdout, preprocessor_stderr, includes_prefix),
-            stdout.to_vec()
+            b"foo.c\r\nNote: including file: C:\\b\\inc\\h.h\r\nwarning text\r\n".to_vec()
+        );
+        let preprocessor_stderr = b"Note: including file: .\\h.h\n";
+        assert_eq!(
+            replace_show_includes(b"", preprocessor_stderr, includes_prefix),
+            preprocessor_stderr.to_vec()
         );
     }
 
