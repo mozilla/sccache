@@ -56,6 +56,14 @@ use crate::errors::*;
 const DEFAULT_THRESHOLD: u32 = 3;
 const DEFAULT_COOLDOWN: Duration = Duration::from_secs(60);
 
+/// How long an admitted probe is trusted to come back on its own before the
+/// gate lets another lookup through anyway. The probe read is already cut at
+/// its own budget (the wrapper's timeout in Full mode, the chain's per-level
+/// share in CallerOwned mode), so this margin only matters if the probe
+/// state wedges — the cost of the net is one extra probe, never a stuck
+/// level.
+const PROBE_DEADLINE_MARGIN: Duration = Duration::from_secs(10);
+
 /// A read that was skipped because the level's backoff gate is open.
 #[derive(Debug)]
 pub(crate) struct LevelSkipped;
@@ -83,6 +91,11 @@ impl std::error::Error for LevelTimedOut {}
 struct GateState {
     consecutive_timeouts: u32,
     open_until: Option<Instant>,
+    /// The recovery probe's safety window: set when an expired cooldown
+    /// admits its one probe, so concurrent lookups keep skipping until the
+    /// probe answers. Cleared by an answer, by the probe timing out, or —
+    /// as a last resort — by expiring, which admits a fresh probe.
+    probe_deadline: Option<Instant>,
 }
 
 /// The gate for one cache level.
@@ -114,26 +127,67 @@ impl BackendBackoff {
             state: Mutex::new(GateState {
                 consecutive_timeouts: 0,
                 open_until: None,
+                probe_deadline: None,
             }),
         }
     }
 
-    /// Whether reads to this level should be skipped right now.
-    pub(crate) fn lookup_blocked(&self) -> bool {
+    /// Whether reads to this level should be skipped right now. A pure
+    /// question — tests and logs ask this; the gated read entries go
+    /// through [`BackendBackoff::try_admit`], the only caller that moves
+    /// the gate forward.
+    #[cfg(test)]
+    pub(crate) fn is_open(&self) -> bool {
         if self.threshold == 0 {
             return false;
         }
         let state = self.state.lock().unwrap();
-        state.open_until.is_some_and(|until| Instant::now() < until)
+        let now = Instant::now();
+        state.open_until.is_some_and(|until| now < until)
+            || state.probe_deadline.is_some_and(|until| now < until)
+    }
+
+    /// Whether one more read may proceed, admitting the recovery probe
+    /// when a cooldown has expired. The state table, for threshold > 0:
+    ///
+    /// | `open_until`       | probe window            | result |
+    /// |--------------------|-------------------------|--------|
+    /// | `None`             | –                       | admit, no change |
+    /// | `Some(t)`, running | –                       | refuse |
+    /// | `Some(t)`, expired | none, or window passed  | admit as the probe, arm `probe_deadline` |
+    /// | `Some(t)`, expired | window still in future  | refuse |
+    fn try_admit(&self) -> bool {
+        if self.threshold == 0 {
+            return true;
+        }
+        let mut state = self.state.lock().unwrap();
+        let now = Instant::now();
+        if state.open_until.is_some_and(|until| now < until) {
+            // The cooldown is still running: refuse, admit nothing.
+            return false;
+        }
+        if state.probe_deadline.is_some_and(|until| now < until) {
+            // One probe is already out (or its safety window is live).
+            return false;
+        }
+        if state.open_until.is_some() {
+            // Cooldown expired: this lookup becomes the single probe, and
+            // the rest keep skipping until it answers.
+            state.probe_deadline = Some(now + read_timeout() + PROBE_DEADLINE_MARGIN);
+        }
+        true
     }
 
     /// Record a read that ran out of time. Called only by `ReadGuard::drop`
-    /// when a gated read is cancelled before it answers.
+    /// when a gated read is cancelled before it answers. Also ends the
+    /// probe state: a probe that times out (or is cancelled by any outer
+    /// timer) restarts the cooldown.
     pub(crate) fn record_timed_out(&self) {
         if self.threshold == 0 {
             return;
         }
         let mut state = self.state.lock().unwrap();
+        state.probe_deadline = None;
         state.consecutive_timeouts += 1;
         if state.consecutive_timeouts >= self.threshold {
             let newly_open = state.open_until.is_none_or(|until| Instant::now() >= until);
@@ -148,13 +202,18 @@ impl BackendBackoff {
         }
     }
 
-    /// Record a read the level answered (hit, miss or fast error).
+    /// Record a read the level answered (hit, miss or fast error). Resets
+    /// the counter and reopens the level: an answer — including a late
+    /// in-flight read finishing during the cooldown — is evidence the
+    /// level serves again, so `open_until` and the probe state clear too.
     fn record_response(&self) {
         if self.threshold == 0 {
             return;
         }
         let mut state = self.state.lock().unwrap();
         state.consecutive_timeouts = 0;
+        state.open_until = None;
+        state.probe_deadline = None;
     }
 }
 
@@ -240,11 +299,14 @@ impl Drop for ReadGuard<'_> {
 /// Wraps one cache level with the per-level backoff gate.
 ///
 /// Reads only: every other operation is forwarded untouched, so a level in
-/// cooldown keeps accepting writes and startup checks. The wrapper reports
-/// [`LevelSkipped`] while its gate is open (or, when it owns the read
-/// timeout, [`LevelTimedOut`] once the level outlasts it); callers recognize
-/// both and report the lookup the same way a lookup that ran out of time is
-/// reported.
+/// cooldown keeps accepting writes and startup checks. Recovery is
+/// half-open: when a cooldown ends, exactly one lookup probes the level
+/// while the rest keep skipping until it answers — an answer reopens the
+/// level immediately, a probe that times out restarts the cooldown. The
+/// wrapper reports [`LevelSkipped`] while its gate is open (or, when it
+/// owns the read timeout, [`LevelTimedOut`] once the level outlasts it);
+/// callers recognize both and report the lookup the same way a lookup that
+/// ran out of time is reported.
 pub(crate) struct BackoffStorage {
     inner: Arc<dyn Storage>,
     backoff: BackendBackoff,
@@ -323,7 +385,7 @@ impl BackoffStorage {
     }
 
     async fn gated_get(&self, key: &str) -> Result<Cache> {
-        if self.backoff.lookup_blocked() {
+        if !self.backoff.try_admit() {
             return Err(anyhow::Error::new(LevelSkipped));
         }
         // Any timer that cancels this read — this wrapper's own (Full mode),
@@ -365,7 +427,7 @@ impl BackoffStorage {
     }
 
     async fn gated_get_with_raw(&self, key: &str) -> Result<(Cache, Option<Bytes>)> {
-        if self.backoff.lookup_blocked() {
+        if !self.backoff.try_admit() {
             return Err(anyhow::Error::new(LevelSkipped));
         }
         // See `gated_get` for the guard contract.
@@ -394,7 +456,7 @@ impl BackoffStorage {
         }
     }
     async fn gated_get_raw(&self, key: &str) -> Result<Option<Bytes>> {
-        if self.backoff.lookup_blocked() {
+        if !self.backoff.try_admit() {
             return Err(anyhow::Error::new(LevelSkipped));
         }
         // Same contract as `gated_get`: the guard records a timeout when a
@@ -617,12 +679,12 @@ mod test {
     #[test]
     fn consecutive_timeouts_trip_the_gate() {
         let backoff = BackendBackoff::new(3, Duration::from_secs(60));
-        assert!(!backoff.lookup_blocked());
+        assert!(!backoff.is_open());
         backoff.record_timed_out();
         backoff.record_timed_out();
-        assert!(!backoff.lookup_blocked());
+        assert!(!backoff.is_open());
         backoff.record_timed_out();
-        assert!(backoff.lookup_blocked());
+        assert!(backoff.is_open());
     }
 
     #[test]
@@ -633,9 +695,9 @@ mod test {
         backoff.record_response();
         backoff.record_timed_out();
         backoff.record_timed_out();
-        assert!(!backoff.lookup_blocked());
+        assert!(!backoff.is_open());
         backoff.record_timed_out();
-        assert!(backoff.lookup_blocked());
+        assert!(backoff.is_open());
     }
 
     #[test]
@@ -644,19 +706,65 @@ mod test {
         for _ in 0..10 {
             backoff.record_timed_out();
         }
-        assert!(!backoff.lookup_blocked());
+        assert!(!backoff.is_open());
+        assert!(backoff.try_admit());
     }
 
     #[test]
     fn lookups_resume_after_the_cooldown_expires() {
         let backoff = BackendBackoff::new(1, Duration::from_millis(20));
         backoff.record_timed_out();
-        assert!(backoff.lookup_blocked());
+        // The cooldown is running: refuse, admit nothing.
+        assert!(!backoff.try_admit());
         std::thread::sleep(Duration::from_millis(40));
-        assert!(!backoff.lookup_blocked());
-        // The recovery read timing out again re-opens the gate.
+        // Expired: the first lookup becomes the single recovery probe…
+        assert!(backoff.try_admit());
+        // …and a second concurrent lookup keeps skipping until it answers.
+        assert!(!backoff.try_admit());
+        // The probe timing out again restarts the cooldown.
         backoff.record_timed_out();
-        assert!(backoff.lookup_blocked());
+        assert!(!backoff.try_admit());
+        // The probe's answer reopens the level for everyone.
+        backoff.record_response();
+        assert!(!backoff.is_open());
+        assert!(backoff.try_admit());
+        assert!(backoff.try_admit());
+    }
+
+    #[test]
+    fn an_answered_read_reopens_a_level_in_cooldown() {
+        // Beyond the counter reset: an answer — hit, miss or fast error — is
+        // evidence the level serves again, so an open cooldown clears
+        // instead of waiting itself out. A late in-flight read finishing
+        // during the cooldown reopens the level the same way.
+        let backoff = BackendBackoff::new(1, Duration::from_secs(60));
+        backoff.record_timed_out();
+        assert!(backoff.is_open());
+        backoff.record_response();
+        assert!(!backoff.is_open());
+    }
+
+    #[test]
+    fn a_wedged_probe_window_admits_a_fresh_probe() {
+        // The safety net: if the probe state wedges (a refactor forgets to
+        // clear it), an expired probe window lets the next lookup through
+        // instead of skipping the level forever.
+        let backoff = BackendBackoff::new(1, Duration::from_secs(60));
+        backoff.record_timed_out();
+        {
+            let mut state = backoff.state.lock().unwrap();
+            state.open_until = Some(Instant::now() - Duration::from_secs(1));
+            state.probe_deadline = Some(Instant::now() + Duration::from_secs(3600));
+        }
+        assert!(!backoff.try_admit(), "a live probe window refuses");
+        {
+            let mut state = backoff.state.lock().unwrap();
+            state.probe_deadline = Some(Instant::now() - Duration::from_secs(1));
+        }
+        assert!(
+            backoff.try_admit(),
+            "an expired probe window admits a fresh probe"
+        );
     }
 
     #[test]
@@ -777,7 +885,7 @@ mod test {
         // Trip the gate the way the chain would: one read ran out of its
         // budget.
         storage.backoff.record_timed_out();
-        assert!(storage.backoff.lookup_blocked());
+        assert!(storage.backoff.is_open());
 
         runtime.block_on(async {
             let start = Instant::now();
@@ -799,7 +907,7 @@ mod test {
             TimeBudget::CallerOwned,
         );
         storage.backoff.record_timed_out();
-        assert!(storage.backoff.lookup_blocked());
+        assert!(storage.backoff.is_open());
 
         runtime.block_on(async {
             // A gated level still accepts writes and forwards its surface.
@@ -963,10 +1071,7 @@ mod test {
             let result = storage2.get_raw("k").await.unwrap();
             assert_eq!(result, None);
         });
-        assert!(
-            !storage2.gate().lookup_blocked(),
-            "one answered raw read resets"
-        );
+        assert!(!storage2.gate().is_open(), "one answered raw read resets");
     }
 
     /// A waker that does nothing: the cancelled-read test polls a future
@@ -1015,7 +1120,7 @@ mod test {
         });
 
         assert!(
-            wrapped.gate().lookup_blocked(),
+            wrapped.gate().is_open(),
             "three cancelled reads must trip the gate"
         );
 
@@ -1034,7 +1139,7 @@ mod test {
             let result = wrapped2.get("k").await.unwrap();
             assert!(matches!(result, Cache::Miss));
         });
-        assert!(!wrapped2.gate().lookup_blocked());
+        assert!(!wrapped2.gate().is_open());
         assert_eq!(level2.reads(), 1);
     }
 }
