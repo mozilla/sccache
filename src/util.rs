@@ -1543,6 +1543,18 @@ fn double_path_separators(path: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Environment variable names are case-insensitive on Windows.
+pub fn env_var_name_matches(key: &OsStr, name: &str) -> bool {
+    #[cfg(windows)]
+    {
+        key.eq_ignore_ascii_case(name)
+    }
+    #[cfg(not(windows))]
+    {
+        key == name
+    }
+}
+
 /// Normalize path for case-insensitive comparison.
 /// On Windows: converts all backslashes to forward slashes;
 ///             lowercases characters for consistency.
