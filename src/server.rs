@@ -928,6 +928,12 @@ where
 type SccacheRequest = Message<Request, Body<()>>;
 type SccacheResponse = Message<Response, Pin<Box<dyn Stream<Item = Result<Response>> + Send>>>;
 
+fn storage_read_error(key: &str, error: Error) -> Response {
+    let message = format!("{error:#}");
+    warn!("Cache lookup failed for key {key}: {message}");
+    Response::StorageReadError(message)
+}
+
 /// Messages sent from all services to the main event loop indicating activity.
 ///
 /// Whenever a request is receive a `Request` message is sent which will reset
@@ -1012,22 +1018,19 @@ where
                 }
                 Request::StorageGetPath { key } => {
                     debug!("handle_client: storage_get_path key={}", key);
-                    let result = me
-                        .storage
-                        .get_path(&key)
-                        .await
-                        .map_err(|e| format!("{e:#}"));
-                    Ok(Message::WithoutBody(Response::StorageGetPath(result)))
+                    let response = match me.storage.get_path(&key).await {
+                        Ok(result) => Response::StorageGetPath(result),
+                        Err(error) => storage_read_error(&key, error),
+                    };
+                    Ok(Message::WithoutBody(response))
                 }
                 Request::StorageGetRaw { key } => {
                     debug!("handle_client: storage_get_raw key={}", key);
-                    let result = me
-                        .storage
-                        .get_raw(&key)
-                        .await
-                        .map(|opt| opt.map(|b| b.to_vec()))
-                        .map_err(|e| format!("{e:#}"));
-                    Ok(Message::WithoutBody(Response::StorageGetRaw(result)))
+                    let response = match me.storage.get_raw(&key).await {
+                        Ok(result) => Response::StorageGetRaw(result.map(|bytes| bytes.to_vec())),
+                        Err(error) => storage_read_error(&key, error),
+                    };
+                    Ok(Message::WithoutBody(response))
                 }
                 Request::StoragePutRaw { key, data } => {
                     debug!("handle_client: storage_put_raw key={}", key);

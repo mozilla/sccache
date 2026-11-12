@@ -95,8 +95,8 @@ impl Storage for IpcStorage {
             })
             .await?;
         match resp {
-            Response::StorageGetPath(Ok(result)) => Ok(result),
-            Response::StorageGetPath(Err(e)) => bail!("IpcStorage::get_path: daemon error: {e}"),
+            Response::StorageGetPath(result) => Ok(result),
+            Response::StorageReadError(e) => bail!("IpcStorage::get_path: daemon error: {e}"),
             other => bail!("IpcStorage::get_path: unexpected response: {other:?}"),
         }
     }
@@ -112,8 +112,8 @@ impl Storage for IpcStorage {
             })
             .await?;
         match resp {
-            Response::StorageGetRaw(Ok(opt)) => Ok(opt.map(Bytes::from)),
-            Response::StorageGetRaw(Err(e)) => bail!("IpcStorage::get_raw: daemon error: {e}"),
+            Response::StorageGetRaw(opt) => Ok(opt.map(Bytes::from)),
+            Response::StorageReadError(e) => bail!("IpcStorage::get_raw: daemon error: {e}"),
             other => bail!("IpcStorage::get_raw: unexpected response: {other:?}"),
         }
     }
