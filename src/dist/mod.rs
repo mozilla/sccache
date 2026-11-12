@@ -328,6 +328,7 @@ pub fn try_compile_command_to_dist(
         cwd,
         // The jobserver is a local resource; a remote worker has its own.
         share_jobserver: _,
+        ..
     } = command;
     Some(CompileCommand {
         executable: executable.into_os_string().into_string().ok()?,
