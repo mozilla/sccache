@@ -1694,8 +1694,8 @@ pub fn resolve_compiler_avoiding_wrapper(
 #[cfg(test)]
 mod tests {
     use super::{
-        Digest, OsStrExt, TimeMacroFinder, exit_status_from_code, hash_all_externs,
-        resolve_compiler_avoiding_wrapper,
+        Digest, OsStrExt, TimeMacroFinder, exit_status_from_code, hash_all_archives,
+        hash_all_externs, resolve_compiler_avoiding_wrapper,
     };
     use crate::test::utils::single_threaded_runtime;
     use object::write::Object as WriteObject;
@@ -1730,6 +1730,60 @@ mod tests {
         let runtime = single_threaded_runtime();
         let hashes = runtime
             .block_on(hash_all_externs(&files, runtime.handle()))
+            .unwrap();
+        assert_eq!(hashes[0], hashes[1]);
+        assert_ne!(hashes[0], hashes[2]);
+    }
+
+    /// Builds a minimal COFF archive fixture without invoking a platform-specific archiver.
+    /// Hand-writing the archive lets tests include special symbol-table members while
+    /// omitting the `//` long-name table, the layout needed to reproduce the hashing bug.
+    ///
+    /// Names must use archive-header syntax and fit the 16-byte name field. Each member
+    /// has a space-padded 60-byte header with a decimal size and a `` `\n `` trailer;
+    /// odd-length payloads get a padding byte to align the next header to two bytes.
+    fn coff_archive(members: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut archive = b"!<arch>\n".to_vec();
+        for (name, data) in members {
+            let mut header = [b' '; 60];
+            header[..name.len()].copy_from_slice(name.as_bytes());
+            let size = data.len().to_string();
+            header[48..48 + size.len()].copy_from_slice(size.as_bytes());
+            header[58..].copy_from_slice(b"`\n");
+            archive.extend_from_slice(&header);
+            archive.extend_from_slice(data);
+            if data.len() % 2 != 0 {
+                archive.push(b'\n');
+            }
+        }
+        archive
+    }
+
+    #[test]
+    fn test_hash_all_archives_skips_ec_symbol_table() {
+        // llvm-ar omits the `//` names table when every member name fits in
+        // the header; object < 0.40 then returned `/<ECSYMBOLS>/` as a member.
+        let dir = tempfile::tempdir().unwrap();
+        let write = |name: &str, ec_symbols: &[u8], code: &[u8]| {
+            let path = dir.path().join(name);
+            let archive = coff_archive(&[
+                ("/", &[0; 4]),
+                ("/", &[0; 4]),
+                ("/<ECSYMBOLS>/", ec_symbols),
+                ("foo.obj/", code),
+            ]);
+            std::fs::write(&path, archive).unwrap();
+            path
+        };
+        let files = [
+            write("a.lib", &[1, 0, 1, 0], b"code"),
+            write("b.lib", &[2, 0, 2, 0], b"code"),
+            write("c.lib", &[1, 0, 1, 0], b"changed"),
+        ];
+
+        let runtime = single_threaded_runtime();
+        let hashes = runtime
+            .block_on(hash_all_archives(&files, runtime.handle()))
             .unwrap();
         assert_eq!(hashes[0], hashes[1]);
         assert_ne!(hashes[0], hashes[2]);

@@ -235,44 +235,62 @@ mod tests {
         );
     }
 
+    /// Encodes watchdog subprocess scenarios so unknown modes cannot silently act as timeouts.
+    #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    enum WatchdogMode {
+        Disconnect,
+        Timeout,
+        Acknowledge,
+    }
+
     #[test]
     fn watchdog_stops_abandoned_startup() {
         const CHILD_ENV: &str = "SCCACHE_TEST_STARTUP_WATCHDOG";
         if let Ok(mode) = std::env::var(CHILD_ENV) {
+            let mode: WatchdogMode = serde_json::from_str(&mode).unwrap();
             let (launcher, daemon) = UnixStream::pair().unwrap();
             StartupNotifier {
                 stream: Some(daemon),
             }
             .watch_launcher(Duration::from_millis(20))
             .unwrap();
-            if mode == "ack" {
-                (&launcher).write_all(&[STARTUP_ACK]).unwrap();
-                let mut confirmation = [0];
-                (&launcher).read_exact(&mut confirmation).unwrap();
-                assert_eq!(confirmation, [STARTUP_ACK]);
-                drop(launcher);
-                std::thread::sleep(Duration::from_millis(100));
-                return;
-            }
-            if mode == "disconnect" {
-                drop(launcher);
+            match mode {
+                WatchdogMode::Acknowledge => {
+                    (&launcher).write_all(&[STARTUP_ACK]).unwrap();
+                    let mut confirmation = [0];
+                    (&launcher).read_exact(&mut confirmation).unwrap();
+                    assert_eq!(confirmation, [STARTUP_ACK]);
+                    drop(launcher);
+                    std::thread::sleep(Duration::from_millis(100));
+                    return;
+                }
+                WatchdogMode::Disconnect => drop(launcher),
+                WatchdogMode::Timeout => (),
             }
             let runtime = tokio::runtime::Runtime::new().unwrap();
             runtime.spawn_blocking(|| std::thread::sleep(Duration::from_secs(2)));
             drop(runtime);
             panic!("startup watchdog did not terminate the daemon");
         }
-        for mode in ["disconnect", "timeout", "ack"] {
+        for mode in [
+            WatchdogMode::Disconnect,
+            WatchdogMode::Timeout,
+            WatchdogMode::Acknowledge,
+        ] {
             let output = std::process::Command::new(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
                     "startup::tests::watchdog_stops_abandoned_startup",
                 ])
-                .env(CHILD_ENV, mode)
+                .env(CHILD_ENV, serde_json::to_string(&mode).unwrap())
                 .output()
                 .unwrap();
-            let expected = if mode == "ack" { 0 } else { 2 };
-            assert_eq!(output.status.code(), Some(expected), "{output:?}");
+            let expected = match mode {
+                WatchdogMode::Acknowledge => 0,
+                WatchdogMode::Disconnect | WatchdogMode::Timeout => 2,
+            };
+            assert_eq!(output.status.code(), Some(expected), "{mode:?}: {output:?}");
         }
     }
 

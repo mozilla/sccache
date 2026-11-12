@@ -11,86 +11,130 @@ use assert_cmd::assert::OutputAssertExt;
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 use predicates::str::contains;
-use serde_json::json;
+use reqwest::StatusCode;
+use sccache::config::scheduler::{ClientAuth, Config, ServerAuth};
+use sccache::dist::SchedulerStatusResult;
 use std::io;
 use std::net::{SocketAddr, TcpListener};
 use std::process::{Output, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Notify;
 use tokio_util::task::AbortOnDropHandle;
-use warp::{Filter, http::StatusCode};
+
+/// Keeps each startup failure paired with its JWK response and expected diagnostic chain.
+#[derive(Clone, Copy)]
+enum StartupFailure {
+    JwksUnavailable,
+    AddressInUse,
+}
+
+impl StartupFailure {
+    /// Lets authentication succeed only when testing the later listener-binding failure.
+    fn jwks_status(self) -> StatusCode {
+        match self {
+            Self::JwksUnavailable => StatusCode::SERVICE_UNAVAILABLE,
+            Self::AddressInUse => StatusCode::OK,
+        }
+    }
+
+    /// Checks both the startup context and root cause reported across the process boundary.
+    fn assert_output(self, output: Output) {
+        let (context, cause) = match self {
+            Self::JwksUnavailable => (
+                "Failed to create a checker for valid JWTs",
+                "Could not retrieve JWKs, HTTP error: 503",
+            ),
+            Self::AddressInUse => (
+                "Failed to start http server for sccache scheduler",
+                "Address already in use",
+            ),
+        };
+        output
+            .assert()
+            .failure()
+            .stderr(contains(context))
+            .stderr(contains(cause));
+    }
+}
+
+/// Serves one JWK response, optionally pausing it to test the launcher's readiness wait.
+async fn jwks_server(
+    status: StatusCode,
+    gates: Option<(Arc<Notify>, Arc<Notify>)>,
+) -> (SocketAddr, AbortOnDropHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+        let mut buffer = [0; 1024];
+        while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+            let read = stream.read(&mut buffer).await.unwrap();
+            assert_ne!(read, 0, "JWK request ended before its headers");
+            request.extend_from_slice(&buffer[..read]);
+        }
+        if let Some((requested, release)) = gates {
+            requested.notify_one();
+            release.notified().await;
+        }
+        let body = r#"{"keys":[]}"#;
+        let response = format!(
+            "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            status.as_u16(),
+            status.canonical_reason().unwrap(),
+            body.len(),
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+        stream.shutdown().await.unwrap();
+    });
+    (address, AbortOnDropHandle::new(server))
+}
 
 #[tokio::test]
 async fn scheduler_jwt_startup_after_daemonization() {
-    for (status, expected_error) in [
-        (
-            StatusCode::OK,
-            "Failed to start http server for sccache scheduler",
-        ),
-        (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Failed to create a checker for valid JWTs",
-        ),
+    for failure in [
+        StartupFailure::AddressInUse,
+        StartupFailure::JwksUnavailable,
     ] {
-        let jwks = warp::any().map(move || {
-            warp::reply::with_status(warp::reply::json(&json!({ "keys": [] })), status)
-        });
-        let (jwks_address, serve) = warp::serve(jwks).bind_ephemeral(([127, 0, 0, 1], 0));
-        let jwks_server = tokio::spawn(serve);
+        let (jwks_address, _jwks_server) = jwks_server(failure.jwks_status(), None).await;
 
         // Force startup to exit at binding, after authentication and runtime initialization.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let tempdir = tempfile::tempdir().unwrap();
-        let config_path = tempdir.path().join("scheduler.json");
-        let config = json!({
-            "public_addr": listener.local_addr().unwrap(),
-            "client_auth": {
-                "type": "jwt_validate",
-                "audience": "test",
-                "issuer": "test",
-                "jwks_url": format!("http://{jwks_address}/jwks"),
-            },
-            "server_auth": { "type": "token", "token": "test" },
-        });
-        std::fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+        let (_tempdir, mut command) =
+            scheduler_command(listener.local_addr().unwrap(), jwks_address);
 
         let output = tokio::time::timeout(
             Duration::from_secs(10),
-            Command::new(env!("CARGO_BIN_EXE_sccache-dist"))
-                .arg("scheduler")
-                .arg("--config")
-                .arg(&config_path)
-                .env("SCCACHE_NO_DAEMON", "1")
-                .kill_on_drop(true)
-                .output(),
+            command.env("SCCACHE_NO_DAEMON", "1").output(),
         )
         .await
         .expect("scheduler startup must finish")
         .unwrap();
-        jwks_server.abort();
-        output.assert().failure().stderr(contains(expected_error));
+        failure.assert_output(output);
     }
 }
 
+/// Retains the temporary config for as long as the scheduler command needs it.
 fn scheduler_command(
     public_addr: SocketAddr,
     jwks_address: SocketAddr,
 ) -> (tempfile::TempDir, Command) {
     let tempdir = tempfile::tempdir().unwrap();
     let config_path = tempdir.path().join("scheduler.json");
-    let config = json!({
-        "public_addr": public_addr,
-        "client_auth": {
-            "type": "jwt_validate",
-            "audience": "test",
-            "issuer": "test",
-            "jwks_url": format!("http://{jwks_address}/jwks"),
+    let config = Config {
+        public_addr,
+        client_auth: ClientAuth::JwtValidate {
+            audience: "test".into(),
+            issuer: "test".into(),
+            jwks_url: format!("http://{jwks_address}/jwks"),
         },
-        "server_auth": { "type": "token", "token": "test" },
-    });
+        server_auth: ServerAuth::Token {
+            token: "test".into(),
+        },
+    };
     std::fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_sccache-dist"));
     command
@@ -154,23 +198,11 @@ async fn scheduler_output(
 
 #[tokio::test]
 async fn scheduler_daemon_startup_errors_reach_launcher() {
-    for (status, expected_error, expected_cause) in [
-        (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Failed to create a checker for valid JWTs",
-            "Could not retrieve JWKs, HTTP error: 503",
-        ),
-        (
-            StatusCode::OK,
-            "Failed to start http server for sccache scheduler",
-            "Address already in use",
-        ),
+    for failure in [
+        StartupFailure::JwksUnavailable,
+        StartupFailure::AddressInUse,
     ] {
-        let jwks = warp::any().map(move || {
-            warp::reply::with_status(warp::reply::json(&json!({ "keys": [] })), status)
-        });
-        let (jwks_address, serve) = warp::serve(jwks).bind_ephemeral(([127, 0, 0, 1], 0));
-        let _jwks_server = AbortOnDropHandle::new(tokio::spawn(serve));
+        let (jwks_address, _jwks_server) = jwks_server(failure.jwks_status(), None).await;
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let (_tempdir, mut command) =
             scheduler_command(listener.local_addr().unwrap(), jwks_address);
@@ -179,11 +211,7 @@ async fn scheduler_daemon_startup_errors_reach_launcher() {
             .expect("scheduler startup must finish")
             .unwrap();
         let _daemon = SchedulerDaemon::from_stderr(&output.stderr);
-        output
-            .assert()
-            .failure()
-            .stderr(contains(expected_error))
-            .stderr(contains(expected_cause));
+        failure.assert_output(output);
     }
 }
 
@@ -191,21 +219,11 @@ async fn scheduler_daemon_startup_errors_reach_launcher() {
 async fn scheduler_daemon_waits_for_jwks_and_serves_status_on_return() {
     let requested = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
-    let jwks = warp::any().and_then({
-        let requested = Arc::clone(&requested);
-        let release = Arc::clone(&release);
-        move || {
-            let requested = Arc::clone(&requested);
-            let release = Arc::clone(&release);
-            async move {
-                requested.notify_one();
-                release.notified().await;
-                Ok::<_, std::convert::Infallible>(warp::reply::json(&json!({ "keys": [] })))
-            }
-        }
-    });
-    let (jwks_address, serve) = warp::serve(jwks).bind_ephemeral(([127, 0, 0, 1], 0));
-    let _jwks_server = AbortOnDropHandle::new(tokio::spawn(serve));
+    let (jwks_address, _jwks_server) = jwks_server(
+        StatusCode::OK,
+        Some((Arc::clone(&requested), Arc::clone(&release))),
+    )
+    .await;
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let public_addr = listener.local_addr().unwrap();
     let (_tempdir, mut command) = scheduler_command(public_addr, jwks_address);
@@ -250,8 +268,8 @@ async fn scheduler_daemon_waits_for_jwks_and_serves_status_on_return() {
         .expect("scheduler must be reachable immediately after launcher success")
         .error_for_status()
         .unwrap()
-        .json::<serde_json::Value>()
+        .json::<SchedulerStatusResult>()
         .await
         .unwrap();
-    assert_eq!(status["num_servers"], json!(0));
+    assert_eq!(status.num_servers, 0);
 }

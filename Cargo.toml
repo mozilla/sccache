@@ -78,8 +78,7 @@ log = "0.4"
 memchr = "2"
 memmap2 = "0.9.4"
 mime = "0.3"
-number_prefix = "0.4"
-object = "0.37"
+object = "0.40"
 opendal = { version = "0.58.1", optional = true, default-features = false }
 opendal-http-transport-reqwest = { version = "0.58.1", optional = true }
 opendal-layer-logging = { version = "0.58.1", optional = true }
@@ -95,7 +94,7 @@ reqwest = { version = "0.13", features = [
 ], optional = true }
 semver = "1.0"
 serde = { version = "1.0", features = ["derive"] }
-serde_json = ">=1.0, <1.0.147" # zmij (used in 1.0.147+) requires Rust 1.84+
+serde_json = "1.0"
 sha2 = { version = "0.10.8", optional = true }
 shlex = "2.0.1"
 strip-ansi-escapes = "0.2"
@@ -114,10 +113,11 @@ tokio-util = { version = "0.7.18", features = ["codec", "io", "rt"] }
 toml = "0.9"
 tower-service = "0.3"
 typed-path = "0.13.0"
+unit-prefix = "0.5"
 url = { version = "2", optional = true }
 uuid = { version = "1.9", features = ["v4"] }
 walkdir = "2"
-webpki-root-certs = { version = "1", optional = true }
+webpki-root-certs = { version = "1.0.11", optional = true }
 # by default which pulls in an outdated failure version
 which = { version = "6", default-features = false }
 zip = { version = "9", default-features = false }
@@ -145,7 +145,7 @@ cc = "1.9"
 chrono = "0.4.42"
 divan = { package = "codspeed-divan-compat", version = "4" }
 filetime = "0.2"
-object = { version = "0.37", features = ["write"] }
+object = { version = "0.40", features = ["write"] }
 predicates = "=3.1.0"
 serial_test = "3.1"
 temp-env = "0.3.6"
