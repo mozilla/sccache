@@ -17,7 +17,6 @@ use sccache::dist::{
     UpdateJobStateResult,
 };
 use sccache::util::BASE64_URL_SAFE_ENGINE;
-use sccache::util::daemonize;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet, btree_map};
 use std::env;
@@ -32,6 +31,7 @@ use tokio::runtime::Runtime;
 mod build;
 
 mod cmdline;
+mod startup;
 mod token_check;
 
 pub const INSECURE_DIST_SERVER_TOKEN: &str = "dangerously_insecure_server";
@@ -170,34 +170,7 @@ fn run(command: Command) -> Result<i32> {
             public_addr,
             client_auth,
             server_auth,
-        }) => {
-            let check_client_auth: Box<dyn dist::http::ClientAuthCheck> = match client_auth {
-                scheduler_config::ClientAuth::Insecure => Box::new(token_check::EqCheck::new(
-                    INSECURE_DIST_CLIENT_TOKEN.to_owned(),
-                )),
-                scheduler_config::ClientAuth::Token { token } => {
-                    Box::new(token_check::EqCheck::new(token))
-                }
-                scheduler_config::ClientAuth::JwtValidate {
-                    audience,
-                    issuer,
-                    jwks_url,
-                } => {
-                    // Finish JWK retrieval and drop its runtime before daemonizing.
-                    let checker = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .context("Failed to create Tokio runtime")?
-                        .block_on(token_check::ValidJWTCheck::new(audience, issuer, &jwks_url))
-                        .context("Failed to create a checker for valid JWTs")?;
-                    Box::new(checker)
-                }
-                scheduler_config::ClientAuth::ProxyToken { url, cache_secs } => Box::new(
-                    token_check::ProxyTokenCheck::new(url, cache_secs)
-                        .context("failed to create proxy token checker")?,
-                ),
-            };
-
+        }) => startup::run(|notifier| {
             let check_server_auth: dist::http::ServerAuthCheck = match server_auth {
                 scheduler_config::ServerAuth::Insecure => {
                     warn!("Scheduler starting with DANGEROUSLY_INSECURE server authentication");
@@ -227,20 +200,39 @@ fn run(command: Command) -> Result<i32> {
                 }
             };
 
-            daemonize(&[])?;
-            let scheduler = Scheduler::new();
-            let http_scheduler = dist::http::Scheduler::new(
-                public_addr,
-                scheduler,
-                check_client_auth,
-                check_server_auth,
-            );
-
-            // Create runtime after daemonize because Tokio doesn't work well with daemonize
             let runtime = Runtime::new().context("Failed to create Tokio runtime")?;
-            runtime.block_on(http_scheduler.start())?;
-            unreachable!();
-        }
+            runtime.block_on(async {
+                let check_client_auth: Box<dyn dist::http::ClientAuthCheck> = match client_auth {
+                    scheduler_config::ClientAuth::Insecure => Box::new(token_check::EqCheck::new(
+                        INSECURE_DIST_CLIENT_TOKEN.to_owned(),
+                    )),
+                    scheduler_config::ClientAuth::Token { token } => {
+                        Box::new(token_check::EqCheck::new(token))
+                    }
+                    scheduler_config::ClientAuth::JwtValidate {
+                        audience,
+                        issuer,
+                        jwks_url,
+                    } => Box::new(
+                        token_check::ValidJWTCheck::new(audience, issuer, &jwks_url)
+                            .await
+                            .context("Failed to create a checker for valid JWTs")?,
+                    ),
+                    scheduler_config::ClientAuth::ProxyToken { url, cache_secs } => Box::new(
+                        token_check::ProxyTokenCheck::new(url, cache_secs)
+                            .context("failed to create proxy token checker")?,
+                    ),
+                };
+                let scheduler = Scheduler::new();
+                let http_scheduler = dist::http::Scheduler::new(
+                    public_addr,
+                    scheduler,
+                    check_client_auth,
+                    check_server_auth,
+                );
+                http_scheduler.start_with_ready(|| notifier.ready()).await
+            })
+        }),
 
         Command::Server(server_config::Config {
             builder,

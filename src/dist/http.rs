@@ -2392,6 +2392,13 @@ mod server {
         }
 
         pub async fn start(self) -> Result<Infallible> {
+            self.start_with_ready(|| Ok(())).await
+        }
+
+        pub async fn start_with_ready(
+            self,
+            on_ready: impl FnOnce() -> Result<()>,
+        ) -> Result<Infallible> {
             let Self {
                 public_addr,
                 handler,
@@ -2417,6 +2424,7 @@ mod server {
             let (_, server) = warp::serve(api)
                 .try_bind_with_graceful_shutdown(public_addr, std::future::pending::<()>())
                 .map_err(|e| anyhow!("Failed to start http server for sccache scheduler: {}", e))?;
+            on_ready().context("failed to report scheduler readiness")?;
             server.await;
 
             panic!("Warp server terminated")
