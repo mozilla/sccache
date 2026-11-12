@@ -505,6 +505,12 @@ pub fn preprocessor_cache_entry_hash_key(
         debug!("Found __TIME__ in {}", input_file.display());
         return Ok(None);
     }
+    if finder.found_embed() {
+        // Embedded files don't show up in the preprocessor output, so they
+        // can't be recorded in the preprocessor cache entry.
+        debug!("Found #embed in {}", input_file.display());
+        return Ok(None);
+    }
     m.update(digest.as_bytes());
     Ok(Some(m.finish()))
 }
@@ -586,6 +592,7 @@ mod digest_cache {
         found_date: bool,
         found_time: bool,
         found_timestamp: bool,
+        found_embed: bool,
     }
 
     /// The digest remembered for `path`, if the file has not changed since.
@@ -610,6 +617,7 @@ mod digest_cache {
             cached.found_date,
             cached.found_time,
             cached.found_timestamp,
+            cached.found_embed,
         );
         Some((cached.digest.clone(), finder))
     }
@@ -643,6 +651,7 @@ mod digest_cache {
                     found_date: finder.found_date(),
                     found_time: finder.found_time(),
                     found_timestamp: finder.found_timestamp(),
+                    found_embed: finder.found_embed(),
                 },
             );
         }
@@ -1424,6 +1433,40 @@ mod test {
 
         let fat = ["-arch", "x86_64", "-arch", "arm64"];
         assert_ne!(key(&fat, true), key(&fat, false));
+    }
+
+    #[test]
+    fn test_preprocessor_cache_entry_hash_key_embed() {
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let key = |name: &str, source: &[u8]| {
+            let file = dir.path().join(name);
+            std::fs::write(&file, source).unwrap();
+            preprocessor_cache_entry_hash_key(
+                "test_digest",
+                Language::C,
+                &[],
+                &[],
+                None,
+                &[],
+                &file,
+                false,
+                false,
+                PreprocessorCacheModeConfig::activated(),
+                &[],
+            )
+            .unwrap()
+        };
+
+        assert!(key("plain.c", b"const char data[] = {1, 2, 3};\n").is_some());
+        assert!(
+            key(
+                "embed.c",
+                b"const char data[] = {\n#embed \"data.bin\"\n};\n"
+            )
+            .is_none()
+        );
     }
 
     #[cfg(unix)]
