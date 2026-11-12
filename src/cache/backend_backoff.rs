@@ -88,9 +88,28 @@ impl fmt::Display for LevelTimedOut {
 
 impl std::error::Error for LevelTimedOut {}
 
+/// What an admitted read is to the gate: a plain read that only ever
+/// touches the counter and the cooldown, or the single recovery probe,
+/// carrying the generation it was admitted at. Only the probe's own
+/// timeout matches the armed reservation, so a timeout from a read
+/// admitted earlier can never end a probe it does not belong to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Admission {
+    Read,
+    Probe(u64),
+}
+
 struct GateState {
     consecutive_timeouts: u32,
     open_until: Option<Instant>,
+    /// The generation handed to the probe currently holding the safety
+    /// window, set when an expired cooldown admits its one probe. A
+    /// timeout carrying a different generation — a read admitted before
+    /// the gate opened, or a superseded probe — restarts the cooldown
+    /// without ending this reservation.
+    probe_id: Option<u64>,
+    /// The generation handed out by the next probe admission.
+    probe_generation: u64,
     /// The recovery probe's safety window: set when an expired cooldown
     /// admits its one probe, so concurrent lookups keep skipping until the
     /// probe answers. Cleared by an answer, by the probe timing out, or —
@@ -127,6 +146,8 @@ impl BackendBackoff {
             state: Mutex::new(GateState {
                 consecutive_timeouts: 0,
                 open_until: None,
+                probe_id: None,
+                probe_generation: 0,
                 probe_deadline: None,
             }),
         }
@@ -152,42 +173,60 @@ impl BackendBackoff {
     ///
     /// | `open_until`       | probe window            | result |
     /// |--------------------|-------------------------|--------|
-    /// | `None`             | –                       | admit, no change |
+    /// | `None`             | –                       | admit as a plain read |
     /// | `Some(t)`, running | –                       | refuse |
     /// | `Some(t)`, expired | none, or window passed  | admit as the probe, arm `probe_deadline` |
     /// | `Some(t)`, expired | window still in future  | refuse |
-    fn try_admit(&self) -> bool {
+    ///
+    /// `None` refuses the lookup; an admitted read gets the
+    /// [`Admission`] it must carry back to [`BackendBackoff::record_timed_out`],
+    /// so a timeout from a read admitted earlier can never clear the
+    /// current probe's reservation.
+    fn try_admit(&self) -> Option<Admission> {
         if self.threshold == 0 {
-            return true;
+            return Some(Admission::Read);
         }
         let mut state = self.state.lock().unwrap();
         let now = Instant::now();
         if state.open_until.is_some_and(|until| now < until) {
             // The cooldown is still running: refuse, admit nothing.
-            return false;
+            return None;
         }
         if state.probe_deadline.is_some_and(|until| now < until) {
             // One probe is already out (or its safety window is live).
-            return false;
+            return None;
         }
         if state.open_until.is_some() {
             // Cooldown expired: this lookup becomes the single probe, and
             // the rest keep skipping until it answers.
+            state.probe_generation += 1;
+            let generation = state.probe_generation;
+            state.probe_id = Some(generation);
             state.probe_deadline = Some(now + read_timeout() + PROBE_DEADLINE_MARGIN);
+            return Some(Admission::Probe(generation));
         }
-        true
+        Some(Admission::Read)
     }
 
     /// Record a read that ran out of time. Called only by `ReadGuard::drop`
-    /// when a gated read is cancelled before it answers. Also ends the
-    /// probe state: a probe that times out (or is cancelled by any outer
-    /// timer) restarts the cooldown.
-    pub(crate) fn record_timed_out(&self) {
+    /// when a gated read is cancelled before it answers, carrying the
+    /// [`Admission`] the read was handed. Only the probe's own timeout ends
+    /// the probe state: a probe that times out (or is cancelled by any
+    /// outer timer) restarts the cooldown, while a timeout from a read
+    /// admitted earlier — before the gate opened, or while a newer probe
+    /// holds the window — restarts the cooldown without clearing the
+    /// current reservation, so two probes can never be out at once.
+    pub(crate) fn record_timed_out(&self, admission: Admission) {
         if self.threshold == 0 {
             return;
         }
         let mut state = self.state.lock().unwrap();
-        state.probe_deadline = None;
+        if let Admission::Probe(generation) = admission
+            && state.probe_id == Some(generation)
+        {
+            state.probe_id = None;
+            state.probe_deadline = None;
+        }
         state.consecutive_timeouts += 1;
         if state.consecutive_timeouts >= self.threshold {
             let newly_open = state.open_until.is_none_or(|until| Instant::now() >= until);
@@ -213,6 +252,7 @@ impl BackendBackoff {
         let mut state = self.state.lock().unwrap();
         state.consecutive_timeouts = 0;
         state.open_until = None;
+        state.probe_id = None;
         state.probe_deadline = None;
     }
 }
@@ -285,13 +325,14 @@ pub(crate) enum TimeBudget {
 /// is one extra cooldown probe later, never a stuck gate.
 struct ReadGuard<'a> {
     backoff: &'a BackendBackoff,
+    admission: Admission,
     answered: bool,
 }
 
 impl Drop for ReadGuard<'_> {
     fn drop(&mut self) {
         if !self.answered {
-            self.backoff.record_timed_out();
+            self.backoff.record_timed_out(self.admission);
         }
     }
 }
@@ -385,9 +426,9 @@ impl BackoffStorage {
     }
 
     async fn gated_get(&self, key: &str) -> Result<Cache> {
-        if !self.backoff.try_admit() {
+        let Some(admission) = self.backoff.try_admit() else {
             return Err(anyhow::Error::new(LevelSkipped));
-        }
+        };
         // Any timer that cancels this read — this wrapper's own (Full mode),
         // a chain level's share of the lookup deadline, or the lookup-level
         // timeout, which can land within microseconds of the inner one and
@@ -399,6 +440,7 @@ impl BackoffStorage {
         // extra cooldown probe later, not a stuck gate.
         let mut guard = ReadGuard {
             backoff: &self.backoff,
+            admission,
             answered: false,
         };
         // `None` = the read ran out of its time budget (Full mode): the
@@ -427,12 +469,13 @@ impl BackoffStorage {
     }
 
     async fn gated_get_with_raw(&self, key: &str) -> Result<(Cache, Option<Bytes>)> {
-        if !self.backoff.try_admit() {
+        let Some(admission) = self.backoff.try_admit() else {
             return Err(anyhow::Error::new(LevelSkipped));
-        }
+        };
         // See `gated_get` for the guard contract.
         let mut guard = ReadGuard {
             backoff: &self.backoff,
+            admission,
             answered: false,
         };
         let outcome = match self.budget {
@@ -456,9 +499,9 @@ impl BackoffStorage {
         }
     }
     async fn gated_get_raw(&self, key: &str) -> Result<Option<Bytes>> {
-        if !self.backoff.try_admit() {
+        let Some(admission) = self.backoff.try_admit() else {
             return Err(anyhow::Error::new(LevelSkipped));
-        }
+        };
         // Same contract as `gated_get`: the guard records a timeout when a
         // timer (this wrapper's, a chain level's, or the lookup-level one)
         // cancels the read before it answers, and one answered read resets
@@ -466,6 +509,7 @@ impl BackoffStorage {
         // path, so a stalled standalone backend trips the gate here too.
         let mut guard = ReadGuard {
             backoff: &self.backoff,
+            admission,
             answered: false,
         };
         let outcome = match self.budget {
@@ -680,23 +724,23 @@ mod test {
     fn consecutive_timeouts_trip_the_gate() {
         let backoff = BackendBackoff::new(3, Duration::from_secs(60));
         assert!(!backoff.is_open());
-        backoff.record_timed_out();
-        backoff.record_timed_out();
+        backoff.record_timed_out(Admission::Read);
+        backoff.record_timed_out(Admission::Read);
         assert!(!backoff.is_open());
-        backoff.record_timed_out();
+        backoff.record_timed_out(Admission::Read);
         assert!(backoff.is_open());
     }
 
     #[test]
     fn a_backend_response_resets_the_counter() {
         let backoff = BackendBackoff::new(3, Duration::from_secs(60));
-        backoff.record_timed_out();
-        backoff.record_timed_out();
+        backoff.record_timed_out(Admission::Read);
+        backoff.record_timed_out(Admission::Read);
         backoff.record_response();
-        backoff.record_timed_out();
-        backoff.record_timed_out();
+        backoff.record_timed_out(Admission::Read);
+        backoff.record_timed_out(Admission::Read);
         assert!(!backoff.is_open());
-        backoff.record_timed_out();
+        backoff.record_timed_out(Admission::Read);
         assert!(backoff.is_open());
     }
 
@@ -704,31 +748,41 @@ mod test {
     fn zero_threshold_disables_the_backoff() {
         let backoff = BackendBackoff::new(0, Duration::from_secs(60));
         for _ in 0..10 {
-            backoff.record_timed_out();
+            backoff.record_timed_out(Admission::Read);
         }
         assert!(!backoff.is_open());
-        assert!(backoff.try_admit());
+        assert!(
+            matches!(backoff.try_admit(), Some(Admission::Read)),
+            "the disabled gate admits every read"
+        );
     }
 
     #[test]
     fn lookups_resume_after_the_cooldown_expires() {
         let backoff = BackendBackoff::new(1, Duration::from_millis(20));
-        backoff.record_timed_out();
+        backoff.record_timed_out(Admission::Read);
         // The cooldown is running: refuse, admit nothing.
-        assert!(!backoff.try_admit());
+        assert!(backoff.try_admit().is_none());
         std::thread::sleep(Duration::from_millis(40));
         // Expired: the first lookup becomes the single recovery probe…
-        assert!(backoff.try_admit());
+        let probe = backoff.try_admit();
+        assert!(
+            matches!(probe, Some(Admission::Probe(_))),
+            "the expired cooldown admits the single recovery probe"
+        );
         // …and a second concurrent lookup keeps skipping until it answers.
-        assert!(!backoff.try_admit());
+        assert!(backoff.try_admit().is_none());
         // The probe timing out again restarts the cooldown.
-        backoff.record_timed_out();
-        assert!(!backoff.try_admit());
+        backoff.record_timed_out(probe.unwrap());
+        assert!(backoff.try_admit().is_none());
         // The probe's answer reopens the level for everyone.
         backoff.record_response();
         assert!(!backoff.is_open());
-        assert!(backoff.try_admit());
-        assert!(backoff.try_admit());
+        assert!(
+            matches!(backoff.try_admit(), Some(Admission::Read)),
+            "the reopened level admits plain reads"
+        );
+        assert!(matches!(backoff.try_admit(), Some(Admission::Read)));
     }
 
     #[test]
@@ -738,7 +792,7 @@ mod test {
         // instead of waiting itself out. A late in-flight read finishing
         // during the cooldown reopens the level the same way.
         let backoff = BackendBackoff::new(1, Duration::from_secs(60));
-        backoff.record_timed_out();
+        backoff.record_timed_out(Admission::Read);
         assert!(backoff.is_open());
         backoff.record_response();
         assert!(!backoff.is_open());
@@ -750,20 +804,117 @@ mod test {
         // clear it), an expired probe window lets the next lookup through
         // instead of skipping the level forever.
         let backoff = BackendBackoff::new(1, Duration::from_secs(60));
-        backoff.record_timed_out();
+        backoff.record_timed_out(Admission::Read);
         {
             let mut state = backoff.state.lock().unwrap();
             state.open_until = Some(Instant::now() - Duration::from_secs(1));
             state.probe_deadline = Some(Instant::now() + Duration::from_secs(3600));
         }
-        assert!(!backoff.try_admit(), "a live probe window refuses");
+        assert!(backoff.try_admit().is_none(), "a live probe window refuses");
         {
             let mut state = backoff.state.lock().unwrap();
             state.probe_deadline = Some(Instant::now() - Duration::from_secs(1));
         }
         assert!(
-            backoff.try_admit(),
+            matches!(backoff.try_admit(), Some(Admission::Probe(_))),
             "an expired probe window admits a fresh probe"
+        );
+    }
+
+    #[test]
+    fn an_older_read_timeout_does_not_clear_the_probe_reservation() {
+        // The overlap the read timeout hides: with a cooldown shorter than
+        // the read timeout, a read admitted before the gate opened is still
+        // pending when the cooldown expires and the probe goes out. That
+        // older read's timeout restarts the cooldown but must leave the
+        // probe's reservation alone — otherwise a second probe is admitted
+        // while the first is still out.
+        let backoff = BackendBackoff::new(1, Duration::from_millis(20));
+        // A read admitted while the level was healthy, still pending.
+        let older = backoff.try_admit();
+        assert!(matches!(older, Some(Admission::Read)));
+        // Other reads time out and open the gate; the older read hangs.
+        backoff.record_timed_out(Admission::Read);
+        assert!(backoff.is_open());
+        // Cooldown expires: the single probe goes out.
+        std::thread::sleep(Duration::from_millis(40));
+        let probe = backoff.try_admit();
+        let Some(Admission::Probe(probe_generation)) = probe else {
+            panic!("the expired cooldown admits the single probe");
+        };
+        assert!(
+            backoff.try_admit().is_none(),
+            "concurrent lookups keep skipping while the probe is out"
+        );
+        // The older read times out now: it counts and restarts the
+        // cooldown, but the reservation stays.
+        backoff.record_timed_out(older.unwrap());
+        assert!(backoff.is_open(), "the older timeout re-arms the cooldown");
+        assert!(
+            backoff.try_admit().is_none(),
+            "the older timeout must not clear the probe window"
+        );
+        // Even after that cooldown passes, the still-live window refuses:
+        // no second probe while the first is out.
+        std::thread::sleep(Duration::from_millis(40));
+        assert!(
+            backoff.try_admit().is_none(),
+            "the single-probe guarantee holds across the re-armed cooldown"
+        );
+        // The probe's own timeout is what ends the reservation.
+        backoff.record_timed_out(probe.unwrap());
+        assert!(
+            backoff.is_open(),
+            "the probe's own timeout restarts the cooldown"
+        );
+        // After the cooldown, a fresh probe is admitted — a new generation.
+        std::thread::sleep(Duration::from_millis(40));
+        let Some(Admission::Probe(fresh_generation)) = backoff.try_admit() else {
+            panic!("the expired cooldown admits the fresh probe");
+        };
+        assert_ne!(
+            probe_generation, fresh_generation,
+            "each probe carries its own generation"
+        );
+    }
+
+    #[test]
+    fn a_superseded_probe_timeout_cannot_clear_the_new_probe_reservation() {
+        // The wedged-window net admits a fresh probe while the old one is
+        // still out; the old probe's late timeout must not clear the new
+        // probe's reservation either — only the matching generation does.
+        let backoff = BackendBackoff::new(1, Duration::from_millis(20));
+        backoff.record_timed_out(Admission::Read);
+        std::thread::sleep(Duration::from_millis(40));
+        let stale = backoff.try_admit();
+        let Some(Admission::Probe(stale_generation)) = stale else {
+            panic!("the expired cooldown admits the first probe");
+        };
+        // The probe wedges: its window expires while its read still hangs,
+        // and the safety net admits the fresh probe.
+        {
+            let mut state = backoff.state.lock().unwrap();
+            state.probe_deadline = Some(Instant::now() - Duration::from_secs(1));
+        }
+        let fresh = backoff.try_admit();
+        let Some(Admission::Probe(fresh_generation)) = fresh else {
+            panic!("the expired window admits the fresh probe");
+        };
+        assert_ne!(stale_generation, fresh_generation);
+        // The stale probe times out late: the fresh reservation stays.
+        backoff.record_timed_out(stale.unwrap());
+        std::thread::sleep(Duration::from_millis(40));
+        assert!(
+            backoff.try_admit().is_none(),
+            "the stale probe's timeout must not clear the fresh probe's window"
+        );
+        // The fresh probe's own timeout ends it.
+        backoff.record_timed_out(fresh.unwrap());
+        assert!(backoff.is_open());
+        std::thread::sleep(Duration::from_millis(40));
+        assert!(
+            matches!(backoff.try_admit(), Some(Admission::Probe(_))),
+            "the cooldown admits a probe again"
         );
     }
 
@@ -809,8 +960,8 @@ mod test {
             // level's own 1s sleep versus the wrapper timeout — instead,
             // drive the gate through the record path for the timeout
             // evidence and prove the skip through the wrapper.
-            storage.backoff.record_timed_out();
-            storage.backoff.record_timed_out();
+            storage.backoff.record_timed_out(Admission::Read);
+            storage.backoff.record_timed_out(Admission::Read);
 
             let start = Instant::now();
             let result = storage.get("k").await;
@@ -884,7 +1035,7 @@ mod test {
 
         // Trip the gate the way the chain would: one read ran out of its
         // budget.
-        storage.backoff.record_timed_out();
+        storage.backoff.record_timed_out(Admission::Read);
         assert!(storage.backoff.is_open());
 
         runtime.block_on(async {
@@ -906,7 +1057,7 @@ mod test {
             Duration::from_secs(60),
             TimeBudget::CallerOwned,
         );
-        storage.backoff.record_timed_out();
+        storage.backoff.record_timed_out(Admission::Read);
         assert!(storage.backoff.is_open());
 
         runtime.block_on(async {
@@ -1066,7 +1217,7 @@ mod test {
             Duration::from_secs(60),
             TimeBudget::CallerOwned,
         );
-        storage2.gate().record_timed_out();
+        storage2.gate().record_timed_out(Admission::Read);
         runtime.block_on(async {
             let result = storage2.get_raw("k").await.unwrap();
             assert_eq!(result, None);
@@ -1133,8 +1284,8 @@ mod test {
             Duration::from_secs(60),
             TimeBudget::CallerOwned,
         );
-        wrapped2.gate().record_timed_out();
-        wrapped2.gate().record_timed_out();
+        wrapped2.gate().record_timed_out(Admission::Read);
+        wrapped2.gate().record_timed_out(Admission::Read);
         runtime.block_on(async {
             let result = wrapped2.get("k").await.unwrap();
             assert!(matches!(result, Cache::Miss));
