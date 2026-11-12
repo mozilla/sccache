@@ -737,6 +737,67 @@ fn test_gcc_clang_depfile(compiler: Compiler, tempdir: &Path) {
     assert_ne!(first, second);
 }
 
+fn test_gcc_clang_embed(compiler: Compiler, tempdir: &Path) {
+    let Compiler {
+        name,
+        exe,
+        env_vars,
+    } = compiler;
+    println!("test_gcc_clang_embed: {}", name);
+    const SRC: &str = "embed.c";
+    fs::create_dir_all(tempdir.join("embed-data")).unwrap();
+    write_source(tempdir, "embed-data/data.bin", "first");
+    write_source(
+        tempdir,
+        SRC,
+        "const char data[] = {
+#embed <data.bin>
+};
+",
+    );
+    let args = compile_cmdline(
+        name,
+        exe.clone(),
+        SRC,
+        OUTPUT,
+        vec_from!(OsString, "-std=c2x", "--embed-dir=embed-data"),
+    );
+    if !Command::new(&exe)
+        .args(&args[1..])
+        .current_dir(tempdir)
+        .envs(env_vars.clone())
+        .status()
+        .unwrap()
+        .success()
+    {
+        warn!("{} does not support #embed, skipping test", name);
+        return;
+    }
+
+    zero_stats();
+    let compile = || {
+        sccache_command()
+            .args(&args)
+            .current_dir(tempdir)
+            .envs(env_vars.clone())
+            .assert()
+            .success();
+    };
+    compile();
+    compile();
+    get_stats(|info| {
+        assert_eq!(1, info.stats.cache_hits.all());
+        assert_eq!(1, info.stats.cache_misses.all());
+    });
+    // Only the embedded file changes.
+    write_source(tempdir, "embed-data/data.bin", "second");
+    compile();
+    get_stats(|info| {
+        assert_eq!(1, info.stats.cache_hits.all());
+        assert_eq!(2, info.stats.cache_misses.all());
+    });
+}
+
 fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path, preprocessor_cache_mode: bool) {
     if compiler.name != "clang++" {
         test_basic_compile(compiler.clone(), tempdir);
@@ -756,6 +817,7 @@ fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path, preprocessor_ca
         test_gcc_clang_no_warnings_from_macro_expansion(compiler.clone(), tempdir);
         test_split_dwarf_object_generate_output_dir_changes(compiler.clone(), tempdir);
         test_gcc_clang_depfile(compiler.clone(), tempdir);
+        test_gcc_clang_embed(compiler.clone(), tempdir);
     }
     if compiler.name == "clang++" {
         test_clang_multicall(compiler.clone(), tempdir);

@@ -189,6 +189,7 @@ pub(crate) const ARCH_FLAG: &str = "-arch";
 counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     flag!("-", TooHardFlag),
     flag!("--coverage", Coverage),
+    take_arg!("--embed-dir", PathBuf, Concatenated(b'='), PreprocessorArgumentPath),
     take_arg!("--param", OsString, Separated, PassThrough),
     flag!("--save-temps", TooHardFlag),
     flag!("--save-temps=cwd", TooHardFlag),
@@ -1119,6 +1120,7 @@ where
             // the assembler then rejects. clang's -frewrite-includes keeps the
             // macros, so clang assembly still needs the server-side cpp pass.
             let rewrite_includes_only = rewrite_includes_only
+                && !parsed_args.suppress_rewrite_includes_only
                 && !(kind == CCompilerKind::Gcc
                     && parsed_args.language == Language::AssemblerToPreprocess);
             if rewrite_includes_only || parsed_args.language.is_c_like_header() {
@@ -1153,7 +1155,7 @@ where
                 //     -fdirectives-only.
                 //
                 // Which is exactly what we do :-)
-                if rewrite_includes_only && !parsed_args.suppress_rewrite_includes_only {
+                if rewrite_includes_only {
                     arguments.push("-fdirectives-only".into());
                 }
                 arguments.push("-fpreprocessed".into());
@@ -1876,6 +1878,21 @@ mod test {
         assert_eq!(ovec!["-nostdinc"], preprocessor_args);
         assert_eq!(ovec!["-fabc"], common_args);
         assert!(!msvc_show_includes);
+    }
+
+    #[test]
+    fn test_parse_arguments_embed_dir() {
+        let args = stringvec!["-c", "foo.c", "--embed-dir=data", "-o", "foo.o"];
+        let ParsedArguments {
+            preprocessor_args,
+            common_args,
+            ..
+        } = match parse_arguments_(args, false) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(ovec!["--embed-dir=data"], preprocessor_args);
+        assert!(common_args.is_empty());
     }
 
     #[test]
@@ -3167,6 +3184,35 @@ mod test {
         let args = dist_args(CCompilerKind::Clang, "foo.c");
         assert_eq!(&args[..2], &["-x", "c"]);
         assert!(!args.contains(&"-fpreprocessed".to_string()));
+    }
+
+    #[test]
+    #[cfg(feature = "dist-client")]
+    fn test_compile_suppressed_rewrite_includes_only_dist() {
+        let f = TestFixture::new();
+        let mut parsed_args =
+            match parse_arguments_(stringvec!["-c", "foo.c", "-o", "foo.o"], false) {
+                CompilerArguments::Ok(args) => args,
+                o => panic!("Got unexpected parse result: {:?}", o),
+            };
+        // As after finding #embed in the -frewrite-includes output.
+        parsed_args.suppress_rewrite_includes_only = true;
+        let mut path_transformer = dist::PathTransformer::new();
+        let args = generate_compile_commands(
+            &mut path_transformer,
+            &f.bins[0],
+            &parsed_args,
+            f.tempdir.path(),
+            &[],
+            CCompilerKind::Clang,
+            true,
+            crate::compiler::clang::language_to_clang_arg,
+        )
+        .unwrap()
+        .1
+        .unwrap()
+        .arguments;
+        assert_eq!(&args[..2], &["-x", "cpp-output"]);
     }
 
     #[test]

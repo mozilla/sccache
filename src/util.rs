@@ -191,8 +191,9 @@ const MAX_HAYSTACK_LEN: usize = b"__TIMESTAMP__".len();
 pub const MAX_TIME_MACRO_HAYSTACK_LEN: usize = MAX_HAYSTACK_LEN;
 
 /// Used during the chunked hashing process to check for C preprocessor time
-/// macros (namely `__TIMESTAMP__`, `__DATE__`, `__DATETIME__`) while reusing
-/// the same buffer as the hashing function, for efficiency.
+/// macros (namely `__TIMESTAMP__`, `__DATE__`, `__DATETIME__`) and for
+/// `#embed`/`__has_embed` while reusing the same buffer as the hashing
+/// function, for efficiency.
 ///
 /// See `[Self::find_time_macros]` for details.
 #[derive(Debug, Default)]
@@ -200,6 +201,7 @@ pub struct TimeMacroFinder {
     found_date: Cell<bool>,
     found_time: Cell<bool>,
     found_timestamp: Cell<bool>,
+    found_embed: Cell<bool>,
     overlap_buffer: [u8; MAX_HAYSTACK_LEN * 2],
     /// Counter of chunks of full size we've been through. Partial reads do
     /// not count and are handled separately.
@@ -339,6 +341,9 @@ impl TimeMacroFinder {
         if memchr::memmem::find(buffer, b"__DATE__").is_some() {
             self.found_date.set(true);
         }
+        if contains_embed(buffer) {
+            self.found_embed.set(true);
+        }
     }
 
     pub fn found_time_macros(&self) -> bool {
@@ -357,18 +362,57 @@ impl TimeMacroFinder {
         self.found_timestamp.get()
     }
 
+    pub fn found_embed(&self) -> bool {
+        self.found_embed.get()
+    }
+
     pub fn new() -> Self {
         Default::default()
     }
 
     /// A finder for a file already known to contain the given macros.
-    pub fn with_found(date: bool, time: bool, timestamp: bool) -> Self {
+    pub fn with_found(date: bool, time: bool, timestamp: bool, embed: bool) -> Self {
         let finder = Self::new();
         finder.found_date.set(date);
         finder.found_time.set(time);
         finder.found_timestamp.set(timestamp);
+        finder.found_embed.set(embed);
         finder
     }
+}
+
+/// Whether `buffer` may contain an `#embed` directive or a `__has_embed`
+/// expression. Errs on the side of yes: a false positive only costs caching
+/// efficiency, while a miss can hand out a stale result.
+///
+/// A match must be followed by a character that ends the identifier, so that
+/// one cut off by the end of `buffer` is left to the overlapping buffers of
+/// [`TimeMacroFinder`].
+pub fn contains_embed(buffer: &[u8]) -> bool {
+    fn is_ident(c: u8) -> bool {
+        c.is_ascii_alphanumeric() || c == b'_'
+    }
+    memchr::memmem::find_iter(buffer, b"embed").any(|pos| {
+        if buffer.get(pos + 5).is_none_or(|&c| is_ident(c)) {
+            return false;
+        }
+        let before = &buffer[..pos];
+        if before.ends_with(b"__has_") {
+            return true;
+        }
+        if before.last().is_some_and(|&c| is_ident(c)) {
+            return false;
+        }
+        // Between the `#` (or `%:`) and `embed` there can be whitespace, a
+        // comment or a line continuation. Assume a directive if the buffer
+        // starts before we can tell.
+        let before = before.trim_ascii_end();
+        before.is_empty()
+            || before.ends_with(b"#")
+            || before.ends_with(b"%:")
+            || before.ends_with(b"*/")
+            || before.ends_with(b"\\")
+    })
 }
 
 pub fn hex(bytes: &[u8]) -> String {
@@ -2018,6 +2062,51 @@ mod tests {
         assert_eq!(a.split_prefix("foo"), Some(OsString::from("")));
         assert_eq!(a.split_prefix("foo2"), None);
         assert_eq!(a.split_prefix("b"), None);
+    }
+
+    #[test]
+    fn test_contains_embed() {
+        use super::contains_embed;
+        for yes in [
+            &b"#embed \"data.bin\"\n"[..],
+            b"const char x[] = {\n  #  embed <data.bin>\n};",
+            b"%:embed \"data.bin\"",
+            b"# /* comment */ embed \"data.bin\"",
+            b"#\\\nembed \"data.bin\"",
+            b"#if __has_embed(\"data.bin\")",
+            b"#if defined(__has_embed)",
+            b"   embed \"cut off before the #\"",
+        ] {
+            assert!(contains_embed(yes), "{}", String::from_utf8_lossy(yes));
+        }
+        for no in [
+            &b"int embedded;\n"[..],
+            b"// we embed the table below\n",
+            b"void do_embed(void);",
+            b"#define EMBED 1",
+            b"#embed",
+        ] {
+            assert!(!contains_embed(no), "{}", String::from_utf8_lossy(no));
+        }
+    }
+
+    #[test]
+    fn test_embed_split_across_reads() {
+        let text = b"#embed \"data.bin\"\n";
+        for split in 0..text.len() {
+            let mut finder = TimeMacroFinder::new();
+            let mut first = vec![b' '; 1000];
+            first.extend_from_slice(&text[..split]);
+            finder.find_time_macros(&first);
+            let mut second = text[split..].to_vec();
+            second.extend_from_slice(&[b' '; 1000]);
+            finder.find_time_macros(&second);
+            assert!(finder.found_embed(), "split at {split}");
+        }
+        let finder = Digest::reader_sync_time_macros(&b"int embedded;\n"[..])
+            .unwrap()
+            .1;
+        assert!(!finder.found_embed());
     }
 
     #[test]

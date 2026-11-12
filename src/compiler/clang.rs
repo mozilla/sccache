@@ -194,7 +194,6 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     // Config files can include other files; refuse rather than hashing one layer.
     take_arg!("--config", OsString, CanBeSeparated(b'='), TooHard),
     take_arg!("--dependent-lib", OsString, Concatenated(b'='), PassThrough),
-    take_arg!("--embed-dir", OsString, Concatenated(b'='), TooHard),
     take_arg!("--extract-api-ignores", PathBuf, Concatenated(b'='), ExtraHashFile),
     take_arg!("--hip-device-lib-path", PathBuf, Concatenated(b'='), PassThroughPath),
     take_arg!("--hip-path", PathBuf, Concatenated(b'='), PassThroughPath),
@@ -465,6 +464,13 @@ mod test {
         assert_eq!(ovec!["-Iinclude", "-include", "file"], a.preprocessor_args);
         assert_eq!(ovec!["-fabc", "/winsysroot", "../some/dir"], a.common_args);
         assert_eq!(ovec!["-arch", "xyz"], a.arch_args);
+    }
+
+    #[test]
+    fn test_parse_arguments_embed_dir() {
+        let a = parses!("-c", "foo.c", "--embed-dir=data", "-o", "foo.o");
+        assert_eq!(ovec!["--embed-dir=data"], a.preprocessor_args);
+        assert!(a.common_args.is_empty());
     }
 
     #[test]
@@ -1315,7 +1321,6 @@ mod test {
             (&["--analyzer-output", "html"], "--analyzer-output"),
             (&["--config", "clang.cfg"], "--config"),
             (&["--config=clang.cfg"], "--config"),
-            (&["--embed-dir=/tmp/embed"], "--embed-dir"),
             (&["--save-stats"], "--save-stats"),
             (&["--save-stats=obj"], "--save-stats"),
             (&["--symbol-graph-dir=/tmp/sg"], "--symbol-graph-dir"),
