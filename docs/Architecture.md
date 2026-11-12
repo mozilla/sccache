@@ -160,9 +160,12 @@ are exchanged with `StorageGetPreprocessorEntry` / `StoragePutPreprocessorEntry`
 Because each CLI process accumulates its own statistics, it flushes them to the
 daemon with `RecordStats` before exiting.
 
-`StorageGetRaw` preserves backend read errors across IPC; an error is not an
-ordinary missing key. Invalid cached archives also produce lookup errors,
-whether the CLI reads a local path or receives raw bytes.
+`StorageGetPath` and `StorageGetRaw` preserve backend read errors across IPC
+using a separate `StorageReadError` response. Hit and miss replies retain their
+existing wire format; older clients cannot decode the new error response as a
+miss. Restart the daemon after upgrading so both processes use the updated
+error handling. Invalid cached archives also produce lookup errors, whether
+the CLI reads a local path or receives raw bytes.
 
 In both execution modes, a cache read error followed by a successful local
 compilation increments `Cache read errors` as well as the existing `Cache errors`

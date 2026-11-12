@@ -1012,22 +1012,19 @@ where
                 }
                 Request::StorageGetPath { key } => {
                     debug!("handle_client: storage_get_path key={}", key);
-                    let result = me
-                        .storage
-                        .get_path(&key)
-                        .await
-                        .map_err(|e| format!("{e:#}"));
-                    Ok(Message::WithoutBody(Response::StorageGetPath(result)))
+                    let response = match me.storage.get_path(&key).await {
+                        Ok(result) => Response::StorageGetPath(result),
+                        Err(error) => Response::StorageReadError(format!("{error:#}")),
+                    };
+                    Ok(Message::WithoutBody(response))
                 }
                 Request::StorageGetRaw { key } => {
                     debug!("handle_client: storage_get_raw key={}", key);
-                    let result = me
-                        .storage
-                        .get_raw(&key)
-                        .await
-                        .map(|opt| opt.map(|b| b.to_vec()))
-                        .map_err(|e| format!("{e:#}"));
-                    Ok(Message::WithoutBody(Response::StorageGetRaw(result)))
+                    let response = match me.storage.get_raw(&key).await {
+                        Ok(result) => Response::StorageGetRaw(result.map(|bytes| bytes.to_vec())),
+                        Err(error) => Response::StorageReadError(format!("{error:#}")),
+                    };
+                    Ok(Message::WithoutBody(response))
                 }
                 Request::StoragePutRaw { key, data } => {
                     debug!("handle_client: storage_put_raw key={}", key);
