@@ -338,6 +338,12 @@ pub struct MultiLevelStorage {
     atomic_stats: Vec<Arc<AtomicLevelStats>>,
     /// Base directories for path normalization, propagated to compiler pipeline
     basedirs: Vec<Vec<u8>>,
+    /// Test-only: pins the lookup deadline so a test can drive the
+    /// per-level cut without racing the process-wide LazyLock env read
+    /// (mirroring the wrapper's `timeout_override` for its Full-mode
+    /// timeout).
+    #[cfg(test)]
+    total_budget_override: Option<Duration>,
 }
 
 impl MultiLevelStorage {
@@ -375,7 +381,20 @@ impl MultiLevelStorage {
             write_error_policy,
             atomic_stats,
             basedirs,
+            #[cfg(test)]
+            total_budget_override: None,
         }
+    }
+
+    /// Test-only constructor: the chain with the lookup deadline pinned.
+    #[cfg(test)]
+    pub(crate) fn with_total_budget_override(
+        levels: Vec<Arc<dyn Storage>>,
+        total_budget: Duration,
+    ) -> Self {
+        let mut storage = Self::new(levels);
+        storage.total_budget_override = Some(total_budget);
+        storage
     }
 
     /// Get a snapshot of current multi-level cache statistics.
@@ -590,6 +609,11 @@ impl Storage for MultiLevelStorage {
         // so a stalled level cannot consume the whole budget before the
         // later levels are tried (and a healthy slow level keeps nearly its
         // full share).
+        #[cfg(test)]
+        let total_budget = self
+            .total_budget_override
+            .unwrap_or_else(crate::cache::backend_backoff::read_timeout);
+        #[cfg(not(test))]
         let total_budget = crate::cache::backend_backoff::read_timeout();
         let lookup_start = Instant::now();
         let level_count = self.levels.len();
@@ -726,6 +750,11 @@ impl Storage for MultiLevelStorage {
         // Same per-level budget split as `get`: the raw read path serves the
         // client-side mode and must not let one stalled level eat the whole
         // deadline or bypass its backoff gate.
+        #[cfg(test)]
+        let total_budget = self
+            .total_budget_override
+            .unwrap_or_else(crate::cache::backend_backoff::read_timeout);
+        #[cfg(not(test))]
         let total_budget = crate::cache::backend_backoff::read_timeout();
         let lookup_start = Instant::now();
         let level_count = self.levels.len();

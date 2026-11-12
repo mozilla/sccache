@@ -2000,9 +2000,89 @@ fn a_fully_stalled_chain_probes_every_level_once_and_misses() {
     // With the process-default 60 s deadline the shares are ≥ 20 s, so the
     // 5 s stall fits inside L2's share: no timeout fires here (the
     // deadline-split math is pinned above; the trip path is covered by the
-    // cooldown test below). The smoke proves the probe contract only.
+    // real-timeout test below and the seeded cooldown test under it). The
+    // smoke proves the probe contract only.
     let stats = storage.stats();
     assert_eq!(stats.0[2].timeouts, 0);
+}
+
+#[test]
+fn a_slow_first_level_exceeds_its_share_trips_its_gate_and_a_healthy_level_serves() {
+    // The timeout-driven fallback the two neighbors avoid by design: the
+    // first level really outlasts the share the chain cuts it at — the
+    // chain's own per-level timer cancels the read, the wrapper's drop
+    // guard records the timeout, the gate trips, and the same lookup
+    // falls through to the healthy second level. No seeded gate state.
+    let runtime = RuntimeBuilder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    // The lookup deadline is pinned to 100 ms (the cfg(test) budget
+    // override, mirroring the wrapper's timeout_override — the process-wide
+    // env read cannot be raced from a test), so the two-level chain assigns
+    // L0 a 50 ms share; L0's 5 s stall cannot fit inside it.
+    let l0 = ChainSlowLevel::new(Duration::from_secs(5));
+    let l1 = ChainCountingLevel::new();
+    l1.put_entry("hit_key");
+
+    let build = |inner: Arc<dyn Storage>| -> Arc<dyn Storage> {
+        Arc::new(crate::cache::backend_backoff::BackoffStorage::with_policy(
+            inner,
+            1,
+            Duration::from_secs(60),
+            crate::cache::backend_backoff::TimeBudget::CallerOwned,
+        ))
+    };
+    let storage = MultiLevelStorage::with_total_budget_override(
+        vec![build(l0.clone()), build(l1.clone())],
+        Duration::from_millis(100),
+    );
+
+    runtime.block_on(async {
+        // First lookup: L0 is cut at its 50 ms share by the chain's own
+        // timer, the guard records the timeout, the threshold-1 gate trips,
+        // and the lookup still falls through to L1, which serves the hit.
+        let start = std::time::Instant::now();
+        match storage.get("hit_key").await.unwrap() {
+            Cache::Hit(_) => {}
+            _ => panic!("the healthy level must serve the hit"),
+        }
+        assert_eq!(l0.reads(), 1, "L0 was probed once");
+        assert_eq!(l1.reads.load(Ordering::SeqCst), 1, "L1 served the hit");
+        assert!(
+            start.elapsed() < Duration::from_secs(1),
+            "the 50 ms cut must bound L0's wait: {:?}",
+            start.elapsed()
+        );
+
+        // The gate is open now: the next lookup skips L0 without
+        // contacting it, and L1 serves again.
+        match storage.get("hit_key").await.unwrap() {
+            Cache::Hit(_) => {}
+            _ => panic!("the healthy level must keep serving"),
+        }
+        assert_eq!(l0.reads(), 1, "the tripped gate skipped L0");
+        assert_eq!(l1.reads.load(Ordering::SeqCst), 2);
+
+        // A missing key reports the skip marker, never a clean miss.
+        match storage.get("missing_key").await {
+            Err(error) if error.is::<crate::cache::backend_backoff::LevelSkipped>() => {}
+            other => panic!(
+                "expected the skip marker, got {:?}",
+                other.map(|_| ()).map_err(|e| e.to_string())
+            ),
+        }
+        assert_eq!(l0.reads(), 1, "L0 stayed gated");
+    });
+
+    let stats = storage.stats();
+    assert_eq!(
+        stats.0[0].timeouts, 1,
+        "the chain counted L0's real timeout"
+    );
+    assert_eq!(stats.0[0].hits, 0);
+    assert_eq!(stats.0[1].hits, 2);
 }
 
 #[test]
@@ -2036,7 +2116,9 @@ fn local_hits_keep_serving_while_the_remote_level_is_in_cooldown() {
     let l1_wrapped = build_slow(l1.clone() as Arc<dyn Storage>);
     // Seed the trip: three consecutive timed-out reads opened L1's gate.
     for _ in 0..3 {
-        l1_wrapped.gate().record_timed_out();
+        l1_wrapped
+            .gate()
+            .record_timed_out(crate::cache::backend_backoff::Admission::Read);
     }
     let wrapped: Vec<Arc<dyn Storage>> =
         vec![build_slow(l0.clone() as Arc<dyn Storage>), l1_wrapped];
