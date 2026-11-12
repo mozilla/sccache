@@ -57,7 +57,7 @@ Start the scheduler by running:
 sccache-dist scheduler --config scheduler.conf
 ```
 
-Like the local server, the scheduler process will daemonize itself unless `SCCACHE_NO_DAEMON=1` is set. If the scheduler fails to start you may need to set `SCCACHE_LOG=trace` when starting it to get useful diagnostics.
+Like the local server, the scheduler process will daemonize itself unless `SCCACHE_NO_DAEMON=1` is set. The same command waits up to 60 seconds for the daemon to initialize authentication and bind its listener, and reports startup failures with a nonzero exit status. No separate launcher or manual IPC setup is required; all initialization runs in the daemon. If the scheduler fails to start you may need to set `SCCACHE_LOG=trace` when starting it to get useful diagnostics.
 
 Configure a build server
 ------------------------

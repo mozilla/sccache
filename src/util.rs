@@ -1062,16 +1062,34 @@ fn close_inherited_fds(preserve: &[std::os::unix::io::RawFd]) {
 /// still needs afterwards; everything else inherited is closed.
 #[cfg(not(windows))]
 pub fn daemonize(preserve_fds: &[std::os::unix::io::RawFd]) -> Result<()> {
-    use daemonix::Daemonize;
+    use daemonix::Outcome;
     use std::env;
-    use std::mem;
 
     match env::var("SCCACHE_NO_DAEMON") {
         Ok(ref val) if val == "1" => {}
-        _ => {
-            Daemonize::new().start().context("failed to daemonize")?;
-        }
+        _ => match daemonize_with_parent() {
+            Outcome::Parent(Ok(parent)) => std::process::exit(parent.first_child_exit_code),
+            Outcome::Parent(Err(error)) | Outcome::Child(Err(error)) => {
+                return Err(error).context("failed to daemonize");
+            }
+            Outcome::Child(Ok(_)) => {}
+        },
     }
+
+    daemonize_cleanup(preserve_fds)
+}
+
+/// Retain the original process so callers can wait for daemon startup.
+#[cfg(not(windows))]
+pub fn daemonize_with_parent() -> daemonix::Outcome<()> {
+    daemonix::Daemonize::new().execute()
+}
+
+/// Run after the final fork, before creating worker threads or async runtimes.
+#[cfg(not(windows))]
+pub fn daemonize_cleanup(preserve_fds: &[std::os::unix::io::RawFd]) -> Result<()> {
+    use std::env;
+    use std::mem;
 
     close_inherited_fds(preserve_fds);
 
