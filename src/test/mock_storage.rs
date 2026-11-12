@@ -79,8 +79,11 @@ impl Storage for MockStorage {
             .expect("MockStorage get called but no get results available")
     }
     async fn get_raw(&self, _key: &str) -> Result<Option<Bytes>> {
-        let next = self.raw_rx.lock().await.try_next().unwrap();
-        next.expect("MockStorage get_raw called but no get_raw results available")
+        self.raw_rx
+            .lock()
+            .await
+            .try_recv()
+            .expect("MockStorage get_raw called but no get_raw results available")
     }
     async fn put(&self, _key: &str, _entry: CacheWrite) -> Result<Duration> {
         Ok(if let Some(delay) = self.delay {
