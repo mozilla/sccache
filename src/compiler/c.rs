@@ -13,7 +13,9 @@
 // limitations under the License.
 
 use crate::cache::{FileObjectSource, Storage};
-use crate::compiler::preprocessor_cache::preprocessor_cache_entry_hash_key;
+use crate::compiler::preprocessor_cache::{
+    preprocessor_cache_entry_hash_key, time_macro_adjusted_digest,
+};
 use crate::compiler::{
     Cacheable, ColorMode, Compilation, CompileCommand, Compiler, CompilerArguments, CompilerHasher,
     CompilerKind, HashResult, Language,
@@ -505,56 +507,38 @@ where
             {
                 let mut buf = vec![];
                 seekable.read_to_end(&mut buf)?;
-                let mut preprocessor_cache_entry = PreprocessorCacheEntry::read(&buf)?;
-                let mut updated = false;
-                let hit = preprocessor_cache_entry
-                    .lookup_result_digest(preprocessor_cache_mode_config, &mut updated);
+                let preprocessor_cache_entry = PreprocessorCacheEntry::read(&buf)?;
+                let hit =
+                    preprocessor_cache_entry.lookup_result_digest(preprocessor_cache_mode_config);
 
-                let mut update_failed = false;
-                if updated {
-                    // Time macros have been found, we need to update
-                    // the preprocessor cache entry. See [`PreprocessorCacheEntry::result_matches`].
-                    debug!("Preprocessor cache updated because of time macros: {preprocessor_key}");
-
-                    if let Err(e) = storage
-                        .put_preprocessor_cache_entry(preprocessor_key, preprocessor_cache_entry)
-                        .await
-                    {
-                        debug!("Failed to update preprocessor cache: {}", e);
-                        update_failed = true;
-                    }
-                }
-
-                if !update_failed {
-                    if let Some(key) = hit {
-                        debug!("Preprocessor cache hit: {preprocessor_key}");
-                        // A compiler binary may be a symlink to another and
-                        // so has the same digest, but that means
-                        // the toolchain will not contain the correct path
-                        // to invoke the compiler! Add the compiler
-                        // executable path to try and prevent this
-                        let weak_toolchain_key = format!(
-                            "{}-{}",
-                            self.executable.to_string_lossy(),
-                            self.executable_digest
-                        );
-                        return Ok(HashResult {
-                            key,
-                            compilation: Box::new(CCompilation {
-                                parsed_args: self.parsed_args.clone(),
-                                is_locally_preprocessed: false,
-                                #[cfg(feature = "dist-client")]
-                                preprocessed_input: PREPROCESSING_SKIPPED_COMPILE_POISON.to_vec(),
-                                executable: self.executable.clone(),
-                                compiler: self.compiler.to_owned(),
-                                cwd: cwd.clone(),
-                                env_vars: env_vars.clone(),
-                            }),
-                            weak_toolchain_key,
-                        });
-                    } else {
-                        debug!("Preprocessor cache miss: {preprocessor_key}");
-                    }
+                if let Some(key) = hit {
+                    debug!("Preprocessor cache hit: {preprocessor_key}");
+                    // A compiler binary may be a symlink to another and
+                    // so has the same digest, but that means
+                    // the toolchain will not contain the correct path
+                    // to invoke the compiler! Add the compiler
+                    // executable path to try and prevent this
+                    let weak_toolchain_key = format!(
+                        "{}-{}",
+                        self.executable.to_string_lossy(),
+                        self.executable_digest
+                    );
+                    return Ok(HashResult {
+                        key,
+                        compilation: Box::new(CCompilation {
+                            parsed_args: self.parsed_args.clone(),
+                            is_locally_preprocessed: false,
+                            #[cfg(feature = "dist-client")]
+                            preprocessed_input: PREPROCESSING_SKIPPED_COMPILE_POISON.to_vec(),
+                            executable: self.executable.clone(),
+                            compiler: self.compiler.to_owned(),
+                            cwd: cwd.clone(),
+                            env_vars: env_vars.clone(),
+                        }),
+                        weak_toolchain_key,
+                    });
+                } else {
+                    debug!("Preprocessor cache miss: {preprocessor_key}");
                 }
             }
 
@@ -1177,6 +1161,8 @@ fn remember_include_file(
         debug!("Found __TIME__ in header file {}", path.display());
         return Ok(false);
     }
+
+    let file_digest = time_macro_adjusted_digest(file_digest, &finder, &path);
 
     included_files.insert(path, file_digest);
 
@@ -2026,6 +2012,39 @@ mod test {
         t("Hpp");
         t("Mm");
         t("Cu");
+    }
+
+    #[test]
+    fn test_remembered_time_macro_header_matches_on_lookup() {
+        let dir = tempfile::tempdir().unwrap();
+        let header = dir.path().join("date.h");
+        std::fs::write(&header, b"static const char *d = __DATE__ __TIMESTAMP__;\n").unwrap();
+        let config = PreprocessorCacheModeConfig::activated();
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+        let mut included_files = HashMap::new();
+        assert!(
+            remember_include_file(
+                header.to_str().unwrap().as_bytes(),
+                Path::new("input.c"),
+                dir.path(),
+                &mut included_files,
+                &mut Digest::new(),
+                false,
+                config,
+                later,
+                &StandardFsAbstraction,
+            )
+            .unwrap()
+        );
+        let mut entry = PreprocessorCacheEntry::new();
+        let files = included_files
+            .into_iter()
+            .map(|(path, digest)| (digest, path));
+        entry.add_result(later, "result", files);
+        assert_eq!(
+            entry.lookup_result_digest(config).as_deref(),
+            Some("result")
+        );
     }
 
     #[test]
