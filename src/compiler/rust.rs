@@ -1886,16 +1886,17 @@ fn basedirs_remap_arguments(
             ArgDisposition::Separated,
         )
     };
+    // The `..` path from the cwd up to its ancestor `dir`.
+    let up_to = |dir: &Path| {
+        iter::repeat_n("..", cwd.components().count() - dir.components().count())
+            .collect::<PathBuf>()
+    };
     let mut arguments = vec![];
     // Relative to the cwd, so that diagnostics still lead to the files.
     let in_cwd: Vec<_> = cwd.ancestors().filter(is_basedir).collect();
-    for dir in in_cwd.iter().rev() {
-        let depth = cwd.components().count() - dir.components().count();
-        if depth > 0 {
-            arguments.push(remap(
-                dir,
-                &iter::repeat_n("..", depth).collect::<PathBuf>(),
-            ));
+    for &dir in in_cwd.iter().rev() {
+        if dir != cwd {
+            arguments.push(remap(dir, &up_to(dir)));
         }
     }
     if !in_cwd.is_empty() {
@@ -1913,8 +1914,7 @@ fn basedirs_remap_arguments(
             // A basedir of the cwd maps it already; mapping it too puts its name in the key.
             let from_cwd = in_cwd.iter().find_map(|outer| {
                 let rest = dir.strip_prefix(outer).ok()?;
-                let depth = cwd.components().count() - outer.components().count();
-                Some(iter::repeat_n("..", depth).collect::<PathBuf>().join(rest))
+                Some(up_to(outer).join(rest))
             });
             // No basedir of the cwd holds it: name no local file rather than a wrong one.
             let to = from_cwd.map(PathBuf::into_os_string).unwrap_or_else(|| {
