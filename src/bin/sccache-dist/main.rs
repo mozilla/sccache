@@ -42,10 +42,10 @@ pub const INSECURE_DIST_SERVER_TOKEN: &str = "dangerously_insecure_server";
     target_os = "freebsd"
 )))]
 fn main() {
-    compile_error!("Distributed compilation is only supported on Linux/x86_64 and FreeBSD!");
+    compile_error!("sccache-dist is only supported on Linux x86_64/aarch64 and FreeBSD!");
 }
 
-// Only supported on x86_64 Linux machines and on FreeBSD
+// Only supported on x86_64/aarch64 Linux machines and on FreeBSD
 #[cfg(any(
     all(target_os = "linux", target_arch = "x86_64"),
     all(target_os = "linux", target_arch = "aarch64"),
@@ -783,8 +783,8 @@ impl SchedulerIncoming for Scheduler {
 }
 
 pub struct Server {
-    builder: Box<dyn BuilderIncoming>,
-    cache: Mutex<TcCache>,
+    builder: Arc<dyn BuilderIncoming>,
+    cache: Arc<Mutex<TcCache>>,
     job_toolchains: tokio::sync::Mutex<HashMap<JobId, Toolchain>>,
 }
 
@@ -797,8 +797,8 @@ impl Server {
         let cache = TcCache::new(&cache_dir.join("tc"), toolchain_cache_size)
             .context("Failed to create toolchain cache")?;
         Ok(Server {
-            builder,
-            cache: Mutex::new(cache),
+            builder: Arc::from(builder),
+            cache: Arc::new(Mutex::new(cache)),
             job_toolchains: tokio::sync::Mutex::new(HashMap::new()),
         })
     }
@@ -860,7 +860,7 @@ impl ServerIncoming for Server {
         job_id: JobId,
         command: CompileCommand,
         outputs: Vec<String>,
-        inputs_rdr: InputsReader<'_>,
+        inputs_rdr: InputsReader,
     ) -> Result<RunJobResult> {
         requester
             .do_update_job_state(job_id, JobState::Started)
@@ -870,16 +870,20 @@ impl ServerIncoming for Server {
         let res = match tc {
             None => Ok(RunJobResult::JobNotFound),
             Some(tc) => {
-                match self
-                    .builder
-                    .run_build(tc, command, outputs, inputs_rdr, &self.cache)
-                {
-                    Err(e) => Err(e.context("run build failed")),
-                    Ok(res) => Ok(RunJobResult::Complete(JobComplete {
+                let builder = Arc::clone(&self.builder);
+                let cache = Arc::clone(&self.cache);
+                tokio::task::spawn_blocking(move || {
+                    builder.run_build(tc, command, outputs, inputs_rdr, &cache)
+                })
+                .await
+                .context("build task failed")
+                .and_then(|res| res.context("run build failed"))
+                .map(|res| {
+                    RunJobResult::Complete(JobComplete {
                         output: res.output,
                         outputs: res.outputs,
-                    })),
-                }
+                    })
+                })
             }
         };
         requester
@@ -889,6 +893,9 @@ impl ServerIncoming for Server {
         res
     }
 }
+
+#[cfg(test)]
+mod server_tests;
 
 #[cfg(test)]
 mod scheduler_tests {

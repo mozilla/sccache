@@ -19,7 +19,9 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
-use crate::cache::cache_io::{Cache, CacheMode, CacheRead, CacheWrite};
+#[cfg(any_cache_remote)]
+use crate::cache::cache_io::CacheRead;
+use crate::cache::cache_io::{Cache, CacheMode, CacheWrite};
 use crate::cache::multilevel::MultiLevelStats;
 #[cfg(any_cache_remote)]
 use crate::cache::utils::normalize_key;
@@ -364,6 +366,7 @@ impl Storage for RemoteStorage {
 
 #[cfg(test)]
 mod test {
+    #[cfg(any_cache_remote)]
     use super::*;
 
     #[cfg(any_cache_remote)]

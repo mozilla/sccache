@@ -316,7 +316,7 @@ impl ServerIncoming for FailingServer {
         job_id: JobId,
         _command: CompileCommand,
         _outputs: Vec<String>,
-        _inputs_rdr: InputsReader<'_>,
+        _inputs_rdr: InputsReader,
     ) -> Result<RunJobResult> {
         requester
             .do_update_job_state(job_id, JobState::Started)

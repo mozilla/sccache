@@ -18,6 +18,7 @@ use rand::{RngCore, rngs::OsRng};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::ffi::OsString;
 use std::fmt;
+#[cfg(any_dist)]
 use std::io::{self, Read};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -630,9 +631,15 @@ impl Read for ToolchainReader<'_> {
 }
 
 #[cfg(feature = "dist-server")]
-pub struct InputsReader<'a>(Box<dyn Read + Send + 'a>);
+pub struct InputsReader(Box<dyn Read + Send>);
 #[cfg(feature = "dist-server")]
-impl Read for InputsReader<'_> {
+impl InputsReader {
+    pub fn new(reader: impl Read + Send + 'static) -> Self {
+        Self(Box::new(reader))
+    }
+}
+#[cfg(feature = "dist-server")]
+impl Read for InputsReader {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.0.read(buf)
     }
@@ -723,7 +730,7 @@ pub trait ServerIncoming: Send + Sync {
         job_id: JobId,
         command: CompileCommand,
         outputs: Vec<String>,
-        inputs_rdr: InputsReader<'_>,
+        inputs_rdr: InputsReader,
     ) -> ExtResult<RunJobResult, Error>;
 }
 
@@ -735,7 +742,7 @@ pub trait BuilderIncoming: Send + Sync {
         toolchain: Toolchain,
         command: CompileCommand,
         outputs: Vec<String>,
-        inputs_rdr: InputsReader<'_>,
+        inputs_rdr: InputsReader,
         cache: &Mutex<TcCache>,
     ) -> ExtResult<BuildResult, Error>;
 }

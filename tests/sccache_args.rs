@@ -7,14 +7,16 @@ pub mod helpers;
 use anyhow::Result;
 use assert_cmd::prelude::*;
 use fs_err as fs;
-use helpers::{SCCACHE_BIN, stop_sccache};
+use helpers::SCCACHE_BIN;
+#[cfg(any(feature = "gcs", feature = "s3"))]
+use helpers::stop_sccache;
 use predicates::prelude::*;
 use serial_test::serial;
 use std::path::Path;
 use std::process::Command;
 
-#[macro_use]
-extern crate log;
+#[cfg(feature = "gcs")]
+use log::trace;
 
 #[test]
 #[serial]

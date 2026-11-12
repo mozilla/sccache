@@ -247,7 +247,7 @@ mod server {
     const HEARTBEAT_ERROR_INTERVAL: Duration = Duration::from_secs(10);
     pub const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(90);
     use async_trait::async_trait;
-    use tokio::sync::Mutex;
+    use tokio::sync::Mutex as AsyncMutex;
 
     async fn bincode_req<T: serde::de::DeserializeOwned>(
         req: reqwest::RequestBuilder,
@@ -827,7 +827,7 @@ mod server {
                         _: JobId,
                         _: CompileCommand,
                         _: Vec<String>,
-                        _: InputsReader<'_>,
+                        _: InputsReader,
                     ) -> anyhow::Result<RunJobResult> {
                         Err(failure("run failed"))
                     }
@@ -1028,6 +1028,67 @@ mod server {
                     let error: Value = serde_json::from_slice(response.body()).unwrap();
                     assert_eq!(error["description"], "error while parsing the bincode body");
                     assert!(error["cause"]["description"].as_str().is_some());
+                }
+
+                #[tokio::test]
+                async fn test_run_job_inputs_are_owned_and_decoded() {
+                    use std::io::{Read, Write};
+
+                    struct ReadingServer;
+                    #[async_trait]
+                    impl ServerIncoming for ReadingServer {
+                        async fn handle_assign_job(
+                            &self,
+                            _: JobId,
+                            _: Toolchain,
+                        ) -> anyhow::Result<AssignJobResult> {
+                            unreachable!()
+                        }
+
+                        async fn handle_submit_toolchain(
+                            &self,
+                            _: &dyn ServerOutgoing,
+                            _: JobId,
+                            _: ToolchainReader<'_>,
+                        ) -> anyhow::Result<SubmitToolchainResult> {
+                            unreachable!()
+                        }
+
+                        async fn handle_run_job(
+                            &self,
+                            _: &dyn ServerOutgoing,
+                            job_id: JobId,
+                            command: CompileCommand,
+                            outputs: Vec<String>,
+                            mut inputs: InputsReader,
+                        ) -> anyhow::Result<RunJobResult> {
+                            assert_eq!(job_id, JobId(1));
+                            assert_eq!(command.executable, "cc");
+                            assert!(outputs.is_empty());
+                            tokio::task::spawn_blocking(move || {
+                                let mut bytes = Vec::new();
+                                inputs.read_to_end(&mut bytes).unwrap();
+                                assert_eq!(bytes, b"compile inputs");
+                            })
+                            .await
+                            .unwrap();
+                            Ok(RunJobResult::JobNotFound)
+                        }
+                    }
+
+                    let mut compressor =
+                        flate2::write::ZlibEncoder::new(run_body(), flate2::Compression::fast());
+                    compressor.write_all(b"compile inputs").unwrap();
+                    let body = compressor.finish().unwrap();
+                    let result = handlers::run_job(
+                        JobId(1),
+                        Arc::new(ReadingServer),
+                        Arc::new(UnusedRequester),
+                        body.into(),
+                    )
+                    .await
+                    .unwrap();
+                    assert!(matches!(result, RunJobResult::JobNotFound));
                 }
 
                 #[tokio::test]
@@ -1260,9 +1321,9 @@ mod server {
                 body: bytes::Bytes,
             ) -> Result<RunJobResult, Rejection> {
                 use crate::errors::Context;
-                use std::io::Read;
+                use std::io::{Cursor, Read};
 
-                let mut body = body.as_ref();
+                let mut body = Cursor::new(body);
                 let bincode_length = body
                     .read_u32::<BigEndian>()
                     .context("failed to read run job input length")
@@ -1277,7 +1338,7 @@ mod server {
 
                 let body = bincode_reader.into_inner();
 
-                let inputs_rdr = InputsReader(Box::new(ZlibReadDecoder::new(body)));
+                let inputs_rdr = InputsReader::new(ZlibReadDecoder::new(body));
 
                 let outputs = outputs.into_iter().collect();
 
@@ -2407,12 +2468,12 @@ mod server {
             } = self;
             let client = new_reqwest_client().context("failed to build scheduler HTTP client")?;
             let requester = Arc::new(SchedulerRequester {
-                client: Mutex::new(client),
+                client: AsyncMutex::new(client),
             });
 
             let check_client_auth = Arc::from(check_client_auth);
             let handler = Arc::from(handler);
-            let server_certificates = Arc::new(Mutex::new(HashMap::new()));
+            let server_certificates = Arc::new(AsyncMutex::new(HashMap::new()));
             let api = scheduler_api_v1::api(
                 requester,
                 check_client_auth,
@@ -2431,7 +2492,7 @@ mod server {
         }
     }
     pub struct SchedulerRequester {
-        client: tokio::sync::Mutex<reqwest::Client>,
+        client: AsyncMutex<reqwest::Client>,
     }
 
     #[async_trait]

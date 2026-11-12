@@ -35,8 +35,15 @@ use crate::cache::storage::RemoteStorage;
 use crate::cache::storage::Storage;
 #[cfg(feature = "webdav")]
 use crate::cache::webdav::WebdavCache;
-use crate::config::Config;
-use crate::config::{self, CacheType};
+#[cfg(any(
+    feature = "azure",
+    feature = "gcs",
+    feature = "gha",
+    feature = "memcached",
+    feature = "redis"
+))]
+use crate::config;
+use crate::config::{CacheType, Config};
 
 use std::sync::Arc;
 
@@ -49,6 +56,9 @@ pub fn build_single_cache(
     basedirs: &[Vec<u8>],
     skip_cache_check: bool,
 ) -> Result<Arc<dyn Storage>> {
+    #[cfg(not(any_cache_remote))]
+    let _ = (basedirs, skip_cache_check);
+
     match cache_type {
         #[cfg(feature = "azure")]
         CacheType::Azure(config::AzureCacheConfig {
@@ -298,9 +308,11 @@ pub fn storage_from_config(
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{
-        PreprocessorCacheEntry, cache::CacheMode, cache::CacheWrite, config::CacheModeConfig,
-    };
+    #[cfg(any(feature = "s3", feature = "redis"))]
+    use crate::cache::CacheMode;
+    #[cfg(feature = "s3")]
+    use crate::config;
+    use crate::{PreprocessorCacheEntry, cache::CacheWrite, config::CacheModeConfig};
     use fs_err as fs;
 
     #[test]
