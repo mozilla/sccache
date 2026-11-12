@@ -39,6 +39,8 @@ use crate::config::Config;
 use crate::config::{self, CacheType};
 
 use std::sync::Arc;
+#[cfg(feature = "redis")]
+use std::time::Duration;
 
 use crate::errors::*;
 
