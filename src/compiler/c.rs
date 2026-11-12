@@ -13,7 +13,9 @@
 // limitations under the License.
 
 use crate::cache::{FileObjectSource, Storage};
-use crate::compiler::preprocessor_cache::preprocessor_cache_entry_hash_key;
+use crate::compiler::preprocessor_cache::{
+    compilation_tree_root, preprocessor_cache_entry_hash_key,
+};
 use crate::compiler::{
     Cacheable, ColorMode, Compilation, CompileCommand, Compiler, CompilerArguments, CompilerHasher,
     CompilerKind, HashResult, Language,
@@ -496,19 +498,31 @@ where
             None
         };
 
+        // The checkout this compilation belongs to. Basedirs make every checkout
+        // listed share one preprocessor cache entry, so the include files it
+        // records have to be checked against this tree's copies and not against
+        // the ones that happened to write the entry.
+        let tree_root = if preprocessor_key.is_some() {
+            compilation_tree_root(&absolute_input_path, &cwd, storage.basedirs())?
+        } else {
+            None
+        };
+
         let (preprocessor_output, include_files) = if needs_preprocessing {
             if let Some(preprocessor_key) = &preprocessor_key
                 && cache_control == CacheControl::Default
                 && let Some(mut seekable) = storage
                     .get_preprocessor_cache_entry(preprocessor_key)
                     .await?
+                && let Some(mut preprocessor_cache_entry) =
+                    read_preprocessor_cache_entry(&mut seekable, preprocessor_key)
             {
-                let mut buf = vec![];
-                seekable.read_to_end(&mut buf)?;
-                let mut preprocessor_cache_entry = PreprocessorCacheEntry::read(&buf)?;
                 let mut updated = false;
-                let hit = preprocessor_cache_entry
-                    .lookup_result_digest(preprocessor_cache_mode_config, &mut updated);
+                let hit = preprocessor_cache_entry.lookup_result_digest(
+                    preprocessor_cache_mode_config,
+                    tree_root.as_deref(),
+                    &mut updated,
+                );
 
                 let mut update_failed = false;
                 if updated {
@@ -681,7 +695,13 @@ where
                 .map(|(path, digest)| (digest, path))
                 .collect();
             files.sort_unstable_by(|a, b| a.1.cmp(&b.1));
-            preprocessor_cache_entry.add_result(start_of_compilation, &key, files);
+            preprocessor_cache_entry.add_result(
+                start_of_compilation,
+                &key,
+                files,
+                storage.basedirs(),
+                tree_root.as_deref(),
+            );
 
             if let Err(e) = storage
                 .put_preprocessor_cache_entry(&preprocessor_key, preprocessor_cache_entry)
@@ -737,6 +757,26 @@ const HASH_31_COMMAND_LINE_NEWLINE: &[u8] = b"# 31 \"<command-line>\"\n";
 const HASH_32_COMMAND_LINE_2_NEWLINE: &[u8] = b"# 32 \"<command-line>\" 2\n";
 const INCBIN_DIRECTIVE: &[u8] = b".incbin";
 const COMPRESSED_CLANG_OFFLOAD_BUNDLE_MAGIC: &[u8] = b"CCOB";
+
+/// An entry that cannot be read, such as one truncated by a crash, is a miss
+/// rather than a failed compilation: the miss path overwrites it.
+fn read_preprocessor_cache_entry(
+    mut entry: impl io::Read,
+    key: &str,
+) -> Option<PreprocessorCacheEntry> {
+    let mut buf = vec![];
+    let result = entry
+        .read_to_end(&mut buf)
+        .map_err(Into::into)
+        .and_then(|_| PreprocessorCacheEntry::read(&buf));
+    match result {
+        Ok(entry) => Some(entry),
+        Err(e) => {
+            debug!("Ignoring unreadable preprocessor cache entry {key}: {e}");
+            None
+        }
+    }
+}
 
 /// Remember the include files in the preprocessor output if it can be cached.
 /// Returns `false` if preprocessor cache mode should be disabled.
