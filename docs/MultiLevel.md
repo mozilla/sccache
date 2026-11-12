@@ -252,6 +252,10 @@ the failure count as `stats.multi_level[].read_failures`.
 Read failures still fall back to the next level; they are not part of
 `Cache read errors`.
 
+When updating across the addition of `read_failures`, use matching CLI and daemon
+builds and restart the daemon (`sccache --stop-server`). The field changes the
+binary statistics response format; mixed builds are not compatible.
+
 ## Best Practices
 
 ### 1. Order Levels by Latency (Fastest First)
