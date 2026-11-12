@@ -200,11 +200,11 @@ impl CCompilerImpl for Nvcc {
         let resolved_executable = resolve_compiler_avoiding_wrapper(executable, &env_vars);
 
         let initialize_cmd_and_args = || {
-            let mut command = creator.clone().new_command_sync(&resolved_executable);
+            let mut command = creator
+                .clone()
+                .new_command_with_env(&resolved_executable, env_vars.iter().cloned());
             command
                 .current_dir(cwd)
-                .env_clear()
-                .envs(env_vars.clone())
                 .args(&parsed_args.preprocessor_args)
                 .args(&parsed_args.common_args)
                 .arg("-x")
@@ -976,13 +976,13 @@ where
     // Resolve compiler avoiding ccache wrappers to prevent double-caching.
     let resolved_executable = resolve_compiler_avoiding_wrapper(executable, env_vars);
 
-    let mut nvcc_dryrun_cmd = creator.clone().new_command_sync(&resolved_executable);
+    let mut nvcc_dryrun_cmd = creator
+        .clone()
+        .new_command_with_env(&resolved_executable, env_vars.iter().cloned());
 
     nvcc_dryrun_cmd
         .args(&[arguments, &["--dryrun".into(), "--keep".into()][..]].concat())
-        .env_clear()
-        .current_dir(cwd)
-        .envs(env_vars.clone());
+        .current_dir(cwd);
 
     let nvcc_dryrun_output = run_input_output(nvcc_dryrun_cmd, None).await?;
 
@@ -1289,12 +1289,11 @@ where
 
         let out = match cacheable {
             Cacheable::No => {
-                let mut cmd = creator.clone().new_command_sync(&resolved_exe);
+                let mut cmd = creator
+                    .clone()
+                    .new_command_with_env(&resolved_exe, env_vars.iter().cloned());
 
-                cmd.args(args)
-                    .current_dir(cwd)
-                    .env_clear()
-                    .envs(env_vars.clone());
+                cmd.args(args).current_dir(cwd);
 
                 run_input_output(cmd, None)
                     .await
