@@ -1,5 +1,5 @@
 use crate::cache::{CacheMode, GetPathResult};
-use crate::compiler::ColorMode;
+use crate::compiler::{ColorMode, CompilerDescriptor};
 use crate::config::PreprocessorCacheModeConfig;
 use crate::server::{DistInfo, ServerInfo, ServerStats};
 use serde::{Deserialize, Serialize};
@@ -35,6 +35,10 @@ pub enum Request {
     StoragePutPreprocessorEntry { key: String, entry_bytes: Vec<u8> },
     /// Merge per-invocation stats into the daemon's running totals.
     RecordStats(Box<ServerStats>),
+    /// Look up the compiler `Compile::exe` is, detecting it if the daemon
+    /// hasn't yet. Only the executable, working directory, arguments and
+    /// environment are used.
+    CompilerInfo(Compile),
 }
 
 /// A server response.
@@ -76,6 +80,9 @@ pub enum Response {
     ///
     /// Currently only `.rmeta` notifications are sent (for Cargo pipelining).
     ArtifactNotification(Vec<u8>),
+    /// Response for `Request::CompilerInfo`: `None` when the compiler could
+    /// not be detected or cannot be sent to another process.
+    CompilerInfo(Option<CompilerDescriptor>),
 }
 
 /// Possible responses from the server for a `Compile` request.
@@ -126,4 +133,7 @@ pub struct StorageHandshakeInfo {
     pub preprocessor_cache_mode_config: PreprocessorCacheModeConfig,
     pub cache_mode: CacheMode,
     pub max_size: Option<u64>,
+    /// The daemon's transport frame limit, so that a client can avoid sending a
+    /// request the daemon would have to drop the connection over.
+    pub max_frame_length: usize,
 }

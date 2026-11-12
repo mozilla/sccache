@@ -24,7 +24,7 @@ use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Respon
 use crate::server::{self, DistInfo, ServerInfo, ServerStartup, ServerStats};
 use crate::util::{daemonize, new_client_runtime, run_input_output};
 use byteorder::{BigEndian, ByteOrder};
-use fs::{File, OpenOptions};
+use fs::File;
 use fs_err as fs;
 use log::Level::Trace;
 use std::env;
@@ -38,7 +38,7 @@ use std::os::unix::process::ExitStatusExt;
 use std::os::windows::io::AsRawHandle;
 use std::path::Path;
 use std::process;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use strip_ansi_escapes::Writer;
 use tokio::io::AsyncReadExt;
@@ -159,23 +159,19 @@ fn redirect_stderr(f: File) {
 /// Create the log file and return an error if cannot be created
 fn create_error_log() -> Result<File> {
     trace!("Create the log file");
-    let name = match env::var("SCCACHE_ERROR_LOG") {
-        Ok(filename) if !filename.is_empty() => filename,
-        _ => {
-            bail!("Cannot read variable 'SCCACHE_ERROR_LOG'");
-        }
+    let path = match crate::logging::error_log_path() {
+        Some(path) => path,
+        None => bail!("Cannot read variable '{}'", crate::logging::ERROR_LOG_ENV),
     };
-
-    let f = match OpenOptions::new().create(true).append(true).open(&name) {
-        Ok(f) => f,
-        Err(_) => {
-            bail!("Cannot open/write log file '{}'", name);
-        }
-    };
-    Ok(f)
+    crate::logging::open_error_log(&path)
 }
 
-/// If `SCCACHE_ERROR_LOG` is set, redirect stderr to it.
+/// Redirect the daemon's stderr into the error log.
+///
+/// Log records already go there directly (see `logging::init`); this catches
+/// what writes to stderr without going through `log`, such as panics and
+/// backtraces.  Only the daemon does this: a CLI process needs its stderr for
+/// the compiler's diagnostics.
 fn redirect_error_log(f: File) -> Result<()> {
     debug!("redirecting stderr into {:?}", f);
     redirect_stderr(f);
@@ -756,34 +752,76 @@ where
         runtime.handle().clone(),
         tx,
         info,
-    );
+    )
+    .with_compiler_info_daemon(Arc::clone(&conn_arc));
     let compile = Compile {
         exe: exe_path.as_os_str().to_owned(),
         cwd: cwd.as_os_str().to_owned(),
         args: cmdline.clone(),
         env_vars,
     };
-    let (compile_resp, finished, forwarded_notification) =
-        runtime.block_on(service.compile_direct(compile, &mut *stderr))?;
-    let creator = C::new(jobserver);
-    let exit_code = handle_compile_result(
-        creator,
-        runtime,
-        compile_resp,
-        finished,
-        forwarded_notification,
-        &exe_path,
-        cmdline,
-        cwd,
-        stdout,
-        stderr,
-    )?;
-    // Ship accumulated stats back to the daemon (best-effort; don't fail the build on error).
+    // Whatever the outcome, the stats accumulated so far still have to be
+    // shipped: a failed compile has counted a cache miss, a cache error or a
+    // compile failure that `--show-stats` should report.
+    let result = match runtime.block_on(service.compile_direct(compile, &mut *stderr)) {
+        Ok((compile_resp, finished, forwarded_notification)) => {
+            let creator = C::new(jobserver);
+            handle_compile_result(
+                creator,
+                runtime,
+                compile_resp,
+                finished,
+                forwarded_notification,
+                &exe_path,
+                cmdline,
+                cwd,
+                stdout,
+                stderr,
+            )
+        }
+        Err(e) => Err(e),
+    };
     let delta: ServerStats = runtime.block_on(service.take_stats());
-    if let Ok(mut conn) = conn_arc.lock() {
-        let _ = conn.request(Request::RecordStats(Box::new(delta)));
+    record_stats(&conn_arc, delta);
+    result
+}
+
+/// Merge this process' stats into the daemon's running totals.
+///
+/// The connection used for the compile may already be unusable — the daemon
+/// drops it when a request exceeds `SCCACHE_MAX_FRAME_LENGTH`, which a cache
+/// write of a large entry does — so a failure here says nothing about whether
+/// the daemon is still alive. Retry once on a fresh connection rather than
+/// discarding the delta, and if that fails too, say so instead of letting the
+/// counts disappear silently.
+fn record_stats(conn: &Mutex<ServerConnection>, delta: ServerStats) {
+    fn attempt(conn: &mut ServerConnection, delta: ServerStats) -> Result<()> {
+        match conn.request(Request::RecordStats(Box::new(delta))) {
+            Ok(Response::RecordStats) => Ok(()),
+            Ok(other) => bail!("unexpected response to RecordStats: {other:?}"),
+            Err(e) => Err(e),
+        }
     }
-    Ok(exit_code)
+
+    let first = match conn.lock() {
+        // A poisoned lock means an RPC panicked mid-request, so the connection
+        // is no more trustworthy than a broken one; fall through to the retry.
+        Err(_) => Err(anyhow!("connection mutex was poisoned")),
+        Ok(mut conn) => attempt(&mut conn, delta.clone()),
+    };
+    let Err(e) = first else {
+        return;
+    };
+    debug!("recording stats on the compile connection failed: {e:#}; reconnecting");
+
+    // Don't start a daemon just to record stats: if none is running, there are
+    // no totals left to merge into.
+    let retried = connect_to_server(&get_addr())
+        .map_err(anyhow::Error::from)
+        .and_then(|mut conn| attempt(&mut conn, delta));
+    if let Err(e) = retried {
+        warn!("stats for this compile were not recorded: {e:#}");
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -857,11 +895,16 @@ pub fn run_command(cmd: Command) -> Result<i32> {
             if env::var("SCCACHE_ERROR_LOG").is_ok() {
                 let f = create_error_log()?;
                 #[cfg(not(windows))]
-                let preserve = [f.as_raw_fd()];
+                let preserve: Vec<_> = std::iter::once(f.as_raw_fd())
+                    .chain(crate::logging::error_log_fd())
+                    .collect();
                 #[cfg(windows)]
                 let preserve = [f.as_raw_handle()];
                 // Can't report failure here, we're already daemonized.
                 daemonize(&preserve)?;
+                // A per-process log path named the file after the pid this
+                // process had before daemonizing.
+                let f = crate::logging::reopen_error_log()?.unwrap_or(f);
                 redirect_error_log(f)?;
             } else {
                 // We aren't asking for a log file

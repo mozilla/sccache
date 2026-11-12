@@ -15,7 +15,9 @@
 #![allow(unused_imports, dead_code, unused_variables)]
 
 use crate::compiler::args::*;
-use crate::compiler::c::{ArtifactDescriptor, CCompilerImpl, CCompilerKind, ParsedArguments};
+use crate::compiler::c::{
+    ArtifactDescriptor, CCompilerImpl, CCompilerImplDescriptor, CCompilerKind, ParsedArguments,
+};
 use crate::compiler::gcc::ArgData::*;
 use crate::compiler::{
     CCompileCommand, Cacheable, CompileCommand, CompilerArguments, Language, gcc, write_temp_file,
@@ -27,6 +29,7 @@ use async_trait::async_trait;
 use fs::File;
 use fs_err as fs;
 use semver::{BuildMetadata, Prerelease, Version};
+use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
 use std::future::Future;
 use std::io::{self, Write};
@@ -36,7 +39,7 @@ use std::process;
 use crate::errors::*;
 
 /// A struct on which to implement `CCompilerImpl`.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Clang {
     /// true iff this is clang++.
     pub clangplusplus: bool,
@@ -85,6 +88,9 @@ impl Clang {
 impl CCompilerImpl for Clang {
     fn kind(&self) -> CCompilerKind {
         CCompilerKind::Clang
+    }
+    fn descriptor(&self) -> Option<CCompilerImplDescriptor> {
+        Some(CCompilerImplDescriptor::Clang(self.clone()))
     }
     fn plusplus(&self) -> bool {
         self.clangplusplus

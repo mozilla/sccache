@@ -13,10 +13,13 @@
 // limitations under the License.
 
 use crate::cache::{FileObjectSource, Storage};
+use crate::compiler::clang::Clang;
+use crate::compiler::gcc::Gcc;
+use crate::compiler::msvc::Msvc;
 use crate::compiler::preprocessor_cache::preprocessor_cache_entry_hash_key;
 use crate::compiler::{
-    Cacheable, ColorMode, Compilation, CompileCommand, Compiler, CompilerArguments, CompilerHasher,
-    CompilerKind, HashResult, Language,
+    Cacheable, ColorMode, Compilation, CompileCommand, Compiler, CompilerArguments,
+    CompilerDescriptor, CompilerHasher, CompilerKind, HashResult, Language,
 };
 #[cfg(feature = "dist-client")]
 use crate::compiler::{DistPackagers, NoopOutputsRewriter};
@@ -31,6 +34,7 @@ use crate::util::{
 };
 use async_trait::async_trait;
 use fs_err as fs;
+use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
@@ -191,6 +195,15 @@ pub enum CCompilerKind {
     TaskingVX,
 }
 
+/// A detected C/C++ compiler implementation, in a form that can be sent to
+/// another process.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum CCompilerImplDescriptor {
+    Clang(Clang),
+    Gcc(Gcc),
+    Msvc(Msvc),
+}
+
 /// An interface to a specific C compiler.
 #[async_trait]
 pub trait CCompilerImpl: Clone + fmt::Debug + Send + Sync + 'static {
@@ -203,6 +216,11 @@ pub trait CCompilerImpl: Clone + fmt::Debug + Send + Sync + 'static {
     /// Return the identity of the assembler the compiler would run, when it
     /// runs one at all.
     fn assembler_digest(&self) -> Option<String> {
+        None
+    }
+    /// Return a copy of this compiler that can be sent to another process, if
+    /// the implementation supports it.
+    fn descriptor(&self) -> Option<CCompilerImplDescriptor> {
         None
     }
     /// Determine whether `arguments` are supported by this compiler.
@@ -271,6 +289,16 @@ where
             },
             compiler,
         })
+    }
+
+    /// Rebuild a compiler that was detected elsewhere, see
+    /// [`CompilerDescriptor`].
+    pub(crate) fn from_parts(compiler: I, executable: PathBuf, executable_digest: String) -> Self {
+        CCompiler {
+            executable,
+            executable_digest,
+            compiler,
+        }
     }
 
     fn extract_rocm_arg(args: &ParsedArguments, flag: &str) -> Option<PathBuf> {
@@ -382,6 +410,13 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compiler<T> for CCompiler<I> {
         }
     }
 
+    fn descriptor(&self) -> Option<CompilerDescriptor> {
+        Some(CompilerDescriptor::C {
+            executable: self.executable.clone(),
+            executable_digest: self.executable_digest.clone(),
+            compiler: self.compiler.descriptor()?,
+        })
+    }
     fn box_clone(&self) -> Box<dyn Compiler<T>> {
         Box::new((*self).clone())
     }
@@ -1688,6 +1723,39 @@ mod test {
     use std::{collections::VecDeque, sync::Mutex};
 
     use super::*;
+
+    #[test]
+    fn test_descriptor_round_trip() {
+        use crate::mock_command::MockCommandCreator;
+        type Creator = Arc<std::sync::Mutex<MockCommandCreator>>;
+
+        let clang = Clang {
+            clangplusplus: true,
+            is_appleclang: false,
+            version: Some("\"21.1.8\"".to_owned()),
+            assembler_digest: Some("abcd".to_owned()),
+        };
+        let compiler = CCompiler::from_parts(clang, "/usr/bin/clang++".into(), "efgh".to_owned());
+        let descriptor = Compiler::<Creator>::descriptor(&compiler).unwrap();
+        let bytes = bincode::serialize(&descriptor).unwrap();
+        let descriptor: CompilerDescriptor = bincode::deserialize(&bytes).unwrap();
+        let rebuilt = descriptor.into_compiler::<Creator>();
+        assert_eq!(rebuilt.kind(), CompilerKind::C(CCompilerKind::Clang));
+        match rebuilt.descriptor().unwrap() {
+            CompilerDescriptor::C {
+                executable,
+                executable_digest,
+                compiler: CCompilerImplDescriptor::Clang(c),
+            } => {
+                assert_eq!(executable, Path::new("/usr/bin/clang++"));
+                assert_eq!(executable_digest, "efgh");
+                assert!(c.clangplusplus);
+                assert_eq!(c.version.as_deref(), Some("\"21.1.8\""));
+                assert_eq!(c.assembler_digest.as_deref(), Some("abcd"));
+            }
+            other => panic!("unexpected descriptor: {other:?}"),
+        }
+    }
 
     #[test]
     fn test_same_content() {
