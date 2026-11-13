@@ -193,6 +193,7 @@ Note that some env variables may need sccache server restart to take effect.
 * `SCCACHE_ALLOW_INCREMENTAL` set to `1` to allow Rust builds with `CARGO_INCREMENTAL=1`; incremental crates go uncached. See [Rust caveats](Rust.md)
 * `SCCACHE_CONF` configuration file path
 * `SCCACHE_BASEDIRS` base directory (or directories) to strip from paths for cache key computation. This is similar to ccache's `CCACHE_BASEDIR` and enables cache hits across different absolute paths when compiling the same source code. Multiple directories can be separated by `;` on Windows hosts and by `:` on any other operating system. When multiple directories are specified, the longest matching prefix is used. Path matching is **case-insensitive** on Windows and **case-sensitive** on other operating systems. Environment variable takes precedence over file configuration. Only absolute paths are supported; relative paths will cause an error and prevent the server from start.
+* `SCCACHE_BASEDIRS_REMAP_PATHS` set to `true`, `on`, or `1` in the environment of a Rust compile to keep the basedirs out of its outputs with `--remap-path-prefix`. See [Rust caveats](Rust.md)
 * `SCCACHE_CACHED_CONF`
 * `SCCACHE_DIST_CLIENT_CACHE_DIR` distributed toolchain cache directory; overrides `[dist].cache_dir` from the configuration file.
 * `SCCACHE_IDLE_TIMEOUT` how long the local daemon process waits for more client requests before exiting, in seconds. Set to `0` to run sccache permanently

@@ -603,6 +603,54 @@ fn test_rust_cargo_basedirs_other_checkout() -> Result<()> {
     Ok(())
 }
 
+/// With `SCCACHE_BASEDIRS_REMAP_PATHS`, the outputs a hit restores in the second checkout
+/// do not name the first one.
+#[test]
+#[serial]
+fn test_rust_cargo_basedirs_remap_paths() -> Result<()> {
+    let mut test_info = SccacheTest::new(None)?;
+    test_info
+        .env
+        .push(("SCCACHE_BASEDIRS_REMAP_PATHS", "1".into()));
+    let tempdir = real_tempdir(&test_info)?;
+    let [a, b] = ["a", "b"].map(|name| tempdir.join(name));
+    let basedirs = std::env::join_paths([&a, &b])?.into_string().unwrap();
+    restart_sccache(
+        &test_info,
+        Some(vec![("SCCACHE_BASEDIRS".into(), basedirs)]),
+    )?;
+    for checkout in [&a, &b] {
+        write_out_dir_crate(checkout)?;
+        cargo_build(&test_info, checkout)?;
+    }
+
+    test_info
+        .show_stats()?
+        .try_stdout(
+            predicates::str::contains(
+                r#""cache_hits":{"counts":{"Rust":2},"adv_counts":{"rust":2}}"#,
+            )
+            .from_utf8(),
+        )?
+        .try_success()?;
+    let a = a.to_str().unwrap().as_bytes();
+    for entry in walkdir::WalkDir::new(b.join("target")) {
+        let path = entry?.into_path();
+        if path
+            .extension()
+            .is_some_and(|e| e == "rlib" || e == "rmeta")
+        {
+            let bytes = fs::read(&path)?;
+            assert!(
+                !bytes.windows(a.len()).any(|w| w == a),
+                "{} names checkout a",
+                path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Test that without `SCCACHE_ALLOW_INCREMENTAL`, enabling cargo's incremental
 /// compilation still makes sccache refuse to run.
 #[test]

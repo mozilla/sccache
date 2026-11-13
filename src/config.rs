@@ -878,15 +878,19 @@ where
 
 fn bool_from_env_var(env_var_name: &str) -> Result<Option<bool>> {
     string_from_env_var(env_var_name)
-        .map(|value| match value.to_lowercase().as_str() {
-            "true" | "on" | "1" => Ok(true),
-            "false" | "off" | "0" => Ok(false),
-            _ => bail!(
-                "{} must be 'true', 'on', '1', 'false', 'off' or '0'.",
-                env_var_name
-            ),
-        })
+        .map(|value| parse_bool(env_var_name, &value))
         .transpose()
+}
+
+pub(crate) fn parse_bool(env_var_name: &str, value: &str) -> Result<bool> {
+    match value.to_lowercase().as_str() {
+        "true" | "on" | "1" => Ok(true),
+        "false" | "off" | "0" => Ok(false),
+        _ => bail!(
+            "{} must be 'true', 'on', '1', 'false', 'off' or '0'.",
+            env_var_name
+        ),
+    }
 }
 
 fn skip_cache_check_from_env() -> Result<bool> {

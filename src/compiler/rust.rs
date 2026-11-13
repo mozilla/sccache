@@ -29,7 +29,7 @@ use crate::mock_command::{CommandCreatorSync, RunCommand};
 use crate::util::{
     Digest, fmt_duration_as_secs, hash_all, hash_all_archives, hash_all_externs, run_input_output,
 };
-use crate::util::{HashToDigest, OsStrExt, strip_basedirs_from_arg};
+use crate::util::{HashToDigest, OsStrExt, env_var_name_matches, strip_basedirs_from_arg};
 use crate::{counted_array, dist};
 use async_trait::async_trait;
 use filetime::FileTime;
@@ -54,7 +54,7 @@ use std::hash::Hash;
 use std::io;
 use std::io::{BufReader, Read};
 use std::iter;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::pin::Pin;
 use std::process;
 #[cfg(feature = "dist-client")]
@@ -403,6 +403,9 @@ pub struct RustCompilation {
     rlib_dep_reader: Option<Arc<RlibDepReader>>,
     /// All arguments passed to rustc
     arguments: Vec<Argument<ArgData>>,
+    /// Whether `arguments` start with `basedirs_remap_arguments`.
+    #[cfg(feature = "dist-client")]
+    remaps_basedirs: bool,
     /// The compiler inputs.
     inputs: Vec<PathBuf>,
     /// The compiler outputs.
@@ -1823,6 +1826,115 @@ fn strip_basedirs_os<'a>(value: &'a OsStr, basedirs: &[Vec<u8>]) -> Cow<'a, OsSt
     }
 }
 
+fn basedirs_remap_paths(env_vars: &[(OsString, OsString)]) -> bool {
+    const VAR: &str = "SCCACHE_BASEDIRS_REMAP_PATHS";
+    let Some((_, value)) = env_vars
+        .iter()
+        .find(|(k, v)| env_var_name_matches(k, VAR) && !v.is_empty())
+    else {
+        return false;
+    };
+    match value
+        .to_str()
+        .map(|value| crate::config::parse_bool(VAR, value))
+    {
+        Some(Ok(remap)) => remap,
+        Some(Err(e)) => {
+            warn!("{e} Ignoring {value:?}");
+            false
+        }
+        None => {
+            warn!("Ignoring {VAR}: not valid UTF-8: {value:?}");
+            false
+        }
+    }
+}
+
+const BASEDIRS_REMAP_PREFIX: &str = "/sccache/basedir";
+
+/// rustc applies the last matching `--remap-path-prefix`, so outer basedirs come first, and
+/// the user's own mappings, which are passed after these, take precedence.
+fn basedirs_remap_arguments(
+    cwd: &Path,
+    output_dir: &Path,
+    basedirs: &[Vec<u8>],
+) -> Vec<Argument<ArgData>> {
+    let output_dir = cwd.join(output_dir);
+    // Depths are counted in components, which a `..` would throw off.
+    if cwd
+        .components()
+        .chain(output_dir.components())
+        .any(|c| c == Component::ParentDir)
+    {
+        debug!("Not remapping basedirs: `..` in {cwd:?} or {output_dir:?}");
+        return vec![];
+    }
+    let is_basedir = |dir: &&Path| {
+        let mut bytes = dir.as_os_str().as_encoded_bytes().to_vec();
+        bytes.push(b'/');
+        #[cfg(target_os = "windows")]
+        let bytes = crate::util::normalize_win_path(&bytes);
+        basedirs.contains(&bytes)
+    };
+    let remap = |from: &Path, to: &Path| {
+        let mut value = from.as_os_str().to_owned();
+        value.push("=");
+        value.push(to);
+        Argument::WithValue(
+            "--remap-path-prefix",
+            ArgData::PassThrough(value),
+            ArgDisposition::Separated,
+        )
+    };
+    // The `..` path from the cwd up to its ancestor `dir`.
+    let up_to = |dir: &Path| {
+        iter::repeat_n("..", cwd.components().count() - dir.components().count())
+            .collect::<PathBuf>()
+    };
+    let mut arguments = vec![];
+    // Relative to the cwd, so that diagnostics still lead to the files.
+    let in_cwd: Vec<_> = cwd.ancestors().filter(is_basedir).collect();
+    for &dir in in_cwd.iter().rev() {
+        if dir != cwd {
+            arguments.push(remap(dir, &up_to(dir)));
+        }
+    }
+    if !in_cwd.is_empty() {
+        arguments.push(remap(cwd, Path::new(".")));
+    }
+    // Cargo compiles crates.io dependencies in their source directory, but their OUT_DIR is
+    // in the target directory.
+    let in_output_dir: Vec<_> = output_dir
+        .ancestors()
+        .filter(is_basedir)
+        .filter(|dir| !cwd.starts_with(dir))
+        .collect();
+    if let Some(root) = in_output_dir.last() {
+        for dir in in_output_dir.iter().rev() {
+            // A basedir of the cwd maps it already; mapping it too puts its name in the key.
+            let from_cwd = in_cwd.iter().find_map(|outer| {
+                let rest = dir.strip_prefix(outer).ok()?;
+                Some(up_to(outer).join(rest))
+            });
+            // No basedir of the cwd holds it: name no local file rather than a wrong one.
+            let to = from_cwd.map(PathBuf::into_os_string).unwrap_or_else(|| {
+                let mut to = OsString::from(BASEDIRS_REMAP_PREFIX);
+                for component in dir
+                    .strip_prefix(root)
+                    .into_iter()
+                    .flat_map(Path::components)
+                {
+                    to.push("/");
+                    to.push(component);
+                }
+                to
+            });
+            arguments.push(remap(dir, Path::new(&to)));
+        }
+    }
+    arguments
+}
+
 #[allow(clippy::suspicious_else_formatting)] // False positive
 #[async_trait]
 impl<T> CompilerHasher<T> for RustHasher
@@ -2005,6 +2117,15 @@ where
             m.update(d.as_bytes());
         }
         let weak_toolchain_key = rust_dist_toolchain_weak_key(&m, &self.sysroot);
+        let remap_arguments = if basedirs_remap_paths(&env_vars) {
+            basedirs_remap_arguments(&cwd, &self.parsed_args.output_dir, basedirs)
+        } else {
+            vec![]
+        };
+        let remap_strings: Vec<_> = remap_arguments
+            .iter()
+            .flat_map(|arg| arg.iter_os_strings())
+            .collect();
         // 3. The full commandline (self.arguments)
         // TODO: there will be full paths here, it would be nice to
         // normalize them so we can get cross-machine cache hits.
@@ -2038,6 +2159,7 @@ where
             rest.into_iter()
                 .chain(sortables)
                 .flat_map(|(arg, val)| iter::once(arg).chain(val.as_ref()))
+                .chain(&remap_strings)
                 .fold(OsString::new(), |mut a, b| {
                     a.push(strip_basedirs_os(b, basedirs));
                     a
@@ -2214,7 +2336,10 @@ where
                 },
             );
         }
-        let mut arguments = self.parsed_args.arguments.clone();
+        #[cfg(feature = "dist-client")]
+        let remaps_basedirs = !remap_arguments.is_empty();
+        let mut arguments = remap_arguments;
+        arguments.extend(self.parsed_args.arguments.iter().cloned());
         // Request color output unless json was requested. The client will strip colors if needed.
         if !self.parsed_args.has_json {
             arguments.push(Argument::WithValue(
@@ -2239,6 +2364,8 @@ where
                 #[cfg(feature = "dist-client")]
                 target_libdir: self.target_libdir.clone(),
                 arguments,
+                #[cfg(feature = "dist-client")]
+                remaps_basedirs,
                 inputs,
                 outputs,
                 crate_link_paths: self.parsed_args.crate_link_paths.clone(),
@@ -2332,6 +2459,10 @@ impl<T: CommandCreatorSync> Compilation<T> for RustCompilation {
                 };
             }
 
+            // The mappings name local paths, which the build server does not have.
+            if self.remaps_basedirs {
+                return None;
+            }
             let mut dist_arguments = vec![];
             let mut saw_target = false;
 
@@ -4531,11 +4662,36 @@ foo.rs:
         A: AsRef<OsStr>,
         F: Fn(&Path) -> Result<()>,
     {
+        hash_result_with(
+            f,
+            f.tempdir.path(),
+            args,
+            env_vars,
+            env_deps,
+            pre_func,
+            storage,
+        )
+        .key
+    }
+
+    fn hash_result_with<A, F>(
+        f: &TestFixture,
+        cwd: &Path,
+        args: &[A],
+        env_vars: &[(OsString, OsString)],
+        env_deps: &[(&str, OsString)],
+        pre_func: F,
+        storage: MockStorage,
+    ) -> HashResult<Arc<Mutex<MockCommandCreator>>>
+    where
+        A: AsRef<OsStr>,
+        F: Fn(&Path) -> Result<()>,
+    {
         let oargs = args
             .iter()
             .map(|a| a.as_ref().to_owned())
             .collect::<Vec<OsString>>();
-        let parsed_args = match parse_arguments(&oargs, f.tempdir.path()) {
+        let parsed_args = match parse_arguments(&oargs, cwd) {
             CompilerArguments::Ok(parsed_args) => parsed_args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
@@ -4543,14 +4699,14 @@ foo.rs:
         {
             let src = &"foo.rs";
             let s = format!("Failed to create {}", src);
-            f.touch(src).expect(&s);
+            touch(cwd, src).expect(&s);
         }
         // as well as externs
         for e in parsed_args.externs.iter() {
             let s = format!("Failed to create {:?}", e);
-            f.touch(e.to_str().unwrap()).expect(&s);
+            touch(cwd, e.to_str().unwrap()).expect(&s);
         }
-        pre_func(f.tempdir.path()).expect("Failed to execute pre_func");
+        pre_func(cwd).expect("Failed to execute pre_func");
         let mut hasher = Box::new(RustHasher {
             executable: "rustc".into(),
             host: "x86-64-unknown-unknown-unknown".to_owned(),
@@ -4574,7 +4730,7 @@ foo.rs:
         hasher
             .generate_hash_key(
                 &creator,
-                f.tempdir.path().to_owned(),
+                cwd.to_owned(),
                 env_vars.to_owned(),
                 false,
                 &pool,
@@ -4584,7 +4740,6 @@ foo.rs:
             )
             .wait()
             .unwrap()
-            .key
     }
 
     #[allow(clippy::unnecessary_unwrap)]
@@ -4645,6 +4800,189 @@ foo.rs:
         // A basedir nothing lives under leaves the key as it was.
         let elsewhere = basedir(&std::env::temp_dir().join("sccache-elsewhere"));
         assert_eq!(key(&a, "x", vec![]), key(&a, "x", vec![elsewhere]));
+    }
+
+    #[test]
+    fn test_basedirs_remap_arguments() {
+        let root = std::env::temp_dir().join("sccache-remap");
+        let ws = root.join("ws");
+        let cwd = ws.join("member");
+        let out = ws.join("target").join("debug").join("deps");
+        let registry = std::env::temp_dir().join("sccache-registry");
+        let shared = root.join("shared");
+        let (here, up) = (Path::new("."), Path::new(".."));
+        let prefix = Path::new(BASEDIRS_REMAP_PREFIX);
+        let remap = |from: &Path, to: &Path| {
+            let mut value = from.as_os_str().to_owned();
+            value.push("=");
+            value.push(to);
+            [OsString::from("--remap-path-prefix"), value]
+        };
+        let nested = [basedir(&ws), basedir(&root)];
+        let cases: &[(&Path, &[Vec<u8>], Vec<[OsString; 2]>)] = &[
+            (
+                &cwd,
+                &[basedir(&root)],
+                vec![remap(&root, &up.join("..")), remap(&cwd, here)],
+            ),
+            (
+                &cwd,
+                &nested,
+                vec![
+                    remap(&root, &up.join("..")),
+                    remap(&ws, up),
+                    remap(&cwd, here),
+                ],
+            ),
+            (&registry, &[basedir(&root)], vec![remap(&root, prefix)]),
+            (
+                &registry,
+                &nested,
+                vec![
+                    remap(&root, prefix),
+                    remap(&ws, Path::new("/sccache/basedir/ws")),
+                ],
+            ),
+            // Not `.`, which the cwd maps to.
+            (
+                &registry,
+                &[basedir(&registry), basedir(&ws)],
+                vec![remap(&registry, here), remap(&ws, prefix)],
+            ),
+            // `ws` is reached through the mapping of `root` too, as `../ws`.
+            (
+                &shared,
+                &nested,
+                vec![
+                    remap(&root, up),
+                    remap(&shared, here),
+                    remap(&ws, &up.join("ws")),
+                ],
+            ),
+            (
+                &ws,
+                &[basedir(&ws), basedir(&ws.join("target"))],
+                vec![
+                    remap(&ws, here),
+                    remap(&ws.join("target"), Path::new("target")),
+                ],
+            ),
+            (&registry, &[basedir(&registry.join("x"))], vec![]),
+            (&ws.join("..").join("ws"), &nested, vec![]),
+        ];
+        for (cwd, basedirs, expected) in cases {
+            let arguments: Vec<_> = basedirs_remap_arguments(cwd, &out, basedirs)
+                .iter()
+                .flat_map(|arg| arg.iter_os_strings())
+                .collect();
+            assert_eq!(arguments, expected.concat(), "{cwd:?}");
+        }
+    }
+
+    #[test]
+    fn test_basedirs_remap_paths_values() {
+        let env = |value: &str| [("SCCACHE_BASEDIRS_REMAP_PATHS".into(), value.into())];
+        for value in ["1", "true", "ON"] {
+            assert!(basedirs_remap_paths(&env(value)), "{value}");
+        }
+        for value in ["0", "off", "", "yes"] {
+            assert!(!basedirs_remap_paths(&env(value)), "{value}");
+        }
+        assert!(!basedirs_remap_paths(&[]));
+        let lower = [("sccache_basedirs_remap_paths".into(), "1".into())];
+        assert_eq!(basedirs_remap_paths(&lower), cfg!(windows));
+    }
+
+    #[test]
+    fn test_hash_key_basedirs_remap_paths() {
+        fn result(
+            f: &TestFixture,
+            cwd: &Path,
+            out_dir: &Path,
+            basedirs: &[Vec<u8>],
+            remap: bool,
+        ) -> HashResult<Arc<Mutex<MockCommandCreator>>> {
+            let args = [
+                OsStr::new("--emit"),
+                "link".as_ref(),
+                "foo.rs".as_ref(),
+                "--out-dir".as_ref(),
+                out_dir.as_os_str(),
+                "--crate-name".as_ref(),
+                "foo".as_ref(),
+                "--crate-type".as_ref(),
+                "lib".as_ref(),
+                "--remap-path-prefix".as_ref(),
+                "user=mapping".as_ref(),
+            ];
+            let env_vars: &[(OsString, OsString)] = if remap {
+                &[("SCCACHE_BASEDIRS_REMAP_PATHS".into(), "1".into())]
+            } else {
+                &[]
+            };
+            hash_result_with(
+                f,
+                cwd,
+                &args,
+                env_vars,
+                &[],
+                nothing,
+                MockStorage::new(None, false).with_basedirs(basedirs.to_vec()),
+            )
+        }
+        let commands = |result: &HashResult<Arc<Mutex<MockCommandCreator>>>| {
+            let (local, dist, _) = result
+                .compilation
+                .generate_compile_commands(&mut dist::PathTransformer::new(), false)
+                .unwrap();
+            (local.get_arguments(), dist)
+        };
+        let a = TestFixture::new();
+        let b = TestFixture::new();
+        let (a_root, b_root) = (a.tempdir.path(), b.tempdir.path());
+        let both = [basedir(a_root), basedir(b_root)];
+        let out = Path::new("out");
+
+        let remapped = result(&a, a_root, out, &both, true);
+        let plain = result(&a, a_root, out, &both, false);
+        assert_eq!(remapped.key, result(&b, b_root, out, &both, true).key);
+        assert_ne!(remapped.key, plain.key);
+        // Nothing to remap without basedirs.
+        assert_eq!(
+            result(&a, a_root, out, &[], true).key,
+            result(&a, a_root, out, &[], false).key
+        );
+        // A cwd below the basedir.
+        assert_eq!(
+            result(&a, &a_root.join("ws"), out, &both, true).key,
+            result(&b, &b_root.join("ws"), out, &both, true).key
+        );
+        // A cwd outside the basedirs, writing to the target directory of each checkout.
+        let registry = TestFixture::new();
+        let cwd = registry.tempdir.path();
+        let (a_out, b_out) = (a_root.join("target"), b_root.join("target"));
+        let from_a = result(&registry, cwd, &a_out, &both, true);
+        assert_eq!(from_a.key, result(&registry, cwd, &b_out, &both, true).key);
+        assert_ne!(from_a.key, result(&registry, cwd, &a_out, &both, false).key);
+
+        // The mappings go before the user's, and keep the compile local.
+        let (arguments, dist) = commands(&remapped);
+        let mut cwd_mapping = a_root.as_os_str().to_owned();
+        cwd_mapping.push("=.");
+        let ours = arguments
+            .iter()
+            .position(|arg| *arg == cwd_mapping)
+            .unwrap();
+        let users = arguments
+            .iter()
+            .position(|arg| arg == "user=mapping")
+            .unwrap();
+        assert_eq!(arguments[ours - 1], "--remap-path-prefix");
+        assert!(ours < users);
+        assert!(dist.is_none());
+        let (arguments, dist) = commands(&plain);
+        assert!(!arguments.contains(&cwd_mapping));
+        assert_eq!(dist.is_some(), cfg!(feature = "dist-client"));
     }
 
     /// An env-dep equal to a basedir is keyed apart from an unset one, which rustc
