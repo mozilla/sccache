@@ -8,7 +8,8 @@ sccache includes support for caching Rust compilation. This includes many caveat
 * Values from `env!` require Rust >= 1.46 to be tracked in caching.
 * Procedural macros that read files from the filesystem may not be cached properly.
 * A procedural macro is identified by its crate metadata, so a change to native code it links, with no change to its Rust source or dependencies, is not seen.
-* `rustc`'s incremental compilation needs to be disabled. See [The Cargo Book](https://doc.rust-lang.org/cargo/reference/profiles.html#incremental). sccache exits with an error when `CARGO_INCREMENTAL=1` is set, unless `SCCACHE_ALLOW_INCREMENTAL=1` is set: then only the incremental crates (workspace members and path dependencies) go uncached.
+* Crates compiled with `rustc`'s incremental compilation (by default, in the debug profile, cargo's workspace members and path dependencies, see [The Cargo Book](https://doc.rust-lang.org/cargo/reference/profiles.html#incremental)) are not cached by default. sccache exits with an error when `CARGO_INCREMENTAL=1` is set, unless `SCCACHE_ALLOW_INCREMENTAL=1` is set: then only the incremental crates go uncached.
+* With `SCCACHE_ALLOW_INCREMENTAL=cache` in the environment of the compile, incremental crates are cached too, which helps a shared cache when a crate hasn't been built locally yet (a fresh checkout or worktree, CI). A hit leaves the incremental directory as it was, so the next rebuild after an edit can be slower. `CARGO_INCREMENTAL=1` and the profile's default give different keys, and incremental compiles are not distributed. A bad rlib from an incremental bug in rustc is cached like any other output: rebuild with `SCCACHE_RECACHE=1`.
 * Crates that invoke the system linker cannot be cached. Examples are `bin`, `dylib`, `cdylib`, and `proc-macro` crates.
 
 If you are using Rust 1.18 or later, you can ask cargo to wrap all compilation with sccache by setting `RUSTC_WRAPPER=sccache` in your build environment.
