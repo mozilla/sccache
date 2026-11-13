@@ -19,7 +19,7 @@ use crate::compiler::{
     SingleCompileCommand, clang, gcc, write_temp_file,
 };
 use crate::mock_command::{CommandCreatorSync, RunCommand};
-use crate::util::{OsStrExt, encode_path, run_input_output};
+use crate::util::{OsStrExt, encode_path, env_var_name_matches, run_input_output};
 use crate::{counted_array, dist};
 use async_trait::async_trait;
 use fs::File;
@@ -576,17 +576,6 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
 
 // TODO: what to do with precompiled header flags? eg: /Yc, /YI, /Yu
 
-fn cl_env_var_matches(key: &OsStr, name: &str) -> bool {
-    #[cfg(windows)]
-    {
-        key.eq_ignore_ascii_case(name)
-    }
-    #[cfg(not(windows))]
-    {
-        key == name
-    }
-}
-
 /// Options from `CL` are prepended and options from `_CL_` are appended.
 /// The first `#` in each token stands for `=`.
 fn cl_env_args(
@@ -595,7 +584,7 @@ fn cl_env_args(
 ) -> std::result::Result<Vec<OsString>, &'static str> {
     let Some((_, value)) = env_vars
         .iter()
-        .find(|(key, _)| cl_env_var_matches(key, name))
+        .find(|(key, _)| env_var_name_matches(key, name))
     else {
         return Ok(Vec::new());
     };
@@ -614,7 +603,7 @@ fn cl_env_args(
 }
 
 fn is_cl_env_var(key: &OsStr) -> bool {
-    cl_env_var_matches(key, "CL") || cl_env_var_matches(key, "_CL_")
+    env_var_name_matches(key, "CL") || env_var_name_matches(key, "_CL_")
 }
 
 /// `cl` applies `CL` and `_CL_` itself, so drop them after they have been
