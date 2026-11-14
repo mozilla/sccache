@@ -1573,6 +1573,14 @@ pub mod scheduler {
         pub public_addr: SocketAddr,
         pub client_auth: ClientAuth,
         pub server_auth: ServerAuth,
+        #[serde(default = "default_check_server_ip")]
+        /// Whether to verify the build server's IP address matches the address
+        /// in its auth token.
+        pub check_server_ip: bool,
+    }
+
+    fn default_check_server_ip() -> bool {
+        true
     }
 
     pub fn from_path(conf_path: &Path) -> Result<Option<Config>> {
@@ -3108,6 +3116,41 @@ fn server_toml_parse() {
             toolchain_cache_size: 10737418240,
         }
     );
+}
+
+#[test]
+#[cfg(feature = "dist-server")]
+fn scheduler_toml_parse_check_server_ip_default() {
+    const CONFIG_STR: &str = r#"
+    public_addr = "192.168.1.1:10600"
+
+    [client_auth]
+    type = "DANGEROUSLY_INSECURE"
+
+    [server_auth]
+    type = "DANGEROUSLY_INSECURE"
+    "#;
+
+    let config: scheduler::Config = toml::from_str(CONFIG_STR).expect("Is valid toml.");
+    assert!(config.check_server_ip);
+}
+
+#[test]
+#[cfg(feature = "dist-server")]
+fn scheduler_toml_parse_check_server_ip_disabled() {
+    const CONFIG_STR: &str = r#"
+    public_addr = "192.168.1.1:10600"
+    check_server_ip = false
+
+    [client_auth]
+    type = "DANGEROUSLY_INSECURE"
+
+    [server_auth]
+    type = "DANGEROUSLY_INSECURE"
+    "#;
+
+    let config: scheduler::Config = toml::from_str(CONFIG_STR).expect("Is valid toml.");
+    assert!(!config.check_server_ip);
 }
 
 #[test]

@@ -12,12 +12,17 @@ use crate::harness::{
 use assert_cmd::prelude::*;
 use sccache::config::HTTPUrl;
 use sccache::dist::{
-    AssignJobResult, CompileCommand, InputsReader, JobId, JobState, RunJobResult, ServerIncoming,
-    ServerOutgoing, SubmitToolchainResult, Toolchain, ToolchainReader,
+    AllocJobResult, AssignJobResult, CompileCommand, HeartbeatServerResult, InputsReader,
+    JobAuthorizer, JobId, JobState, RunJobResult, SchedulerIncoming, SchedulerOutgoing,
+    SchedulerStatusResult, ServerId, ServerIncoming, ServerNonce, ServerOutgoing,
+    SubmitToolchainResult, Toolchain, ToolchainReader, UpdateJobStateResult,
 };
 use std::ffi::OsStr;
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::Path;
 use std::process::Output;
+use std::sync::{Arc, Mutex, mpsc};
+use std::time::{Duration, Instant};
 
 use sccache::errors::*;
 
@@ -512,4 +517,226 @@ fn test_dist_toolchain() {
         assert_eq!(0, info.stats.cache_hits.all());
         assert_eq!(1, info.stats.cache_misses.all());
     });
+}
+
+struct RecordingScheduler {
+    heartbeats: Arc<Mutex<Vec<ServerId>>>,
+    accepted: mpsc::Sender<ServerId>,
+}
+
+impl SchedulerIncoming for RecordingScheduler {
+    fn handle_alloc_job(
+        &self,
+        _requester: &dyn SchedulerOutgoing,
+        _tc: Toolchain,
+    ) -> Result<AllocJobResult> {
+        panic!("should not have allocated a job")
+    }
+
+    fn handle_heartbeat_server(
+        &self,
+        server_id: ServerId,
+        _server_nonce: ServerNonce,
+        _num_cpus: usize,
+        _job_authorizer: Box<dyn JobAuthorizer>,
+    ) -> Result<HeartbeatServerResult> {
+        self.heartbeats.lock().unwrap().push(server_id);
+        let _ = self.accepted.send(server_id);
+        Ok(HeartbeatServerResult { is_new: true })
+    }
+
+    fn handle_update_job_state(
+        &self,
+        _job_id: JobId,
+        _server_id: ServerId,
+        _job_state: JobState,
+    ) -> Result<UpdateJobStateResult> {
+        Ok(UpdateJobStateResult::Success)
+    }
+
+    fn handle_status(&self) -> Result<SchedulerStatusResult> {
+        Ok(SchedulerStatusResult {
+            num_servers: self.heartbeats.lock().unwrap().len(),
+            num_cpus: 1,
+            in_progress: 0,
+        })
+    }
+}
+
+struct AcceptAnyClient;
+
+impl sccache::dist::http::ClientAuthCheck for AcceptAnyClient {
+    fn check(
+        &self,
+        _token: &str,
+    ) -> std::result::Result<(), sccache::dist::http::ClientVisibleMsg> {
+        Ok(())
+    }
+}
+
+struct NullServer;
+
+impl ServerIncoming for NullServer {
+    fn handle_assign_job(&self, _job_id: JobId, _tc: Toolchain) -> Result<AssignJobResult> {
+        panic!("should not have assigned a job")
+    }
+
+    fn handle_submit_toolchain(
+        &self,
+        _requester: &dyn ServerOutgoing,
+        _job_id: JobId,
+        _tc_rdr: ToolchainReader,
+    ) -> Result<SubmitToolchainResult> {
+        panic!("should not have submitted a toolchain")
+    }
+
+    fn handle_run_job(
+        &self,
+        _requester: &dyn ServerOutgoing,
+        _job_id: JobId,
+        _command: CompileCommand,
+        _outputs: Vec<String>,
+        _inputs_rdr: InputsReader,
+    ) -> Result<RunJobResult> {
+        panic!("should not have run a job")
+    }
+}
+
+fn wait_until<F: Fn() -> bool>(what: &str, f: F) {
+    let start = Instant::now();
+    while !f() {
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "timed out waiting for {what}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+const TEST_SERVER_TOKEN: &str = "test server token";
+
+struct TestScheduler {
+    addr: SocketAddr,
+    auth_attempts: Arc<Mutex<Vec<ServerId>>>,
+    heartbeats: Arc<Mutex<Vec<ServerId>>>,
+    accepted: mpsc::Receiver<ServerId>,
+}
+
+fn start_test_scheduler(check_server_ip: bool) -> TestScheduler {
+    let addr: SocketAddr = {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap()
+    };
+
+    let auth_attempts = Arc::new(Mutex::new(Vec::new()));
+    let heartbeats = Arc::new(Mutex::new(Vec::new()));
+    let (accepted, accepted_rx) = mpsc::channel();
+    let scheduler = sccache::dist::http::Scheduler::new(
+        addr,
+        RecordingScheduler {
+            heartbeats: heartbeats.clone(),
+            accepted,
+        },
+        Box::new(AcceptAnyClient),
+        {
+            let auth_attempts = auth_attempts.clone();
+            Box::new(move |token| {
+                let mut split = token.splitn(2, ' ');
+                let addr = split.next().and_then(|addr| addr.parse().ok())?;
+                match split.next() {
+                    Some(token) if token == TEST_SERVER_TOKEN => {
+                        let server_id = ServerId::new(addr);
+                        auth_attempts.lock().unwrap().push(server_id);
+                        Some(server_id)
+                    }
+                    _ => None,
+                }
+            })
+        },
+        check_server_ip,
+    );
+    std::thread::spawn(move || scheduler.start().expect("scheduler failed to start"));
+
+    wait_until("scheduler to listen", || TcpStream::connect(addr).is_ok());
+    TestScheduler {
+        addr,
+        auth_attempts,
+        heartbeats,
+        accepted: accepted_rx,
+    }
+}
+
+#[test]
+#[cfg_attr(not(feature = "dist-tests"), ignore)]
+fn test_dist_check_server_ip_disabled_accepts_mismatched_ip() {
+    // The server advertises an address that is not the one it connects from.
+    let public_addr: SocketAddr = "192.0.2.1:12345".parse().unwrap();
+    let scheduler = start_test_scheduler(false);
+
+    let server = sccache::dist::http::Server::new(
+        public_addr,
+        Some("127.0.0.1:0".parse().unwrap()),
+        reqwest::Url::parse(&format!("http://{}", scheduler.addr)).unwrap(),
+        format!("{public_addr} {TEST_SERVER_TOKEN}"),
+        NullServer,
+    )
+    .unwrap();
+    std::thread::spawn(move || server.start().expect("server failed to start"));
+
+    wait_until("server heartbeat attempt", || {
+        !scheduler.auth_attempts.lock().unwrap().is_empty()
+    });
+    assert_eq!(
+        scheduler.auth_attempts.lock().unwrap().as_slice(),
+        &[ServerId::new(public_addr)]
+    );
+    // Sanity check that the advertised IP really differs from the connection's source IP.
+    assert_ne!(public_addr.ip(), scheduler.addr.ip());
+
+    let accepted = scheduler
+        .accepted
+        .recv_timeout(Duration::from_secs(5))
+        .expect("scheduler rejected a heartbeat from a mismatched IP");
+    assert_eq!(accepted, ServerId::new(public_addr));
+    assert_eq!(
+        scheduler.heartbeats.lock().unwrap().as_slice(),
+        &[ServerId::new(public_addr)]
+    );
+}
+
+#[test]
+#[cfg_attr(not(feature = "dist-tests"), ignore)]
+fn test_dist_check_server_ip_enabled_rejects_mismatched_ip() {
+    // The server advertises an address that is not the one it connects from.
+    let public_addr: SocketAddr = "192.0.2.1:12345".parse().unwrap();
+    let scheduler = start_test_scheduler(true);
+
+    let server = sccache::dist::http::Server::new(
+        public_addr,
+        Some("127.0.0.1:0".parse().unwrap()),
+        reqwest::Url::parse(&format!("http://{}", scheduler.addr)).unwrap(),
+        format!("{public_addr} {TEST_SERVER_TOKEN}"),
+        NullServer,
+    )
+    .unwrap();
+    std::thread::spawn(move || server.start().expect("server failed to start"));
+
+    wait_until("server heartbeat attempt", || {
+        !scheduler.auth_attempts.lock().unwrap().is_empty()
+    });
+    assert_eq!(
+        scheduler.auth_attempts.lock().unwrap().as_slice(),
+        &[ServerId::new(public_addr)]
+    );
+    // Sanity check that the advertised IP really differs from the connection's source IP.
+    assert_ne!(public_addr.ip(), scheduler.addr.ip());
+
+    assert!(
+        scheduler
+            .accepted
+            .recv_timeout(Duration::from_secs(1))
+            .is_err(),
+        "scheduler accepted a heartbeat from a mismatched IP"
+    );
+    assert!(scheduler.heartbeats.lock().unwrap().is_empty());
 }
