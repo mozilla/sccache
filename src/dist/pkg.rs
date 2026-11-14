@@ -219,6 +219,7 @@ mod toolchain_imp {
         fn tarify_path(&mut self, path: &Path) -> Result<PathBuf> {
             SimplifyPath {
                 resolved_symlinks: Some(&mut self.symlinks),
+                traversed_dirs: None,
             }
             .simplify(path)
             .map(tar_safe_path)
@@ -450,6 +451,38 @@ pub fn make_tar_header(src: &Path, dest: &str) -> io::Result<tar::Header> {
     Ok(file_header)
 }
 
+pub fn append_tar_dir<W: io::Write>(
+    builder: &mut tar::Builder<W>,
+    src: &Path,
+    dest: &str,
+) -> io::Result<()> {
+    let mut dir_header = tar::Header::new_gnu();
+    if let Ok(metadata) = fs::metadata(src)
+        && metadata.is_dir()
+    {
+        dir_header.set_metadata(&metadata);
+        if let Ok(mode) = dir_header.mode() {
+            dir_header.set_mode(mode | 0o700);
+        }
+    } else {
+        warn!(
+            "Couldn't get metadata of directory {:?}, falling back to some defaults",
+            src
+        );
+        dir_header.set_mode(0o755);
+        dir_header.set_uid(0);
+        dir_header.set_gid(0);
+        dir_header.set_mtime(0);
+        dir_header.set_size(0);
+        dir_header.set_entry_type(tar::EntryType::dir());
+    }
+
+    assert!(dest.starts_with('/'));
+    let dest = dest.trim_start_matches('/');
+    assert!(!dest.starts_with('/'));
+    builder.append_data(&mut dir_header, dest, io::empty())
+}
+
 /// Simplify a path to one without any relative components, erroring if it looks
 /// like there could be any symlink complexity that means a simplified path is not
 /// equivalent to the original (see the documentation of `fs::canonicalize` for an
@@ -462,12 +495,22 @@ pub fn make_tar_header(src: &Path, dest: &str) -> io::Result<tar::Header> {
 pub fn simplify_path(path: &Path) -> Result<PathBuf> {
     SimplifyPath {
         resolved_symlinks: None,
+        traversed_dirs: None,
+    }
+    .simplify(path)
+}
+
+pub fn simplify_path_and_dirs(path: &Path, traversed_dirs: &mut Vec<PathBuf>) -> Result<PathBuf> {
+    SimplifyPath {
+        resolved_symlinks: None,
+        traversed_dirs: Some(traversed_dirs),
     }
     .simplify(path)
 }
 
 struct SimplifyPath<'a> {
     pub resolved_symlinks: Option<&'a mut std::collections::BTreeMap<PathBuf, PathBuf>>,
+    pub traversed_dirs: Option<&'a mut Vec<PathBuf>>,
 }
 
 impl SimplifyPath<'_> {
@@ -496,11 +539,58 @@ impl SimplifyPath<'_> {
                     if final_path.is_symlink() {
                         bail!("Cannot handle symlinks in parent paths")
                     }
+                    if let Some(traversed_dirs) = self.traversed_dirs.as_deref_mut()
+                        && matches!(
+                            final_path.components().next_back(),
+                            Some(Component::Normal(_))
+                        )
+                    {
+                        traversed_dirs.push(final_path.clone());
+                    }
                     final_path.pop();
                 }
                 Component::CurDir => continue,
             }
         }
         Ok(final_path)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_simplify_path_and_dirs() {
+        let root = if cfg!(windows) {
+            Path::new(r"C:\src")
+        } else {
+            Path::new("/src")
+        };
+
+        let mut dirs = Vec::new();
+        let simplified = simplify_path_and_dirs(
+            &root.join("nptl/bits/../../x86/./nptl/bits/struct_mutex.rs"),
+            &mut dirs,
+        )
+        .unwrap();
+        assert_eq!(simplified, root.join("x86/nptl/bits/struct_mutex.rs"));
+        assert_eq!(dirs, vec![root.join("nptl/bits"), root.join("nptl")]);
+
+        dirs.clear();
+        let simplified = simplify_path_and_dirs(&root.join("a/../b/../c.rs"), &mut dirs).unwrap();
+        assert_eq!(simplified, root.join("c.rs"));
+        assert_eq!(dirs, vec![root.join("a"), root.join("b")]);
+
+        // Traversal at filesystem root should not record the root itself.
+        let fs_root = if cfg!(windows) {
+            Path::new(r"C:\")
+        } else {
+            Path::new("/")
+        };
+        dirs.clear();
+        let simplified = simplify_path_and_dirs(&fs_root.join("../foo.rs"), &mut dirs).unwrap();
+        assert_eq!(simplified, fs_root.join("foo.rs"));
+        assert!(dirs.is_empty());
     }
 }
