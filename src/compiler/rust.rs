@@ -2966,9 +2966,10 @@ impl pkg::InputsPackager for RustInputsPackager {
         all_tar_inputs.dedup();
 
         // Resolving `a/b/../../c` on Unix walks into `a/b` before `..`, so any
-        // traversed directory with nothing packaged beneath it must still exist
-        // on the server.
-        let tar_dirs = uncovered_tar_dirs(traversed_dirs, &all_tar_inputs, &mut path_transformer)?;
+        // traversed directory must exist on the server even when no files are
+        // packaged beneath it.
+        traversed_dirs.sort();
+        traversed_dirs.dedup();
 
         // If we're just creating an rlib then the only thing inspected inside dependency rlibs is the
         // metadata, in which case we can create a trimmed rlib (which is actually a .a) with the metadata
@@ -2982,8 +2983,11 @@ impl pkg::InputsPackager for RustInputsPackager {
 
         let mut builder = tar::Builder::new(wtr);
 
-        for (dir_path, dist_dir_path) in tar_dirs.iter() {
-            pkg::append_tar_dir(&mut builder, dir_path, dist_dir_path)?;
+        for dir_path in &traversed_dirs {
+            let dist_dir_path = path_transformer
+                .as_dist(dir_path)
+                .with_context(|| format!("unable to transform input dir {}", dir_path.display()))?;
+            pkg::append_tar_dir(&mut builder, dir_path, &dist_dir_path)?;
         }
 
         for (input_path, dist_input_path) in all_tar_inputs.iter() {
@@ -3018,52 +3022,6 @@ impl pkg::InputsPackager for RustInputsPackager {
         let _ = builder.into_inner()?;
         Ok(path_transformer)
     }
-}
-
-#[cfg(feature = "dist-client")]
-fn uncovered_tar_dirs(
-    mut traversed_dirs: Vec<PathBuf>,
-    all_tar_inputs: &[(PathBuf, String)],
-    path_transformer: &mut dist::PathTransformer,
-) -> Result<Vec<(PathBuf, String)>> {
-    if traversed_dirs.is_empty() {
-        return Ok(Vec::new());
-    }
-    traversed_dirs.sort();
-    traversed_dirs.dedup();
-
-    let mut tar_dirs = Vec::with_capacity(traversed_dirs.len());
-    for dir_path in traversed_dirs {
-        let dist_dir_path = path_transformer
-            .as_dist(&dir_path)
-            .with_context(|| format!("unable to transform input dir {}", dir_path.display()))?;
-        tar_dirs.push((dir_path, dist_dir_path));
-    }
-    tar_dirs.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
-    tar_dirs.dedup_by(|a, b| a.1 == b.1);
-
-    let mut dist_file_paths: Vec<&str> = all_tar_inputs
-        .iter()
-        .map(|(_, dist_path)| dist_path.as_str())
-        .collect();
-    dist_file_paths.sort_unstable();
-    let dist_dir_paths: Vec<String> = tar_dirs.iter().map(|(_, d)| d.clone()).collect();
-    let dir_slices: Vec<&str> = dist_dir_paths.iter().map(String::as_str).collect();
-
-    let has_descendant = |sorted_paths: &[&str], dir: &str| {
-        let prefix = format!("{dir}/");
-        let idx = sorted_paths.partition_point(|p| *p < prefix.as_str());
-        sorted_paths
-            .get(idx)
-            .is_some_and(|p| p.starts_with(&prefix))
-    };
-
-    tar_dirs.retain(|(_, dist_dir)| {
-        dist_file_paths.binary_search(&dist_dir.as_str()).is_err()
-            && !has_descendant(&dist_file_paths, dist_dir)
-            && !has_descendant(&dir_slices, dist_dir)
-    });
-    Ok(tar_dirs)
 }
 
 #[cfg(feature = "dist-client")]
@@ -5705,15 +5663,18 @@ foo.rs:
             .iter()
             .filter(|(_, kind, _)| *kind == tar::EntryType::Directory)
             .map(|(p, _, mode)| {
-                assert_ne!(mode & 0o111, 0);
+                assert_eq!(mode & 0o700, 0o700);
                 p.clone()
             })
             .collect();
-        assert_eq!(dir_paths, vec![link_sub_dir.clone(), bits_dir.clone()]);
-        assert!(
-            !entries
-                .iter()
-                .any(|(p, _, _)| p == &nptl_dir || p == &sub_dir)
+        assert_eq!(
+            dir_paths,
+            vec![
+                link_sub_dir.clone(),
+                sub_dir.clone(),
+                nptl_dir.clone(),
+                bits_dir.clone(),
+            ]
         );
 
         let unpack_dir = tempfile::Builder::new()
