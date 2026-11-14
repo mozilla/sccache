@@ -29,7 +29,6 @@ use crate::protocol::{
     Compile, CompileFinished, CompileResponse, Request, Response, StorageHandshakeInfo,
 };
 use crate::util;
-#[cfg(feature = "dist-client")]
 use anyhow::Context as _;
 use bytes::{Bytes, BytesMut, buf::BufMut};
 use filetime::FileTime;
@@ -769,7 +768,10 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
                 let socket = listener.accept().await?;
                 trace!("incoming connection");
                 let conn = service.clone().bind(socket).map_err(|res| {
-                    error!("Failed to bind socket: {}", res);
+                    // `{:#}` so the cause chain comes along: the outer message
+                    // says which half of the connection gave up, the causes say
+                    // why.
+                    error!("Error serving client connection: {:#}", res);
                 });
 
                 // We're not interested if the task panicked; immediately process
@@ -928,6 +930,38 @@ where
 type SccacheRequest = Message<Request, Body<()>>;
 type SccacheResponse = Message<Response, Pin<Box<dyn Stream<Item = Result<Response>> + Send>>>;
 
+/// The transport's frame limit, overridable with `SCCACHE_MAX_FRAME_LENGTH`.
+///
+/// The codec streams frames of any size up to this; the limit is a guard against
+/// a nonsense length header, not a chunk size. It has to sit above anything that
+/// can legitimately be sent, because a frame that exceeds it is not merely
+/// rejected: the codec cannot resynchronise, so the whole connection goes down
+/// with it. In client-side mode a single frame carries a whole cache entry, and
+/// `tokio_util`'s 8 MiB default is well inside the range those reach — a Rust
+/// rlib alone can be tens of MB.
+pub fn max_frame_length() -> usize {
+    parse_max_frame_length(env::var("SCCACHE_MAX_FRAME_LENGTH").ok())
+}
+
+fn parse_max_frame_length(value: Option<String>) -> usize {
+    /// Comfortably above any plausible cache entry.
+    const DEFAULT: usize = 1024 * 1024 * 1024;
+
+    let Some(value) = value else {
+        return DEFAULT;
+    };
+    match value.parse::<usize>() {
+        // The length prefix is 4 bytes wide, and `write_length_prefixed_bincode`
+        // casts to `u32`, so a larger limit would let a payload's length wrap
+        // rather than be caught here.
+        Ok(len) => len.min(u32::MAX as usize),
+        Err(_) => {
+            warn!("Content of SCCACHE_MAX_FRAME_LENGTH is not a valid number, using default");
+            DEFAULT
+        }
+    }
+}
+
 /// Messages sent from all services to the main event loop indicating activity.
 ///
 /// Whenever a request is receive a `Request` message is sent which will reset
@@ -1007,6 +1041,10 @@ where
                         preprocessor_cache_mode_config: me.storage.preprocessor_cache_mode_config(),
                         cache_mode: me.effective_cache_mode,
                         max_size: me.storage.max_size().await.unwrap_or(None),
+                        // The daemon may have been started with a different
+                        // `SCCACHE_MAX_FRAME_LENGTH` than this client sees, and
+                        // it is the daemon's value that governs.
+                        max_frame_length: max_frame_length(),
                     };
                     Ok(Message::WithoutBody(Response::StorageHandshake(info)))
                 }
@@ -1019,6 +1057,21 @@ where
                 Request::StorageGetRaw { key } => {
                     debug!("handle_client: storage_get_raw key={}", key);
                     let resp = match me.storage.get_raw(&key).await {
+                        // Sending this would take the connection down with it,
+                        // costing the client every later RPC. Report a miss: the
+                        // client recompiles, which is what an unreadable entry
+                        // leaves it doing anyway. Backends that expose a local
+                        // path (the disk cache) never come through here.
+                        Ok(Some(bytes)) if bytes.len() > max_frame_length() => {
+                            warn!(
+                                "storage_get_raw: entry for {key} is {} bytes, over the frame \
+                                 limit of {}; reporting a miss. Raise SCCACHE_MAX_FRAME_LENGTH \
+                                 and restart the server to read entries this large.",
+                                bytes.len(),
+                                max_frame_length()
+                            );
+                            Response::StorageGetRaw(None)
+                        }
                         Ok(opt) => Response::StorageGetRaw(opt.map(|b| b.to_vec())),
                         Err(e) => {
                             warn!("storage_get_raw error: {e:#}");
@@ -1180,13 +1233,7 @@ where
         T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         let mut builder = length_delimited::Builder::new();
-        if let Ok(max_frame_length_str) = env::var("SCCACHE_MAX_FRAME_LENGTH") {
-            if let Ok(max_frame_length) = max_frame_length_str.parse::<usize>() {
-                builder.max_frame_length(max_frame_length);
-            } else {
-                warn!("Content of SCCACHE_MAX_FRAME_LENGTH is not a valid number, using default");
-            }
-        }
+        builder.max_frame_length(max_frame_length());
         let io = builder.new_framed(socket);
 
         let (sink, mut stream) = SccacheTransport {
@@ -1202,12 +1249,12 @@ where
         // The reader loop below feeds requests into `reqs_tx`; this task drains
         // them, calls the service, and writes responses back to the sink.
         //
-        // `_handle` must stay bound for the lifetime of `bind` (not `let _ =`,
+        // `handle` must stay bound for the lifetime of `bind` (not `let _ =`,
         // which would drop it immediately): it is an `AbortOnDropHandle`, so
         // dropping it aborts this task and its in-flight compile subtasks. That
         // is the cancellation we want once the client disconnects and the reader
         // loop below exits.
-        let _handle = util::spawn(async move {
+        let mut handle = util::spawn(async move {
             while let Some(req) = reqs_rx.recv().await {
                 match util::spawn(me.clone().call(req)).await?? {
                     Message::WithoutBody(message) => {
@@ -1230,13 +1277,30 @@ where
         });
 
         // Read requests until the client disconnects (stream ends) or the
-        // stream errors. A send error means the handler task above has ended,
-        // so we stop reading in that case too.
-        while let Some(req) = stream.next().await {
-            reqs_tx.send(req?)?;
-        }
+        // stream errors.
+        let reader = async {
+            while let Some(req) = stream.next().await {
+                reqs_tx.send(req?)?;
+            }
+            Ok::<_, Error>(())
+        };
+        tokio::pin!(reader);
 
-        Ok(())
+        // Stop as soon as either half is done. Watching the handler matters as
+        // much as watching the reader: the two halves of the connection are
+        // independent, so a handler that has given up — a response too large to
+        // encode, a panic in a request handler — does not close the socket. The
+        // reader would then keep the connection open with nobody left to answer,
+        // and a client blocked reading its response would wait for one that is
+        // never coming. Ending `bind` drops the transport, which closes the
+        // socket, so the client fails instead of hanging.
+        tokio::select! {
+            result = &mut reader => result,
+            result = &mut handle => match result {
+                Ok(result) => result.context("failed while serving the connection"),
+                Err(e) => Err(anyhow!("connection handler task failed: {e}")),
+            },
+        }
     }
 
     /// Get dist status.
@@ -2630,6 +2694,33 @@ mod tests {
     use super::*;
     use crate::mock_command::{MockChild, MockCommandCreator, exit_status};
     use crate::test::utils::{TestFixture, next_command, next_command_calls};
+
+    #[test]
+    fn test_default_max_frame_length_fits_a_cache_entry() {
+        // The default has to be above what a cache entry reaches, not a value
+        // entries bump into: a frame over the limit kills the connection. Rust
+        // rlibs are tens of MB, which the old 8 MiB default did not cover.
+        assert!(parse_max_frame_length(None) >= 512 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_max_frame_length_from_env_var() {
+        assert_eq!(parse_max_frame_length(Some("4096".into())), 4096);
+        // Larger than the 4-byte length prefix can describe.
+        assert_eq!(
+            parse_max_frame_length(Some("999999999999".into())),
+            u32::MAX as usize
+        );
+        // Unparseable values fall back to the default.
+        assert_eq!(
+            parse_max_frame_length(Some("lots".into())),
+            parse_max_frame_length(None)
+        );
+        assert_eq!(
+            parse_max_frame_length(Some(String::new())),
+            parse_max_frame_length(None)
+        );
+    }
 
     struct StringWriter {
         buffer: String,
