@@ -148,6 +148,11 @@ mod toolchain_imp {
                     file_path.to_string_lossy()
                 ))
             }
+            // Some sysroots contain unreadable files. Packaging is best-effort:
+            // omit those files rather than failing the entire toolchain archive.
+            if fs::File::open(&file_path).is_err() {
+                return Ok(());
+            }
             let tar_path = self.tarify_path(&file_path)?;
             self.file_set.insert(tar_path, file_path);
             Ok(())
@@ -163,7 +168,9 @@ mod toolchain_imp {
                 if file_type.is_dir() {
                     continue;
                 } else if file_type.is_symlink() {
-                    let metadata = fs::metadata(entry.path())?;
+                    let Ok(metadata) = fs::metadata(entry.path()) else {
+                        continue;
+                    };
                     if !metadata.file_type().is_file() {
                         continue;
                     }

@@ -778,6 +778,17 @@ where
                         .await;
                 }
 
+                let dist_client = if self.language() == Language::Rust
+                    && service.is_local_only_crate(&out_pretty)
+                {
+                    info!(
+                        "[{}]: Skipping distributed compilation because the crate is configured as local-only",
+                        out_pretty
+                    );
+                    None
+                } else {
+                    dist_client
+                };
                 let (cacheable, dist_type, compiler_result) = dist_or_local_compile(
                     service,
                     dist_client,

@@ -772,6 +772,8 @@ pub struct DistConfig {
     #[serde(deserialize_with = "deserialize_size_from_str")]
     pub toolchain_cache_size: u64,
     pub rewrite_includes_only: bool,
+    /// Rust crate names that must be compiled locally instead of distributed.
+    pub local_only_crates: Vec<String>,
 }
 
 impl Default for DistConfig {
@@ -783,6 +785,7 @@ impl Default for DistConfig {
             toolchains: Default::default(),
             toolchain_cache_size: default_toolchain_cache_size(),
             rewrite_includes_only: false,
+            local_only_crates: Vec::new(),
         }
     }
 }
@@ -3040,6 +3043,7 @@ key_prefix = "cosprefix"
                 toolchains: vec![],
                 toolchain_cache_size: 5368709120,
                 rewrite_includes_only: false,
+                local_only_crates: vec![],
             },
             server_startup_timeout_ms: Some(10000),
             basedirs: vec![],
@@ -3569,4 +3573,21 @@ fn test_cache_type_by_name_matches_features() {
             }
         }
     }
+}
+#[test]
+fn test_dist_local_only_crates_config() {
+    let present: FileConfig = toml::from_str(
+        r#"
+[dist]
+local_only_crates = ["xai_grok_shell", "pdf_oxide"]
+"#,
+    )
+    .unwrap();
+    assert_eq!(
+        present.dist.local_only_crates,
+        vec!["xai_grok_shell", "pdf_oxide"]
+    );
+
+    let absent: FileConfig = toml::from_str("").unwrap();
+    assert!(absent.dist.local_only_crates.is_empty());
 }

@@ -212,6 +212,7 @@ pub struct DistClientContainer {
     // The actual dist client state
     #[cfg(feature = "dist-client")]
     state: futures::lock::Mutex<DistClientState>,
+    local_only_crates: Vec<String>,
 }
 
 #[cfg(feature = "dist-client")]
@@ -248,16 +249,22 @@ impl DistClientContainer {
                 "Scheduler address configured but dist feature disabled, disabling distributed sccache"
             )
         }
-        Self {}
+        Self {
+            local_only_crates: config.dist.local_only_crates.clone(),
+        }
     }
 
     pub fn new_disabled() -> Self {
-        Self {}
+        Self {
+            local_only_crates: Vec::new(),
+        }
     }
 
     #[cfg(feature = "dist-client")]
     pub fn new_with_state(_: DistClientState) -> Self {
-        Self {}
+        Self {
+            local_only_crates: Vec::new(),
+        }
     }
 
     pub async fn reset_state(&self) {}
@@ -269,11 +276,15 @@ impl DistClientContainer {
     async fn get_client(&self) -> Result<Option<Arc<dyn dist::Client>>> {
         Ok(None)
     }
+    pub fn is_local_only_crate(&self, crate_name: &str) -> bool {
+        self.local_only_crates.iter().any(|name| name == crate_name)
+    }
 }
 
 #[cfg(feature = "dist-client")]
 impl DistClientContainer {
     fn new(config: &Config, pool: &tokio::runtime::Handle) -> Self {
+        let local_only_crates = config.dist.local_only_crates.clone();
         let config = DistClientConfig {
             pool: pool.clone(),
             scheduler_url: config.dist.scheduler_url.clone(),
@@ -287,6 +298,7 @@ impl DistClientContainer {
         let state = pool.block_on(state);
         Self {
             state: futures::lock::Mutex::new(state),
+            local_only_crates,
         }
     }
 
@@ -294,12 +306,17 @@ impl DistClientContainer {
     pub fn new_with_state(state: DistClientState) -> Self {
         Self {
             state: futures::lock::Mutex::new(state),
+            local_only_crates: Vec::new(),
         }
+    }
+    pub fn is_local_only_crate(&self, crate_name: &str) -> bool {
+        self.local_only_crates.iter().any(|name| name == crate_name)
     }
 
     pub fn new_disabled() -> Self {
         Self {
             state: futures::lock::Mutex::new(DistClientState::Disabled),
+            local_only_crates: Vec::new(),
         }
     }
 
@@ -1113,6 +1130,9 @@ where
             info,
             notification_tx: None,
         }
+    }
+    pub fn is_local_only_crate(&self, crate_name: &str) -> bool {
+        self.dist_client.is_local_only_crate(crate_name)
     }
 
     pub fn mock_with_storage(
@@ -2630,6 +2650,18 @@ mod tests {
     use super::*;
     use crate::mock_command::{MockChild, MockCommandCreator, exit_status};
     use crate::test::utils::{TestFixture, next_command, next_command_calls};
+
+    #[test]
+    fn local_only_crate_is_marked_for_local_compilation() {
+        let dist_client = DistClientContainer {
+            #[cfg(feature = "dist-client")]
+            state: futures::lock::Mutex::new(DistClientState::Disabled),
+            local_only_crates: vec!["xai_grok_shell".to_owned()],
+        };
+
+        assert!(dist_client.is_local_only_crate("xai_grok_shell"));
+        assert!(!dist_client.is_local_only_crate("kkprobe"));
+    }
 
     struct StringWriter {
         buffer: String,

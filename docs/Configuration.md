@@ -44,6 +44,9 @@ toolchains = []
 # the maximum size of the toolchain cache in bytes
 toolchain_cache_size = 5368709120
 cache_dir = "/home/user/.cache/sccache-dist-client"
+# Rust crate names in this list are always compiled locally, never on dist
+# workers. Defaults to an empty list.
+local_only_crates = []
 
 [dist.auth]
 type = "token"
