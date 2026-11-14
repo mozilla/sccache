@@ -865,6 +865,7 @@ pub fn parse_arguments(
                 | Some(TooHardFlag)
                 | Some(XClang(_))
                 | Some(ClangModuleOutput(_))
+                | Some(PrebuiltModulePathDir(_))
                 | Some(ExtraHashFileClangModuleFile(_))
                 | Some(ModuleOnlyFlag)
                 | Some(IntegratedAs)
