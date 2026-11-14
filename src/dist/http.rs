@@ -1093,6 +1093,23 @@ mod client {
     const REQUEST_TIMEOUT_SECS: u64 = 1200;
     const CONNECT_TIMEOUT_SECS: u64 = 5;
 
+    /// Request timeout for scheduler and server round trips, in seconds.
+    ///
+    /// One request can cover a whole toolchain transfer, so operators on slow
+    /// links need to raise the default.
+    fn get_request_timeout_secs() -> u64 {
+        std::env::var("SCCACHE_DIST_REQUEST_TIMEOUT_SECS")
+            .ok()
+            .and_then(|raw| parse_request_timeout(&raw))
+            .unwrap_or(REQUEST_TIMEOUT_SECS)
+    }
+
+    /// A zero timeout would abort every request immediately, so it is treated
+    /// as unset rather than accepted.
+    fn parse_request_timeout(raw: &str) -> Option<u64> {
+        raw.parse::<u64>().ok().filter(|secs| *secs > 0)
+    }
+
     pub struct Client {
         auth_token: String,
         scheduler_url: reqwest::Url,
@@ -1114,7 +1131,7 @@ mod client {
             auth_token: String,
             rewrite_includes_only: bool,
         ) -> Result<Self> {
-            let timeout = Duration::new(REQUEST_TIMEOUT_SECS, 0);
+            let timeout = Duration::new(get_request_timeout_secs(), 0);
             let connect_timeout = Duration::new(CONNECT_TIMEOUT_SECS, 0);
             let client = new_reqwest_client_builder()?
                 .timeout(timeout)
@@ -1156,7 +1173,7 @@ mod client {
                 );
             }
             // Finish the client
-            let timeout = Duration::new(REQUEST_TIMEOUT_SECS, 0);
+            let timeout = Duration::new(get_request_timeout_secs(), 0);
             let new_client_async = client_async_builder
                 .timeout(timeout)
                 // Disable keep-alive
@@ -1329,6 +1346,32 @@ mod client {
             match self.tc_cache.get_custom_toolchain(exe) {
                 Some(Ok((_, _, path))) => Some(path),
                 _ => None,
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod test {
+        use super::*;
+
+        #[test]
+        fn request_timeout_defaults_to_twenty_minutes() {
+            temp_env::with_var_unset("SCCACHE_DIST_REQUEST_TIMEOUT_SECS", || {
+                assert_eq!(get_request_timeout_secs(), REQUEST_TIMEOUT_SECS);
+            });
+        }
+
+        #[test]
+        fn request_timeout_is_configurable() {
+            temp_env::with_var("SCCACHE_DIST_REQUEST_TIMEOUT_SECS", Some("3600"), || {
+                assert_eq!(get_request_timeout_secs(), 3600);
+            });
+        }
+
+        #[test]
+        fn invalid_request_timeout_falls_back_to_default() {
+            for raw in ["", "abc", "0", "-5"] {
+                assert_eq!(parse_request_timeout(raw), None, "raw={raw:?}");
             }
         }
     }
