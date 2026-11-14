@@ -2287,6 +2287,26 @@ mod test {
     }
 
     #[test]
+    fn test_assembler_path_relative_path_entry_uses_client_cwd() {
+        let f = TestFixture::new();
+        let runtime = single_threaded_runtime();
+        let creator = new_creator();
+        let assembler = mk_bin(f.tempdir.path(), "tools/as").unwrap();
+        next_command(&creator, Ok(MockChild::new(exit_status(0), "as\n", "")));
+        let env = vec![(OsString::from("PATH"), OsString::from("tools"))];
+        let found = runtime
+            .block_on(assembler_path(
+                &creator,
+                Path::new("gcc"),
+                &[],
+                f.tempdir.path(),
+                &env,
+            ))
+            .unwrap();
+        assert_eq!(assembler, found.canonicalize().unwrap());
+    }
+
+    #[test]
     fn test_detect_compiler_must_be_clang() {
         let f = TestFixture::new();
         let creator = new_creator();

@@ -120,8 +120,7 @@ url = { version = "2", optional = true }
 uuid = { version = "1.9", features = ["v4"] }
 walkdir = "2"
 webpki-root-certs = { version = "1.0.11", optional = true }
-# by default which pulls in an outdated failure version
-which = { version = "6", default-features = false }
+which = "8"
 zip = { version = "9", default-features = false }
 zstd = "0.13"
 

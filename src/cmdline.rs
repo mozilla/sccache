@@ -18,7 +18,7 @@ use std::env;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::str::FromStr;
-use which::which_in;
+use which::which_in_all;
 
 const ENV_VAR_INTERNAL_START_SERVER: &str = "SCCACHE_START_SERVER";
 
@@ -213,23 +213,13 @@ pub fn try_parse() -> Result<Command> {
                 _ => {
                     if let (Some(path), Some(exe_filename)) = (env::var_os("PATH"), exe.file_name())
                     {
-                        match which_in(exe_filename, Some(&path), &cwd) {
-                            Ok(ref full_path)
-                                if full_path.canonicalize()?
-                                    == env::current_exe()?.canonicalize()? =>
-                            {
-                                if let Some(dir) = full_path.parent() {
-                                    let path = env::join_paths(
-                                        env::split_paths(&path).filter(|p| p != dir),
-                                    )
-                                    .ok();
-                                    if let Ok(full_path) = which_in(exe_filename, path, &cwd) {
-                                        args[0] = full_path.into();
-                                    }
-                                }
-                            }
-                            Ok(full_path) => args[0] = full_path.into(),
-                            Err(_) => {}
+                        let current_exe = env::current_exe()?.canonicalize()?;
+                        if let Some(full_path) = which_in_all(exe_filename, Some(&path), &cwd)
+                            .into_iter()
+                            .flatten()
+                            .find(|p| p.canonicalize().ok().as_ref() != Some(&current_exe))
+                        {
+                            args[0] = full_path.into();
                         }
                         args.insert(0, env!("CARGO_PKG_NAME").into());
                     }
