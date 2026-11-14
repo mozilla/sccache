@@ -26,7 +26,7 @@ mod gcc;
 mod msvc;
 mod nvcc;
 mod nvhpc;
-mod preprocessor_cache;
+pub(crate) mod preprocessor_cache;
 mod ptxas;
 mod rust;
 mod tasking_vx;

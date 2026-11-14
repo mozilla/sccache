@@ -38,7 +38,7 @@ use std::os::unix::process::ExitStatusExt;
 use std::os::windows::io::AsRawHandle;
 use std::path::Path;
 use std::process;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use strip_ansi_escapes::Writer;
 use tokio::io::AsyncReadExt;
@@ -743,6 +743,7 @@ where
 {
     trace!("do_compile_client_side");
     let exe_path = which_in(exe, path, cwd)?;
+    crate::compiler::preprocessor_cache::record_computed_file_digests();
     let storage = IpcStorage::connect(conn)?;
     let cache_mode = runtime.block_on(storage.check())?;
     let conn_arc = storage.conn();
@@ -780,10 +781,26 @@ where
     )?;
     // Ship accumulated stats back to the daemon (best-effort; don't fail the build on error).
     let delta: ServerStats = runtime.block_on(service.take_stats());
+    store_file_digests(&conn_arc);
     if let Ok(mut conn) = conn_arc.lock() {
         let _ = conn.request(Request::RecordStats(Box::new(delta)));
     }
     Ok(exit_code)
+}
+
+/// Hand the daemon the file digests this process computed, so that the next
+/// process checking a preprocessor cache entry does not hash the same files
+/// again. Best effort: if this fails, the next process hashes them itself.
+fn store_file_digests(conn: &Mutex<ServerConnection>) {
+    let entries = crate::compiler::preprocessor_cache::take_computed_file_digests();
+    if entries.is_empty() {
+        return;
+    }
+    if let Ok(mut conn) = conn.lock()
+        && let Err(e) = conn.request(Request::StoreFileDigests(entries))
+    {
+        debug!("handing file digests to the daemon failed: {e:#}");
+    }
 }
 
 #[derive(serde::Serialize)]

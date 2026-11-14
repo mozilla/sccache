@@ -500,3 +500,39 @@ fn test_cli_rmeta_notification_delivery_after_daemon_disconnect() {
         "stderr written in total"
     );
 }
+
+#[test]
+#[cfg(unix)]
+fn test_server_file_digests_round_trip() {
+    use crate::protocol::{Request, Response};
+
+    let f = TestFixture::new();
+    let header = f.tempdir.path().join("shared.h");
+    std::fs::write(&header, b"int shared;\n").unwrap();
+    let entry = crate::compiler::preprocessor_cache::file_digest_for_test(&header);
+
+    let (addr, sender, _storage, child) = run_server_thread(f.tempdir.path(), None);
+    let mut conn = connect_to_server(&addr).unwrap();
+    // What a client computed, handed to the daemon...
+    assert!(matches!(
+        conn.request(Request::StoreFileDigests(vec![entry]))
+            .unwrap(),
+        Response::StoreFileDigests
+    ));
+    // ...comes back to the next one that asks for that file.
+    match conn
+        .request(Request::FileDigests {
+            paths: vec![header.clone(), f.tempdir.path().join("unknown.h")],
+        })
+        .unwrap()
+    {
+        Response::FileDigests(entries) => {
+            let paths: Vec<_> = entries.into_iter().map(|(path, _)| path).collect();
+            assert_eq!(paths, vec![header]);
+        }
+        other => panic!("unexpected response to FileDigests: {other:?}"),
+    }
+    drop(conn);
+    sender.send(ServerMessage::Shutdown).ok().unwrap();
+    child.join().unwrap();
+}
