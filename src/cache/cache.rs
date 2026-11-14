@@ -277,7 +277,12 @@ pub fn storage_from_config(
     #[cfg(any_cache_remote)]
     if let Some(cache_type) = &config.cache {
         debug!("Configuring single cache from CacheType");
-        return build_single_cache(cache_type, &config.basedirs, config.skip_cache_check);
+        let storage = build_single_cache(cache_type, &config.basedirs, config.skip_cache_check)?;
+        // A standalone backend bounds its own reads and carries the per-level
+        // backoff gate (the degenerate one-level chain).
+        return Ok(crate::cache::backend_backoff::BackoffStorage::standalone(
+            storage,
+        ));
     }
 
     // No remote cache configured - use disk cache only

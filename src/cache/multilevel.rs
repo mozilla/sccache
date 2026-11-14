@@ -44,6 +44,7 @@ struct AtomicLevelStats {
     location: String,
     hits: AtomicU64,
     misses: AtomicU64,
+    timeouts: AtomicU64,
     writes: AtomicU64,
     write_failures: AtomicU64,
     backfills_from: AtomicU64,
@@ -59,6 +60,7 @@ impl AtomicLevelStats {
             location,
             hits: Default::default(),
             misses: Default::default(),
+            timeouts: Default::default(),
             writes: Default::default(),
             write_failures: Default::default(),
             backfills_from: Default::default(),
@@ -92,6 +94,7 @@ impl AtomicLevelStats {
             location: self.location.clone(),
             hits: self.hits.load(Ordering::Relaxed),
             misses: self.misses.load(Ordering::Relaxed),
+            timeouts: self.timeouts.load(Ordering::Relaxed),
             writes: self.writes.load(Ordering::Relaxed),
             write_failures: self.write_failures.load(Ordering::Relaxed),
             backfills_from: self.backfills_from.load(Ordering::Relaxed),
@@ -113,6 +116,9 @@ pub struct LevelStats {
     pub hits: u64,
     /// Number of cache misses (checked but not found) at this level
     pub misses: u64,
+    /// Number of reads at this level that ran out of their time budget
+    #[serde(default)]
+    pub timeouts: u64,
     /// Number of successful writes to this level
     pub writes: u64,
     /// Number of failed writes to this level
@@ -155,6 +161,7 @@ impl std::ops::AddAssign for LevelStats {
         // name and location identify the level — keep lhs values
         self.hits += rhs.hits;
         self.misses += rhs.misses;
+        self.timeouts += rhs.timeouts;
         self.writes += rhs.writes;
         self.write_failures += rhs.write_failures;
         self.backfills_from += rhs.backfills_from;
@@ -218,6 +225,11 @@ impl LevelStats {
         stats.push((
             format!("  {} misses", self.name),
             self.misses.to_string(),
+            0,
+        ));
+        stats.push((
+            format!("  {} timeouts", self.name),
+            self.timeouts.to_string(),
             0,
         ));
 
@@ -326,6 +338,12 @@ pub struct MultiLevelStorage {
     atomic_stats: Vec<Arc<AtomicLevelStats>>,
     /// Base directories for path normalization, propagated to compiler pipeline
     basedirs: Vec<Vec<u8>>,
+    /// Test-only: pins the lookup deadline so a test can drive the
+    /// per-level cut without racing the process-wide LazyLock env read
+    /// (mirroring the wrapper's `timeout_override` for its Full-mode
+    /// timeout).
+    #[cfg(test)]
+    total_budget_override: Option<Duration>,
 }
 
 impl MultiLevelStorage {
@@ -363,7 +381,20 @@ impl MultiLevelStorage {
             write_error_policy,
             atomic_stats,
             basedirs,
+            #[cfg(test)]
+            total_budget_override: None,
         }
+    }
+
+    /// Test-only constructor: the chain with the lookup deadline pinned.
+    #[cfg(test)]
+    pub(crate) fn with_total_budget_override(
+        levels: Vec<Arc<dyn Storage>>,
+        total_budget: Duration,
+    ) -> Self {
+        let mut storage = Self::new(levels);
+        storage.total_budget_override = Some(total_budget);
+        storage
     }
 
     /// Get a snapshot of current multi-level cache statistics.
@@ -418,7 +449,9 @@ impl MultiLevelStorage {
                     rw_mode,
                     config.basedirs.clone(),
                 ));
-                storages.push(disk_storage);
+                storages.push(crate::cache::backend_backoff::BackoffStorage::chain_level(
+                    disk_storage,
+                ));
                 trace!("Added disk cache level");
             } else {
                 // Build remote cache - get the appropriate CacheType
@@ -434,7 +467,9 @@ impl MultiLevelStorage {
                         .with_context(|| {
                             format!("Failed to build cache for level '{}'", level_name)
                         })?;
-                storages.push(storage);
+                storages.push(crate::cache::backend_backoff::BackoffStorage::chain_level(
+                    storage,
+                ));
                 trace!("Added cache level: {}", level_name);
             }
         }
@@ -470,21 +505,25 @@ impl MultiLevelStorage {
         Ok(())
     }
 
-    fn record_read_hit(&self, hit_level: usize, duration: Duration) {
+    fn record_read_hit(&self, hit_level: usize, duration: Duration, probed: &[usize]) {
         inc_stat!(self.atomic_stats.get(hit_level), hits, 1);
         inc_stat!(
             self.atomic_stats.get(hit_level),
             hit_duration_nanos,
             duration.as_nanos() as u64
         );
-        for miss_idx in 0..hit_level {
-            inc_stat!(self.atomic_stats.get(miss_idx), misses, 1);
+        for miss_idx in probed {
+            if *miss_idx < hit_level {
+                inc_stat!(self.atomic_stats.get(*miss_idx), misses, 1);
+            }
         }
     }
 
-    fn record_all_read_misses(&self) {
-        for idx in 0..self.levels.len() {
-            inc_stat!(self.atomic_stats.get(idx), misses, 1);
+    /// Count a miss on every level this lookup actually probed; a level
+    /// skipped by its backoff gate was not checked, so it is not a miss.
+    fn record_read_misses(&self, probed: &[usize]) {
+        for idx in probed {
+            inc_stat!(self.atomic_stats.get(*idx), misses, 1);
         }
     }
 
@@ -565,27 +604,102 @@ impl MultiLevelStorage {
 #[async_trait]
 impl Storage for MultiLevelStorage {
     async fn get(&self, key: &str) -> Result<Cache> {
+        // The lookup keeps the read deadline as its total budget; each
+        // probed level gets the remaining time divided by the levels left,
+        // so a stalled level cannot consume the whole budget before the
+        // later levels are tried (and a healthy slow level keeps nearly its
+        // full share).
+        #[cfg(test)]
+        let total_budget = self
+            .total_budget_override
+            .unwrap_or_else(crate::cache::backend_backoff::read_timeout);
+        #[cfg(not(test))]
+        let total_budget = crate::cache::backend_backoff::read_timeout();
+        let lookup_start = Instant::now();
+        let level_count = self.levels.len();
+        let mut probed = Vec::with_capacity(level_count);
+        // Whether any level this lookup could not actually check — a gate
+        // skip or a level that outlasted its budget. The lookup then ends as
+        // a timed-out lookup (the same reporting path the standalone backend
+        // uses), never as a clean miss: the backend was not proven to miss.
+        let mut unchecked = None;
+
         for (idx, level) in self.levels.iter().enumerate() {
+            let levels_left = (level_count - idx) as u32;
+            let budget = crate::cache::backend_backoff::level_budget(
+                total_budget,
+                lookup_start.elapsed(),
+                levels_left,
+            );
             let start = Instant::now();
             let mut raw_bytes_for_backfill = None;
             let cache_result = if idx > 0 {
-                match level.get_with_raw(key).await {
-                    Ok((cache, raw_bytes)) => {
+                let fut = level.get_with_raw(key);
+                tokio::pin!(fut);
+                match tokio::time::timeout(budget, fut).await {
+                    Ok(Ok((cache, raw_bytes))) => {
                         raw_bytes_for_backfill = raw_bytes;
                         Ok(cache)
                     }
-                    Err(error) => Err(error),
+                    Ok(Err(error)) => Err(error),
+                    Err(error) => Err(error.into()),
                 }
             } else {
-                level.get(key).await
+                let fut = level.get(key);
+                tokio::pin!(fut);
+                match tokio::time::timeout(budget, fut).await {
+                    Ok(result) => result,
+                    Err(error) => Err(error.into()),
+                }
             };
+
+            // A level whose backoff gate is open reports a skip instead of
+            // a read: pass over it without paying its timeout.
+            if cache_result
+                .as_ref()
+                .err()
+                .is_some_and(|e| e.is::<crate::cache::backend_backoff::LevelSkipped>())
+            {
+                debug!(
+                    "Cache level {} is in backoff, skipping it for this lookup",
+                    idx
+                );
+                unchecked = unchecked.or(Some(anyhow::Error::new(
+                    crate::cache::backend_backoff::LevelSkipped,
+                )));
+                continue;
+            }
+
+            probed.push(idx);
+
+            if let Err(error) = &cache_result
+                && (error.is::<crate::cache::backend_backoff::LevelTimedOut>()
+                    || error
+                        .downcast_ref::<tokio::time::error::Elapsed>()
+                        .is_some())
+            {
+                // This level ran out of its own budget: count the
+                // timeout on the level's stats (the gate itself is moved
+                // by the wrapper's drop guard when this timer cancels
+                // the read).
+                inc_stat!(self.atomic_stats.get(idx), timeouts, 1);
+                warn!(
+                    "Cache level {} timed out after {:?}, trying next level",
+                    idx,
+                    start.elapsed()
+                );
+                unchecked = unchecked.or(Some(anyhow::Error::new(
+                    crate::cache::backend_backoff::LevelTimedOut,
+                )));
+                continue;
+            }
 
             match cache_result {
                 Ok(Cache::Hit(entry)) => {
                     let duration = start.elapsed();
                     debug!("Cache hit at level {} in {:?}", idx, duration);
 
-                    self.record_read_hit(idx, duration);
+                    self.record_read_hit(idx, duration, &probed);
 
                     // Raw bytes obtained above are reused for backfilling;
                     // no second read is needed for a raw-capable level.
@@ -618,17 +732,80 @@ impl Storage for MultiLevelStorage {
         }
         debug!("Cache miss at all levels");
 
-        self.record_all_read_misses();
+        self.record_read_misses(&probed);
+
+        // A lookup that could not check every level reports the way a
+        // timed-out lookup reports (the caller maps the markers to
+        // `MissType::TimedOut`), so the stats keep counting the lookups the
+        // backend never answered — the pre-backoff behavior for a stalled
+        // chain.
+        if let Some(error) = unchecked {
+            return Err(error);
+        }
 
         Ok(Cache::Miss)
     }
 
     async fn get_raw(&self, key: &str) -> Result<Option<Bytes>> {
+        // Same per-level budget split as `get`: the raw read path serves the
+        // client-side mode and must not let one stalled level eat the whole
+        // deadline or bypass its backoff gate.
+        #[cfg(test)]
+        let total_budget = self
+            .total_budget_override
+            .unwrap_or_else(crate::cache::backend_backoff::read_timeout);
+        #[cfg(not(test))]
+        let total_budget = crate::cache::backend_backoff::read_timeout();
+        let lookup_start = Instant::now();
+        let level_count = self.levels.len();
+        let mut probed = Vec::with_capacity(level_count);
+        // Same contract as `get`: a lookup that could not actually check a
+        // level is a timed-out lookup, never a clean miss.
+        let mut unchecked = None;
+
         for (idx, level) in self.levels.iter().enumerate() {
+            let levels_left = (level_count - idx) as u32;
+            let budget = crate::cache::backend_backoff::level_budget(
+                total_budget,
+                lookup_start.elapsed(),
+                levels_left,
+            );
             let start = Instant::now();
-            match level.get_raw(key).await {
+            let fut = level.get_raw(key);
+            tokio::pin!(fut);
+            let read_result = match tokio::time::timeout(budget, fut).await {
+                Ok(result) => result,
+                Err(_) => {
+                    inc_stat!(self.atomic_stats.get(idx), timeouts, 1);
+                    warn!(
+                        "Cache level {} timed out after {:?} on the raw read, trying next level",
+                        idx,
+                        start.elapsed()
+                    );
+                    unchecked = unchecked.or(Some(anyhow::Error::new(
+                        crate::cache::backend_backoff::LevelTimedOut,
+                    )));
+                    continue;
+                }
+            };
+
+            if read_result
+                .as_ref()
+                .err()
+                .is_some_and(|e| e.is::<crate::cache::backend_backoff::LevelSkipped>())
+            {
+                debug!("Cache level {} is in backoff, skipping its raw read", idx);
+                unchecked = unchecked.or(Some(anyhow::Error::new(
+                    crate::cache::backend_backoff::LevelSkipped,
+                )));
+                continue;
+            }
+
+            probed.push(idx);
+
+            match read_result {
                 Ok(Some(bytes)) => {
-                    self.record_read_hit(idx, start.elapsed());
+                    self.record_read_hit(idx, start.elapsed(), &probed);
                     self.backfill_raw_hit(key, &bytes, idx);
                     return Ok(Some(bytes));
                 }
@@ -642,7 +819,10 @@ impl Storage for MultiLevelStorage {
             }
         }
 
-        self.record_all_read_misses();
+        self.record_read_misses(&probed);
+        if let Some(error) = unchecked {
+            return Err(error);
+        }
         Ok(None)
     }
 
