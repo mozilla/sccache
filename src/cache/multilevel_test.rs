@@ -1776,27 +1776,143 @@ fn test_multilevel_get_raw_records_per_level_stats() {
     assert_eq!(stats.0[1].misses, 0);
 }
 
+fn assert_read_outcomes(stats: &MultiLevelStats, expected: &[(u64, u64, u64)]) {
+    let actual: Vec<_> = stats
+        .0
+        .iter()
+        .map(|level| (level.hits, level.misses, level.read_failures))
+        .collect();
+    assert_eq!(actual, expected);
+}
+
 #[test]
-fn test_multilevel_get_raw_continues_after_level_error() {
+fn test_multilevel_stats_merge_and_serde() {
+    let mut merged = MultiLevelStats(vec![LevelStats {
+        hits: 2,
+        misses: 3,
+        read_failures: 5,
+        ..Default::default()
+    }]);
+    merged += MultiLevelStats(vec![LevelStats {
+        hits: 7,
+        misses: 11,
+        read_failures: 13,
+        ..Default::default()
+    }]);
+    let expected = [(9, 14, 18)];
+    assert_read_outcomes(&merged, &expected);
+
+    let json = serde_json::to_value(&merged).unwrap();
+    assert_eq!(json[0]["read_failures"], serde_json::json!(18));
+    let decoded: MultiLevelStats = serde_json::from_value(json).unwrap();
+    assert_read_outcomes(&decoded, &expected);
+}
+
+#[test]
+fn test_multilevel_read_outcomes_and_fallback() {
     let runtime = RuntimeBuilder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
-    let l0 = Arc::new(CheckFailingStorage);
-    let l1 = Arc::new(InMemoryStorage::new());
-    let storage =
-        MultiLevelStorage::new(vec![l0 as Arc<dyn Storage>, l1.clone() as Arc<dyn Storage>]);
 
     runtime.block_on(async {
-        l1.put("hit", CacheWrite::default()).await.unwrap();
-        assert!(storage.get_raw("hit").await.unwrap().is_some());
-    });
+        for raw in [false, true] {
+            // Each character is a cache level: m = miss, e = error, h = hit.
+            for (chain, expected) in [
+                ("me", vec![(0, 1, 0), (0, 0, 1)]),
+                ("ee", vec![(0, 0, 1), (0, 0, 1)]),
+                ("eh", vec![(0, 0, 1), (1, 0, 0)]),
+                ("he", vec![(1, 0, 0), (0, 0, 0)]),
+                ("meh", vec![(0, 1, 0), (0, 0, 1), (1, 0, 0)]),
+            ] {
+                let bytes: Bytes = CacheWrite::default().finish().unwrap().into();
+                let mut levels: Vec<Arc<dyn Storage>> = Vec::new();
+                let mut memory_levels = Vec::new();
+                for outcome in chain.chars() {
+                    if outcome == 'e' {
+                        levels.push(Arc::new(CheckFailingStorage));
+                    } else {
+                        let level = Arc::new(InMemoryStorage::new());
+                        if outcome == 'h' {
+                            level.put_raw("key", bytes.clone()).await.unwrap();
+                        }
+                        levels.push(level.clone());
+                        memory_levels.push(level);
+                    }
+                }
+                let storage = MultiLevelStorage::new(levels);
+                let expect_hit = chain.contains('h');
+                if raw {
+                    assert_eq!(
+                        storage.get_raw("key").await.unwrap(),
+                        expect_hit.then(|| bytes.clone())
+                    );
+                } else {
+                    let result = storage.get("key").await.unwrap();
+                    if expect_hit {
+                        assert!(matches!(result, Cache::Hit(_)));
+                    } else {
+                        assert!(matches!(result, Cache::Miss));
+                    }
+                }
+                let stats = storage.stats();
+                assert_read_outcomes(&stats, &expected);
 
-    let stats = storage.stats();
-    assert_eq!(stats.0[0].hits, 0);
-    assert_eq!(stats.0[0].misses, 1);
-    assert_eq!(stats.0[1].hits, 1);
-    assert_eq!(stats.0[1].misses, 0);
+                if chain == "meh" {
+                    // A failed intervening tier must not stop a later hit backfilling L0.
+                    tokio::time::timeout(Duration::from_secs(1), async {
+                        loop {
+                            let data = memory_levels[0].data.lock().await;
+                            if data.get("key").map(Vec::as_slice) == Some(bytes.as_ref()) {
+                                break;
+                            }
+                            drop(data);
+                            tokio::task::yield_now().await;
+                        }
+                    })
+                    .await
+                    .expect("later hit should backfill the earlier missing tier");
+                }
+            }
+        }
+    });
+}
+
+#[test]
+fn test_multilevel_completed_reads_survive_cancellation() {
+    let runtime = RuntimeBuilder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        for raw in [false, true] {
+            let stalled = Arc::new(InMemoryStorage::new());
+            let storage = MultiLevelStorage::new(vec![
+                Arc::new(InMemoryStorage::new()) as Arc<dyn Storage>,
+                Arc::new(CheckFailingStorage) as Arc<dyn Storage>,
+                stalled.clone() as Arc<dyn Storage>,
+            ]);
+            // Holding the data lock makes the final read pending without relying on timing.
+            let _guard = stalled.data.lock().await;
+            {
+                let lookup = async {
+                    if raw {
+                        storage.get_raw("key").await.map(|_| ())
+                    } else {
+                        storage.get("key").await.map(|_| ())
+                    }
+                };
+                tokio::pin!(lookup);
+                tokio::select! {
+                    biased;
+                    result = &mut lookup => panic!("lookup should remain pending: {:?}", result),
+                    _ = std::future::ready(()) => {}
+                }
+            }
+            assert_read_outcomes(&storage.stats(), &[(0, 1, 0), (0, 0, 1), (0, 0, 0)]);
+        }
+    });
 }
 
 #[test]
