@@ -2659,6 +2659,63 @@ LLVM version: 6.0",
         assert_ne!(results[0].key, results[1].key);
     }
 
+    #[test]
+    fn test_rewrite_includes_only_falls_back_on_embed() {
+        let f = TestFixture::new();
+        let clang = f.mk_bin("clang").unwrap();
+        let runtime = single_threaded_runtime();
+        let pool = runtime.handle();
+        let cwd = f.tempdir.path();
+        std::fs::write(cwd.join("foo.c"), "whatever").unwrap();
+
+        let arguments = ovec!["-c", "foo.c", "-o", "foo.o"];
+        let key = |rewrite_includes_only: bool| {
+            let creator = new_creator();
+            next_command(
+                &creator,
+                Ok(MockChild::new(
+                    exit_status(0),
+                    "compiler_id=clang\ncompiler_version=\"20.0.0\"",
+                    "",
+                )),
+            );
+            next_assembler(&creator, "GNU assembler (GNU Binutils) 2.42", "");
+            let c = detect_compiler(creator.clone(), &clang, cwd, &[], &[], pool, None)
+                .wait()
+                .unwrap()
+                .0;
+            if rewrite_includes_only {
+                next_command_calls(&creator, |args| {
+                    assert!(args.iter().any(|a| a == "-frewrite-includes"));
+                    Ok(MockChild::new(exit_status(0), "#embed \"data.bin\"\n", ""))
+                });
+            }
+            next_command_calls(&creator, |args| {
+                assert!(!args.iter().any(|a| a == "-frewrite-includes"));
+                Ok(MockChild::new(exit_status(0), "1, 2, 3\n", ""))
+            });
+            let mut hasher = match c.parse_arguments(&arguments, ".".as_ref(), &[]) {
+                CompilerArguments::Ok(h) => h,
+                o => panic!("Bad result from parse_arguments: {:?}", o),
+            };
+            hasher
+                .generate_hash_key(
+                    &creator,
+                    cwd.to_path_buf(),
+                    vec![],
+                    true,
+                    pool,
+                    rewrite_includes_only,
+                    Arc::new(MockStorage::new(None, false)),
+                    CacheControl::Default,
+                )
+                .wait()
+                .unwrap()
+                .key
+        };
+        assert_eq!(key(true), key(false));
+    }
+
     #[test_case(true ; "with preprocessor cache")]
     #[test_case(false ; "without preprocessor cache")]
     fn test_multiarch_hash_covers_every_arch(preprocessor_cache_mode: bool) {

@@ -26,7 +26,7 @@ use crate::dist;
 use crate::dist::pkg;
 use crate::mock_command::CommandCreatorSync;
 use crate::util::{
-    Digest, HashToDigest, MetadataCtimeExt, TimeMacroFinder, Timestamp, decode_path, encode_path,
+    Digest, HashToDigest, MetadataCtimeExt, Timestamp, contains_embed, decode_path, encode_path,
     hash_all, strip_basedirs, strip_basedirs_from_arg,
 };
 use async_trait::async_trait;
@@ -569,7 +569,7 @@ where
                 }
             }
 
-            let result = self
+            let mut result = self
                 .compiler
                 .preprocess(
                     creator,
@@ -582,6 +582,34 @@ where
                     use_preprocessor_cache_mode,
                 )
                 .await;
+            // clang's -frewrite-includes keeps #embed directives as they are,
+            // so neither the hash nor the dist server would see the embedded
+            // data. Preprocess fully instead.
+            if rewrite_includes_only
+                && matches!(
+                    self.compiler.kind(),
+                    CCompilerKind::Clang | CCompilerKind::Msvc
+                )
+                && result
+                    .as_ref()
+                    .is_ok_and(|output| contains_embed(&output.stdout))
+            {
+                debug!("Found #embed, not rewriting includes only");
+                self.parsed_args.suppress_rewrite_includes_only = true;
+                result = self
+                    .compiler
+                    .preprocess(
+                        creator,
+                        &self.executable,
+                        &self.parsed_args,
+                        &cwd,
+                        &env_vars,
+                        may_dist,
+                        false,
+                        use_preprocessor_cache_mode,
+                    )
+                    .await;
+            }
             let out_pretty = self.parsed_args.output_pretty().into_owned();
             let result = result.map_err(|e| {
                 debug!("[{}]: preprocessor failed: {:?}", out_pretty, e);
@@ -1172,26 +1200,21 @@ fn remember_include_file(
         }
     };
 
-    let (file_digest, finder) = if config.ignore_time_macros {
-        match Digest::reader_sync(file) {
-            Ok(file_digest) => (file_digest, TimeMacroFinder::new()),
-            Err(e) => {
-                debug!("Failed to read header file {}: {}", path.display(), e);
-                return Ok(false);
-            }
-        }
-    } else {
-        match Digest::reader_sync_time_macros(file) {
-            Ok((file_digest, finder)) => (file_digest, finder),
-            Err(e) => {
-                debug!("Failed to read header file {}: {}", path.display(), e);
-                return Ok(false);
-            }
+    let (file_digest, finder) = match Digest::reader_sync_time_macros(file) {
+        Ok((file_digest, finder)) => (file_digest, finder),
+        Err(e) => {
+            debug!("Failed to read header file {}: {}", path.display(), e);
+            return Ok(false);
         }
     };
 
-    if finder.found_time() {
+    if !config.ignore_time_macros && finder.found_time() {
         debug!("Found __TIME__ in header file {}", path.display());
+        return Ok(false);
+    }
+    if finder.found_embed() {
+        // Embedded files leave no trace in the preprocessor output.
+        debug!("Found #embed in header file {}", path.display());
         return Ok(false);
     }
 
@@ -2488,6 +2511,43 @@ int value;
                 .unwrap(),
             // hash of `b"contents"`
             "a93900c371d997927c5bc568ea538bed59ae5c960021dcfe7b0b369da5267528",
+        );
+
+        // A header with #embed: the embedded file is not in the output, so
+        // preprocessor cache mode can't know when it changes.
+        let mut include_files = HashMap::new();
+        let fs_impl = TestFs {
+            metadata_results: Mutex::new(
+                [(
+                    PathBuf::from("/src/table.h"),
+                    PreprocessorFileMetadata {
+                        is_dir: false,
+                        is_file: true,
+                        modified: Some(Timestamp::new(12341234, 0)),
+                        ctime_or_creation: None,
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            ),
+            open_results: Mutex::new(
+                [(
+                    PathBuf::from("/src/table.h"),
+                    Box::new(&b"static const char table[] = {\n#embed \"table.bin\"\n};\n"[..])
+                        as Box<dyn std::io::Read>,
+                )]
+                .into_iter()
+                .collect(),
+            ),
+        };
+        assert_eq!(
+            do_single_preprocessor_line_call(
+                br#"# 1 "/src/table.h" 1"#,
+                &mut include_files,
+                &fs_impl,
+                false,
+            ),
+            ControlFlow::Break((17, 5, false)),
         );
     }
 }
