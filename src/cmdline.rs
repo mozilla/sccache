@@ -213,23 +213,32 @@ pub fn try_parse() -> Result<Command> {
                 _ => {
                     if let (Some(path), Some(exe_filename)) = (env::var_os("PATH"), exe.file_name())
                     {
+                        let self_exe = env::current_exe()?.canonicalize()?;
+                        // Without a real $name to wrap, we would end up wrapping
+                        // ourselves and recursing forever (e.g. via `$name -vV`).
+                        let not_found = || {
+                            anyhow!(
+                                "`{}` not found in PATH (`{}` is {} itself and cannot wrap itself)",
+                                exe_filename.display(),
+                                exe.display(),
+                                env!("CARGO_PKG_NAME"),
+                            )
+                        };
                         match which_in(exe_filename, Some(&path), &cwd) {
-                            Ok(ref full_path)
-                                if full_path.canonicalize()?
-                                    == env::current_exe()?.canonicalize()? =>
-                            {
-                                if let Some(dir) = full_path.parent() {
-                                    let path = env::join_paths(
-                                        env::split_paths(&path).filter(|p| p != dir),
-                                    )
-                                    .ok();
-                                    if let Ok(full_path) = which_in(exe_filename, path, &cwd) {
+                            Ok(ref full_path) if full_path.canonicalize()? == self_exe => {
+                                let path = full_path.parent().and_then(|dir| {
+                                    env::join_paths(env::split_paths(&path).filter(|p| p != dir))
+                                        .ok()
+                                });
+                                match which_in(exe_filename, path, &cwd) {
+                                    Ok(full_path) if full_path.canonicalize()? != self_exe => {
                                         args[0] = full_path.into();
                                     }
+                                    _ => return Err(not_found()),
                                 }
                             }
                             Ok(full_path) => args[0] = full_path.into(),
-                            Err(_) => {}
+                            Err(_) => return Err(not_found()),
                         }
                         args.insert(0, env!("CARGO_PKG_NAME").into());
                     }
