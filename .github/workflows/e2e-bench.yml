@@ -1,0 +1,84 @@
+name: End-to-end benchmark
+
+# Builds FFmpeg through the sccache of the pull request and through the one of
+# the branch it targets, in server and client-side mode, cold and warm. See
+# scripts/e2e-bench.sh for what fails the job.
+
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'scripts/e2e-bench.sh'
+      - '.github/workflows/e2e-bench.yml'
+  workflow_dispatch:
+    inputs:
+      baseline:
+        description: 'Revision to compare against'
+        default: 'main'
+        required: true
+
+permissions:
+  contents: read # to fetch code (actions/checkout)
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e-bench:
+    name: FFmpeg, server and client-side
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: candidate
+          persist-credentials: false
+
+      - uses: actions/checkout@v6
+        with:
+          path: baseline
+          ref: ${{ github.event.inputs.baseline || github.base_ref }}
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            candidate
+            baseline
+
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y clang jq bc
+
+      - name: Build the candidate
+        run: cargo build --release --locked --manifest-path candidate/Cargo.toml
+
+      - name: Build the baseline
+        run: cargo build --release --locked --manifest-path baseline/Cargo.toml
+
+      - name: Cache the FFmpeg source
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/e2e/ffmpeg-src
+          key: e2e-ffmpeg-${{ hashFiles('candidate/scripts/e2e-bench.sh') }}
+
+      - name: Run
+        run: >-
+          candidate/scripts/e2e-bench.sh
+          --baseline baseline/target/release/sccache
+          --candidate candidate/target/release/sccache
+          --work "$RUNNER_TEMP/e2e"
+
+      - name: Upload the logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-bench-logs
+          path: |
+            ${{ runner.temp }}/e2e/*.log
+            ${{ runner.temp }}/e2e/*.tsv
+            ${{ runner.temp }}/e2e/*.md
