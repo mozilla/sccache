@@ -2700,8 +2700,9 @@ impl pkg::InputsPackager for RustInputsPackager {
         };
 
         let mut tar_inputs = vec![];
+        let mut traversed_dirs = vec![];
         for input_path in inputs {
-            let input_path = pkg::simplify_path(&input_path)?;
+            let input_path = pkg::simplify_path_and_dirs(&input_path, &mut traversed_dirs)?;
             if let Some(ext) = input_path.extension() {
                 if !super::CAN_DIST_DYLIBS && ext == DLL_EXTENSION {
                     bail!(
@@ -2752,7 +2753,8 @@ impl pkg::InputsPackager for RustInputsPackager {
         // crate, otherwise we need to send everything.
         let mut tar_crate_libs = vec![];
         for crate_link_path in crate_link_paths {
-            let crate_link_path = pkg::simplify_path(&crate_link_path)?;
+            let crate_link_path =
+                pkg::simplify_path_and_dirs(&crate_link_path, &mut traversed_dirs)?;
             let dir_entries = match fs::read_dir(crate_link_path) {
                 Ok(iter) => iter,
                 Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
@@ -2806,6 +2808,11 @@ impl pkg::InputsPackager for RustInputsPackager {
         // There are almost certainly duplicates from explicit externs also within the lib search paths
         all_tar_inputs.dedup();
 
+        // Resolving `a/b/../../c` on Unix walks into `a/b` before `..`, so any
+        // traversed directory with nothing packaged beneath it must still exist
+        // on the server.
+        let tar_dirs = uncovered_tar_dirs(traversed_dirs, &all_tar_inputs, &mut path_transformer)?;
+
         // If we're just creating an rlib then the only thing inspected inside dependency rlibs is the
         // metadata, in which case we can create a trimmed rlib (which is actually a .a) with the metadata
         let can_trim_rlibs = matches!(
@@ -2817,6 +2824,10 @@ impl pkg::InputsPackager for RustInputsPackager {
         );
 
         let mut builder = tar::Builder::new(wtr);
+
+        for (dir_path, dist_dir_path) in tar_dirs.iter() {
+            pkg::append_tar_dir(&mut builder, dir_path, dist_dir_path)?;
+        }
 
         for (input_path, dist_input_path) in all_tar_inputs.iter() {
             let mut file_header = pkg::make_tar_header(input_path, dist_input_path)?;
@@ -2850,6 +2861,52 @@ impl pkg::InputsPackager for RustInputsPackager {
         let _ = builder.into_inner()?;
         Ok(path_transformer)
     }
+}
+
+#[cfg(feature = "dist-client")]
+fn uncovered_tar_dirs(
+    mut traversed_dirs: Vec<PathBuf>,
+    all_tar_inputs: &[(PathBuf, String)],
+    path_transformer: &mut dist::PathTransformer,
+) -> Result<Vec<(PathBuf, String)>> {
+    if traversed_dirs.is_empty() {
+        return Ok(Vec::new());
+    }
+    traversed_dirs.sort();
+    traversed_dirs.dedup();
+
+    let mut tar_dirs = Vec::with_capacity(traversed_dirs.len());
+    for dir_path in traversed_dirs {
+        let dist_dir_path = path_transformer
+            .as_dist(&dir_path)
+            .with_context(|| format!("unable to transform input dir {}", dir_path.display()))?;
+        tar_dirs.push((dir_path, dist_dir_path));
+    }
+    tar_dirs.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+    tar_dirs.dedup_by(|a, b| a.1 == b.1);
+
+    let mut dist_file_paths: Vec<&str> = all_tar_inputs
+        .iter()
+        .map(|(_, dist_path)| dist_path.as_str())
+        .collect();
+    dist_file_paths.sort_unstable();
+    let dist_dir_paths: Vec<String> = tar_dirs.iter().map(|(_, d)| d.clone()).collect();
+    let dir_slices: Vec<&str> = dist_dir_paths.iter().map(String::as_str).collect();
+
+    let has_descendant = |sorted_paths: &[&str], dir: &str| {
+        let prefix = format!("{dir}/");
+        let idx = sorted_paths.partition_point(|p| *p < prefix.as_str());
+        sorted_paths
+            .get(idx)
+            .is_some_and(|p| p.starts_with(&prefix))
+    };
+
+    tar_dirs.retain(|(_, dist_dir)| {
+        dist_file_paths.binary_search(&dist_dir.as_str()).is_err()
+            && !has_descendant(&dist_file_paths, dist_dir)
+            && !has_descendant(&dir_slices, dist_dir)
+    });
+    Ok(tar_dirs)
 }
 
 #[cfg(feature = "dist-client")]
@@ -5133,5 +5190,116 @@ foo.rs:
         ));
         assert!(!is_rmeta_artifact_notification(b"not json\n"));
         assert!(!is_rmeta_artifact_notification(b""));
+    }
+
+    #[cfg(feature = "dist-client")]
+    #[test]
+    fn test_write_inputs_parent_dir_components() {
+        use crate::dist::pkg::InputsPackager;
+
+        let tempdir = tempfile::Builder::new()
+            .prefix("sccache_test")
+            .tempdir()
+            .unwrap();
+        let root = tempdir.path();
+
+        fs::create_dir_all(root.join("sysdeps/nptl/bits")).unwrap();
+        fs::create_dir_all(root.join("sysdeps/nptl/bits-other")).unwrap();
+        fs::create_dir_all(root.join("sysdeps/x86/nptl/bits")).unwrap();
+        fs::create_dir_all(root.join("src/sub")).unwrap();
+        fs::create_dir_all(root.join("deps/empty_link_sub")).unwrap();
+        fs::write(root.join("sysdeps/nptl/mod.rs"), b"mod struct_mutex;\n").unwrap();
+        fs::write(
+            root.join("sysdeps/nptl/bits-other/sibling.rs"),
+            b"pub struct Sibling;\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("sysdeps/x86/nptl/bits/struct_mutex.rs"),
+            b"pub struct Mutex;\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("sysdeps/x86/nptl/bits/cond.rs"),
+            b"pub struct Cond;\n",
+        )
+        .unwrap();
+        fs::write(root.join("src/sub/helper.rs"), b"pub fn h() {}\n").unwrap();
+        fs::write(root.join("src/lib.rs"), b"mod sub;\n").unwrap();
+
+        let packager = RustInputsPackager {
+            env_vars: vec![],
+            crate_link_paths: vec![root.join("deps/empty_link_sub/..")],
+            crate_types: CrateTypes {
+                rlib: true,
+                staticlib: false,
+            },
+            inputs: vec![
+                root.join("sysdeps/nptl/mod.rs"),
+                root.join("sysdeps/nptl/bits-other/sibling.rs"),
+                root.join("sysdeps/nptl/bits/../../x86/nptl/bits/struct_mutex.rs"),
+                root.join("sysdeps/nptl/bits/../../x86/nptl/bits/cond.rs"),
+                root.join("src/sub/helper.rs"),
+                root.join("src/sub/../lib.rs"),
+            ],
+            path_transformer: dist::PathTransformer::new(),
+            rlib_dep_reader: None,
+        };
+
+        let mut tar_bytes = vec![];
+        Box::new(packager).write_inputs(&mut tar_bytes).unwrap();
+
+        let mut pt = dist::PathTransformer::new();
+        let mut dist_rel =
+            |rel: &str| PathBuf::from(pt.as_dist(&root.join(rel)).unwrap().trim_start_matches('/'));
+        let bits_dir = dist_rel("sysdeps/nptl/bits");
+        let link_sub_dir = dist_rel("deps/empty_link_sub");
+        let nptl_dir = dist_rel("sysdeps/nptl");
+        let sub_dir = dist_rel("src/sub");
+
+        let mut entries = vec![];
+        for entry in tar::Archive::new(tar_bytes.as_slice()).entries().unwrap() {
+            let entry = entry.unwrap();
+            let header = entry.header();
+            entries.push((
+                entry.path().unwrap().into_owned(),
+                header.entry_type(),
+                header.mode().unwrap(),
+            ));
+        }
+
+        let dir_paths: Vec<_> = entries
+            .iter()
+            .filter(|(_, kind, _)| *kind == tar::EntryType::Directory)
+            .map(|(p, _, mode)| {
+                assert_ne!(mode & 0o111, 0);
+                p.clone()
+            })
+            .collect();
+        assert_eq!(dir_paths, vec![link_sub_dir.clone(), bits_dir.clone()]);
+        assert!(
+            !entries
+                .iter()
+                .any(|(p, _, _)| p == &nptl_dir || p == &sub_dir)
+        );
+
+        let unpack_dir = tempfile::Builder::new()
+            .prefix("sccache_unpack")
+            .tempdir()
+            .unwrap();
+        tar::Archive::new(tar_bytes.as_slice())
+            .unpack(unpack_dir.path())
+            .unwrap();
+
+        assert!(unpack_dir.path().join(&bits_dir).is_dir());
+        assert!(unpack_dir.path().join(&link_sub_dir).is_dir());
+        let unsimplified = unpack_dir
+            .path()
+            .join(&nptl_dir)
+            .join("bits/../../x86/nptl/bits/struct_mutex.rs");
+        assert_eq!(
+            fs::read_to_string(unsimplified).unwrap(),
+            "pub struct Mutex;\n"
+        );
     }
 }
