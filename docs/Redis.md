@@ -23,6 +23,14 @@ Set `SCCACHE_REDIS_EXPIRATION` in seconds if you don't want your cache to live f
 Set `SCCACHE_REDIS_KEY_PREFIX` if you want to prefix all cache keys. This can be
 useful when sharing a Redis instance with another application or cache.
 
+Set `SCCACHE_REDIS_IO_TIMEOUT_SECS` to a positive integer number of seconds to
+limit Redis read/write IO, including connection-pool acquisition. For example,
+`SCCACHE_REDIS_IO_TIMEOUT_SECS=2` makes an unavailable Redis tier fail faster.
+The equivalent configuration-file setting is `[cache.redis].io_timeout_secs`.
+When unset, existing Redis backend timeouts are unchanged. The deadline applies
+to each IO operation, not to the total compilation or the entire multilevel
+lookup. Restart the sccache server after changing it.
+
 `SCCACHE_REDIS` is deprecated for security reasons, use `SCCACHE_REDIS_ENDPOINT` instead. See mozilla/sccache#2083 for details.
 If you really want to use `SCCACHE_REDIS`, you should URL in format `redis://[[<username>]:<passwd>@]<hostname>[:port][/?db=<db>]`.
 
