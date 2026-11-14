@@ -162,6 +162,47 @@ where
     deserializer.deserialize_any(StringOrU64Visitor)
 }
 
+/// Like `deserialize_size_from_str`, for optional fields. A missing field is
+/// handled by `#[serde(default)]`; an explicit null (as JSON configs emit for
+/// `None`) is `None`; a present value must be a valid size.
+fn deserialize_opt_size_from_str<'de, D>(deserializer: D) -> StdResult<Option<u64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct OptSizeVisitor;
+
+    impl<'de> de::Visitor<'de> for OptSizeVisitor {
+        type Value = Option<u64>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("null, a string with size suffix (like '20G') or a u64")
+        }
+
+        fn visit_none<E>(self) -> StdResult<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(None)
+        }
+
+        fn visit_unit<E>(self) -> StdResult<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(None)
+        }
+
+        fn visit_some<D2>(self, deserializer: D2) -> StdResult<Self::Value, D2::Error>
+        where
+            D2: Deserializer<'de>,
+        {
+            deserialize_size_from_str(deserializer).map(Some)
+        }
+    }
+
+    deserializer.deserialize_option(OptSizeVisitor)
+}
+
 pub fn parse_size(val: &str) -> Option<u64> {
     let multiplier = match val.chars().last().map(|v| v.to_ascii_uppercase()) {
         Some('K') => 1024,
@@ -795,6 +836,8 @@ pub struct FileConfig {
     pub cache: CacheConfigs,
     pub dist: DistConfig,
     pub server_startup_timeout_ms: Option<u64>,
+    #[serde(deserialize_with = "deserialize_opt_size_from_str")]
+    pub error_log_max_size: Option<u64>,
     /// Base directories to strip from paths for cache key computation.
     pub basedirs: Vec<String>,
     pub client_side_mode: bool,
@@ -838,6 +881,7 @@ pub struct EnvConfig {
     basedirs: Option<Vec<String>>,
     dist_cache_dir: Option<PathBuf>,
     client_side_mode: Option<bool>,
+    error_log_max_size: Option<u64>,
 }
 
 fn string_from_env_var(env_var_name: &str) -> Option<String> {
@@ -885,6 +929,20 @@ fn bool_from_env_var(env_var_name: &str) -> Result<Option<bool>> {
                 "{} must be 'true', 'on', '1', 'false', 'off' or '0'.",
                 env_var_name
             ),
+        })
+        .transpose()
+}
+
+fn size_from_env_var(env_var_name: &str) -> Result<Option<u64>> {
+    string_from_env_var(env_var_name)
+        .map(|value| {
+            parse_size(&value).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "{} must be a byte count or a size with a K/M/G/T suffix (like '20G'), got '{}'.",
+                    env_var_name,
+                    value
+                )
+            })
         })
         .transpose()
 }
@@ -1280,12 +1338,14 @@ fn config_from_env() -> Result<EnvConfig> {
 
     let dist_cache_dir = env::var_os("SCCACHE_DIST_CLIENT_CACHE_DIR").map(PathBuf::from);
     let client_side_mode = bool_from_env_var("SCCACHE_CLIENT_SIDE")?;
+    let error_log_max_size = size_from_env_var("SCCACHE_ERROR_LOG_MAX_SIZE")?;
 
     Ok(EnvConfig {
         cache,
         basedirs,
         dist_cache_dir,
         client_side_mode,
+        error_log_max_size,
     })
 }
 
@@ -1319,6 +1379,7 @@ pub struct Config {
     pub fallback_cache: DiskCacheConfig,
     pub dist: DistConfig,
     pub server_startup_timeout: Option<std::time::Duration>,
+    pub error_log_max_size: Option<u64>,
     pub skip_cache_check: bool,
     /// Base directory (or directories) to strip from paths for cache key computation.
     /// Similar to ccache's CCACHE_BASEDIR.
@@ -1348,6 +1409,7 @@ impl Config {
             cache,
             mut dist,
             server_startup_timeout_ms,
+            error_log_max_size: file_error_log_max_size,
             basedirs: file_basedirs,
             client_side_mode: file_client_side_mode,
         } = file_conf;
@@ -1361,8 +1423,11 @@ impl Config {
             basedirs: env_basedirs,
             dist_cache_dir: env_dist_cache_dir,
             client_side_mode: env_client_side_mode,
+            error_log_max_size: env_error_log_max_size,
         } = env_conf;
         conf_caches.merge(cache);
+
+        let error_log_max_size = env_error_log_max_size.or(file_error_log_max_size);
 
         if let Some(cache_dir) = env_dist_cache_dir {
             dist.cache_dir = cache_dir;
@@ -1434,6 +1499,7 @@ impl Config {
             fallback_cache,
             dist,
             server_startup_timeout,
+            error_log_max_size,
             skip_cache_check: false,
             basedirs,
             client_side_mode,
@@ -1779,6 +1845,7 @@ fn config_overrides() {
         basedirs: None,
         dist_cache_dir: None,
         client_side_mode: None,
+        error_log_max_size: None,
     };
 
     let file_conf = FileConfig {
@@ -1805,6 +1872,7 @@ fn config_overrides() {
         },
         dist: Default::default(),
         server_startup_timeout_ms: None,
+        error_log_max_size: None,
         basedirs: vec![],
         client_side_mode: false,
     };
@@ -1861,6 +1929,7 @@ fn config_overrides() {
             },
             dist: Default::default(),
             server_startup_timeout: None,
+            error_log_max_size: None,
             skip_cache_check: false,
             basedirs: vec![],
             client_side_mode: false,
@@ -1877,12 +1946,14 @@ fn config_basedirs_overrides() {
         basedirs: vec!["C:/env/basedir".to_string()].into(),
         dist_cache_dir: None,
         client_side_mode: None,
+        error_log_max_size: None,
     };
 
     let file_conf = FileConfig {
         cache: Default::default(),
         dist: Default::default(),
         server_startup_timeout_ms: None,
+        error_log_max_size: None,
         basedirs: vec!["C:/file/basedir".to_string()],
         client_side_mode: false,
     };
@@ -1896,12 +1967,14 @@ fn config_basedirs_overrides() {
         basedirs: None,
         dist_cache_dir: None,
         client_side_mode: None,
+        error_log_max_size: None,
     };
 
     let file_conf = FileConfig {
         cache: Default::default(),
         dist: Default::default(),
         server_startup_timeout_ms: None,
+        error_log_max_size: None,
         basedirs: vec!["C:/file/basedir".to_string()],
         client_side_mode: false,
     };
@@ -1915,12 +1988,14 @@ fn config_basedirs_overrides() {
         basedirs: vec![].into(),
         dist_cache_dir: None,
         client_side_mode: None,
+        error_log_max_size: None,
     };
 
     let file_conf = FileConfig {
         cache: Default::default(),
         dist: Default::default(),
         server_startup_timeout_ms: None,
+        error_log_max_size: None,
         basedirs: vec!["C:/file/basedir".to_string()],
         client_side_mode: false,
     };
@@ -1934,12 +2009,14 @@ fn config_basedirs_overrides() {
         basedirs: vec![].into(),
         dist_cache_dir: None,
         client_side_mode: None,
+        error_log_max_size: None,
     };
 
     let file_conf = FileConfig {
         cache: Default::default(),
         dist: Default::default(),
         server_startup_timeout_ms: None,
+        error_log_max_size: None,
         basedirs: vec![],
         client_side_mode: false,
     };
@@ -1957,12 +2034,14 @@ fn config_basedirs_overrides() {
         basedirs: vec!["/env/basedir".to_string()].into(),
         dist_cache_dir: None,
         client_side_mode: None,
+        error_log_max_size: None,
     };
 
     let file_conf = FileConfig {
         cache: Default::default(),
         dist: Default::default(),
         server_startup_timeout_ms: None,
+        error_log_max_size: None,
         basedirs: vec!["/file/basedir".to_string()],
         client_side_mode: false,
     };
@@ -1976,12 +2055,14 @@ fn config_basedirs_overrides() {
         basedirs: None,
         dist_cache_dir: None,
         client_side_mode: None,
+        error_log_max_size: None,
     };
 
     let file_conf = FileConfig {
         cache: Default::default(),
         dist: Default::default(),
         server_startup_timeout_ms: None,
+        error_log_max_size: None,
         basedirs: vec!["/file/basedir".to_string()],
         client_side_mode: false,
     };
@@ -1995,12 +2076,14 @@ fn config_basedirs_overrides() {
         basedirs: vec![].into(),
         dist_cache_dir: None,
         client_side_mode: None,
+        error_log_max_size: None,
     };
 
     let file_conf = FileConfig {
         cache: Default::default(),
         dist: Default::default(),
         server_startup_timeout_ms: None,
+        error_log_max_size: None,
         basedirs: vec!["/file/basedir".to_string()],
         client_side_mode: false,
     };
@@ -2014,12 +2097,14 @@ fn config_basedirs_overrides() {
         basedirs: vec![].into(),
         dist_cache_dir: None,
         client_side_mode: None,
+        error_log_max_size: None,
     };
 
     let file_conf = FileConfig {
         cache: Default::default(),
         dist: Default::default(),
         server_startup_timeout_ms: None,
+        error_log_max_size: None,
         basedirs: vec![],
         client_side_mode: false,
     };
@@ -2031,12 +2116,14 @@ fn config_basedirs_overrides() {
         basedirs: None,
         dist_cache_dir: None,
         client_side_mode: None,
+        error_log_max_size: None,
     };
 
     let file_conf = FileConfig {
         cache: Default::default(),
         dist: Default::default(),
         server_startup_timeout_ms: None,
+        error_log_max_size: None,
         basedirs: vec![],
         client_side_mode: false,
     };
@@ -2262,6 +2349,7 @@ fn test_env_basedirs_with_spaces() {
         cache: Default::default(),
         dist: Default::default(),
         server_startup_timeout_ms: None,
+        error_log_max_size: None,
         basedirs: vec![],
         client_side_mode: false,
     };
@@ -2297,6 +2385,7 @@ fn test_env_basedirs_with_spaces() {
         cache: Default::default(),
         dist: Default::default(),
         server_startup_timeout_ms: None,
+        error_log_max_size: None,
         basedirs: vec![],
         client_side_mode: false,
     };
@@ -2845,9 +2934,92 @@ fn test_gcs_service_account() {
 }
 
 #[test]
+fn test_size_from_env_var() {
+    let var_name = "TEST_SCCACHE_ERROR_LOG_MAX_SIZE";
+    for (value, expected) in [
+        (None, Ok(None)),
+        (Some(""), Ok(None)),
+        (Some("4096"), Ok(Some(4096))),
+        (Some("2K"), Ok(Some(2048))),
+        (Some("10m"), Ok(Some(10 * 1024 * 1024))),
+        (Some("bogus"), Err(())),
+        (Some("-1"), Err(())),
+    ] {
+        match value {
+            None => unsafe {
+                std::env::remove_var(var_name);
+            },
+            Some(value) => unsafe {
+                std::env::set_var(var_name, value);
+            },
+        }
+        assert_eq!(
+            size_from_env_var(var_name).map_err(|_| ()),
+            expected,
+            "value: {value:?}"
+        );
+    }
+    unsafe {
+        std::env::remove_var(var_name);
+    }
+}
+
+#[test]
+fn error_log_max_size_env_overrides_file() {
+    let env_conf = |error_log_max_size| EnvConfig {
+        cache: Default::default(),
+        basedirs: None,
+        dist_cache_dir: None,
+        client_side_mode: None,
+        error_log_max_size,
+    };
+    let file_conf = |error_log_max_size| FileConfig {
+        error_log_max_size,
+        ..Default::default()
+    };
+
+    let merged = |env, file| {
+        Config::from_env_and_file_configs(env_conf(env), file_conf(file))
+            .unwrap()
+            .error_log_max_size
+    };
+    assert_eq!(merged(None, None), None);
+    assert_eq!(merged(None, Some(1)), Some(1));
+    assert_eq!(merged(Some(2), None), Some(2));
+    assert_eq!(merged(Some(2), Some(1)), Some(2));
+}
+
+#[test]
+fn error_log_max_size_parse() {
+    let conf: FileConfig = toml::from_str("error_log_max_size = 4096").unwrap();
+    assert_eq!(conf.error_log_max_size, Some(4096));
+
+    let conf: FileConfig = toml::from_str(r#"error_log_max_size = "2K""#).unwrap();
+    assert_eq!(conf.error_log_max_size, Some(2048));
+
+    let conf: FileConfig = toml::from_str("").unwrap();
+    assert_eq!(conf.error_log_max_size, None);
+
+    assert!(toml::from_str::<FileConfig>(r#"error_log_max_size = "bogus""#).is_err());
+    assert!(toml::from_str::<FileConfig>("error_log_max_size = -1").is_err());
+
+    // JSON configs (as written by the test harness) emit `null` for `None`.
+    let conf: FileConfig = serde_json::from_str(r#"{"error_log_max_size": null}"#).unwrap();
+    assert_eq!(conf.error_log_max_size, None);
+    let conf: FileConfig = serde_json::from_str(r#"{"error_log_max_size": "10M"}"#).unwrap();
+    assert_eq!(conf.error_log_max_size, Some(10 * 1024 * 1024));
+
+    // A default config must survive a JSON round trip.
+    let json = serde_json::to_string(&FileConfig::default()).unwrap();
+    let conf: FileConfig = serde_json::from_str(&json).unwrap();
+    assert_eq!(conf, FileConfig::default());
+}
+
+#[test]
 fn full_toml_parse() {
     const CONFIG_STR: &str = r#"
 server_startup_timeout_ms = 10000
+error_log_max_size = "10M"
 
 [dist]
 # where to find the scheduler
@@ -3042,6 +3214,7 @@ key_prefix = "cosprefix"
                 rewrite_includes_only: false,
             },
             server_startup_timeout_ms: Some(10000),
+            error_log_max_size: Some(10 * 1024 * 1024),
             basedirs: vec![],
             client_side_mode: false,
         }
@@ -3136,6 +3309,7 @@ size = "7g"
                 ..Default::default()
             },
             server_startup_timeout_ms: None,
+            error_log_max_size: None,
             basedirs: vec![],
             client_side_mode: false,
         }
@@ -3184,12 +3358,14 @@ fn test_integration_config_normalizes_and_strips() {
         basedirs: None,
         dist_cache_dir: None,
         client_side_mode: None,
+        error_log_max_size: None,
     };
 
     let file_conf = FileConfig {
         cache: Default::default(),
         dist: Default::default(),
         server_startup_timeout_ms: None,
+        error_log_max_size: None,
         basedirs: vec!["/home/user/project".to_string()],
         client_side_mode: false,
     };
@@ -3220,12 +3396,14 @@ fn test_integration_normalized_path_with_double_slashes() {
         basedirs: None,
         dist_cache_dir: None,
         client_side_mode: None,
+        error_log_max_size: None,
     };
 
     let file_conf = FileConfig {
         cache: Default::default(),
         dist: Default::default(),
         server_startup_timeout_ms: None,
+        error_log_max_size: None,
         basedirs: vec!["/home//user///project/".to_string()],
         client_side_mode: false,
     };
@@ -3252,12 +3430,14 @@ fn test_integration_windows_path_normalization() {
         basedirs: None,
         dist_cache_dir: None,
         client_side_mode: None,
+        error_log_max_size: None,
     };
 
     let file_conf = FileConfig {
         cache: Default::default(),
         dist: Default::default(),
         server_startup_timeout_ms: None,
+        error_log_max_size: None,
         basedirs: vec!["C:\\Users\\Test\\Project".to_string()],
         client_side_mode: false,
     };
@@ -3285,12 +3465,14 @@ fn test_integration_cow_borrowed_when_no_match() {
         basedirs: None,
         dist_cache_dir: None,
         client_side_mode: None,
+        error_log_max_size: None,
     };
 
     let file_conf = FileConfig {
         cache: Default::default(),
         dist: Default::default(),
         server_startup_timeout_ms: None,
+        error_log_max_size: None,
         basedirs: vec!["/home/user/project".to_string()],
         client_side_mode: false,
     };
@@ -3318,12 +3500,14 @@ fn test_integration_cow_borrowed_when_empty_basedirs() {
         basedirs: None,
         dist_cache_dir: None,
         client_side_mode: None,
+        error_log_max_size: None,
     };
 
     let file_conf = FileConfig {
         cache: Default::default(),
         dist: Default::default(),
         server_startup_timeout_ms: None,
+        error_log_max_size: None,
         basedirs: vec![],
         client_side_mode: false,
     };
@@ -3350,12 +3534,14 @@ fn test_integration_multiple_basedirs_longest_match() {
         basedirs: None,
         dist_cache_dir: None,
         client_side_mode: None,
+        error_log_max_size: None,
     };
 
     let file_conf = FileConfig {
         cache: Default::default(),
         dist: Default::default(),
         server_startup_timeout_ms: None,
+        error_log_max_size: None,
         basedirs: vec!["/home/user".to_string(), "/home/user/project".to_string()],
         client_side_mode: false,
     };
@@ -3387,12 +3573,14 @@ fn test_integration_paths_with_dots_normalized() {
         basedirs: None,
         dist_cache_dir: None,
         client_side_mode: None,
+        error_log_max_size: None,
     };
 
     let file_conf = FileConfig {
         cache: Default::default(),
         dist: Default::default(),
         server_startup_timeout_ms: None,
+        error_log_max_size: None,
         basedirs: vec!["/home/user/./project/../project".to_string()],
         client_side_mode: false,
     };
@@ -3420,12 +3608,14 @@ fn test_integration_windows_mixed_slashes() {
         basedirs: None,
         dist_cache_dir: None,
         client_side_mode: None,
+        error_log_max_size: None,
     };
 
     let file_conf = FileConfig {
         cache: Default::default(),
         dist: Default::default(),
         server_startup_timeout_ms: None,
+        error_log_max_size: None,
         basedirs: vec!["C:\\Users\\test\\project".to_string()],
         client_side_mode: false,
     };
