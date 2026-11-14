@@ -1720,6 +1720,17 @@ mod tests {
         obj.write().unwrap()
     }
 
+    // Dist JWT secrets and PKCE values are stored or sent in this form, so the
+    // alphabet and lack of padding must not change.
+    #[test]
+    fn test_base64_url_safe_engine_output() {
+        use base64::Engine;
+        let engine = super::BASE64_URL_SAFE_ENGINE;
+        assert_eq!(engine.encode([0xfb, 0xff]), "-_8");
+        assert_eq!(engine.decode("-_8").unwrap(), [0xfb, 0xff]);
+        assert!(engine.decode("-_8=").is_err());
+    }
+
     #[test]
     fn test_hash_all_externs_hashes_a_dylib_by_its_metadata() {
         let dir = tempfile::tempdir().unwrap();
