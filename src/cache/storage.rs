@@ -172,7 +172,6 @@ pub trait PreprocessorCacheStorage: Send + Sync {
     }
 }
 
-#[async_trait]
 pub trait Storage: CacheStorage + PreprocessorCacheStorage {}
 
 impl<T: CacheStorage + PreprocessorCacheStorage> Storage for T {}
