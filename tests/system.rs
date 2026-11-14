@@ -2793,7 +2793,30 @@ fn test_symlinked_exe() {
         unix_fs::symlink(&sccache_path, &sccache_compiler_alias).unwrap();
 
         let compiler_alias_ver_stdout =
-            get_version(Command::new(&sccache_compiler_alias).envs(compiler.env_vars));
+            get_version(Command::new(&sccache_compiler_alias).envs(compiler.env_vars.clone()));
+        assert_eq!(compiler_ver_stdout, compiler_alias_ver_stdout);
+
+        fs::remove_file(&sccache_compiler_alias).unwrap();
+
+        // The alias directory is on PATH as a relative entry, so sccache has to
+        // skip it to find the real compiler instead of itself.
+        let wrapper_dir = tempdir.path().join("wrappers");
+        fs::create_dir_all(&wrapper_dir).unwrap();
+        let sccache_compiler_alias = wrapper_dir.join(exe_filename);
+        unix_fs::symlink(&sccache_path, &sccache_compiler_alias).unwrap();
+        let compiler_dir = Path::new(&compiler.exe).parent().unwrap();
+        let path = env::join_paths(
+            [Path::new("wrappers"), compiler_dir]
+                .into_iter()
+                .map(Path::to_path_buf)
+                .chain(env::split_paths(&env::var_os("PATH").unwrap_or_default())),
+        )
+        .unwrap();
+        let compiler_alias_ver_stdout = get_version(
+            Command::new(&sccache_compiler_alias)
+                .envs(compiler.env_vars)
+                .env("PATH", path),
+        );
         assert_eq!(compiler_ver_stdout, compiler_alias_ver_stdout);
 
         fs::remove_file(&sccache_compiler_alias).unwrap();
