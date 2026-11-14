@@ -2173,6 +2173,66 @@ int value;
         );
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn test_process_preprocessed_file_msvc_line_markers() {
+        // As cl.exe -E writes a header included with quotes, and clang-cl -E one in the
+        // working directory.
+        let absolute = PathBuf::from(r"D:\t\src\foo.h");
+        let relative = PathBuf::from("bar.h");
+        let meta = PreprocessorFileMetadata {
+            is_dir: false,
+            is_file: true,
+            modified: Some(Timestamp::new(12341234, 0)),
+            ctime_or_creation: None,
+        };
+        let fs_impl = TestFs {
+            metadata_results: Mutex::new(
+                [(absolute.clone(), meta.clone()), (relative.clone(), meta)]
+                    .into_iter()
+                    .collect(),
+            ),
+            open_results: Mutex::new(
+                [
+                    (
+                        absolute.clone(),
+                        Box::new(&b"int foo;"[..]) as Box<dyn std::io::Read>,
+                    ),
+                    (
+                        relative.clone(),
+                        Box::new(&b"int bar;"[..]) as Box<dyn std::io::Read>,
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            ),
+        };
+        let mut bytes = br#"#line 1 "src\\main.c"
+#line 1 "D:\\t\\src\\foo.h"
+int foo;
+# 1 ".\\bar.h"
+int bar;
+"#
+        .to_vec();
+        let mut include_files = HashMap::new();
+
+        let success = process_preprocessed_file(
+            Path::new(r"src\main.c"),
+            Path::new(""),
+            &mut bytes,
+            &mut include_files,
+            PreprocessorCacheModeConfig::activated(),
+            std::time::SystemTime::now(),
+            fs_impl,
+        )
+        .unwrap();
+
+        assert!(success);
+        assert_eq!(include_files.len(), 2);
+        assert!(include_files.contains_key(&absolute));
+        assert!(include_files.contains_key(&relative));
+    }
+
     /// A filesystem interface that only panics to test that we don't access it.
     struct PanicFs;
 
