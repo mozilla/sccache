@@ -34,6 +34,7 @@ use crate::{counted_array, dist};
 use async_trait::async_trait;
 use filetime::FileTime;
 use fs_err as fs;
+#[cfg(feature = "dist-client")]
 use log::Level::Trace;
 #[cfg(feature = "dist-client")]
 use semver::Version;
@@ -273,6 +274,7 @@ pub struct Rust {
     /// The path to the rustc executable.
     executable: PathBuf,
     /// The host triple for this rustc.
+    #[cfg(feature = "dist-client")]
     host: String,
     /// The verbose version for this rustc.
     ///
@@ -312,6 +314,7 @@ pub struct RustHasher {
     /// The path to the rustc executable, not the rustup proxy.
     executable: PathBuf,
     /// The host triple for this rustc.
+    #[cfg(feature = "dist-client")]
     host: String,
     /// The version for this rustc.
     version: String,
@@ -392,8 +395,10 @@ pub struct RustCompilation {
     /// The path to the rustc executable, not the rustup proxy.
     executable: PathBuf,
     /// The host triple for this rustc.
+    #[cfg(feature = "dist-client")]
     host: String,
     /// The sysroot for this rustc
+    #[cfg(feature = "dist-client")]
     sysroot: PathBuf,
     /// The `--print=target-libdir` of this rustc, i.e. `$libdir/rustlib/$target/lib`.
     #[cfg(feature = "dist-client")]
@@ -404,14 +409,17 @@ pub struct RustCompilation {
     /// All arguments passed to rustc
     arguments: Vec<Argument<ArgData>>,
     /// The compiler inputs.
+    #[cfg(feature = "dist-client")]
     inputs: Vec<PathBuf>,
     /// The compiler outputs.
     outputs: HashMap<String, ArtifactDescriptor>,
     /// The directories searched for rlibs
+    #[cfg(feature = "dist-client")]
     crate_link_paths: Vec<PathBuf>,
     /// The crate name being compiled.
     crate_name: String,
     /// The crate types that will be generated
+    #[cfg(feature = "dist-client")]
     crate_types: CrateTypes,
     /// The current working directory
     cwd: PathBuf,
@@ -837,7 +845,7 @@ impl Rust {
         T: CommandCreatorSync,
     {
         // Taken from Cargo
-        let host = rustc_verbose_version
+        let _host = rustc_verbose_version
             .lines()
             .find(|l| l.starts_with("host: "))
             .map(|l| &l[6..])
@@ -912,7 +920,7 @@ impl Rust {
             };
             hash_all(&libs, &pool).await.map(move |digests| Rust {
                 executable,
-                host,
+                host: _host,
                 version: rustc_verbose_version.to_string(),
                 sysroot,
                 target_libdir,
@@ -927,7 +935,6 @@ impl Rust {
             let (sysroot, _target_libdir, libs) = sysroot_and_libs.await?;
             hash_all(&libs, &pool).await.map(move |digests| Rust {
                 executable,
-                host,
                 version: rustc_verbose_version.to_string(),
                 sysroot,
                 compiler_shlibs_digests: digests,
@@ -971,6 +978,7 @@ where
         match parse_arguments(arguments, cwd) {
             CompilerArguments::Ok(args) => CompilerArguments::Ok(Box::new(RustHasher {
                 executable: self.executable.clone(), // if rustup exists, this must already contain the true resolved compiler path
+                #[cfg(feature = "dist-client")]
                 host: self.host.clone(),
                 version: self.version.clone(),
                 sysroot: self.sysroot.clone(),
@@ -2066,7 +2074,7 @@ where
             Ok::<_, Error>((source_files, source_hashes, env_deps, dep_info))
         };
 
-        let (inputs, (source_files, source_hashes, mut env_deps, dep_info_text), mut outputs) =
+        let (inputs, (_source_files, source_hashes, mut env_deps, dep_info_text), mut outputs) =
             match remembered_dep_info(&dep_info_key) {
                 Some(remembered) => {
                     let inputs = inputs.await?;
@@ -2338,7 +2346,8 @@ where
             ));
         }
 
-        let inputs = source_files
+        #[cfg(feature = "dist-client")]
+        let inputs = _source_files
             .into_iter()
             .chain(abs_externs)
             .chain(abs_staticlibs)
@@ -2348,15 +2357,20 @@ where
             key: m.finish(),
             compilation: Box::new(RustCompilation {
                 executable: self.executable.clone(),
+                #[cfg(feature = "dist-client")]
                 host: self.host.clone(),
+                #[cfg(feature = "dist-client")]
                 sysroot: self.sysroot.clone(),
                 #[cfg(feature = "dist-client")]
                 target_libdir: self.target_libdir.clone(),
                 arguments,
+                #[cfg(feature = "dist-client")]
                 inputs,
                 outputs,
+                #[cfg(feature = "dist-client")]
                 crate_link_paths: self.parsed_args.crate_link_paths.clone(),
                 crate_name: self.parsed_args.crate_name.clone(),
+                #[cfg(feature = "dist-client")]
                 crate_types: self.parsed_args.crate_types.clone(),
                 cwd,
                 env_vars,
@@ -2400,7 +2414,9 @@ impl<T: CommandCreatorSync> Compilation<T> for RustCompilation {
             ref crate_name,
             ref cwd,
             ref env_vars,
+            #[cfg(feature = "dist-client")]
             ref host,
+            #[cfg(feature = "dist-client")]
             ref sysroot,
             ..
         } = *self;
@@ -2409,8 +2425,6 @@ impl<T: CommandCreatorSync> Compilation<T> for RustCompilation {
         #[cfg(not(feature = "dist-client"))]
         {
             let _ = path_transformer;
-            let _ = host;
-            let _ = sysroot;
         }
 
         trace!("[{}]: compile", crate_name);
@@ -4344,6 +4358,7 @@ hash 42fac6f0 stable_crate_id StableCrateId(12206970385906972588)
         emit.insert("metadata".to_string());
         let mut hasher = Box::new(RustHasher {
             executable: "rustc".into(),
+            #[cfg(feature = "dist-client")]
             host: "x86-64-unknown-unknown-unknown".to_owned(),
             version: TEST_RUSTC_VERSION.to_string(),
             sysroot: f.tempdir.path().join("sysroot"),
@@ -4450,6 +4465,26 @@ hash 42fac6f0 stable_crate_id StableCrateId(12206970385906972588)
         let mut out = res.compilation.outputs().map(|k| k.key).collect::<Vec<_>>();
         out.sort();
         assert_eq!(out, vec!["foo.a", "foo.rlib", "foo.rmeta"]);
+
+        let (command, dist_command, cacheable) = res
+            .compilation
+            .generate_compile_commands(&mut dist::PathTransformer::new(), false)
+            .unwrap();
+        assert_eq!(command.get_executable(), PathBuf::from("rustc"));
+        assert_eq!(command.get_cwd(), f.tempdir.path());
+        assert_eq!(
+            command.get_arguments(),
+            [
+                "a", "--cfg", "xyz", "b", "--cfg", "abc", "--color", "always"
+            ]
+            .map(OsString::from)
+            .to_vec()
+        );
+        assert_eq!(cacheable, Cacheable::Yes);
+        #[cfg(not(feature = "dist-client"))]
+        assert!(dist_command.is_none());
+        #[cfg(feature = "dist-client")]
+        assert!(dist_command.is_some());
     }
 
     #[test]
@@ -4462,6 +4497,7 @@ hash 42fac6f0 stable_crate_id StableCrateId(12206970385906972588)
         let hasher = || {
             Box::new(RustHasher {
                 executable: "rustc".into(),
+                #[cfg(feature = "dist-client")]
                 host: "x86-64-unknown-unknown-unknown".to_owned(),
                 version: TEST_RUSTC_VERSION.to_string(),
                 sysroot: f.tempdir.path().join("sysroot"),
@@ -4552,6 +4588,7 @@ hash 42fac6f0 stable_crate_id StableCrateId(12206970385906972588)
             .collect();
         let mut hasher = Box::new(RustHasher {
             executable: "rustc".into(),
+            #[cfg(feature = "dist-client")]
             host: "x86-64-unknown-unknown-unknown".to_owned(),
             version: TEST_RUSTC_VERSION.to_string(),
             sysroot: f.tempdir.path().join("sysroot"),
@@ -4692,6 +4729,7 @@ foo.rs:
         pre_func(f.tempdir.path()).expect("Failed to execute pre_func");
         let mut hasher = Box::new(RustHasher {
             executable: "rustc".into(),
+            #[cfg(feature = "dist-client")]
             host: "x86-64-unknown-unknown-unknown".to_owned(),
             version: TEST_RUSTC_VERSION.to_string(),
             sysroot: f.tempdir.path().join("sysroot"),

@@ -10,11 +10,13 @@ use crate::harness::{
     start_local_daemon, stop_local_daemon, write_json_cfg, write_source,
 };
 use assert_cmd::prelude::*;
+use async_trait::async_trait;
 use sccache::config::HTTPUrl;
 use sccache::dist::{
     AssignJobResult, CompileCommand, InputsReader, JobId, JobState, RunJobResult, ServerIncoming,
     ServerOutgoing, SubmitToolchainResult, Toolchain, ToolchainReader,
 };
+use serial_test::serial;
 use std::ffi::OsStr;
 use std::path::Path;
 use std::process::Output;
@@ -23,7 +25,7 @@ use sccache::errors::*;
 
 mod harness;
 
-fn basic_compile(tmpdir: &Path, sccache_cfg_path: &Path, sccache_cached_cfg_path: &Path) {
+async fn basic_compile(tmpdir: &Path, sccache_cfg_path: &Path, sccache_cached_cfg_path: &Path) {
     let envs: Vec<(_, &OsStr)> = vec![
         ("RUST_BACKTRACE", "1".as_ref()),
         ("SCCACHE_LOG", "debug".as_ref()),
@@ -37,7 +39,7 @@ fn basic_compile(tmpdir: &Path, sccache_cfg_path: &Path, sccache_cached_cfg_path
         source_file,
         "#if !defined(SCCACHE_TEST_DEFINE)\n#error SCCACHE_TEST_DEFINE is not defined\n#endif\nint x() { return 5; }",
     );
-    sccache_command()
+    tokio::process::Command::from(sccache_command())
         .args([
             std::env::var("CC")
                 .unwrap_or_else(|_| "gcc".to_string())
@@ -49,11 +51,18 @@ fn basic_compile(tmpdir: &Path, sccache_cfg_path: &Path, sccache_cached_cfg_path
         .arg("-o")
         .arg(tmpdir.join(obj_file))
         .envs(envs)
+        .output()
+        .await
+        .unwrap()
         .assert()
         .success();
 }
 
-fn rust_compile(tmpdir: &Path, sccache_cfg_path: &Path, sccache_cached_cfg_path: &Path) -> Output {
+async fn rust_compile(
+    tmpdir: &Path,
+    sccache_cfg_path: &Path,
+    sccache_cached_cfg_path: &Path,
+) -> Output {
     let sccache_path = env!("CARGO_BIN_EXE_sccache");
     let envs: Vec<(_, &OsStr)> = vec![
         ("RUSTC_WRAPPER", sccache_path.as_ref()),
@@ -89,11 +98,12 @@ fn rust_compile(tmpdir: &Path, sccache_cfg_path: &Path, sccache_cached_cfg_path:
 }"#,
     );
 
-    cargo_command()
+    tokio::process::Command::from(cargo_command())
         .current_dir(cargo_path)
         .args(["build", "--release"])
         .envs(envs)
         .output()
+        .await
         .unwrap()
 }
 
@@ -107,9 +117,10 @@ pub fn dist_test_sccache_client_cfg(
     sccache_cfg
 }
 
-#[test]
+#[tokio::test]
 #[cfg_attr(not(feature = "dist-tests"), ignore)]
-fn test_dist_basic() {
+#[serial]
+async fn test_dist_basic() {
     let tmpdir = tempfile::Builder::new()
         .prefix("sccache_dist_test")
         .tempdir()
@@ -118,8 +129,8 @@ fn test_dist_basic() {
     let sccache_dist = harness::sccache_dist_path();
 
     let mut system = harness::DistSystem::new(&sccache_dist, tmpdir);
-    system.add_scheduler();
-    system.add_server();
+    system.add_scheduler().await;
+    system.add_server().await;
 
     let sccache_cfg = dist_test_sccache_client_cfg(tmpdir, system.scheduler_url());
     let sccache_cfg_path = tmpdir.join("sccache-cfg.json");
@@ -128,7 +139,7 @@ fn test_dist_basic() {
 
     stop_local_daemon();
     start_local_daemon(&sccache_cfg_path, &sccache_cached_cfg_path);
-    basic_compile(tmpdir, &sccache_cfg_path, &sccache_cached_cfg_path);
+    basic_compile(tmpdir, &sccache_cfg_path, &sccache_cached_cfg_path).await;
 
     get_stats(|info| {
         assert_eq!(1, info.stats.dist_compiles.values().sum::<usize>());
@@ -142,9 +153,10 @@ fn test_dist_basic() {
 
 // A compile error on the build server reached the client as "Compiler killed by signal 1" with exit
 // code 254 instead of the compiler's exit code.
-#[test]
+#[tokio::test]
 #[cfg_attr(not(feature = "dist-tests"), ignore)]
-fn test_dist_failed_compile() {
+#[serial]
+async fn test_dist_failed_compile() {
     let tmpdir = tempfile::Builder::new()
         .prefix("sccache_dist_test")
         .tempdir()
@@ -153,8 +165,8 @@ fn test_dist_failed_compile() {
     let sccache_dist = harness::sccache_dist_path();
 
     let mut system = harness::DistSystem::new(&sccache_dist, tmpdir);
-    system.add_scheduler();
-    system.add_server();
+    system.add_scheduler().await;
+    system.add_server().await;
 
     let sccache_cfg = dist_test_sccache_client_cfg(tmpdir, system.scheduler_url());
     let sccache_cfg_path = tmpdir.join("sccache-cfg.json");
@@ -171,7 +183,7 @@ fn test_dist_failed_compile() {
         "fail.c",
         "int x() { return sccache_dist_test_undeclared; }",
     );
-    let output = sccache_command()
+    let output = tokio::process::Command::from(sccache_command())
         .args([
             std::env::var("CC")
                 .unwrap_or_else(|_| "gcc".to_string())
@@ -187,6 +199,7 @@ fn test_dist_failed_compile() {
             ("SCCACHE_CACHED_CONF", sccache_cached_cfg_path.as_os_str()),
         ])
         .output()
+        .await
         .unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -208,9 +221,10 @@ fn test_dist_failed_compile() {
     });
 }
 
-#[test]
+#[tokio::test]
 #[cfg_attr(not(feature = "dist-tests"), ignore)]
-fn test_dist_restartedserver() {
+#[serial]
+async fn test_dist_restartedserver() {
     let tmpdir = tempfile::Builder::new()
         .prefix("sccache_dist_test")
         .tempdir()
@@ -219,8 +233,8 @@ fn test_dist_restartedserver() {
     let sccache_dist = harness::sccache_dist_path();
 
     let mut system = harness::DistSystem::new(&sccache_dist, tmpdir);
-    system.add_scheduler();
-    let server_handle = system.add_server();
+    system.add_scheduler().await;
+    let server_handle = system.add_server().await;
 
     let sccache_cfg = dist_test_sccache_client_cfg(tmpdir, system.scheduler_url());
     let sccache_cfg_path = tmpdir.join("sccache-cfg.json");
@@ -229,10 +243,10 @@ fn test_dist_restartedserver() {
 
     stop_local_daemon();
     start_local_daemon(&sccache_cfg_path, &sccache_cached_cfg_path);
-    basic_compile(tmpdir, &sccache_cfg_path, &sccache_cached_cfg_path);
+    basic_compile(tmpdir, &sccache_cfg_path, &sccache_cached_cfg_path).await;
 
-    system.restart_server(&server_handle);
-    basic_compile(tmpdir, &sccache_cfg_path, &sccache_cached_cfg_path);
+    system.restart_server(&server_handle).await;
+    basic_compile(tmpdir, &sccache_cfg_path, &sccache_cached_cfg_path).await;
 
     get_stats(|info| {
         assert_eq!(2, info.stats.dist_compiles.values().sum::<usize>());
@@ -244,9 +258,10 @@ fn test_dist_restartedserver() {
     });
 }
 
-#[test]
+#[tokio::test]
 #[cfg_attr(not(feature = "dist-tests"), ignore)]
-fn test_dist_nobuilder() {
+#[serial]
+async fn test_dist_nobuilder() {
     let tmpdir = tempfile::Builder::new()
         .prefix("sccache_dist_test")
         .tempdir()
@@ -255,7 +270,7 @@ fn test_dist_nobuilder() {
     let sccache_dist = harness::sccache_dist_path();
 
     let mut system = harness::DistSystem::new(&sccache_dist, tmpdir);
-    system.add_scheduler();
+    system.add_scheduler().await;
 
     let sccache_cfg = dist_test_sccache_client_cfg(tmpdir, system.scheduler_url());
     let sccache_cfg_path = tmpdir.join("sccache-cfg.json");
@@ -264,7 +279,7 @@ fn test_dist_nobuilder() {
 
     stop_local_daemon();
     start_local_daemon(&sccache_cfg_path, &sccache_cached_cfg_path);
-    basic_compile(tmpdir, &sccache_cfg_path, &sccache_cached_cfg_path);
+    basic_compile(tmpdir, &sccache_cfg_path, &sccache_cached_cfg_path).await;
 
     get_stats(|info| {
         assert_eq!(0, info.stats.dist_compiles.values().sum::<usize>());
@@ -277,8 +292,9 @@ fn test_dist_nobuilder() {
 }
 
 struct FailingServer;
+#[async_trait]
 impl ServerIncoming for FailingServer {
-    fn handle_assign_job(&self, _job_id: JobId, _tc: Toolchain) -> Result<AssignJobResult> {
+    async fn handle_assign_job(&self, _job_id: JobId, _tc: Toolchain) -> Result<AssignJobResult> {
         let need_toolchain = false;
         let state = JobState::Ready;
         Ok(AssignJobResult {
@@ -286,15 +302,15 @@ impl ServerIncoming for FailingServer {
             state,
         })
     }
-    fn handle_submit_toolchain(
+    async fn handle_submit_toolchain(
         &self,
         _requester: &dyn ServerOutgoing,
         _job_id: JobId,
-        _tc_rdr: ToolchainReader,
+        _tc_rdr: ToolchainReader<'_>,
     ) -> Result<SubmitToolchainResult> {
         panic!("should not have submitted toolchain")
     }
-    fn handle_run_job(
+    async fn handle_run_job(
         &self,
         requester: &dyn ServerOutgoing,
         job_id: JobId,
@@ -304,14 +320,16 @@ impl ServerIncoming for FailingServer {
     ) -> Result<RunJobResult> {
         requester
             .do_update_job_state(job_id, JobState::Started)
+            .await
             .context("Updating job state failed")?;
         bail!("internal build failure")
     }
 }
 
-#[test]
+#[tokio::test]
 #[cfg_attr(not(feature = "dist-tests"), ignore)]
-fn test_dist_failingserver() {
+#[serial]
+async fn test_dist_failingserver() {
     let tmpdir = tempfile::Builder::new()
         .prefix("sccache_dist_test")
         .tempdir()
@@ -320,9 +338,9 @@ fn test_dist_failingserver() {
     let sccache_dist = harness::sccache_dist_path();
 
     let mut system = harness::DistSystem::new(&sccache_dist, tmpdir);
-    system.add_scheduler();
-    system.add_custom_server(FailingServer);
+    system.add_scheduler().await;
 
+    let handle = system.add_custom_server(FailingServer).await;
     let sccache_cfg = dist_test_sccache_client_cfg(tmpdir, system.scheduler_url());
     let sccache_cfg_path = tmpdir.join("sccache-cfg.json");
     write_json_cfg(tmpdir, "sccache-cfg.json", &sccache_cfg);
@@ -330,7 +348,7 @@ fn test_dist_failingserver() {
 
     stop_local_daemon();
     start_local_daemon(&sccache_cfg_path, &sccache_cached_cfg_path);
-    basic_compile(tmpdir, &sccache_cfg_path, &sccache_cached_cfg_path);
+    basic_compile(tmpdir, &sccache_cfg_path, &sccache_cached_cfg_path).await;
 
     get_stats(|info| {
         assert_eq!(0, info.stats.dist_compiles.values().sum::<usize>());
@@ -340,11 +358,17 @@ fn test_dist_failingserver() {
         assert_eq!(0, info.stats.cache_hits.all());
         assert_eq!(1, info.stats.cache_misses.all());
     });
+    stop_local_daemon();
+    if let harness::ServerHandle::AsyncTask { handle, url: _ } = handle {
+        handle.abort();
+        let _ = handle.await;
+    }
 }
 
-#[test]
+#[tokio::test]
 #[cfg_attr(not(feature = "dist-tests"), ignore)]
-fn test_dist_cargo_build() {
+#[serial]
+async fn test_dist_cargo_build() {
     let tmpdir = tempfile::Builder::new()
         .prefix("sccache_dist_test")
         .tempdir()
@@ -353,8 +377,8 @@ fn test_dist_cargo_build() {
     let sccache_dist = harness::sccache_dist_path();
 
     let mut system = harness::DistSystem::new(&sccache_dist, tmpdir);
-    system.add_scheduler();
-    let _server_handle = system.add_server();
+    system.add_scheduler().await;
+    let _server_handle = system.add_server().await;
 
     let sccache_cfg = dist_test_sccache_client_cfg(tmpdir, system.scheduler_url());
     let sccache_cfg_path = tmpdir.join("sccache-cfg.json");
@@ -364,6 +388,7 @@ fn test_dist_cargo_build() {
     stop_local_daemon();
     start_local_daemon(&sccache_cfg_path, &sccache_cached_cfg_path);
     rust_compile(tmpdir, &sccache_cfg_path, &sccache_cached_cfg_path)
+        .await
         .assert()
         .success();
     get_stats(|info| {
@@ -376,9 +401,10 @@ fn test_dist_cargo_build() {
     });
 }
 
-#[test]
+#[tokio::test]
 #[cfg_attr(not(feature = "dist-tests"), ignore)]
-fn test_dist_cargo_makeflags() {
+#[serial]
+async fn test_dist_cargo_makeflags() {
     let tmpdir = tempfile::Builder::new()
         .prefix("sccache_dist_test")
         .tempdir()
@@ -387,8 +413,8 @@ fn test_dist_cargo_makeflags() {
     let sccache_dist = harness::sccache_dist_path();
 
     let mut system = harness::DistSystem::new(&sccache_dist, tmpdir);
-    system.add_scheduler();
-    let _server_handle = system.add_server();
+    system.add_scheduler().await;
+    let _server_handle = system.add_server().await;
 
     let sccache_cfg = dist_test_sccache_client_cfg(tmpdir, system.scheduler_url());
     let sccache_cfg_path = tmpdir.join("sccache-cfg.json");
@@ -397,7 +423,7 @@ fn test_dist_cargo_makeflags() {
 
     stop_local_daemon();
     start_local_daemon(&sccache_cfg_path, &sccache_cached_cfg_path);
-    let compile_output = rust_compile(tmpdir, &sccache_cfg_path, &sccache_cached_cfg_path);
+    let compile_output = rust_compile(tmpdir, &sccache_cfg_path, &sccache_cached_cfg_path).await;
 
     assert!(
         !String::from_utf8_lossy(&compile_output.stderr)
@@ -414,9 +440,10 @@ fn test_dist_cargo_makeflags() {
     });
 }
 
-#[test]
+#[tokio::test]
 #[cfg_attr(not(feature = "dist-tests"), ignore)]
-fn test_dist_preprocesspr_cache_bug_2173() {
+#[serial]
+async fn test_dist_preprocesspr_cache_bug_2173() {
     // Bug 2173: preprocessor cache hit but main cache miss - because using the preprocessor cache
     // means not doing regular preprocessing, there was no preprocessed translation unit to send
     // out for distributed compilation, so an empty u8 array was compiled - which "worked", but
@@ -429,8 +456,8 @@ fn test_dist_preprocesspr_cache_bug_2173() {
     let sccache_dist = harness::sccache_dist_path();
 
     let mut system = harness::DistSystem::new(&sccache_dist, tmpdir);
-    system.add_scheduler();
-    let _server_handle = system.add_server();
+    system.add_scheduler().await;
+    let _server_handle = system.add_server().await;
 
     let mut sccache_cfg = dist_test_sccache_client_cfg(tmpdir, system.scheduler_url());
     let disk_cache = sccache_cfg.cache.disk.as_mut().unwrap();
@@ -445,7 +472,7 @@ fn test_dist_preprocesspr_cache_bug_2173() {
     stop_local_daemon();
     start_local_daemon(&sccache_cfg_path, &sccache_cached_cfg_path);
 
-    basic_compile(tmpdir, &sccache_cfg_path, &sccache_cached_cfg_path);
+    basic_compile(tmpdir, &sccache_cfg_path, &sccache_cached_cfg_path).await;
     let obj_file = "x.o";
     let obj_path = tmpdir.join(obj_file);
     let data_a = std::fs::read(&obj_path).unwrap();
@@ -465,7 +492,7 @@ fn test_dist_preprocesspr_cache_bug_2173() {
     });
     assert_eq!(delete_count, 1, "Did the disk cache format change?");
 
-    basic_compile(tmpdir, &sccache_cfg_path, &sccache_cached_cfg_path);
+    basic_compile(tmpdir, &sccache_cfg_path, &sccache_cached_cfg_path).await;
 
     // Check that this gave the same result (i.e. that it didn't compile a completely empty file).
     // It would be nice to check directly that the object file contains the symbol for the x() function
@@ -475,9 +502,10 @@ fn test_dist_preprocesspr_cache_bug_2173() {
     assert_eq!(data_a, data_b);
 }
 
-#[test]
+#[tokio::test]
 #[cfg_attr(not(feature = "dist-tests"), ignore)]
-fn test_dist_toolchain() {
+#[serial]
+async fn test_dist_toolchain() {
     let tmpdir = tempfile::Builder::new()
         .prefix("sccache_dist_test")
         .tempdir()
@@ -486,21 +514,21 @@ fn test_dist_toolchain() {
     let sccache_dist = harness::sccache_dist_path();
 
     let mut system = harness::DistSystem::new(&sccache_dist, tmpdir);
-    system.add_scheduler();
-    let server_handle = system.add_server();
+    system.add_scheduler().await;
+    let server_handle = system.add_server().await;
     let sccache_cfg = dist_test_sccache_client_cfg(tmpdir, system.scheduler_url());
     let sccache_cfg_path = tmpdir.join("sccache-cfg.json");
     write_json_cfg(tmpdir, "sccache-cfg.json", &sccache_cfg);
     let sccache_cached_cfg_path = tmpdir.join("sccache-cached-cfg");
     stop_local_daemon();
     start_local_daemon(&sccache_cfg_path, &sccache_cached_cfg_path);
-    basic_compile(tmpdir, &sccache_cfg_path, &sccache_cached_cfg_path);
+    basic_compile(tmpdir, &sccache_cfg_path, &sccache_cached_cfg_path).await;
 
     stop_local_daemon();
     clear_cache_local_daemon(tmpdir);
 
     start_local_daemon(&sccache_cfg_path, &sccache_cached_cfg_path);
-    basic_compile(tmpdir, &sccache_cfg_path, &sccache_cached_cfg_path);
+    basic_compile(tmpdir, &sccache_cfg_path, &sccache_cached_cfg_path).await;
 
     assert_eq!(system.count_toolchains_on_server(&server_handle), 1);
 

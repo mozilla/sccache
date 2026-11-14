@@ -88,7 +88,7 @@ fn adv_key_kind(lang: &str, compiler: &str) -> String {
 
 macro_rules! vec_from {
     ( $t:ty, $( $x:expr ),* ) => {
-        vec!($( Into::<$t>::into(&$x), )*)
+        vec![$( Into::<$t>::into(&$x), )*]
     };
 }
 

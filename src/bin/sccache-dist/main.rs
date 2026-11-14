@@ -2,7 +2,9 @@
 extern crate log;
 
 use anyhow::{Context, Result, bail};
+use async_trait::async_trait;
 use base64::Engine;
+use cmdline::{AuthSubcommand, Command};
 use rand::{RngCore, rngs::OsRng};
 use sccache::config::{
     INSECURE_DIST_CLIENT_TOKEN, scheduler as scheduler_config, server as server_config,
@@ -15,23 +17,22 @@ use sccache::dist::{
     UpdateJobStateResult,
 };
 use sccache::util::BASE64_URL_SAFE_ENGINE;
-use sccache::util::daemonize;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet, btree_map};
 use std::env;
 use std::io;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
+use tokio::runtime::Runtime;
 
 #[cfg_attr(target_os = "freebsd", path = "build_freebsd.rs")]
 mod build;
 
 mod cmdline;
+mod startup;
 mod token_check;
-
-use cmdline::{AuthSubcommand, Command};
 
 pub const INSECURE_DIST_SERVER_TOKEN: &str = "dangerously_insecure_server";
 
@@ -41,10 +42,10 @@ pub const INSECURE_DIST_SERVER_TOKEN: &str = "dangerously_insecure_server";
     target_os = "freebsd"
 )))]
 fn main() {
-    compile_error!("Distributed compilation is only supported on Linux/x86_64 and FreeBSD!");
+    compile_error!("sccache-dist is only supported on Linux x86_64/aarch64 and FreeBSD!");
 }
 
-// Only supported on x86_64 Linux machines and on FreeBSD
+// Only supported on x86_64/aarch64 Linux machines and on FreeBSD
 #[cfg(any(
     all(target_os = "linux", target_arch = "x86_64"),
     all(target_os = "linux", target_arch = "aarch64"),
@@ -169,36 +170,15 @@ fn run(command: Command) -> Result<i32> {
             public_addr,
             client_auth,
             server_auth,
-        }) => {
-            let check_client_auth: Box<dyn dist::http::ClientAuthCheck> = match client_auth {
-                scheduler_config::ClientAuth::Insecure => Box::new(token_check::EqCheck::new(
-                    INSECURE_DIST_CLIENT_TOKEN.to_owned(),
-                )),
-                scheduler_config::ClientAuth::Token { token } => {
-                    Box::new(token_check::EqCheck::new(token))
-                }
-                scheduler_config::ClientAuth::JwtValidate {
-                    audience,
-                    issuer,
-                    jwks_url,
-                } => Box::new(
-                    token_check::ValidJWTCheck::new(audience, issuer, &jwks_url)
-                        .context("Failed to create a checker for valid JWTs")?,
-                ),
-                scheduler_config::ClientAuth::ProxyToken { url, cache_secs } => Box::new(
-                    token_check::ProxyTokenCheck::new(url, cache_secs)
-                        .context("failed to create proxy token checker")?,
-                ),
-            };
-
+        }) => startup::run(|notifier| {
             let check_server_auth: dist::http::ServerAuthCheck = match server_auth {
                 scheduler_config::ServerAuth::Insecure => {
                     warn!("Scheduler starting with DANGEROUSLY_INSECURE server authentication");
                     let token = INSECURE_DIST_SERVER_TOKEN;
-                    Box::new(move |server_token| check_server_token(server_token, token))
+                    Arc::new(move |server_token| check_server_token(server_token, token))
                 }
                 scheduler_config::ServerAuth::Token { token } => {
-                    Box::new(move |server_token| check_server_token(server_token, &token))
+                    Arc::new(move |server_token| check_server_token(server_token, &token))
                 }
                 scheduler_config::ServerAuth::JwtHS256 { secret_key } => {
                     let secret_key = BASE64_URL_SAFE_ENGINE
@@ -214,23 +194,45 @@ fn run(command: Command) -> Result<i32> {
                         validation.validate_nbf = false;
                         validation
                     };
-                    Box::new(move |server_token| {
+                    Arc::new(move |server_token| {
                         check_jwt_server_token(server_token, &secret_key, &validation)
                     })
                 }
             };
 
-            daemonize(&[])?;
-            let scheduler = Scheduler::new();
-            let http_scheduler = dist::http::Scheduler::new(
-                public_addr,
-                scheduler,
-                check_client_auth,
-                check_server_auth,
-            );
-            http_scheduler.start()?;
-            unreachable!();
-        }
+            let runtime = Runtime::new().context("Failed to create Tokio runtime")?;
+            runtime.block_on(async {
+                let check_client_auth: Box<dyn dist::http::ClientAuthCheck> = match client_auth {
+                    scheduler_config::ClientAuth::Insecure => Box::new(token_check::EqCheck::new(
+                        INSECURE_DIST_CLIENT_TOKEN.to_owned(),
+                    )),
+                    scheduler_config::ClientAuth::Token { token } => {
+                        Box::new(token_check::EqCheck::new(token))
+                    }
+                    scheduler_config::ClientAuth::JwtValidate {
+                        audience,
+                        issuer,
+                        jwks_url,
+                    } => Box::new(
+                        token_check::ValidJWTCheck::new(audience, issuer, &jwks_url)
+                            .await
+                            .context("Failed to create a checker for valid JWTs")?,
+                    ),
+                    scheduler_config::ClientAuth::ProxyToken { url, cache_secs } => Box::new(
+                        token_check::ProxyTokenCheck::new(url, cache_secs)
+                            .context("failed to create proxy token checker")?,
+                    ),
+                };
+                let scheduler = Scheduler::new();
+                let http_scheduler = dist::http::Scheduler::new(
+                    public_addr,
+                    scheduler,
+                    check_client_auth,
+                    check_server_auth,
+                );
+                http_scheduler.start_with_ready(|| notifier.ready()).await
+            })
+        }),
 
         Command::Server(server_config::Config {
             builder,
@@ -307,7 +309,8 @@ fn run(command: Command) -> Result<i32> {
                 server,
             )
             .context("Failed to create sccache HTTP server instance")?;
-            http_server.start()?;
+            let runtime = Runtime::new().context("Failed to create Tokio runtime")?;
+            runtime.block_on(http_server.start())?;
             unreachable!();
         }
     }
@@ -448,8 +451,9 @@ fn load_weight(job_count: usize, core_count: usize) -> f64 {
     }
 }
 
+#[async_trait]
 impl SchedulerIncoming for Scheduler {
-    fn handle_alloc_job(
+    async fn handle_alloc_job(
         &self,
         requester: &dyn SchedulerOutgoing,
         tc: Toolchain,
@@ -548,6 +552,7 @@ impl SchedulerIncoming for Scheduler {
             need_toolchain,
         } = requester
             .do_assign_job(server_id, job_id, tc, auth.clone())
+            .await
             .with_context(|| {
                 // LOCKS
                 let mut servers = self.servers.lock().unwrap();
@@ -778,9 +783,9 @@ impl SchedulerIncoming for Scheduler {
 }
 
 pub struct Server {
-    builder: Box<dyn BuilderIncoming>,
-    cache: Mutex<TcCache>,
-    job_toolchains: Mutex<HashMap<JobId, Toolchain>>,
+    builder: Arc<dyn BuilderIncoming>,
+    cache: Arc<Mutex<TcCache>>,
+    job_toolchains: tokio::sync::Mutex<HashMap<JobId, Toolchain>>,
 }
 
 impl Server {
@@ -792,20 +797,21 @@ impl Server {
         let cache = TcCache::new(&cache_dir.join("tc"), toolchain_cache_size)
             .context("Failed to create toolchain cache")?;
         Ok(Server {
-            builder,
-            cache: Mutex::new(cache),
-            job_toolchains: Mutex::new(HashMap::new()),
+            builder: Arc::from(builder),
+            cache: Arc::new(Mutex::new(cache)),
+            job_toolchains: tokio::sync::Mutex::new(HashMap::new()),
         })
     }
 }
 
+#[async_trait]
 impl ServerIncoming for Server {
-    fn handle_assign_job(&self, job_id: JobId, tc: Toolchain) -> Result<AssignJobResult> {
+    async fn handle_assign_job(&self, job_id: JobId, tc: Toolchain) -> Result<AssignJobResult> {
         let need_toolchain = !self.cache.lock().unwrap().contains_toolchain(&tc);
         assert!(
             self.job_toolchains
                 .lock()
-                .unwrap()
+                .await
                 .insert(job_id, tc)
                 .is_none()
         );
@@ -820,18 +826,19 @@ impl ServerIncoming for Server {
             need_toolchain,
         })
     }
-    fn handle_submit_toolchain(
+    async fn handle_submit_toolchain(
         &self,
         requester: &dyn ServerOutgoing,
         job_id: JobId,
-        tc_rdr: ToolchainReader,
+        tc_rdr: ToolchainReader<'_>,
     ) -> Result<SubmitToolchainResult> {
         requester
             .do_update_job_state(job_id, JobState::Ready)
+            .await
             .context("Updating job state failed")?;
         // TODO: need to lock the toolchain until the container has started
         // TODO: can start prepping container
-        let tc = match self.job_toolchains.lock().unwrap().get(&job_id).cloned() {
+        let tc = match self.job_toolchains.lock().await.get(&job_id).cloned() {
             Some(tc) => tc,
             None => return Ok(SubmitToolchainResult::JobNotFound),
         };
@@ -847,7 +854,7 @@ impl ServerIncoming for Server {
             .map(|_| SubmitToolchainResult::Success)
             .unwrap_or(SubmitToolchainResult::CannotCache))
     }
-    fn handle_run_job(
+    async fn handle_run_job(
         &self,
         requester: &dyn ServerOutgoing,
         job_id: JobId,
@@ -857,29 +864,38 @@ impl ServerIncoming for Server {
     ) -> Result<RunJobResult> {
         requester
             .do_update_job_state(job_id, JobState::Started)
+            .await
             .context("Updating job state failed")?;
-        let tc = self.job_toolchains.lock().unwrap().remove(&job_id);
+        let tc = self.job_toolchains.lock().await.remove(&job_id);
         let res = match tc {
             None => Ok(RunJobResult::JobNotFound),
             Some(tc) => {
-                match self
-                    .builder
-                    .run_build(tc, command, outputs, inputs_rdr, &self.cache)
-                {
-                    Err(e) => Err(e.context("run build failed")),
-                    Ok(res) => Ok(RunJobResult::Complete(JobComplete {
+                let builder = Arc::clone(&self.builder);
+                let cache = Arc::clone(&self.cache);
+                tokio::task::spawn_blocking(move || {
+                    builder.run_build(tc, command, outputs, inputs_rdr, &cache)
+                })
+                .await
+                .context("build task failed")
+                .and_then(|res| res.context("run build failed"))
+                .map(|res| {
+                    RunJobResult::Complete(JobComplete {
                         output: res.output,
                         outputs: res.outputs,
-                    })),
-                }
+                    })
+                })
             }
         };
         requester
             .do_update_job_state(job_id, JobState::Complete)
+            .await
             .context("Updating job state failed")?;
         res
     }
 }
+
+#[cfg(test)]
+mod server_tests;
 
 #[cfg(test)]
 mod scheduler_tests {
@@ -918,8 +934,9 @@ mod scheduler_tests {
         server_nonce: ServerNonce,
     }
 
+    #[async_trait]
     impl SchedulerOutgoing for ReapDuringAssign<'_> {
-        fn do_assign_job(
+        async fn do_assign_job(
             &self,
             server_id: ServerId,
             job_id: JobId,
@@ -951,8 +968,8 @@ mod scheduler_tests {
         }
     }
 
-    #[test]
-    fn allocation_fails_if_assignment_is_cleaned_up() {
+    #[tokio::test]
+    async fn allocation_fails_if_assignment_is_cleaned_up() {
         let scheduler = Scheduler::new();
         let server_id: ServerId = "127.0.0.1:10501".parse().unwrap();
         let server_nonce = ServerNonce::new();
@@ -978,6 +995,7 @@ mod scheduler_tests {
                     archive_id: "test-toolchain".to_owned(),
                 },
             )
+            .await
             .unwrap();
 
         assert!(matches!(allocation, AllocJobResult::Fail { .. }));

@@ -1062,16 +1062,34 @@ fn close_inherited_fds(preserve: &[std::os::unix::io::RawFd]) {
 /// still needs afterwards; everything else inherited is closed.
 #[cfg(not(windows))]
 pub fn daemonize(preserve_fds: &[std::os::unix::io::RawFd]) -> Result<()> {
-    use daemonix::Daemonize;
+    use daemonix::Outcome;
     use std::env;
-    use std::mem;
 
     match env::var("SCCACHE_NO_DAEMON") {
         Ok(ref val) if val == "1" => {}
-        _ => {
-            Daemonize::new().start().context("failed to daemonize")?;
-        }
+        _ => match daemonize_with_parent() {
+            Outcome::Parent(Ok(parent)) => std::process::exit(parent.first_child_exit_code),
+            Outcome::Parent(Err(error)) | Outcome::Child(Err(error)) => {
+                return Err(error).context("failed to daemonize");
+            }
+            Outcome::Child(Ok(_)) => {}
+        },
     }
+
+    daemonize_cleanup(preserve_fds)
+}
+
+/// Retain the original process so callers can wait for daemon startup.
+#[cfg(not(windows))]
+pub fn daemonize_with_parent() -> daemonix::Outcome<()> {
+    daemonix::Daemonize::new().execute()
+}
+
+/// Run after the final fork, before creating worker threads or async runtimes.
+#[cfg(not(windows))]
+pub fn daemonize_cleanup(preserve_fds: &[std::os::unix::io::RawFd]) -> Result<()> {
+    use std::env;
+    use std::mem;
 
     close_inherited_fds(preserve_fds);
 
@@ -1172,26 +1190,13 @@ pub(crate) fn new_reqwest_client_builder() -> reqwest::Result<reqwest::ClientBui
     Ok(builder.tls_certs_merge(mozilla_root_certificates()?))
 }
 
-/// Create a blocking reqwest client builder using the platform verifier, augmented with
-/// Mozilla roots when the verifier supports additional trust anchors.
-#[cfg(any_dist)]
-pub(crate) fn new_reqwest_blocking_builder() -> reqwest::Result<reqwest::blocking::ClientBuilder> {
-    let builder = reqwest::blocking::Client::builder();
-
-    // See `new_reqwest_client_builder`: Android cannot merge extra verifier roots.
-    #[cfg(target_os = "android")]
-    return Ok(builder);
-
-    #[cfg(not(target_os = "android"))]
-    Ok(builder.tls_certs_merge(mozilla_root_certificates()?))
-}
-
-/// Build the blocking HTTP client used by distributed sccache components.
+/// Build the HTTP client used by distributed sccache components.
 ///
 /// `sccache-dist` is a separate crate in this package, so this helper is public.
 #[cfg(any_dist)]
-pub fn new_reqwest_blocking_client() -> reqwest::Result<reqwest::blocking::Client> {
-    new_reqwest_blocking_builder()?
+pub fn new_reqwest_client() -> reqwest::Result<reqwest::Client> {
+    new_reqwest_client_builder()?
+        .timeout(Duration::from_secs(30))
         // Disable pooling while sccache uses multiple runtimes; pooled connections can
         // otherwise outlive the runtime that created them. See #1563.
         .pool_max_idle_per_host(0)
@@ -1730,6 +1735,13 @@ mod tests {
         assert_ne!(hashes[0], hashes[2]);
     }
 
+    /// Builds a minimal COFF archive fixture without invoking a platform-specific archiver.
+    /// Hand-writing the archive lets tests include special symbol-table members while
+    /// omitting the `//` long-name table, the layout needed to reproduce the hashing bug.
+    ///
+    /// Names must use archive-header syntax and fit the 16-byte name field. Each member
+    /// has a space-padded 60-byte header with a decimal size and a `` `\n `` trailer;
+    /// odd-length payloads get a padding byte to align the next header to two bytes.
     fn coff_archive(members: &[(&str, &[u8])]) -> Vec<u8> {
         let mut archive = b"!<arch>\n".to_vec();
         for (name, data) in members {
@@ -1829,7 +1841,9 @@ mod tests {
     #[cfg(all(any_dist, target_os = "linux"))]
     #[test]
     #[serial_test::serial(reqwest_tls_env)]
-    fn blocking_http_client_builds_with_invalid_native_ca_paths() -> reqwest::Result<()> {
+    fn http_client_builds_with_invalid_native_ca_paths() -> reqwest::Result<()> {
+        let runtime = single_threaded_runtime();
+        let _guard = runtime.enter();
         temp_env::with_vars(
             [
                 ("SSL_CERT_FILE", Some("/sccache-test-no-cert-file.crt")),
@@ -1837,10 +1851,10 @@ mod tests {
             ],
             || {
                 assert!(
-                    reqwest::blocking::Client::builder().build().is_err(),
+                    reqwest::Client::builder().build().is_err(),
                     "test environment must reproduce the empty native trust-store failure"
                 );
-                super::new_reqwest_blocking_client().map(drop)
+                super::new_reqwest_client().map(drop)
             },
         )
     }
