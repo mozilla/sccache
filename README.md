@@ -369,6 +369,15 @@ This is similar to ccache's `CCACHE_BASEDIR` and helps when:
 
 **Note:** Only absolute paths are supported. Relative paths will prevent server from starting.
 
+`SCCACHE_BASEDIRS` is also read from the environment of each compile, where it takes precedence over the value the server started with, so each build can name its own checkout without restarting the server. With Cargo, a checkout's `.cargo/config.toml` can set it to the directory holding `.cargo`:
+
+```toml
+[env]
+SCCACHE_BASEDIRS = { value = "", relative = true }
+```
+
+A compile whose `SCCACHE_BASEDIRS` is empty uses no base directories; one whose value is invalid uses the configured ones and logs a warning.
+
 You can also configure this in the sccache config file:
 
 ```toml

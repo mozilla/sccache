@@ -412,6 +412,7 @@ where
         pool: &tokio::runtime::Handle,
         rewrite_includes_only: bool,
         storage: Arc<dyn Storage>,
+        basedirs: &[Vec<u8>],
         cache_control: CacheControl,
     ) -> Result<HashResult<T>> {
         let start_of_compilation = std::time::SystemTime::now();
@@ -500,7 +501,7 @@ where
                 self.compiler.plusplus(),
                 self.parsed_args.is_multiarch(),
                 preprocessor_cache_mode_config,
-                storage.basedirs(),
+                basedirs,
             )?
         } else {
             None
@@ -679,7 +680,7 @@ where
         .with_extra_hashes(&extra_hashes)
         .with_env_vars(&env_vars)
         .with_plusplus(self.compiler.plusplus())
-        .with_basedirs(storage.basedirs())
+        .with_basedirs(basedirs)
         .with_assembler_digest(assembler_digest.as_deref())
         .with_input_file_name(hashed_input_file_name(
             self.parsed_args.language,

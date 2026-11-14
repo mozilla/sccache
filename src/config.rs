@@ -27,6 +27,7 @@ use serde::{
 #[cfg(test)]
 use serial_test::serial;
 use std::env;
+use std::ffi::OsStr;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::result::Result as StdResult;
@@ -1264,19 +1265,9 @@ fn config_from_env() -> Result<EnvConfig> {
     };
 
     // ======= Base directory =======
-    // Support multiple paths separated by ';' on Windows and ':' on other platforms
-    // to match PATH behavior.
-    #[cfg(target_os = "windows")]
-    let split_symbol = ';';
-    #[cfg(not(target_os = "windows"))]
-    let split_symbol = ':';
-    let basedirs = env::var_os("SCCACHE_BASEDIRS").map(|s| {
-        s.to_string_lossy()
-            .split(split_symbol)
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_owned())
-            .collect()
-    });
+    let basedirs = env::var_os("SCCACHE_BASEDIRS")
+        .map(|s| split_basedirs(&s))
+        .transpose()?;
 
     let dist_cache_dir = env::var_os("SCCACHE_DIST_CLIENT_CACHE_DIR").map(PathBuf::from);
     let client_side_mode = bool_from_env_var("SCCACHE_CLIENT_SIDE")?;
@@ -1287,6 +1278,65 @@ fn config_from_env() -> Result<EnvConfig> {
         dist_cache_dir,
         client_side_mode,
     })
+}
+
+/// Split a `SCCACHE_BASEDIRS` value into its paths, separated by ';' on Windows
+/// and ':' on other platforms to match PATH behavior.
+fn split_basedirs(value: &OsStr) -> Result<Vec<String>> {
+    #[cfg(target_os = "windows")]
+    let split_symbol = ';';
+    #[cfg(not(target_os = "windows"))]
+    let split_symbol = ':';
+    let Some(value) = value.to_str() else {
+        bail!("SCCACHE_BASEDIRS is not valid UTF-8: {value:?}");
+    };
+    Ok(value
+        .split(split_symbol)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_owned())
+        .collect())
+}
+
+/// Validate basedirs and normalize them for matching.
+fn normalize_basedirs(basedirs_raw: Vec<String>) -> Result<Vec<Vec<u8>>> {
+    let mut basedirs = Vec::with_capacity(basedirs_raw.len());
+    for d in basedirs_raw {
+        let p = Utf8TypedPathBuf::from(d);
+        if !p.is_absolute() {
+            bail!("Basedir path must be absolute: {:?}", p);
+        }
+        // Normalize basedir:
+        // remove double separators, cur_dirs, parent_dirs, trailing slashes
+        let p_norm = p.normalize();
+        let mut bytes = p_norm.to_string().into_bytes();
+
+        // Always add a trailing `/` to basedirs to ensure we only match complete path
+        // components
+        bytes.push(b'/');
+
+        // normalize windows paths: use slashes and lowercase
+        let normalized = {
+            #[cfg(target_os = "windows")]
+            {
+                normalize_win_path(&bytes)
+            }
+
+            #[cfg(not(target_os = "windows"))]
+            {
+                bytes
+            }
+        };
+        // push only if not already present
+        if !basedirs.contains(&normalized) {
+            basedirs.push(normalized);
+        }
+    }
+    Ok(basedirs)
+}
+
+/// The basedirs a `SCCACHE_BASEDIRS` value names, normalized like the configured ones.
+pub(crate) fn basedirs_from_env(value: &OsStr) -> Result<Vec<Vec<u8>>> {
+    normalize_basedirs(split_basedirs(value)?)
 }
 
 // The directories crate changed the location of `config_dir` on macos in version 3,
@@ -1375,40 +1425,7 @@ impl Config {
             file_basedirs
         };
 
-        // Validate that all basedirs are absolute paths
-        // basedirs_raw is Vec<PathBuf>
-        let mut basedirs = Vec::with_capacity(basedirs_raw.len());
-        for d in basedirs_raw {
-            let p = Utf8TypedPathBuf::from(d);
-            if !p.is_absolute() {
-                bail!("Basedir path must be absolute: {:?}", p);
-            }
-            // Normalize basedir:
-            // remove double separators, cur_dirs, parent_dirs, trailing slashes
-            let p_norm = p.normalize();
-            let mut bytes = p_norm.to_string().into_bytes();
-
-            // Always add a trailing `/` to basedirs to ensure we only match complete path
-            // components
-            bytes.push(b'/');
-
-            // normalize windows paths: use slashes and lowercase
-            let normalized = {
-                #[cfg(target_os = "windows")]
-                {
-                    normalize_win_path(&bytes)
-                }
-
-                #[cfg(not(target_os = "windows"))]
-                {
-                    bytes
-                }
-            };
-            // push only if not already present
-            if !basedirs.contains(&normalized) {
-                basedirs.push(normalized);
-            }
-        }
+        let basedirs = normalize_basedirs(basedirs_raw)?;
 
         if !basedirs.is_empty() && log::log_enabled!(log::Level::Debug) {
             let basedirs_str: Vec<String> = basedirs
@@ -2302,6 +2319,21 @@ fn test_env_basedirs_with_spaces() {
     };
     Config::from_env_and_file_configs(env_conf, file_conf)
         .expect_err("Should fail due to non-absolute path");
+}
+
+#[test]
+fn test_basedirs_from_env_not_utf8() {
+    #[cfg(unix)]
+    let value = {
+        use std::os::unix::ffi::OsStrExt;
+        OsStr::from_bytes(b"/home/caf\xe9").to_owned()
+    };
+    #[cfg(windows)]
+    let value = {
+        use std::os::windows::ffi::OsStringExt;
+        std::ffi::OsString::from_wide(&[b'C' as u16, b':' as u16, b'\\' as u16, 0xd800])
+    };
+    assert!(basedirs_from_env(&value).is_err());
 }
 
 #[test]
