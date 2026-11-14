@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
-use crate::cache::{Cache, CacheMode, CacheWrite, Storage};
+use crate::cache::{Cache, CacheMode, CacheStorage, CacheWrite, PreprocessorCacheStorage, Storage};
 use crate::compiler::PreprocessorCacheEntry;
 use crate::config::PreprocessorCacheModeConfig;
 use crate::errors::*;
@@ -24,7 +24,7 @@ use bytes::Bytes;
 pub struct ReadOnlyStorage(pub Arc<dyn Storage>);
 
 #[async_trait]
-impl Storage for ReadOnlyStorage {
+impl CacheStorage for ReadOnlyStorage {
     async fn get(&self, key: &str) -> Result<Cache> {
         self.0.get(key).await
     }
@@ -68,14 +68,22 @@ impl Storage for ReadOnlyStorage {
         self.0.max_size().await
     }
 
-    /// Return the config for preprocessor cache mode if applicable
-    fn preprocessor_cache_mode_config(&self) -> PreprocessorCacheModeConfig {
-        self.0.preprocessor_cache_mode_config()
-    }
-
     /// Return the base directories for path normalization if configured
     fn basedirs(&self) -> &[Vec<u8>] {
         self.0.basedirs()
+    }
+
+    /// Get raw serialized cache entry bytes (forwarded to inner storage)
+    async fn get_raw(&self, key: &str) -> Result<Option<Bytes>> {
+        self.0.get_raw(key).await
+    }
+}
+
+#[async_trait]
+impl PreprocessorCacheStorage for ReadOnlyStorage {
+    /// Return the config for preprocessor cache mode if applicable
+    fn preprocessor_cache_mode_config(&self) -> PreprocessorCacheModeConfig {
+        self.0.preprocessor_cache_mode_config()
     }
 
     /// Return the preprocessor cache entry for a given preprocessor key,
@@ -97,11 +105,6 @@ impl Storage for ReadOnlyStorage {
         _preprocessor_cache_entry: PreprocessorCacheEntry,
     ) -> Result<()> {
         Err(anyhow!("Cannot write to read-only storage"))
-    }
-
-    /// Get raw serialized cache entry bytes (forwarded to inner storage)
-    async fn get_raw(&self, key: &str) -> Result<Option<Bytes>> {
-        self.0.get_raw(key).await
     }
 }
 

@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cache::{Cache, CacheMode, CacheRead, CacheWrite, GetPathResult, Storage};
+use crate::cache::{
+    Cache, CacheMode, CacheRead, CacheStorage, CacheWrite, GetPathResult, PreprocessorCacheStorage,
+};
 use crate::compiler::PreprocessorCacheEntry;
 use crate::lru_disk_cache::{Error as LruError, LruDiskCache, ReadSeek, Result as LruResult};
 use async_trait::async_trait;
@@ -95,7 +97,7 @@ fn preprocessor_key_path(key: &str) -> PathBuf {
 }
 
 #[async_trait]
-impl Storage for DiskCache {
+impl CacheStorage for DiskCache {
     async fn get(&self, key: &str) -> Result<Cache> {
         trace!("DiskCache::get({})", key);
         let path = make_key_path(key);
@@ -233,11 +235,16 @@ impl Storage for DiskCache {
     async fn max_size(&self) -> Result<Option<u64>> {
         Ok(Some(self.lru.lock().unwrap().capacity()))
     }
-    fn preprocessor_cache_mode_config(&self) -> PreprocessorCacheModeConfig {
-        self.preprocessor_cache_mode_config
-    }
+
     fn basedirs(&self) -> &[Vec<u8>] {
         &self.basedirs
+    }
+}
+
+#[async_trait]
+impl PreprocessorCacheStorage for DiskCache {
+    fn preprocessor_cache_mode_config(&self) -> PreprocessorCacheModeConfig {
+        self.preprocessor_cache_mode_config
     }
     async fn get_preprocessor_cache_entry(&self, key: &str) -> Result<Option<Box<dyn ReadSeek>>> {
         let key = preprocessor_key_path(key);
