@@ -19,9 +19,7 @@ use crate::compiler::{
     CacheControl, CompileResult, Compiler, CompilerArguments, CompilerHasher, CompilerKind,
     CompilerProxy, DistType, Language, MissType, NO_CRATE_TYPE_PASSED, get_compiler_info,
 };
-#[cfg(feature = "dist-client")]
-use crate::config;
-use crate::config::Config;
+use crate::config::{self, Config};
 use crate::dist;
 use crate::jobserver::Client;
 use crate::mock_command::{CommandCreatorSync, ProcessCommandCreator};
@@ -42,7 +40,7 @@ use serde::{Deserialize, Serialize};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::env;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::future::Future;
 use std::io::{self, Write};
 use std::marker::Unpin;
@@ -81,6 +79,33 @@ const DEFAULT_IDLE_TIMEOUT: u64 = 600;
 /// of seconds from now (or later)
 #[cfg(feature = "dist-client")]
 const DIST_CLIENT_RECREATE_TIMEOUT: Duration = Duration::from_secs(30);
+
+fn is_basedirs_env(name: &OsStr) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        name.as_encoded_bytes()
+            .eq_ignore_ascii_case(b"SCCACHE_BASEDIRS")
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        name == "SCCACHE_BASEDIRS"
+    }
+}
+
+/// The request's own `SCCACHE_BASEDIRS` when it sets one, `fallback` otherwise.
+fn request_basedirs(
+    env_vars: &[(OsString, OsString)],
+    fallback: &[Vec<u8>],
+) -> Result<Vec<Vec<u8>>> {
+    match env_vars
+        .iter()
+        .rev()
+        .find(|(name, _)| is_basedirs_env(name))
+    {
+        Some((_, value)) => config::parse_basedirs_env(value),
+        None => Ok(fallback.to_vec()),
+    }
+}
 
 /// Result of background server startup.
 #[derive(Debug, Serialize, Deserialize)]
@@ -1291,6 +1316,13 @@ where
         Ok(me.check_compiler(info, cmd, cwd, env_vars).await)
     }
 
+    pub(crate) fn basedirs_for_request(
+        &self,
+        env_vars: &[(OsString, OsString)],
+    ) -> Result<Vec<Vec<u8>>> {
+        request_basedirs(env_vars, self.storage.basedirs())
+    }
+
     /// Run a compile entirely in the current process (used in client-side mode).
     ///
     /// Returns a tuple of
@@ -1509,6 +1541,20 @@ where
                     CompilerArguments::Ok(hasher) => {
                         debug!("parse_arguments: Ok: {:?}", cmd);
 
+                        let basedirs = match self.basedirs_for_request(&env_vars) {
+                            Ok(basedirs) => basedirs,
+                            Err(e) => {
+                                warn!("Not caching {cmd:?}: invalid SCCACHE_BASEDIRS: {e:#}");
+                                self.stats
+                                    .lock()
+                                    .await
+                                    .record_not_cacheable("SCCACHE_BASEDIRS", None);
+                                return Message::WithoutBody(Response::Compile(
+                                    CompileResponse::UnhandledCompile,
+                                ));
+                            }
+                        };
+
                         let body = if c.kind() == CompilerKind::Rust {
                             // Only rustc emits artifact notifications,
                             // for `.rmeta` pipelining.
@@ -1517,7 +1563,7 @@ where
                             me.notification_tx = Some(tx);
                             let finished = util::spawn_on(
                                 &self.rt,
-                                me.start_compile_task(c, hasher, cmd, cwd, env_vars),
+                                me.start_compile_task(c, hasher, cmd, cwd, env_vars, basedirs),
                             );
                             rx.map(|chunk| Ok(Response::ArtifactNotification(chunk)))
                                 .chain(futures::stream::once(async move {
@@ -1527,7 +1573,7 @@ where
                         } else {
                             futures::stream::once(
                                 self.clone()
-                                    .start_compile_task(c, hasher, cmd, cwd, env_vars)
+                                    .start_compile_task(c, hasher, cmd, cwd, env_vars, basedirs)
                                     .map_ok(Response::CompileFinished),
                             )
                             .boxed()
@@ -1574,6 +1620,7 @@ where
         arguments: Vec<OsString>,
         cwd: PathBuf,
         env_vars: Vec<(OsString, OsString)>,
+        basedirs: Vec<Vec<u8>>,
     ) -> Result<CompileFinished> {
         self.stats.lock().await.requests_executed += 1;
 
@@ -1615,6 +1662,7 @@ where
                     client,
                     me.creator.clone(),
                     me.storage.clone(),
+                    &basedirs,
                     arguments,
                     cwd,
                     env_vars,
@@ -3033,6 +3081,121 @@ mod tests {
             other => panic!("body must end with CompileFinished, got {other:?}"),
         };
         (body, finished)
+    }
+
+    #[test]
+    fn request_basedirs_override_the_fallback() {
+        #[cfg(target_os = "windows")]
+        let (fallback, request, normalized) = (b"c:/fallback/", r"C:\request", b"c:/request/");
+        #[cfg(not(target_os = "windows"))]
+        let (fallback, request, normalized) = (b"/fallback/", "/request", b"/request/");
+        let fallback = [fallback.to_vec()];
+        let env = |value: &str| vec![(OsString::from("SCCACHE_BASEDIRS"), OsString::from(value))];
+
+        assert_eq!(request_basedirs(&[], &fallback).unwrap(), fallback);
+        assert_eq!(
+            request_basedirs(&env(request), &fallback).unwrap(),
+            [normalized.to_vec()]
+        );
+        assert!(request_basedirs(&env(""), &fallback).unwrap().is_empty());
+        assert!(request_basedirs(&env("relative"), &fallback).is_err());
+    }
+
+    #[test]
+    fn request_basedirs_use_the_last_value() {
+        #[cfg(target_os = "windows")]
+        let (first, last, normalized) = (r"C:\first", r"C:\last", b"c:/last/");
+        #[cfg(not(target_os = "windows"))]
+        let (first, last, normalized) = ("/first", "/last", b"/last/");
+        let env_vars: Vec<(OsString, OsString)> = vec![
+            ("SCCACHE_BASEDIRS".into(), first.into()),
+            ("SCCACHE_BASEDIRS_EXTRA".into(), "relative".into()),
+            ("SCCACHE_BASEDIRS".into(), last.into()),
+        ];
+
+        assert_eq!(
+            request_basedirs(&env_vars, &[]).unwrap(),
+            [normalized.to_vec()]
+        );
+    }
+
+    /// Whether `dep` compiled in a second root hits the entry the first root wrote.
+    fn second_root_hits(file_basedirs: bool, request_basedirs: Option<&str>) -> bool {
+        use crate::cache::disk::DiskCache;
+        use crate::config::PreprocessorCacheModeConfig;
+
+        let roots = [TestFixture::new(), TestFixture::new()];
+        let both = env::join_paths(roots.iter().map(|f| f.tempdir.path())).unwrap();
+        let runtime = Runtime::new().unwrap();
+        let storage = Arc::new(DiskCache::new(
+            roots[0].tempdir.path().join("cache"),
+            u64::MAX,
+            runtime.handle(),
+            PreprocessorCacheModeConfig::default(),
+            CacheMode::ReadWrite,
+            if file_basedirs {
+                config::parse_basedirs_env(&both).unwrap()
+            } else {
+                vec![]
+            },
+        ));
+        let service = MockService::mock_with_storage(storage, runtime.handle().clone());
+
+        for f in &roots {
+            let rustc = f.mk_bin("rustc").unwrap();
+            std::fs::create_dir(f.tempdir.path().join("lib")).unwrap();
+            std::fs::create_dir(f.tempdir.path().join("bin")).unwrap();
+            f.touch("lib.rs").unwrap();
+            mock_rustc_cache_miss(&service.creator, f);
+            let mut compile = dep_compile(f, &rustc);
+            if let Some(value) = request_basedirs {
+                let value = value.replace("{both}", both.to_str().unwrap());
+                compile
+                    .env_vars
+                    .push(("SCCACHE_BASEDIRS".into(), value.into()));
+            }
+            let (_, finished) = compile_body(&runtime, &service, compile);
+            assert_eq!(Some(0), finished.retcode);
+        }
+
+        let stats = runtime.block_on(service.take_stats());
+        stats.cache_hits.counts.values().sum::<u64>() == 1
+    }
+
+    #[test_case::test_case(false, None => false ; "no basedirs")]
+    #[test_case::test_case(false, Some("{both}") => true ; "request basedirs")]
+    #[test_case::test_case(true, None => true ; "config file basedirs")]
+    #[test_case::test_case(true, Some("") => false ; "empty request value clears config file basedirs")]
+    fn request_basedirs_reach_the_hasher(
+        file_basedirs: bool,
+        request_basedirs: Option<&str>,
+    ) -> bool {
+        second_root_hits(file_basedirs, request_basedirs)
+    }
+
+    /// An invalid request value runs the compiler uncached and shows in the stats.
+    #[test]
+    fn invalid_request_basedirs_compile_uncached() {
+        let (_f, runtime, service, mut compile) = rustc_miss_fixture();
+        compile
+            .env_vars
+            .push(("SCCACHE_BASEDIRS".into(), "relative/root".into()));
+
+        let response = runtime
+            .block_on(service.handle_compile(compile))
+            .unwrap()
+            .into_inner();
+
+        assert!(
+            matches!(
+                response,
+                Response::Compile(CompileResponse::UnhandledCompile)
+            ),
+            "unexpected response: {response:?}"
+        );
+        let stats = runtime.block_on(service.take_stats());
+        assert_eq!(stats.requests_not_cacheable, 1);
+        assert_eq!(stats.not_cached.get("SCCACHE_BASEDIRS"), Some(&1));
     }
 
     #[test]

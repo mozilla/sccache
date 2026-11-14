@@ -367,7 +367,7 @@ This is similar to ccache's `CCACHE_BASEDIR` and helps when:
 * Multiple developers working with different username paths
 * Working with multiple project checkouts simultaneously
 
-**Note:** Only absolute paths are supported. Relative paths will prevent server from starting.
+**Note:** Only absolute paths are supported. If a build passes a relative path, sccache compiles without caching. A relative path in the config file stops the server from starting.
 
 You can also configure this in the sccache config file:
 
@@ -378,6 +378,10 @@ basedirs = ["/home/user/project"]
 # Or multiple directories
 basedirs = ["/home/user/project", "/home/user/workspace"]
 ```
+
+The environment variable applies to each compiler invocation. Its value overrides the config-file value for that request, so a persistent sccache daemon can serve builds from different checkout roots without a restart. Set `SCCACHE_BASEDIRS=""` on an invocation to disable the config-file fallback for that request.
+
+Only the config file defines the daemon's fallback. A `SCCACHE_BASEDIRS` value in the environment that starts the daemon does not become global daemon state. Statistics report the config-file fallback and do not accumulate paths from individual requests.
 
 ---
 

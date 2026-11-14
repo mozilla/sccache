@@ -1951,11 +1951,11 @@ where
         _may_dist: bool,
         pool: &tokio::runtime::Handle,
         _rewrite_includes_only: bool,
-        storage: Arc<dyn Storage>,
+        _storage: Arc<dyn Storage>,
+        basedirs: &[Vec<u8>],
         _cache_control: CacheControl,
     ) -> Result<HashResult<T>> {
         trace!("[{}]: generate_hash_key", self.parsed_args.crate_name);
-        let basedirs = storage.basedirs();
         // TODO: this doesn't produce correct arguments if they should be concatenated - should use iter_os_strings
         let os_string_arguments: Vec<(OsString, Option<OsString>)> = self
             .parsed_args
@@ -4413,6 +4413,7 @@ hash 42fac6f0 stable_crate_id StableCrateId(12206970385906972588)
                 &pool,
                 false,
                 Arc::new(MockStorage::new(None, preprocessor_cache_mode)),
+                &[],
                 CacheControl::Default,
             )
             .wait()
@@ -4505,6 +4506,7 @@ hash 42fac6f0 stable_crate_id StableCrateId(12206970385906972588)
                     &pool,
                     false,
                     Arc::new(MockStorage::new(None, false)),
+                    &[],
                     CacheControl::Default,
                 )
                 .wait()
@@ -4595,6 +4597,7 @@ hash 42fac6f0 stable_crate_id StableCrateId(12206970385906972588)
                 &pool,
                 false,
                 Arc::new(MockStorage::new(None, false)),
+                &[],
                 CacheControl::Default,
             )
             .wait()
@@ -4640,6 +4643,7 @@ foo.rs:
             &[],
             pre_func,
             MockStorage::new(None, preprocessor_cache_mode),
+            &[],
         )
     }
 
@@ -4650,6 +4654,7 @@ foo.rs:
         env_deps: &[(&str, OsString)],
         pre_func: F,
         storage: MockStorage,
+        basedirs: &[Vec<u8>],
     ) -> String
     where
         A: AsRef<OsStr>,
@@ -4719,6 +4724,7 @@ foo.rs:
                 &pool,
                 false,
                 Arc::new(storage),
+                basedirs,
                 CacheControl::Default,
             )
             .wait()
@@ -4746,7 +4752,7 @@ foo.rs:
     fn test_equal_hashes_basedirs() {
         // The root shows up in the cwd, an argument, a `CARGO_*` variable
         // and an env-dep (`include!(concat!(env!("OUT_DIR"), ...))`).
-        fn key(f: &TestFixture, outside: &str, basedirs: Vec<Vec<u8>>) -> String {
+        fn key(f: &TestFixture, outside: &str, basedirs: &[Vec<u8>]) -> String {
             let root = f.tempdir.path();
             hash_key_with(
                 f,
@@ -4769,20 +4775,21 @@ foo.rs:
                 ],
                 &[("OUT_DIR", root.join("target").join("out").into())],
                 nothing,
-                MockStorage::new(None, false).with_basedirs(basedirs),
+                MockStorage::new(None, false),
+                basedirs,
             )
         }
 
         let a = TestFixture::new();
         let b = TestFixture::new();
         let both = vec![basedir(a.tempdir.path()), basedir(b.tempdir.path())];
-        assert_ne!(key(&a, "x", vec![]), key(&b, "x", vec![]));
-        assert_eq!(key(&a, "x", both.clone()), key(&b, "x", both.clone()));
+        assert_ne!(key(&a, "x", &[]), key(&b, "x", &[]));
+        assert_eq!(key(&a, "x", &both), key(&b, "x", &both));
         // A difference outside the basedirs still counts.
-        assert_ne!(key(&a, "x", both.clone()), key(&b, "y", both));
+        assert_ne!(key(&a, "x", &both), key(&b, "y", &both));
         // A basedir nothing lives under leaves the key as it was.
         let elsewhere = basedir(&std::env::temp_dir().join("sccache-elsewhere"));
-        assert_eq!(key(&a, "x", vec![]), key(&a, "x", vec![elsewhere]));
+        assert_eq!(key(&a, "x", &[]), key(&a, "x", &[elsewhere]));
     }
 
     /// An env-dep equal to a basedir is keyed apart from an unset one, which rustc
@@ -4812,7 +4819,8 @@ foo.rs:
                 &env_vars,
                 &[("Y", val.unwrap_or_default())],
                 nothing,
-                MockStorage::new(None, false).with_basedirs(vec![basedir(&root)]),
+                MockStorage::new(None, false),
+                &[basedir(&root)],
             )
         };
         assert_ne!(key(None), key(Some(root.clone().into())));
