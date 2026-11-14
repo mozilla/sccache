@@ -1548,6 +1548,18 @@ static CACHED_ENV_VARS: LazyLock<HashSet<&'static OsStr>> = LazyLock::new(|| {
     .collect()
 });
 
+/// The arguments as [`hash_arguments`] hashes them, with the basedirs stripped,
+/// for the `hash_key` trace.
+pub fn hashed_arguments(arguments: &[OsString], basedirs: &[Vec<u8>]) -> Vec<String> {
+    arguments
+        .iter()
+        .map(|arg| {
+            String::from_utf8_lossy(&strip_basedirs_from_arg(arg.as_encoded_bytes(), basedirs))
+                .into_owned()
+        })
+        .collect()
+}
+
 /// Feed the compiler arguments into `m`, with the base directories stripped.
 ///
 /// The arguments are hashed verbatim, so any that spell out an absolute path -
@@ -1670,18 +1682,29 @@ impl<'a> HashKeyParams<'a> {
     pub fn compute(&self) -> String {
         let mut m = Digest::new();
         m.update(self.compiler_digest.as_bytes());
+        trace!(target: "hash_key", "compiler_digest = {:?}", self.compiler_digest);
         // clang and clang++ have different behavior despite being byte-for-byte identical binaries, so
         // we have to incorporate that into the hash as well.
         m.update(&[self.plusplus as u8]);
+        trace!(target: "hash_key", "plusplus = {:?}", self.plusplus);
         m.update(CACHE_VERSION);
+        trace!(target: "hash_key", "cache_version = {:?}", CACHE_VERSION);
         m.update(self.language.as_str().as_bytes());
+        trace!(target: "hash_key", "language = {:?}", self.language);
         hash_arguments(&mut m, self.arguments, self.basedirs);
+        trace!(
+            target: "hash_key",
+            "arguments = {:?}",
+            hashed_arguments(self.arguments, self.basedirs)
+        );
         for hash in self.extra_hashes {
             m.update(hash.as_bytes());
         }
+        trace!(target: "hash_key", "extra_hashes = {:?}", self.extra_hashes);
         if let Some(assembler_digest) = self.assembler_digest {
             m.update(assembler_digest.as_bytes());
         }
+        trace!(target: "hash_key", "assembler_digest = {:?}", self.assembler_digest);
         // The compiler writes the source's file name into the object (the
         // STT_FILE symbol on ELF), and -P leaves it out of the preprocessed
         // output, so two sources that preprocess the same would share an
@@ -1691,9 +1714,11 @@ impl<'a> HashKeyParams<'a> {
         if let Some(input_file_name) = self.input_file_name {
             input_file_name.hash(&mut HashToDigest { digest: &mut m });
         }
+        trace!(target: "hash_key", "input_file_name = {:?}", self.input_file_name);
 
         for (var, val) in self.env_vars.iter() {
             if CACHED_ENV_VARS.contains(var.as_os_str()) {
+                trace!(target: "hash_key", "env var {:?} = {:?}", var, val);
                 var.hash(&mut HashToDigest { digest: &mut m });
                 m.update(&b"="[..]);
                 val.hash(&mut HashToDigest { digest: &mut m });
@@ -1702,9 +1727,16 @@ impl<'a> HashKeyParams<'a> {
 
         // Strip basedirs from preprocessor output if configured
         let preprocessor_output_to_hash = strip_basedirs(self.preprocessor_output, self.basedirs);
+        trace!(
+            target: "hash_key",
+            "preprocessor_output = {} bytes (basedir-stripped)",
+            preprocessor_output_to_hash.len()
+        );
 
         m.update(&preprocessor_output_to_hash);
-        m.finish()
+        let key = m.finish();
+        trace!(target: "hash_key", "final key = {}", key);
+        key
     }
 }
 
