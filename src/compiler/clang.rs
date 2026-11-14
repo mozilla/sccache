@@ -248,6 +248,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     flag!("-fno-pch-timestamp", PassThroughFlag),
     flag!("-fno-profile-instr-generate", TooHardFlag),
     flag!("-fno-profile-instr-use", TooHardFlag),
+    take_arg!("-fobjc-dispatch-method", OsString, Concatenated(b'='), PassThrough),
     take_arg!("-foptimization-record-file", OsString, Concatenated(b'='), TooHard),
     take_arg!("-foptimization-record-passes", OsString, Concatenated(b'='), PassThrough),
     take_arg!("-fpass-plugin", PathBuf, Concatenated(b'='), ExtraHashFile),
@@ -287,6 +288,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     // Note: this is ROCm clang specific. Parallelism level shouldn't affect output.
     take_arg!("-parallel-jobs", OsString, Concatenated(b'='), Unhashed),
     take_arg!("-plugin-arg", OsString, Concatenated(b'-'), PassThrough),
+    take_arg!("-resource-dir", PathBuf, CanBeSeparated(b'='), PassThroughPath),
     take_arg!("-save-stats", OsString, Concatenated(b'='), TooHard),
     take_arg!("-target", OsString, Separated, PassThrough),
     flag!("-verify", PreprocessorArgumentFlag),
@@ -389,6 +391,28 @@ mod test {
             version: Some("\"FreeBSD Clang 14.0.5 (https://github.com/llvm/llvm-project.git llvmorg-14.0.5-0-gc12386ae247c)\"".to_string()),
             assembler_digest: None,
         }.is_minversion(14)); // is_appleclang wins
+    }
+
+    #[test]
+    fn test_parse_arguments_resource_dir() {
+        let a = parses!(
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "-resource-dir",
+            "/usr/lib/clang/15"
+        );
+        assert_eq!(ovec!["-resource-dir", "/usr/lib/clang/15"], a.common_args);
+
+        let a = parses!(
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "-resource-dir=/usr/lib/clang/15"
+        );
+        assert_eq!(ovec!["-resource-dir", "/usr/lib/clang/15"], a.common_args);
     }
 
     #[test]
@@ -1076,6 +1100,22 @@ mod test {
     }
 
     #[test]
+    fn test_parse_xclang_fobjc_dispatch_method() {
+        let a = parses!(
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "-Xclang",
+            "-fobjc-dispatch-method=legacy"
+        );
+        assert_eq!(
+            ovec!["-Xclang", "-fobjc-dispatch-method=legacy"],
+            a.common_args
+        );
+    }
+
+    #[test]
     fn test_parse_fplugin() {
         let a = parses!("-c", "foo.c", "-o", "foo.o", "-fplugin", "plugin.so");
         println!("A {:#?}", a);
@@ -1648,6 +1688,7 @@ mod test {
             extra_hash_files: vec![],
             uses_external_assembler: false,
             msvc_show_includes: false,
+            msvc_explicit_language: false,
             profile_generate: false,
             color_mode: ColorMode::Auto,
             suppress_rewrite_includes_only: false,

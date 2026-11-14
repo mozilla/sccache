@@ -3,7 +3,7 @@
 edition = "2024"
 name = "sccache"
 rust-version = "1.91.0"
-version = "0.18.0"
+version = "0.19.0"
 
 categories = ["command-line-utilities", "development-tools::build-utils"]
 description = "Sccache is a ccache-like tool. It is used as a compiler wrapper and avoids compilation when possible. Sccache has the capability to utilize caching in remote storage environments, including various cloud storage options, or alternatively, in local storage."
@@ -60,7 +60,7 @@ flate2 = { version = "1.0", optional = true, default-features = false, features 
   "rust_backend",
 ] }
 fs-err = "3"
-futures = "0.3"
+futures = "0.3.32"
 gzp = { version = "2", default-features = false, features = ["deflate_rust"] }
 http = "1.0"
 http-body-util = { version = "0.1", optional = true }
@@ -78,30 +78,29 @@ log = "0.4"
 memchr = "2"
 memmap2 = "0.9.4"
 mime = "0.3"
-number_prefix = "0.4"
-object = "0.37"
+object = "0.40"
 opendal = { version = "0.58.1", optional = true, default-features = false }
 opendal-http-transport-reqwest = { version = "0.58.1", optional = true }
 opendal-layer-logging = { version = "0.58.1", optional = true }
+opendal-layer-retry = { version = "0.58.1", optional = true }
 openssl = { version = "0.10.75", optional = true }
 rand = "0.8.4"
 regex = "1.10.3"
+reqsign-google = { version = "3.2", optional = true }
 reqwest = { version = "0.13", features = [
   "json",
   "blocking",
   "stream",
   "rustls",
-  "hickory-dns",
 ], optional = true }
-rustls-native-certs = { version = "0.8", optional = true }
 semver = "1.0"
 serde = { version = "1.0", features = ["derive"] }
-serde_json = ">=1.0, <1.0.147" # zmij (used in 1.0.147+) requires Rust 1.84+
+serde_json = "1.0"
 sha2 = { version = "0.10.8", optional = true }
 shlex = "2.0.1"
 strip-ansi-escapes = "0.2"
 tar = "0.4.45"
-tempfile = "3"
+tempfile = "3.20"
 tokio = { version = "1", features = [
   "rt-multi-thread",
   "io-util",
@@ -114,13 +113,15 @@ tokio-serde = "0.9"
 tokio-util = { version = "0.7.18", features = ["codec", "io", "rt"] }
 toml = "0.9"
 tower-service = "0.3"
-typed-path = "0.12.0"
+typed-path = "0.13.0"
+unit-prefix = "0.5"
 url = { version = "2", optional = true }
 uuid = { version = "1.9", features = ["v4"] }
 walkdir = "2"
+webpki-root-certs = { version = "1.0.11", optional = true }
 # by default which pulls in an outdated failure version
 which = { version = "6", default-features = false }
-zip = { version = "0.6", default-features = false }
+zip = { version = "9", default-features = false }
 zstd = "0.13"
 
 # dist-server only
@@ -137,17 +138,24 @@ rouille = { version = "3.6", optional = true, default-features = false, features
 syslog = { version = "7", optional = true }
 version-compare = { version = "0.1.1", optional = true }
 
+[build-dependencies]
+cfg_aliases = "0.2.2"
+
 [dev-dependencies]
 assert_cmd = "2.0.13"
-cc = "1.0"
+cc = "1.9"
 chrono = "0.4.42"
 divan = { package = "codspeed-divan-compat", version = "4" }
 filetime = "0.2"
+object = { version = "0.40", features = ["write"] }
 predicates = "=3.1.0"
 serial_test = "3.1"
 temp-env = "0.3.6"
 test-case = "3.3.1"
-thirtyfour = "0.36"
+thirtyfour = { version = "0.38.1", default-features = false, features = [
+  "reqwest",
+  "rustls",
+] }
 
 [target.'cfg(unix)'.dependencies]
 daemonix = "0.1"
@@ -197,12 +205,14 @@ gcs = [
   "opendal/services-gcs",
   "opendal-layer-logging",
   "opendal-http-transport-reqwest",
+  "reqsign-google",
   "url",
   "reqwest",
 ]
 gha = [
   "opendal/services-ghac",
   "opendal-layer-logging",
+  "opendal-layer-retry",
   "opendal-http-transport-reqwest",
   "reqwest",
 ]
@@ -215,6 +225,7 @@ oss = [
   "reqwest",
 ]
 redis = ["url", "opendal/services-redis", "opendal-layer-logging"]
+reqwest = ["dep:reqwest", "dep:webpki-root-certs"]
 s3 = [
   "opendal/services-s3",
   "opendal-layer-logging",
@@ -242,7 +253,6 @@ dist-client = [
   "reqwest",
   "url",
   "sha2",
-  "rustls-native-certs",
 ]
 # Enables the sccache-dist binary
 dist-server = [
@@ -255,7 +265,6 @@ dist-server = [
   "rouille",
   "syslog",
   "version-compare",
-  "rustls-native-certs",
 ]
 # Enables dist tests with external requirements
 dist-tests = ["dist-client", "dist-server"]
@@ -269,14 +278,22 @@ harness = false
 name = "sccache_bench"
 test = false
 
+[[bench]]
+harness = false
+name = "preprocessor_cache_bench"
+test = false
+
 [lints]
 workspace = true
+
+[workspace.lints.rust]
+# Set by scripts/build-pgo.sh on the instrumented build.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(pgo_training)'] }
 
 [workspace.lints.clippy]
 cloned_instead_of_copied = "warn"
 cloned_ref_to_slice_refs = "warn"
 explicit_into_iter_loop = "warn"
-from_iter_instead_of_collect = "warn"
 implicit_clone = "warn"
 manual_string_new = "warn"
 ptr_as_ptr = "warn"

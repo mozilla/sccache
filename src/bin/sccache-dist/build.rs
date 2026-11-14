@@ -87,6 +87,27 @@ fn join_suffix<P: AsRef<Path>>(path: &Path, suffix: P) -> PathBuf {
     path.join(components)
 }
 
+// Run `f` on a thread whose root directory is `root`. Toolchains and inputs are packaged on
+// the client and routinely contain absolute symlinks (e.g. `lib -> /usr/lib`), which the
+// sandboxed compiler resolves inside the toolchain. Resolve paths below them the same way here,
+// instead of against the build server's own root directory.
+fn run_in_root<T: Send>(root: &Path, f: impl FnOnce() -> Result<T> + Send) -> Result<T> {
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                // Give this thread its own root directory and cwd, so the chroot affects
+                // nothing else and ends when the thread does
+                nix::sched::unshare(nix::sched::CloneFlags::CLONE_FS)
+                    .context("Failed to unshare filesystem attributes")?;
+                std::os::unix::fs::chroot(root).context("Failed to chroot")?;
+                std::env::set_current_dir("/").context("Failed to chdir to new root")?;
+                f()
+            })
+            .join()
+            .unwrap_or_else(|_e| Err(anyhow!("Chroot thread exited unsuccessfully")))
+    })
+}
+
 #[derive(Debug)]
 struct OverlaySpec {
     build_dir: PathBuf,
@@ -163,7 +184,7 @@ impl OverlayBuilder {
 
     fn cleanup(&self) -> Result<()> {
         if self.dir.exists() {
-            fs::remove_dir_all(&self.dir).context("Failed to clean up builder directory")?
+            fs::remove_dir_all(&self.dir).context("Failed to clean up builder directory")?;
         }
         Ok(())
     }
@@ -181,11 +202,9 @@ impl OverlayBuilder {
             let mut toolchain_dir_map = self.toolchain_dir_map.lock().unwrap();
             // Create the toolchain dir (if necessary) while we have an exclusive lock
             let toolchain_dir = self.dir.join("toolchains").join(&tc.archive_id);
-            if toolchain_dir_map.contains_key(tc) && toolchain_dir.exists() {
-                // TODO: use if let when sccache can use NLL
-                let entry = toolchain_dir_map
-                    .get_mut(tc)
-                    .expect("Key missing after checking");
+            if let Some(entry) = toolchain_dir_map.get_mut(tc)
+                && toolchain_dir.exists()
+            {
                 entry.build_count += 1;
                 entry.clone()
             } else {
@@ -203,17 +222,20 @@ impl OverlayBuilder {
                     }
                 };
 
-                tar::Archive::new(GzDecoder::new(toolchain_rdr))
-                    .unpack(&toolchain_dir)
-                    .or_else(|e| {
-                        warn!("Failed to unpack toolchain: {:?}", e);
-                        fs::remove_dir_all(&toolchain_dir)
-                            .context("Failed to remove unpacked toolchain")?;
-                        tccache
-                            .remove(tc)
-                            .context("Failed to remove corrupt toolchain")?;
-                        Err(Error::from(e))
-                    })?;
+                run_in_root(&toolchain_dir, || {
+                    tar::Archive::new(GzDecoder::new(toolchain_rdr))
+                        .unpack("/")
+                        .map_err(Error::from)
+                })
+                .or_else(|e| {
+                    warn!("Failed to unpack toolchain: {:?}", e);
+                    fs::remove_dir_all(&toolchain_dir)
+                        .context("Failed to remove unpacked toolchain")?;
+                    tccache
+                        .remove(tc)
+                        .context("Failed to remove corrupt toolchain")?;
+                    Err(e)
+                })?;
 
                 let entry = DeflatedToolchain {
                     path: toolchain_dir,
@@ -229,7 +251,7 @@ impl OverlayBuilder {
                     // toolchains could be the opposite of the least recently
                     // recently used, so we clear out half of the accumulated
                     // toolchains to prevent repeated sort/delete cycles.
-                    entries.sort_by(|a, b| (a.1).ctime.cmp(&(b.1).ctime));
+                    entries.sort_by_key(|a| (a.1).ctime);
                     entries.truncate(entries.len() / 2);
                     for (tc, _) in entries {
                         warn!("Removing old un-compressed toolchain: {:?}", tc);
@@ -306,14 +328,7 @@ impl OverlayBuilder {
                         // This error is unfortunately not Send+Sync
                     )
                     .mount()
-                    .map_err(|e| anyhow!("Failed to mount overlay FS: {}", e.to_string()))?;
-
-                    trace!("copying in inputs");
-                    // Note that we don't unpack directly into the upperdir since there overlayfs has some
-                    // special marker files that we don't want to create by accident (or malicious intent)
-                    tar::Archive::new(inputs_rdr)
-                        .unpack(&target_dir)
-                        .context("Failed to unpack inputs to overlay")?;
+                    .map_err(|e| anyhow!("Failed to mount overlay FS: {}", e))?;
 
                     let CompileCommand {
                         executable,
@@ -323,19 +338,32 @@ impl OverlayBuilder {
                     } = compile_command;
                     let cwd = Path::new(&cwd);
 
-                    trace!("creating output directories");
-                    fs::create_dir_all(join_suffix(&target_dir, cwd))
-                        .context("Failed to create cwd")?;
-                    for path in output_paths.iter() {
-                        // If it doesn't have a parent, nothing needs creating
-                        let output_parent = if let Some(p) = Path::new(path).parent() {
-                            p
-                        } else {
-                            continue;
-                        };
-                        fs::create_dir_all(join_suffix(&target_dir, cwd.join(output_parent)))
-                            .context("Failed to create an output directory")?;
-                    }
+                    // Resolve paths below target_dir the way the sandboxed command will see them
+                    run_in_root(&target_dir, || {
+                        let root = Path::new("/");
+
+                        trace!("copying in inputs");
+                        // Note that we don't unpack directly into the upperdir since there overlayfs has some
+                        // special marker files that we don't want to create by accident (or malicious intent)
+                        tar::Archive::new(inputs_rdr)
+                            .unpack(root)
+                            .context("Failed to unpack inputs to overlay")?;
+
+                        trace!("creating output directories");
+                        fs::create_dir_all(join_suffix(root, cwd))
+                            .context("Failed to create cwd")?;
+                        for path in output_paths.iter() {
+                            // If it doesn't have a parent, nothing needs creating
+                            let output_parent = if let Some(p) = Path::new(path).parent() {
+                                p
+                            } else {
+                                continue;
+                            };
+                            fs::create_dir_all(join_suffix(root, cwd.join(output_parent)))
+                                .context("Failed to create an output directory")?;
+                        }
+                        Ok(())
+                    })?;
 
                     trace!("performing compile");
                     // Bubblewrap notes:
@@ -385,27 +413,32 @@ impl OverlayBuilder {
                         .context("Failed to retrieve output from compile")?;
                     trace!("compile_output: {:?}", compile_output);
 
-                    let mut outputs = vec![];
                     trace!("retrieving {:?}", output_paths);
-                    for path in output_paths {
-                        let abspath = join_suffix(&target_dir, cwd.join(&path)); // Resolve in case it's relative since we copy it from the root level
-                        match fs::File::open(abspath) {
-                            Ok(file) => {
-                                let output = OutputData::try_from_reader(file)
-                                    .context("Failed to read output file")?;
-                                outputs.push((path, output))
-                            }
-                            Err(e) => {
-                                if e.kind() == io::ErrorKind::NotFound {
-                                    debug!("Missing output path {:?}", path)
-                                } else {
-                                    return Err(
-                                        Error::from(e).context("Failed to open output file")
-                                    );
+                    // The compile may have added symlinks of its own, so read the outputs
+                    // from the same root as above
+                    let outputs = run_in_root(&target_dir, || {
+                        let mut outputs = vec![];
+                        for path in output_paths {
+                            let abspath = join_suffix(Path::new("/"), cwd.join(&path)); // Resolve in case it's relative since we copy it from the root level
+                            match fs::File::open(abspath) {
+                                Ok(file) => {
+                                    let output = OutputData::try_from_reader(file)
+                                        .context("Failed to read output file")?;
+                                    outputs.push((path, output));
+                                }
+                                Err(e) => {
+                                    if e.kind() == io::ErrorKind::NotFound {
+                                        debug!("Missing output path {:?}", path);
+                                    } else {
+                                        return Err(
+                                            Error::from(e).context("Failed to open output file")
+                                        );
+                                    }
                                 }
                             }
                         }
-                    }
+                        Ok(outputs)
+                    })?;
                     let compile_output = ProcessOutput::try_from(compile_output)
                         .context("Failed to convert compilation exit status")?;
                     Ok(BuildResult {
@@ -424,14 +457,10 @@ impl OverlayBuilder {
     fn finish_overlay(&self, _tc: &Toolchain, overlay: OverlaySpec) {
         // TODO: collect toolchain directories
 
-        let OverlaySpec {
-            build_dir,
-            toolchain_dir: _,
-        } = overlay;
-        if let Err(e) = fs::remove_dir_all(&build_dir) {
+        if let Err(e) = fs::remove_dir_all(&overlay.build_dir) {
             error!(
                 "Failed to remove build directory {}: {}",
-                build_dir.display(),
+                overlay.build_dir.display(),
                 e
             );
         }
@@ -525,7 +554,7 @@ impl DockerBuilder {
                     bail!("Malformed container listing - third field on row")
                 }
                 if image_name.starts_with("sccache-builder-") {
-                    containers_to_rm.push(container_id)
+                    containers_to_rm.push(container_id);
                 }
             }
             if !containers_to_rm.is_empty() {
@@ -555,7 +584,7 @@ impl DockerBuilder {
                     bail!("Malformed image listing - third field on row")
                 }
                 if image_name.starts_with("sccache-builder-") {
-                    images_to_rm.push(image_id)
+                    images_to_rm.push(image_id);
                 }
             }
             if !images_to_rm.is_empty() {
@@ -563,7 +592,7 @@ impl DockerBuilder {
                     .args(["rmi"])
                     .args(images_to_rm)
                     .check_run()
-                    .context("Failed to remove image")?
+                    .context("Failed to remove image")?;
             }
         }
 
@@ -636,10 +665,10 @@ impl DockerBuilder {
                 }
                 // Docker diff paths are in alphabetical order and we do `rm -rf`, so we might be able to skip
                 // calling Docker more than necessary (since it's slow)
-                if let Some(lastpath) = lastpath {
-                    if Path::new(changepath).starts_with(lastpath) {
-                        continue;
-                    }
+                if let Some(lastpath) = lastpath
+                    && Path::new(changepath).starts_with(lastpath)
+                {
+                    continue;
                 }
                 lastpath = Some(changepath);
                 if let Err(e) = Command::new("docker")
@@ -647,7 +676,7 @@ impl DockerBuilder {
                     .check_run()
                 {
                     // We do a final check anyway, so just continue
-                    warn!("Failed to remove added path in a container: {}", e)
+                    warn!("Failed to remove added path in a container: {}", e);
                 }
             }
 
@@ -683,7 +712,7 @@ impl DockerBuilder {
         // Good as new, add it back to the container list
         if let Some(entry) = self.container_lists.lock().unwrap().get_mut(tc) {
             debug!("Reclaimed container {}", cid);
-            entry.push(cid)
+            entry.push(cid);
         } else {
             warn!(
                 "Was ready to reclaim container {} but toolchain went missing",
@@ -724,7 +753,7 @@ impl DockerBuilder {
             .context("Failed to copy toolchain tar into container")?;
         drop(toolchain_rdr);
 
-        let imagename = format!("sccache-builder-{}", &tc.archive_id);
+        let imagename = format!("sccache-builder-{}", tc.archive_id);
         Command::new("docker")
             .args(["commit", &cid, &imagename])
             .check_run()
@@ -835,9 +864,9 @@ impl DockerBuilder {
             if output.status.success() {
                 let output = OutputData::try_from_reader(&*output.stdout)
                     .expect("Failed to read compress output stdout");
-                outputs.push((path, output))
+                outputs.push((path, output));
             } else {
-                debug!("Missing output path {:?}", path)
+                debug!("Missing output path {:?}", path);
             }
         }
 
@@ -871,5 +900,72 @@ impl BuilderIncoming for DockerBuilder {
         self.finish_container(&tc, cid);
         debug!("Returning result");
         Ok(res)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+    use sccache::util::Digest;
+    use std::io::Write;
+
+    // A toolchain with an absolute symlink, followed by a file below that symlink,
+    // must end up entirely inside the toolchain directory
+    #[test]
+    fn overlay_toolchain_symlinks_resolve_inside_toolchain() {
+        if !nix::unistd::geteuid().is_root() {
+            // Toolchains are unpacked in a chroot
+            return;
+        }
+        let tempdir = tempfile::Builder::new()
+            .prefix("sccache_dist_overlay")
+            .tempdir()
+            .unwrap();
+        let dir = tempdir.path().join("build");
+        fs::create_dir_all(dir.join("builds")).unwrap();
+        fs::create_dir_all(dir.join("toolchains")).unwrap();
+        let builder = OverlayBuilder {
+            bubblewrap: PathBuf::new(),
+            dir,
+            toolchain_dir_map: Mutex::new(HashMap::new()),
+        };
+        let tccache = Mutex::new(TcCache::new(&tempdir.path().join("tc"), u64::MAX).unwrap());
+
+        // A directory that exists on the host, and under the same name in the toolchain
+        let host_dir = tempdir.path().join("host");
+        fs::create_dir(&host_dir).unwrap();
+        let tc_dir = host_dir.strip_prefix("/").unwrap();
+
+        let mut archive = tar::Builder::new(GzEncoder::new(vec![], Compression::default()));
+        let mut file = tar::Header::new_gnu();
+        file.set_mode(0o644);
+        file.set_size(0);
+        let mut link = tar::Header::new_gnu();
+        link.set_entry_type(tar::EntryType::Symlink);
+        link.set_size(0);
+        archive
+            .append_data(&mut file, tc_dir.join("direct"), io::empty())
+            .unwrap();
+        archive.append_link(&mut link, "link", &host_dir).unwrap();
+        archive
+            .append_data(&mut file, "link/through_link", io::empty())
+            .unwrap();
+        let archive = archive.into_inner().unwrap().finish().unwrap();
+        let tc = Toolchain {
+            archive_id: Digest::reader_sync(&archive[..]).unwrap(),
+        };
+        tccache
+            .lock()
+            .unwrap()
+            .insert_with(&tc, |mut file| file.write_all(&archive))
+            .unwrap();
+
+        let overlay = builder.prepare_overlay_dirs(&tc, &tccache).unwrap();
+        let tc_dir = overlay.toolchain_dir.join(tc_dir);
+        assert!(tc_dir.join("direct").exists());
+        assert!(tc_dir.join("through_link").exists());
+        assert_eq!(fs::read_dir(&host_dir).unwrap().count(), 0);
     }
 }

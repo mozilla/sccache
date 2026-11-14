@@ -194,7 +194,7 @@ counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     flag!("--save-temps=cwd", TooHardFlag),
     flag!("--save-temps=obj", TooHardFlag),
     take_arg!("--serialize-diagnostics", PathBuf, Separated, SerializeDiagnostics),
-    take_arg!("--sysroot", PathBuf, Separated, PassThroughPath),
+    take_arg!("--sysroot", PathBuf, CanBeSeparated(b'='), PassThroughPath),
     take_arg!("-A", OsString, Separated, PassThrough),
     take_arg!("-B", PathBuf, CanBeSeparated, PassThroughPath),
     take_arg!("-D", OsString, CanBeSeparated, PassThrough),
@@ -520,14 +520,7 @@ where
                 &mut common_args
             }
             Some(ExtraHashFileClangModuleFile(val)) => {
-                // -fmodule-file can be either "path" or "name=path"
-                let val_str = val.to_string_lossy();
-                let path = if let Some(idx) = val_str.find('=') {
-                    PathBuf::from(&val_str[idx + 1..])
-                } else {
-                    PathBuf::from(val)
-                };
-                extra_hash_files.push(cwd.join(path));
+                extra_hash_files.push(cwd.join(module_file_path(val)));
                 &mut common_args
             }
             Some(PreprocessorArgument(_)) => {
@@ -622,14 +615,7 @@ where
                 &mut common_args
             }
             Some(ExtraHashFileClangModuleFile(val)) => {
-                // -fmodule-file can be either "path" or "name=path"
-                let val_str = val.to_string_lossy();
-                let path = if let Some(idx) = val_str.find('=') {
-                    PathBuf::from(&val_str[idx + 1..])
-                } else {
-                    PathBuf::from(val)
-                };
-                extra_hash_files.push(cwd.join(path));
+                extra_hash_files.push(cwd.join(module_file_path(val)));
                 &mut common_args
             }
             Some(PreprocessorArgumentFlag)
@@ -790,11 +776,20 @@ where
         extra_hash_files,
         uses_external_assembler: !integrated_assembler,
         msvc_show_includes: false,
+        msvc_explicit_language: false,
         profile_generate,
         color_mode,
         suppress_rewrite_includes_only,
         too_hard_for_preprocessor_cache_mode,
     })
+}
+
+/// The module file a `-fmodule-file=` value names, given as either `path` or `name=path`.
+pub(crate) fn module_file_path(val: &OsStr) -> PathBuf {
+    match val.to_string_lossy().split_once('=') {
+        Some((_, path)) => PathBuf::from(path),
+        None => PathBuf::from(val),
+    }
 }
 
 fn module_artifact_descriptor(
@@ -1118,6 +1113,14 @@ where
             // https://gcc.gnu.org/onlinedocs/gcc-4.9.0/gcc/Overall-Options.html
             let mut language: Option<String> =
                 language_to_arg(parsed_args.language).map(|lang| lang.into());
+            // The gcc driver forces -fno-directives-only for assembly, so the
+            // client output is already fully preprocessed. Running it through
+            // cpp again with -fpreprocessed breaks the first linemarker, which
+            // the assembler then rejects. clang's -frewrite-includes keeps the
+            // macros, so clang assembly still needs the server-side cpp pass.
+            let rewrite_includes_only = rewrite_includes_only
+                && !(kind == CCompilerKind::Gcc
+                    && parsed_args.language == Language::AssemblerToPreprocess);
             if rewrite_includes_only || parsed_args.language.is_c_like_header() {
             } else if let Some(processed_lang) = parsed_args.language.to_c_preprocessed_language() {
                 language = Some(language_to_arg(processed_lang)?.into());
@@ -1335,6 +1338,35 @@ mod test {
             plusplus,
             CCompilerKind::Clang,
         )
+    }
+
+    #[test]
+    fn test_parse_arguments_sysroot() {
+        let parse = |args| match parse_arguments_(args, false) {
+            CompilerArguments::Ok(ParsedArguments { common_args, .. }) => common_args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(
+            ovec!["--sysroot", "/opt/sysroot"],
+            parse(stringvec![
+                "-c",
+                "foo.c",
+                "-o",
+                "foo.o",
+                "--sysroot",
+                "/opt/sysroot"
+            ])
+        );
+        assert_eq!(
+            ovec!["--sysroot", "/opt/sysroot"],
+            parse(stringvec![
+                "-c",
+                "foo.c",
+                "-o",
+                "foo.o",
+                "--sysroot=/opt/sysroot"
+            ])
+        );
     }
 
     #[test]
@@ -2946,6 +2978,7 @@ mod test {
             extra_hash_files: vec![],
             uses_external_assembler: false,
             msvc_show_includes: false,
+            msvc_explicit_language: false,
             profile_generate: false,
             color_mode: ColorMode::Auto,
             suppress_rewrite_includes_only: false,
@@ -3008,6 +3041,7 @@ mod test {
             extra_hash_files: vec![],
             uses_external_assembler: false,
             msvc_show_includes: false,
+            msvc_explicit_language: false,
             profile_generate: false,
             color_mode: ColorMode::Auto,
             suppress_rewrite_includes_only: false,
@@ -3083,6 +3117,59 @@ mod test {
     }
 
     #[test]
+    #[cfg(feature = "dist-client")]
+    fn test_compile_rewrite_includes_only_dist_assembler() {
+        let f = TestFixture::new();
+        let dist_args = |kind: CCompilerKind, input: &str| {
+            let parsed_args = match parse_arguments_(stringvec!["-c", input, "-o", "foo.o"], false)
+            {
+                CompilerArguments::Ok(args) => args,
+                o => panic!("Got unexpected parse result: {:?}", o),
+            };
+            let language_to_arg = match kind {
+                CCompilerKind::Clang => crate::compiler::clang::language_to_clang_arg,
+                _ => language_to_gcc_arg,
+            };
+            let mut path_transformer = dist::PathTransformer::new();
+            generate_compile_commands(
+                &mut path_transformer,
+                &f.bins[0],
+                &parsed_args,
+                f.tempdir.path(),
+                &[],
+                kind,
+                true,
+                language_to_arg,
+            )
+            .unwrap()
+            .1
+            .unwrap()
+            .arguments
+        };
+
+        // gcc assembly is fully preprocessed on the client, so the server
+        // only assembles it.
+        let args = dist_args(CCompilerKind::Gcc, "foo.S");
+        assert_eq!(&args[..2], &["-x", "assembler"]);
+        assert!(!args.contains(&"-fdirectives-only".to_string()));
+
+        // C still has its macros left for the server to expand.
+        let args = dist_args(CCompilerKind::Gcc, "foo.c");
+        assert_eq!(&args[..2], &["-x", "c"]);
+        assert!(args.contains(&"-fdirectives-only".to_string()));
+
+        // clang's -frewrite-includes leaves the macros in assembly too;
+        // sending it as plain assembler would silently miscompile it.
+        let args = dist_args(CCompilerKind::Clang, "foo.S");
+        assert_eq!(&args[..2], &["-x", "assembler-with-cpp"]);
+
+        // -fpreprocessed is gcc only, clang must not get it for C either.
+        let args = dist_args(CCompilerKind::Clang, "foo.c");
+        assert_eq!(&args[..2], &["-x", "c"]);
+        assert!(!args.contains(&"-fpreprocessed".to_string()));
+    }
+
+    #[test]
     fn test_compile_simple_verbose_long() {
         let creator = new_creator();
         let f = TestFixture::new();
@@ -3110,6 +3197,7 @@ mod test {
             extra_hash_files: vec![],
             uses_external_assembler: false,
             msvc_show_includes: false,
+            msvc_explicit_language: false,
             profile_generate: false,
             color_mode: ColorMode::Auto,
             suppress_rewrite_includes_only: false,
@@ -3315,6 +3403,15 @@ mod test {
         assert_eq!(
             parsed_args.too_hard_for_preprocessor_cache_mode,
             Some("-Wp".into())
+        );
+    }
+
+    #[test]
+    fn test_module_file_path() {
+        assert_eq!(module_file_path(OsStr::new("m.pcm")), Path::new("m.pcm"));
+        assert_eq!(
+            module_file_path(OsStr::new("m=d/m.pcm")),
+            Path::new("d/m.pcm")
         );
     }
 }

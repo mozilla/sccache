@@ -37,6 +37,10 @@ The preprocessor cache may silently produce stale results in any of the followin
 - A macro such as `__TIME__` (etc) is used in the source code and `ignore_time_macros` is enabled
 - There are other external factors influencing the preprocessing result that sccache does not know about
 
+On Linux and macOS, the server remembers the digest of each file it hashes for this mode and reuses it while the file's size,
+mtime, ctime, device and inode are unchanged, so a cache hit does not re-read unchanged headers. Files changed less than two
+seconds before being hashed are not remembered, as their timestamps may not tell a quick rewrite apart.
+
 Configuration options and their default values:
 
 - `use_preprocessor_cache_mode`: `true`. Whether to use preprocessor cache mode. This can be overridden for an sccache invocation by setting the environment variable `SCCACHE_DIRECT` to `true`/`on`/`1` or `false`/`off`/`0`.

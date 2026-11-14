@@ -26,6 +26,7 @@ Table of Contents (ToC)
 * [Usage](#usage)
 * [Build Requirements](#build-requirements)
 * [Build](#build)
+  * [Profile-guided optimization](docs/PGO.md)
 * [Separating caches between invocations](#separating-caches-between-invocations)
 * [Overwriting the cache](#overwriting-the-cache)
 * [Debugging](#debugging)
@@ -251,6 +252,17 @@ The list of features can be found in the `Cargo.toml` file, `[features]` section
 
 By default, `sccache` builds with support for all storage backends, but individual backends may be disabled by resetting the list of features and enabling all the other backends. Refer the [Cargo Documentation](http://doc.crates.io/manifest.html#the-features-section) for details on how to select features with Cargo.
 
+### Profile-guided optimization
+
+The official release binaries are built with profile-guided optimization (PGO), which makes sccache itself faster on every compilation it wraps. `scripts/build-pgo.sh` builds sccache this way:
+
+```bash
+rustup component add llvm-tools
+./scripts/build-pgo.sh
+```
+
+**Packagers are encouraged to build sccache with PGO too.** See [docs/PGO.md](docs/PGO.md) for the options, and for how to plug the profile into an existing packaging recipe.
+
 ### Building portable binaries
 
 When building with the `dist-server` feature, `sccache` will depend on OpenSSL, which can be an annoyance if you want to distribute portable binaries. It is possible to statically link against OpenSSL using the `openssl/vendored` feature.
@@ -347,6 +359,8 @@ Base directories are stripped from the preprocessed source and from the compiler
 
 In an argument only the places that are expected to spell a pathname are considered: the whole argument, the value of an option written with an `=` (either half of a prefix map), and the value glued to a short option such as `-I`. A base directory appearing anywhere else is left alone, so a definition the compiler bakes into the output verbatim, `-DROOT="/home/user/project"`, still counts. A match also has to end where a path component ends, so a sibling `/home/user/project-docs` is not one.
 
+For Rust, base directories are also stripped from the working directory, from the `CARGO_*` environment variables such as `CARGO_MANIFEST_DIR`, and from the variables a crate reads with `env!` or `option_env!`, such as a build script's `OUT_DIR`. A hit then returns a crate compiled in another directory: its debug info and panic messages name that directory unless `--remap-path-prefix` maps it away, and so does any `env!("CARGO_MANIFEST_DIR")` the crate keeps.
+
 This is similar to ccache's `CCACHE_BASEDIR` and helps when:
 * Building the same project from different directories
 * Sharing cache between CI jobs with different checkout paths
@@ -377,7 +391,7 @@ Known Caveats
 ### Rust
 
 * Crates that invoke the system linker cannot be cached. This includes `bin`, `dylib`, `cdylib`, and `proc-macro` crates. You may be able to improve compilation time of large `bin` crates by converting them to a `lib` crate with a thin `bin` wrapper.
-* Incrementally compiled crates cannot be cached. By default, in the debug profile Cargo will use incremental compilation for workspace members and path dependencies. [You can disable incremental compilation.](https://doc.rust-lang.org/cargo/reference/profiles.html#incremental)
+* Incrementally compiled crates cannot be cached. By default, in the debug profile Cargo will use incremental compilation for workspace members and path dependencies. [You can disable incremental compilation.](https://doc.rust-lang.org/cargo/reference/profiles.html#incremental) sccache exits with an error if `CARGO_INCREMENTAL=1` is set; `SCCACHE_ALLOW_INCREMENTAL=1` lets the build proceed, leaving only those crates uncached.
 
 [More details on Rust caveats](/docs/Rust.md)
 
@@ -394,6 +408,8 @@ The following module-related flags are **not supported** and will bypass the cac
 
 * `-fmodules` and `-fcxx-modules` - Clang header modules (not C++20 named modules)
 * `-fprebuilt-implicit-modules` and `-fprebuilt-module-path` - implicit module discovery
+
+With **clang-cl**, `-fmodule-file=[<name>=]<path>` and `-x c++-module` together with `-fmodule-output=<path>` are supported, but not through `-Xclang` or `-clang:`.
 
 **GCC** and **MSVC** C++20 modules are not yet supported. Compilations using `-fmodules-ts` (GCC) or `/interface`, `/ifcOutput`, etc. (MSVC) will bypass the cache.
 

@@ -5,7 +5,7 @@
 
 pub mod helpers;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use helpers::{CARGO, CRATE_DIR, cargo_clean, stop_sccache};
 
 use assert_cmd::prelude::*;
@@ -13,7 +13,7 @@ use fs_err as fs;
 use helpers::{SCCACHE_BIN, SccacheTest};
 use predicates::prelude::*;
 use serial_test::serial;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[macro_use]
@@ -403,6 +403,355 @@ fn test_rust_cargo_cmd_readonly_preemtive_block() -> Result<()> {
         .try_stdout(
             predicates::str::contains(
                 r#""cache_misses":{"counts":{"Rust":2},"adv_counts":{"rust":2}}"#,
+            )
+            .from_utf8(),
+        )?
+        .try_success()?;
+    Ok(())
+}
+
+/// Copy the test crate to `name` under the test tempdir
+/// and build it there with its own target directory.
+///
+/// Returns the checkout's target directory.
+fn build_checkout(test_info: &SccacheTest, name: &str) -> Result<PathBuf> {
+    let checkout = test_info.tempdir.path().join(name);
+    fs::create_dir_all(checkout.join("src"))?;
+    for file in ["Cargo.toml", "Cargo.lock", "src/lib.rs", "src/bin.rs"] {
+        fs::copy(CRATE_DIR.join(file), checkout.join(file))?;
+    }
+    cargo_build(test_info, &checkout)
+}
+
+/// Build the crate in `checkout` with its own target directory.
+///
+/// Returns the checkout's target directory.
+fn cargo_build(test_info: &SccacheTest, checkout: &Path) -> Result<PathBuf> {
+    let target_dir = checkout.join("target");
+    Command::new(CARGO.as_os_str())
+        // `--target-dir` rather than `CARGO_TARGET_DIR`,
+        // since cargo forwards `CARGO_*` to rustc and sccache hashes them.
+        .args(["build", "--color=never", "--target-dir"])
+        .arg(&target_dir)
+        .envs(test_info.env.iter().cloned())
+        .current_dir(checkout)
+        .assert()
+        .try_success()?;
+    Ok(target_dir)
+}
+
+/// Read the dep-info file cargo keeps for the crate `name` under `target_dir`.
+fn read_dep_info(target_dir: &Path, name: &str) -> Result<String> {
+    /// Search rather than assume `target/debug/deps`,
+    /// since cargo changed the build-dir layout in rust-lang/cargo#15010.
+    fn collect(dir: &Path, prefix: &str, found: &mut Vec<PathBuf>) -> Result<()> {
+        for entry in fs::read_dir(dir)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                collect(&path, prefix, found)?;
+            } else if path.extension().is_some_and(|e| e == "d")
+                && path
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with(prefix))
+            {
+                found.push(path);
+            }
+        }
+        Ok(())
+    }
+
+    let mut found = Vec::new();
+    collect(target_dir, &format!("{name}-"), &mut found)?;
+    found.sort();
+
+    // One profile and no `--target`, so the crate is built exactly once.
+    match found.as_slice() {
+        [dep_info] => Ok(fs::read_to_string(dep_info)?),
+        [] => bail!("no {name} dep-info file under {}", target_dir.display()),
+        _ => bail!(
+            "several {name} dep-info files under {}: {found:?}",
+            target_dir.display()
+        ),
+    }
+}
+
+/// The same dependency built from two checkouts, the second one being a cache hit.
+/// Whose paths does the second checkout's dep-info name? (mozilla/sccache#984)
+#[test]
+#[serial]
+fn test_rust_cargo_dep_info_from_other_checkout() -> Result<()> {
+    let test_info = SccacheTest::new(None)?;
+
+    let target_a = build_checkout(&test_info, "a")?;
+    let target_b = build_checkout(&test_info, "b")?;
+
+    // Only `itoa` is shared;
+    // the crate's own lib and bin are keyed on their differing cwd.
+    test_info
+        .show_stats()?
+        .try_stdout(
+            predicates::str::contains(
+                r#""cache_hits":{"counts":{"Rust":1},"adv_counts":{"rust":1}}"#,
+            )
+            .from_utf8(),
+        )?
+        .try_success()?;
+
+    let dep_info = read_dep_info(&target_b, "itoa")?;
+    assert!(
+        !dep_info.contains(target_a.to_str().unwrap()),
+        "dep-info names checkout a:\n{dep_info}"
+    );
+    assert!(
+        dep_info.contains(target_b.to_str().unwrap()),
+        "dep-info does not name checkout b:\n{dep_info}"
+    );
+    Ok(())
+}
+
+/// Write a crate to `checkout` whose path dependency includes build script output,
+/// so the checkout's path reaches both crates' keys through the cwd,
+/// `CARGO_MANIFEST_DIR` and the dependency's `OUT_DIR` env-dep.
+fn write_out_dir_crate(checkout: &Path) -> Result<()> {
+    let package = |name: &str| {
+        format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n")
+    };
+    fs::create_dir_all(checkout.join("src"))?;
+    fs::create_dir_all(checkout.join("dep/src"))?;
+    fs::write(
+        checkout.join("Cargo.toml"),
+        package("out-dir-test") + "\n[dependencies]\ndep = { path = \"dep\" }\n",
+    )?;
+    fs::write(
+        checkout.join("src/lib.rs"),
+        "pub fn answer() -> u32 { dep::ANSWER }\n",
+    )?;
+    fs::write(checkout.join("dep/Cargo.toml"), package("dep"))?;
+    fs::write(
+        checkout.join("dep/build.rs"),
+        r#"fn main() {
+    let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+    std::fs::write(out.join("answer.rs"), "pub const ANSWER: u32 = 42;").unwrap();
+}
+"#,
+    )?;
+    fs::write(
+        checkout.join("dep/src/lib.rs"),
+        "include!(concat!(env!(\"OUT_DIR\"), \"/answer.rs\"));\n",
+    )?;
+    Ok(())
+}
+
+/// The test's tempdir by its real path, which is how cargo names it in `CARGO_MANIFEST_DIR`
+/// and `[env]` paths; on macOS the tempdir is under a symlink to /private.
+fn real_tempdir(test_info: &SccacheTest) -> Result<PathBuf> {
+    let path = test_info.tempdir.path();
+    if cfg!(unix) {
+        Ok(fs::canonicalize(path)?)
+    } else {
+        Ok(path.to_owned())
+    }
+}
+
+/// A crate and its path dependency, built from two checkouts listed in `SCCACHE_BASEDIRS`,
+/// hit in the second one, whose dep-info still names its own files.
+#[test]
+#[serial]
+fn test_rust_cargo_basedirs_other_checkout() -> Result<()> {
+    let test_info = SccacheTest::new(None)?;
+    let tempdir = real_tempdir(&test_info)?;
+    let [a, b] = ["a", "b"].map(|name| tempdir.join(name));
+    let basedirs = std::env::join_paths([&a, &b])?.into_string().unwrap();
+    restart_sccache(
+        &test_info,
+        Some(vec![("SCCACHE_BASEDIRS".into(), basedirs)]),
+    )?;
+
+    write_out_dir_crate(&a)?;
+    cargo_build(&test_info, &a)?;
+    Command::new(SCCACHE_BIN.as_os_str())
+        .arg("--zero-stats")
+        .assert()
+        .try_success()?;
+    write_out_dir_crate(&b)?;
+    let target_b = cargo_build(&test_info, &b)?;
+
+    test_info
+        .show_stats()?
+        .try_stdout(
+            predicates::str::contains(
+                r#""cache_hits":{"counts":{"Rust":2},"adv_counts":{"rust":2}}"#,
+            )
+            .from_utf8(),
+        )?
+        .try_stdout(
+            predicates::str::contains(r#""cache_misses":{"counts":{},"adv_counts":{}}"#)
+                .from_utf8(),
+        )?
+        .try_success()?;
+
+    let dep_info = read_dep_info(&target_b, "dep")?;
+    assert!(
+        !dep_info.contains(a.to_str().unwrap()),
+        "dep-info names checkout a:\n{dep_info}"
+    );
+    assert!(
+        dep_info.contains(b.to_str().unwrap()),
+        "dep-info does not name checkout b:\n{dep_info}"
+    );
+
+    Ok(())
+}
+
+/// Test that without `SCCACHE_ALLOW_INCREMENTAL`, enabling cargo's incremental
+/// compilation still makes sccache refuse to run.
+#[test]
+#[serial]
+fn test_rust_cargo_incremental_refused_by_default() -> Result<()> {
+    let test_info = SccacheTest::new(None)?;
+    // Clean before setting the env var below: the refusal fires on any rustc
+    // invocation, including the `rustc -vV` probe `cargo clean` makes.
+    cargo_clean(&test_info)?;
+
+    Command::new(CARGO.as_os_str())
+        .args(["build", "--color=never"])
+        .envs(test_info.env.iter().cloned())
+        .env("CARGO_INCREMENTAL", "1")
+        // Explicitly off, so the default is still tested on a machine that opted
+        // in globally (`.env_remove` cannot undo cargo's `[env]` table).
+        .env("SCCACHE_ALLOW_INCREMENTAL", "0")
+        .current_dir(CRATE_DIR.as_os_str())
+        .assert()
+        .try_stderr(predicates::str::contains("incremental compilation is prohibited").from_utf8())?
+        .try_failure()?;
+
+    Ok(())
+}
+
+/// Test that with `SCCACHE_ALLOW_INCREMENTAL` an incremental build succeeds and
+/// splits per invocation: the workspace crates cargo hands `-C incremental=`
+/// bypass the cache, while its registry dependencies keep hitting it.
+#[test]
+#[serial]
+fn test_rust_cargo_incremental_allowed_deps_cached() -> Result<()> {
+    let test_info = SccacheTest::new(None)?;
+
+    // Two incremental builds, each from a clean target.
+    for _ in 0..2 {
+        cargo_clean(&test_info)?;
+        Command::new(CARGO.as_os_str())
+            .args(["build", "--color=never"])
+            .envs(test_info.env.iter().cloned())
+            .env("CARGO_INCREMENTAL", "1")
+            .env("SCCACHE_ALLOW_INCREMENTAL", "1")
+            .current_dir(CRATE_DIR.as_os_str())
+            .assert()
+            .try_success()?;
+    }
+
+    // The workspace lib really went through rustc's incremental machinery.
+    let incremental_dir = test_info.tempdir.path().join("cargo/debug/incremental");
+    let has_mylib_session = std::fs::read_dir(&incremental_dir)?
+        .filter_map(|e| e.ok())
+        .any(|e| e.file_name().to_string_lossy().starts_with("mylib"));
+    assert!(
+        has_mylib_session,
+        "expected an incremental session dir for `mylib` in {incremental_dir:?}"
+    );
+
+    test_info
+        .show_stats()?
+        // itoa: one miss (first build), one hit (second build).
+        .try_stdout(predicates::str::contains(r#""cache_hits":{"counts":{"Rust":1}"#).from_utf8())?
+        .try_stdout(
+            predicates::str::contains(
+                r#""cache_misses":{"counts":{"Rust":1},"adv_counts":{"rust":1}}"#,
+            )
+            .from_utf8(),
+        )?
+        // The workspace lib bypassed the cache in both builds. `mybin` is rejected
+        // on `--crate-type bin` first, which cargo passes ahead of the flag.
+        .try_stdout(predicates::str::contains(r#""incremental":2"#).from_utf8())?
+        .try_success()?;
+
+    Ok(())
+}
+
+/// Test that a crate using a proc-macro hits the cache when the proc-macro was built into a
+/// different target directory. On macOS the linker writes the proc-macro dylib's own path into
+/// it, so hashing the whole file gave every target directory its own key.
+#[test]
+#[serial]
+fn test_rust_cargo_proc_macro_in_another_target_dir() -> Result<()> {
+    let test_info = SccacheTest::new(None)?;
+    let root = test_info.tempdir.path();
+    let src = root.join("src");
+    fs::create_dir_all(src.join("pm/src"))?;
+    fs::create_dir_all(src.join("user/src"))?;
+    fs::write(
+        src.join("Cargo.toml"),
+        r#"[workspace]
+        members = ["pm", "user"]
+        resolver = "2"
+        "#,
+    )?;
+    fs::write(
+        src.join("pm/Cargo.toml"),
+        r#"[package]
+        name = "pm"
+        version = "0.1.0"
+        edition = "2021"
+        [lib]
+        proc-macro = true
+        "#,
+    )?;
+    fs::write(
+        src.join("pm/src/lib.rs"),
+        r#"use proc_macro::TokenStream;
+        #[proc_macro]
+        pub fn answer(_: TokenStream) -> TokenStream {
+            "42".parse().unwrap()
+        }
+        "#,
+    )?;
+    fs::write(
+        src.join("user/Cargo.toml"),
+        r#"[package]
+        name = "user"
+        version = "0.1.0"
+        edition = "2021"
+        [dependencies]
+        pm = { path = "../pm" }
+        "#,
+    )?;
+    fs::write(
+        src.join("user/src/lib.rs"),
+        "pub fn answer() -> u32 { pm::answer!() }\n",
+    )?;
+
+    // The target directory goes on the command line, because sccache hashes every `CARGO_*`
+    // variable and an exported CARGO_TARGET_DIR would itself make the keys differ.
+    let env = test_info
+        .env
+        .iter()
+        .filter(|(var, _)| *var != "CARGO_TARGET_DIR")
+        .cloned()
+        .collect::<Vec<_>>();
+    for target_dir in ["t1", "target-two"] {
+        Command::new(CARGO.as_os_str())
+            .args(["build", "--color=never", "--target-dir"])
+            .arg(root.join(target_dir))
+            .envs(env.iter().cloned())
+            .current_dir(&src)
+            .assert()
+            .try_success()?;
+    }
+
+    test_info
+        .show_stats()?
+        .try_stdout(
+            predicates::str::contains(
+                r#""cache_hits":{"counts":{"Rust":1},"adv_counts":{"rust":1}}"#,
             )
             .from_utf8(),
         )?

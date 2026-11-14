@@ -49,6 +49,10 @@ pub mod server;
 #[doc(hidden)]
 pub mod util;
 
+// For benches/sccache_bench.rs.
+#[doc(hidden)]
+pub use compiler::PreprocessorCacheEntry;
+
 use std::env;
 
 /// VERSION is the pkg version of sccache.
@@ -60,6 +64,24 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Used to denote the environment variable that controls
 /// logging for sccache, and sccache-dist.
 pub const LOGGING_ENV: &str = "SCCACHE_LOG";
+
+// See `--cfg pgo_training` in scripts/build-pgo.sh.
+#[cfg(all(pgo_training, windows))]
+unsafe extern "C" {
+    fn __llvm_profile_write_file() -> i32;
+}
+
+/// Terminates the process with `code`, flushing the PGO counters when the
+/// binary was built for profile training on Windows.
+fn exit(code: i32) -> ! {
+    #[cfg(all(pgo_training, windows))]
+    // SAFETY: the profiling runtime that defines it is linked in by the
+    // `-Cprofile-generate` build that sets this cfg.
+    unsafe {
+        __llvm_profile_write_file();
+    }
+    std::process::exit(code)
+}
 
 pub fn main() {
     init_logging();
@@ -74,12 +96,12 @@ pub fn main() {
                 for source in some_other_err.chain().skip(1) {
                     println!("sccache: caused by: {source}");
                 }
-                std::process::exit(1);
+                exit(1);
             }
         },
     };
 
-    std::process::exit(match commands::run_command(command) {
+    exit(match commands::run_command(command) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("sccache: error: {}", e);

@@ -29,6 +29,7 @@ use fs_err as fs;
 use log::Level::Trace;
 use predicates::prelude::*;
 use regex::Regex;
+use sccache::lru_disk_cache::CACHEDIR_TAG_FILE_NAME;
 use serial_test::serial;
 use std::collections::HashMap;
 use std::env;
@@ -1802,12 +1803,18 @@ fn test_clang_cache_whitespace_normalization(
         assert_eq!(1, info.stats.cache_misses.all());
     });
 
+    // Reformat the same file: the file name is part of the hash.
     debug!("compile whitespace_alt");
+    fs::copy(
+        tempdir.join(INPUT_WITH_WHITESPACE_ALT),
+        tempdir.join(INPUT_WITH_WHITESPACE),
+    )
+    .unwrap();
     sccache_command()
         .args(compile_cmdline(
             name,
             &exe,
-            INPUT_WITH_WHITESPACE_ALT,
+            INPUT_WITH_WHITESPACE,
             OUTPUT,
             Vec::new(),
         ))
@@ -1868,7 +1875,10 @@ fn find_compilers() -> Vec<Compiler> {
     vec![Compiler {
         name: "cl.exe",
         exe: tool.path().as_os_str().to_os_string(),
-        env_vars: tool.env().to_vec(),
+        env_vars: tool
+            .get_envs()
+            .map(|(key, value)| (key.to_owned(), value.to_owned()))
+            .collect(),
     }]
 }
 
@@ -1980,6 +1990,25 @@ fn test_sccache_command(preprocessor_cache_mode: bool) {
         for compiler in compilers {
             run_sccache_command_tests(compiler, tempdir.path(), preprocessor_cache_mode);
             zero_stats();
+        }
+        // The preprocessor dir is created as soon as the disk cache is used,
+        // but entries are only written by compilers that support preprocessor
+        // cache mode (not MSVC), so check for an actual entry file.
+        let entries_dir = tempdir.path().join("client-cache").join("preprocessor");
+        let has_entries = walkdir::WalkDir::new(&entries_dir)
+            .into_iter()
+            .filter_map(Result::ok)
+            .any(|e| e.file_type().is_file() && e.file_name() != CACHEDIR_TAG_FILE_NAME);
+        if has_entries {
+            sccache_command()
+                .arg("--debug-preprocessor-cache")
+                .env("SCCACHE_CONF", tempdir.path().join("sccache-cfg.json"))
+                .assert()
+                .success()
+                .stdout(predicate::str::contains(format!(
+                    "Showing preprocessor entry file {}",
+                    entries_dir.display()
+                )));
         }
         stop_local_daemon();
     }

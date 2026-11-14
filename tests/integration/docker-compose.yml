@@ -9,12 +9,14 @@ x-common-env: &common-env
 
 x-test-runner: &test-runner
   user: "${UID:-1000}:${GID:-1000}"
+  # Empty under docker; "keep-id" under rootless podman (set by the Makefile).
+  userns_mode: "${COMPOSE_USERNS_MODE:-}"
   volumes:
     - ../../:/sccache:ro
     - ../../target/integration-cargo-cache:/usr/local/cargo/registry:rw
     - ../../target/integration-coverage:/coverage:rw
   tmpfs:
-    - /build:exec,uid=${UID:-1000},gid=${GID:-1000},mode=1777
+    - /build:exec,mode=1777
   working_dir: /build
   environment:
     <<: *common-env
@@ -26,7 +28,7 @@ x-health-check: &healthcheck
 
 services:
   redis:
-    image: redis:7-alpine
+    image: docker.io/library/redis:7-alpine
     ports:
       - "6379:6379"
     healthcheck:
@@ -37,7 +39,7 @@ services:
       - redis
 
   memcached:
-    image: memcached:latest
+    image: docker.io/library/memcached:latest
     ports:
       - "11211:11211"
     environment:
@@ -50,7 +52,7 @@ services:
       - memcached
 
   silo:
-    image: pgsty/silo:latest
+    image: docker.io/pgsty/silo:latest
     ports:
       - "9000:9000"
       - "9001:9001"
@@ -67,7 +69,7 @@ services:
       - s3
 
   silo-setup:
-    image: pgsty/mc:latest
+    image: docker.io/pgsty/mc:latest
     depends_on:
       silo:
         condition: service_healthy
@@ -108,7 +110,7 @@ services:
       - azblob
 
   webdav:
-    image: hacdias/webdav:latest
+    image: docker.io/hacdias/webdav:latest
     ports:
       - "8080:8080"
     volumes:
@@ -121,7 +123,7 @@ services:
 
   test-redis-deprecated:
     <<: *test-runner
-    image: rust:latest
+    image: docker.io/library/rust:latest
     entrypoint: /sccache/tests/integration/scripts/test-backend.sh
     depends_on:
       redis:
@@ -137,7 +139,7 @@ services:
 
   test-redis:
     <<: *test-runner
-    image: rust:latest
+    image: docker.io/library/rust:latest
     entrypoint: /sccache/tests/integration/scripts/test-backend.sh
     depends_on:
       redis:
@@ -153,7 +155,7 @@ services:
 
   test-memcached-deprecated:
     <<: *test-runner
-    image: rust:latest
+    image: docker.io/library/rust:latest
     entrypoint: /sccache/tests/integration/scripts/test-backend.sh
     depends_on:
       memcached:
@@ -169,7 +171,7 @@ services:
 
   test-memcached:
     <<: *test-runner
-    image: rust:latest
+    image: docker.io/library/rust:latest
     entrypoint: /sccache/tests/integration/scripts/test-backend.sh
     depends_on:
       memcached:
@@ -185,7 +187,7 @@ services:
 
   test-s3:
     <<: *test-runner
-    image: rust:latest
+    image: docker.io/library/rust:latest
     entrypoint: /sccache/tests/integration/scripts/test-backend.sh
     depends_on:
       silo:
@@ -208,7 +210,7 @@ services:
 
   test-azblob:
     <<: *test-runner
-    image: rust:latest
+    image: docker.io/library/rust:latest
     entrypoint: /sccache/tests/integration/scripts/test-backend.sh
     depends_on:
       azurite:
@@ -227,7 +229,7 @@ services:
 
   test-webdav:
     <<: *test-runner
-    image: rust:latest
+    image: docker.io/library/rust:latest
     entrypoint: /sccache/tests/integration/scripts/test-backend.sh
     depends_on:
       - webdav
@@ -244,7 +246,7 @@ services:
 
   test-gcc:
     <<: *test-runner
-    image: gcc:latest
+    image: docker.io/library/gcc:latest
     entrypoint: /sccache/tests/integration/scripts/test-gcc.sh
     environment:
       <<: *common-env
@@ -255,7 +257,7 @@ services:
 
   test-file-prefix-map:
     <<: *test-runner
-    image: gcc:latest
+    image: docker.io/library/gcc:latest
     entrypoint: /sccache/tests/integration/scripts/test-file-prefix-map.sh
     environment:
       <<: *common-env
@@ -266,7 +268,7 @@ services:
 
   test-clang:
     <<: *test-runner
-    image: silkeh/clang:21-trixie
+    image: docker.io/silkeh/clang:21-trixie
     entrypoint: /sccache/tests/integration/scripts/test-clang.sh
     environment:
       <<: *common-env
@@ -277,7 +279,7 @@ services:
 
   test-cmake:
     <<: *test-runner
-    image: silkeh/clang:21-trixie
+    image: docker.io/silkeh/clang:21-trixie
     entrypoint: /sccache/tests/integration/scripts/test-cmake.sh
     environment:
       <<: *common-env
@@ -314,7 +316,7 @@ services:
 
   test-autotools:
     <<: *test-runner
-    image: gcc:latest
+    image: docker.io/library/gcc:latest
     entrypoint: /sccache/tests/integration/scripts/test-autotools.sh
     environment:
       <<: *common-env
@@ -325,7 +327,7 @@ services:
 
   test-coverage:
     <<: *test-runner
-    image: rust:latest
+    image: docker.io/library/rust:latest
     entrypoint: /sccache/tests/integration/scripts/test-coverage.sh
     environment:
       <<: *common-env
@@ -336,7 +338,7 @@ services:
 
   test-zstd:
     <<: *test-runner
-    image: rust:latest
+    image: docker.io/library/rust:latest
     entrypoint: /sccache/tests/integration/scripts/test-zstd.sh
     environment:
       <<: *common-env
@@ -347,7 +349,7 @@ services:
 
   test-basedirs:
     <<: *test-runner
-    image: gcc:latest
+    image: docker.io/library/gcc:latest
     entrypoint: /sccache/tests/integration/scripts/test-basedirs.sh
     depends_on:
       redis:
@@ -370,7 +372,7 @@ services:
 
   test-multilevel:
     <<: *test-runner
-    image: rust:latest
+    image: docker.io/library/rust:latest
     entrypoint: /sccache/tests/integration/scripts/test-multilevel.sh
     depends_on:
       redis:
@@ -393,7 +395,7 @@ services:
 
   test-multilevel-chain:
     <<: *test-runner
-    image: rust:latest
+    image: docker.io/library/rust:latest
     entrypoint: /sccache/tests/integration/scripts/test-multilevel-chain.sh
     depends_on:
       redis:

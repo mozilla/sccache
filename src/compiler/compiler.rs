@@ -36,7 +36,8 @@ use crate::lru_disk_cache;
 use crate::mock_command::{CommandChild, CommandCreatorSync, RunCommand, exit_status};
 use crate::server;
 use crate::util::{
-    Digest, fmt_duration_as_secs, resolve_compiler_avoiding_wrapper, run_input_output,
+    Digest, StderrLineObserver, fmt_duration_as_secs, resolve_compiler_avoiding_wrapper,
+    run_input_output, run_input_output_observing,
 };
 use crate::{counted_array, dist};
 use async_trait::async_trait;
@@ -55,7 +56,7 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::{self, Stdio};
 use std::str;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
@@ -196,7 +197,7 @@ impl CompileCommandImpl for SingleCompileCommand {
 
     async fn execute<T>(
         &self,
-        _: &server::SccacheService<T>,
+        service: &server::SccacheService<T>,
         creator: &T,
     ) -> Result<process::Output>
     where
@@ -219,7 +220,18 @@ impl CompileCommandImpl for SingleCompileCommand {
         if *share_jobserver {
             cmd.share_jobserver();
         }
-        run_input_output(cmd, None).await
+        match service.notification_tx() {
+            Some(tx) => {
+                let tx = tx.clone();
+                let observer: StderrLineObserver = Box::new(move |line| {
+                    if super::rust::is_rmeta_artifact_notification(line) {
+                        let _ = tx.unbounded_send(line.to_vec());
+                    }
+                });
+                run_input_output_observing(cmd, None, Some(observer)).await
+            }
+            None => run_input_output(cmd, None).await,
+        }
     }
 }
 
@@ -236,6 +248,33 @@ pub enum CompilerKind {
 // Need to be consistent with `Language`
 #[allow(dead_code)]
 const EXPECTED_LANGUAGE_COUNT: usize = 21;
+
+const DEFAULT_CACHE_READ_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How long a cache lookup may take before the compilation runs locally
+/// instead, from `SCCACHE_CACHE_READ_TIMEOUT_SECS`.
+fn cache_read_timeout() -> Duration {
+    static TIMEOUT: LazyLock<Duration> = LazyLock::new(|| {
+        parse_cache_read_timeout(env::var("SCCACHE_CACHE_READ_TIMEOUT_SECS").ok().as_deref())
+    });
+    *TIMEOUT
+}
+
+fn parse_cache_read_timeout(value: Option<&str>) -> Duration {
+    let Some(value) = value.map(str::trim).filter(|v| !v.is_empty()) else {
+        return DEFAULT_CACHE_READ_TIMEOUT;
+    };
+    match value.parse::<u64>() {
+        Ok(secs) if secs > 0 => Duration::from_secs(secs),
+        _ => {
+            warn!(
+                "Ignoring invalid SCCACHE_CACHE_READ_TIMEOUT_SECS value {value:?}, using {}s",
+                DEFAULT_CACHE_READ_TIMEOUT.as_secs()
+            );
+            DEFAULT_CACHE_READ_TIMEOUT
+        }
+    }
+}
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Language {
@@ -602,7 +641,7 @@ where
 
         // Set a maximum time limit for the cache to respond before we forge
         // ahead ourselves with a compilation.
-        let timeout = Duration::new(60, 0);
+        let timeout = cache_read_timeout();
         let cache_status = async {
             let res = tokio::time::timeout(timeout, cache_status).await;
             let duration = start.elapsed();
@@ -2071,6 +2110,23 @@ mod test {
     use tokio::runtime::Runtime;
 
     #[test]
+    fn test_parse_cache_read_timeout() {
+        assert_eq!(parse_cache_read_timeout(Some("5")), Duration::from_secs(5));
+        assert_eq!(
+            parse_cache_read_timeout(Some(" 2 ")),
+            Duration::from_secs(2)
+        );
+        assert_eq!(parse_cache_read_timeout(None), DEFAULT_CACHE_READ_TIMEOUT);
+        for invalid in ["", "0", "-1", "1.5", "abc"] {
+            assert_eq!(
+                parse_cache_read_timeout(Some(invalid)),
+                DEFAULT_CACHE_READ_TIMEOUT,
+                "{invalid:?}"
+            );
+        }
+    }
+
+    #[test]
     fn test_c_preprocessing_consistent() {
         // Must contain all possible values from `Language`.
         // Cannot use `enum_iterator` because it adds macro to the real enum,
@@ -2395,11 +2451,20 @@ LLVM version: 6.0",
                 "",
             )),
         );
-        // rustc --print=sysroot
+        // rustc --print=sysroot --print=target-libdir
         let sysroot = f.tempdir.path().to_str().unwrap();
-        next_command(creator, Ok(MockChild::new(exit_status(0), sysroot, "")));
-        next_command(creator, Ok(MockChild::new(exit_status(0), sysroot, "")));
-        next_command(creator, Ok(MockChild::new(exit_status(0), sysroot, "")));
+        let sysroot_and_target_libdir =
+            format!("{sysroot}\n{sysroot}/lib/rustlib/x86_64-unknown-linux-gnu/lib");
+        for _ in 0..3 {
+            next_command(
+                creator,
+                Ok(MockChild::new(
+                    exit_status(0),
+                    &sysroot_and_target_libdir,
+                    "",
+                )),
+            );
+        }
     }
 
     #[test]
@@ -3582,6 +3647,89 @@ LLVM version: 6.0",
         assert_eq!(PREPROCESSOR_STDERR, res.stderr.as_slice());
         // Errors in preprocessing should remove the object file.
         assert!(fs::metadata(&obj).is_err());
+    }
+
+    // A compile that fails on the build server has to reach the client with its exit code; it used
+    // to arrive as "killed by signal 1".
+    #[test]
+    #[cfg(feature = "dist-client")]
+    fn test_compiler_get_cached_or_compile_dist_failed_compile() {
+        drop(env_logger::try_init());
+        let creator = new_creator();
+        let f = TestFixture::new();
+        let gcc = f.mk_bin("gcc").unwrap();
+        let runtime = Runtime::new().unwrap();
+        let pool = runtime.handle().clone();
+        let storage = DiskCache::new(
+            f.tempdir.path().join("cache"),
+            u64::MAX,
+            &pool,
+            PreprocessorCacheModeConfig::default(),
+            CacheMode::ReadWrite,
+            vec![],
+        );
+        let storage = Arc::new(storage);
+        next_command(
+            &creator,
+            Ok(MockChild::new(exit_status(0), "compiler_id=gcc", "")),
+        );
+        next_assembler(&creator, "GNU assembler (GNU Binutils) 2.42", "");
+        let c = get_compiler_info(
+            creator.clone(),
+            &gcc,
+            f.tempdir.path(),
+            &[],
+            &[],
+            &pool,
+            None,
+        )
+        .wait()
+        .unwrap()
+        .0;
+        next_command(
+            &creator,
+            Ok(MockChild::new(exit_status(0), "preprocessor output", "")),
+        );
+        const COMPILER_STDERR: &[u8] = b"foo.c:1: error: expected ';'";
+        let dist_client = test_dist::OneshotClient::new(1, vec![], COMPILER_STDERR.to_owned());
+        let service = server::SccacheService::mock_with_dist_client(
+            dist_client.clone(),
+            storage.clone(),
+            pool.clone(),
+        );
+        let arguments = ovec!["-c", "foo.c", "-o", "foo.o"];
+        let mut hasher = match c.parse_arguments(&arguments, ".".as_ref(), &[]) {
+            CompilerArguments::Ok(h) => h,
+            o => panic!("Bad result from parse_arguments: {:?}", o),
+        };
+        let (cached, res) = runtime
+            .block_on(async {
+                hasher
+                    .get_cached_or_compile(
+                        &service,
+                        Some(dist_client.clone()),
+                        creator.clone(),
+                        storage.clone(),
+                        arguments.clone(),
+                        f.tempdir.path().to_path_buf(),
+                        vec![],
+                        CacheControl::Default,
+                        pool.clone(),
+                    )
+                    .await
+            })
+            .unwrap();
+        match cached {
+            CompileResult::CompileFailed(DistType::Ok(_), _) => {}
+            _ => panic!("Unexpected compile result: {:?}", cached),
+        }
+        assert_eq!(res.status.code(), Some(1));
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            assert_eq!(res.status.signal(), None);
+        }
+        assert!(res.stderr.ends_with(COMPILER_STDERR));
     }
 
     #[test_case(true ; "with preprocessor cache")]

@@ -12,15 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::time::Duration;
+
 use opendal::OperationContext;
 use opendal::Operator;
 use opendal::services::Ghac;
 use opendal_layer_logging::LoggingLayer;
+use opendal_layer_retry::RetryLayer;
 
 use crate::VERSION;
 use crate::errors::*;
 
-use super::http_client::set_user_agent;
+use super::http_client::new_http_transport;
 
 /// A cache that stores entries in GHA Cache Services.
 pub struct GHACache;
@@ -42,8 +45,15 @@ impl GHACache {
         };
 
         let op = Operator::new(builder)?
-            .with_context(OperationContext::new().with_http_transport(set_user_agent()))
-            .layer(LoggingLayer::default());
+            .with_context(OperationContext::new().with_http_transport(new_http_transport()?))
+            .layer(LoggingLayer::default())
+            .layer(
+                // #2821 saw 1–21s Retry-After on GHA 429s; six retries with an 8s cap cover that range.
+                RetryLayer::new()
+                    .with_jitter()
+                    .with_max_times(6)
+                    .with_max_delay(Duration::from_secs(8)),
+            );
         Ok(op)
     }
 }

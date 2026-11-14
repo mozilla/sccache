@@ -161,7 +161,7 @@ impl SeleniumContainer {
                 "host",
                 "-e",
                 "SE_OPTS=-debug",
-                "selenium/standalone-chrome-debug:3.14.0",
+                "docker.io/selenium/standalone-chrome-debug:3.14.0",
             ];
             let output = Command::new("docker").args(args).output().unwrap();
             check_output(&output);

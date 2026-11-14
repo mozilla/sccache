@@ -37,19 +37,12 @@ pub mod readonly;
 pub mod redis;
 #[cfg(feature = "s3")]
 pub mod s3;
+pub mod storage;
 pub(crate) mod utils;
 #[cfg(feature = "webdav")]
 pub mod webdav;
 
-#[cfg(any(
-    feature = "azure",
-    feature = "gcs",
-    feature = "gha",
-    feature = "s3",
-    feature = "webdav",
-    feature = "oss",
-    feature = "cos"
-))]
+#[cfg(any_http_remote)]
 pub(crate) mod http_client;
 
 pub use crate::cache::cache::*;
@@ -57,3 +50,4 @@ pub use crate::cache::cache_io::*;
 pub use crate::cache::ipc_storage::IpcStorage;
 pub use crate::cache::lazy_disk_cache::*;
 pub use crate::cache::multilevel::MultiLevelStorage;
+pub use crate::cache::storage::*;
