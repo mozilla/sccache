@@ -468,9 +468,6 @@ impl DistSystem {
                 child
             }
             ForkResult::Child => {
-                unsafe {
-                    env::set_var("SCCACHE_LOG", "sccache=trace");
-                }
                 env_logger::try_init().unwrap();
                 match server.start().unwrap() {}
             }
