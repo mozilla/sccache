@@ -2684,37 +2684,16 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn unix_socket_binding_replaces_stale_socket() {
-        use std::os::fd::{AsRawFd, FromRawFd};
-        use std::os::unix::ffi::OsStrExt;
+        use socket2::{Domain, SockAddr, Socket, Type};
 
         let tempdir = tempfile::tempdir().unwrap();
         let path = tempdir.path().join("server.sock");
         let runtime = Runtime::new().unwrap();
         let _guard = runtime.enter();
 
-        let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
-        addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
-        let bytes = path.as_os_str().as_bytes();
-        assert!(bytes.len() < addr.sun_path.len());
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                bytes.as_ptr(),
-                addr.sun_path.as_mut_ptr().cast::<u8>(),
-                bytes.len(),
-            );
-        }
-        let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
-        assert!(fd >= 0, "{}", io::Error::last_os_error());
-        let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
-        let ret = unsafe {
-            libc::bind(
-                fd.as_raw_fd(),
-                (&raw const addr).cast::<libc::sockaddr>(),
-                std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t,
-            )
-        };
-        assert_eq!(ret, 0, "{}", io::Error::last_os_error());
-        drop(fd);
+        let stale = Socket::new(Domain::UNIX, Type::STREAM, None).unwrap();
+        stale.bind(&SockAddr::unix(&path).unwrap()).unwrap();
+        drop(stale);
 
         let replacement = bind_unix_listener(&path).unwrap();
         assert!(std::os::unix::net::UnixStream::connect(&path).is_ok());
