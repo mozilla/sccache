@@ -14,11 +14,12 @@
 
 use crate::errors::*;
 use clap::{Arg, ArgAction, ArgGroup, ValueEnum, error::ErrorKind};
+use same_file::is_same_file;
 use std::env;
-use std::ffi::OsString;
-use std::path::PathBuf;
+use std::ffi::{OsStr, OsString};
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use which::which_in;
+use which::which_in_all;
 
 const ENV_VAR_INTERNAL_START_SERVER: &str = "SCCACHE_START_SERVER";
 
@@ -183,6 +184,16 @@ fn get_clap_command() -> clap::Command {
         )
 }
 
+/// Find the first `name` in `path` that is not `self_exe`, so that a link to
+/// sccache named after a compiler wraps the real compiler further down PATH.
+/// Files are compared by identity, which catches symlinks as well as hardlinks.
+/// A candidate that cannot be opened is skipped.
+fn find_real_command(name: &OsStr, path: &OsStr, cwd: &Path, self_exe: &Path) -> Option<PathBuf> {
+    which_in_all(name, Some(path), cwd)
+        .ok()?
+        .find(|p| is_same_file(p, self_exe).is_ok_and(|same| !same))
+}
+
 /// Parse the commandline args into a `Result<Command>` to execute.
 pub fn try_parse() -> Result<Command> {
     trace!("parse");
@@ -213,24 +224,20 @@ pub fn try_parse() -> Result<Command> {
                 _ => {
                     if let (Some(path), Some(exe_filename)) = (env::var_os("PATH"), exe.file_name())
                     {
-                        match which_in(exe_filename, Some(&path), &cwd) {
-                            Ok(ref full_path)
-                                if full_path.canonicalize()?
-                                    == env::current_exe()?.canonicalize()? =>
-                            {
-                                if let Some(dir) = full_path.parent() {
-                                    let path = env::join_paths(
-                                        env::split_paths(&path).filter(|p| p != dir),
-                                    )
-                                    .ok();
-                                    if let Ok(full_path) = which_in(exe_filename, path, &cwd) {
-                                        args[0] = full_path.into();
-                                    }
-                                }
-                            }
-                            Ok(full_path) => args[0] = full_path.into(),
-                            Err(_) => {}
-                        }
+                        let self_exe = env::current_exe()?;
+                        // Without a real $name to wrap, we would end up wrapping
+                        // ourselves and recursing forever (e.g. via `$name -vV`).
+                        let Some(full_path) =
+                            find_real_command(exe_filename, &path, &cwd, &self_exe)
+                        else {
+                            bail!(
+                                "`{}` not found in PATH (`{}` is {} itself and cannot wrap itself)",
+                                exe_filename.display(),
+                                exe.display(),
+                                env!("CARGO_PKG_NAME"),
+                            );
+                        };
+                        args[0] = full_path.into();
                         args.insert(0, env!("CARGO_PKG_NAME").into());
                     }
                 }
@@ -334,5 +341,47 @@ pub fn try_parse() -> Result<Command> {
                 unreachable!("Either the arg group or env variable should provide a command");
             }
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::find_real_command;
+    use std::fs;
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    #[test]
+    fn find_real_command_skips_every_link_to_self() {
+        let tmp = tempfile::tempdir().unwrap();
+        let self_exe = tmp.path().join("sccache");
+        fs::write(&self_exe, "").unwrap();
+        fs::set_permissions(&self_exe, fs::Permissions::from_mode(0o755)).unwrap();
+
+        // A symlink and a hardlink to sccache named `cc`, ahead of the real one.
+        let dirs: Vec<_> = ["link1", "link2", "real"]
+            .iter()
+            .map(|d| tmp.path().join(d))
+            .collect();
+        for dir in &dirs {
+            fs::create_dir(dir).unwrap();
+        }
+        symlink(&self_exe, dirs[0].join("cc")).unwrap();
+        fs::hard_link(&self_exe, dirs[1].join("cc")).unwrap();
+        let real = dirs[2].join("cc");
+        fs::write(&real, "").unwrap();
+        fs::set_permissions(&real, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let path = std::env::join_paths(&dirs).unwrap();
+        assert_eq!(
+            find_real_command("cc".as_ref(), &path, tmp.path(), &self_exe),
+            Some(real)
+        );
+
+        // Without the real one, there is nothing to wrap.
+        let path = std::env::join_paths(&dirs[..2]).unwrap();
+        assert_eq!(
+            find_real_command("cc".as_ref(), &path, tmp.path(), &self_exe),
+            None
+        );
     }
 }

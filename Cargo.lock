@@ -3492,6 +3492,7 @@ dependencies = [
  "reqsign-google",
  "reqwest",
  "rouille",
+ "same-file",
  "semver",
  "serde",
  "serde_json",
