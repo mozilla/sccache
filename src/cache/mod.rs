@@ -32,6 +32,7 @@ pub mod memcached;
 pub mod multilevel;
 #[cfg(feature = "oss")]
 pub mod oss;
+pub mod preprocessor_cache;
 pub mod readonly;
 #[cfg(feature = "redis")]
 pub mod redis;
@@ -50,4 +51,6 @@ pub use crate::cache::cache_io::*;
 pub use crate::cache::ipc_storage::IpcStorage;
 pub use crate::cache::lazy_disk_cache::*;
 pub use crate::cache::multilevel::MultiLevelStorage;
+#[allow(unused_imports)]
+pub use crate::cache::preprocessor_cache::*;
 pub use crate::cache::storage::*;

@@ -12,23 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cache::{
-    Cache, CacheMode, CacheRead, CacheStorage, CacheWrite, GetPathResult, PreprocessorCacheStorage,
-};
-use crate::compiler::PreprocessorCacheEntry;
+use crate::cache::{Cache, CacheMode, CacheRead, CacheStorage, CacheWrite, GetPathResult};
 use crate::lru_disk_cache::{Error as LruError, LruDiskCache, ReadSeek, Result as LruResult};
 use async_trait::async_trait;
 use bytes::Bytes;
 use std::ffi::OsStr;
-use std::io::{BufWriter, Read, Write};
-use std::path::{Path, PathBuf};
+use std::io::{Read, Write};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::errors::*;
 
 use super::lazy_disk_cache::LazyDiskCache;
-use super::utils::normalize_key;
+use super::utils::make_key_path;
 use crate::config::PreprocessorCacheModeConfig;
 
 /// A cache that stores entries at local disk paths.
@@ -37,9 +34,9 @@ pub struct DiskCache {
     lru: Arc<Mutex<LazyDiskCache>>,
     /// Thread pool to execute disk I/O
     pool: tokio::runtime::Handle,
-    preprocessor_cache_mode_config: PreprocessorCacheModeConfig,
-    preprocessor_cache: Arc<Mutex<LazyDiskCache>>,
-    rw_mode: CacheMode,
+    pub(in crate::cache) preprocessor_cache_mode_config: PreprocessorCacheModeConfig,
+    pub(in crate::cache) preprocessor_cache: Arc<Mutex<LazyDiskCache>>,
+    pub(in crate::cache) rw_mode: CacheMode,
     basedirs: Vec<Vec<u8>>,
 }
 
@@ -73,7 +70,7 @@ impl DiskCache {
 }
 
 /// Open the entry at `key`, leaving its file times alone in a read-only cache (see `get_untouched`).
-fn open_entry<K: AsRef<OsStr>>(
+pub(in crate::cache) fn open_entry<K: AsRef<OsStr>>(
     cache: &mut LruDiskCache,
     key: K,
     rw_mode: CacheMode,
@@ -82,18 +79,6 @@ fn open_entry<K: AsRef<OsStr>>(
         CacheMode::ReadOnly => cache.get_untouched(key),
         CacheMode::ReadWrite => cache.get(key),
     }
-}
-
-/// Make a path to the cache entry with key `key`.
-fn make_key_path(key: &str) -> PathBuf {
-    Path::new(&key[0..1]).join(&key[1..2]).join(key)
-}
-
-/// The path of the preprocessor cache entry for `key`: `normalize_key`'s layout, joined with
-/// the platform separator, because a cache loaded from disk indexes entries by their relative
-/// path as the platform spells it.
-fn preprocessor_key_path(key: &str) -> PathBuf {
-    normalize_key(key).split('/').collect()
 }
 
 #[async_trait]
@@ -241,186 +226,6 @@ impl CacheStorage for DiskCache {
     }
 }
 
-#[async_trait]
-impl PreprocessorCacheStorage for DiskCache {
-    fn preprocessor_cache_mode_config(&self) -> PreprocessorCacheModeConfig {
-        self.preprocessor_cache_mode_config
-    }
-    async fn get_preprocessor_cache_entry(&self, key: &str) -> Result<Option<Box<dyn ReadSeek>>> {
-        let key = preprocessor_key_path(key);
-        Ok(open_entry(
-            self.preprocessor_cache.lock().unwrap().get_or_init()?,
-            key,
-            self.rw_mode,
-        )
-        .ok())
-    }
-    async fn put_preprocessor_cache_entry(
-        &self,
-        key: &str,
-        preprocessor_cache_entry: PreprocessorCacheEntry,
-    ) -> Result<()> {
-        if self.rw_mode == CacheMode::ReadOnly {
-            return Err(anyhow!("Cannot write to a read-only cache"));
-        }
-
-        let key = preprocessor_key_path(key);
-        let mut f = self
-            .preprocessor_cache
-            .lock()
-            .unwrap()
-            .get_or_init()?
-            .prepare_add(key, 0)?;
-        preprocessor_cache_entry.serialize_to(BufWriter::new(f.as_file_mut()))?;
-        Ok(self
-            .preprocessor_cache
-            .lock()
-            .unwrap()
-            .get()
-            .unwrap()
-            .commit(f)?)
-    }
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_disk_cache_type_name() {
-        let tempdir = tempfile::tempdir().unwrap();
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap();
-
-        let disk = DiskCache::new(
-            tempdir.path(),
-            1024 * 1024,
-            runtime.handle(),
-            PreprocessorCacheModeConfig::default(),
-            CacheMode::ReadWrite,
-            vec![],
-        );
-
-        assert_eq!(disk.cache_type_name(), "disk");
-    }
-
-    const KEY: &str = "0123456789abcdef";
-
-    fn disk_cache(root: &Path, runtime: &tokio::runtime::Runtime, rw_mode: CacheMode) -> DiskCache {
-        DiskCache::new(
-            root,
-            1024 * 1024,
-            runtime.handle(),
-            PreprocessorCacheModeConfig::default(),
-            rw_mode,
-            vec![],
-        )
-    }
-
-    enum Stored {
-        CompileEntry,
-        PreprocessorEntry,
-    }
-
-    /// A cache directory holding one entry under `KEY`, written by a read-write
-    /// cache and then backdated, so that any refresh of its times by a later
-    /// read is visible.
-    struct ReadOnlyFixture {
-        dir: tempfile::TempDir,
-        runtime: tokio::runtime::Runtime,
-        entry: PathBuf,
-        old: filetime::FileTime,
-    }
-
-    fn read_only_fixture(stored: Stored) -> ReadOnlyFixture {
-        let dir = tempfile::tempdir().unwrap();
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap();
-        let writer = disk_cache(dir.path(), &runtime, CacheMode::ReadWrite);
-        let entry = match stored {
-            Stored::CompileEntry => {
-                runtime
-                    .block_on(writer.put(KEY, CacheWrite::new()))
-                    .unwrap();
-                dir.path().join(make_key_path(KEY))
-            }
-            Stored::PreprocessorEntry => {
-                runtime
-                    .block_on(
-                        writer.put_preprocessor_cache_entry(KEY, PreprocessorCacheEntry::new()),
-                    )
-                    .unwrap();
-                dir.path()
-                    .join("preprocessor")
-                    .join(preprocessor_key_path(KEY))
-            }
-        };
-        let old = filetime::FileTime::from_unix_time(1_000_000_000, 0);
-        filetime::set_file_times(&entry, old, old).unwrap();
-        ReadOnlyFixture {
-            dir,
-            runtime,
-            entry,
-            old,
-        }
-    }
-
-    impl ReadOnlyFixture {
-        fn reader(&self) -> DiskCache {
-            disk_cache(self.dir.path(), &self.runtime, CacheMode::ReadOnly)
-        }
-
-        fn assert_untouched(&self) {
-            let metadata = std::fs::metadata(&self.entry).unwrap();
-            assert_eq!(
-                filetime::FileTime::from_last_modification_time(&metadata),
-                self.old
-            );
-        }
-    }
-
-    #[test]
-    fn test_read_only_get_leaves_entry_untouched() {
-        let f = read_only_fixture(Stored::CompileEntry);
-        let hit = f.runtime.block_on(f.reader().get(KEY)).unwrap();
-        assert!(matches!(hit, Cache::Hit(_)));
-        f.assert_untouched();
-    }
-
-    #[test]
-    fn test_read_only_get_raw_leaves_entry_untouched() {
-        let f = read_only_fixture(Stored::CompileEntry);
-        let reader = f.reader();
-        let data = f.runtime.block_on(reader.get_raw(KEY)).unwrap();
-        assert_eq!(data.as_deref(), Some(&std::fs::read(&f.entry).unwrap()[..]));
-        let (hit, _) = f.runtime.block_on(reader.get_with_raw(KEY)).unwrap();
-        assert!(matches!(hit, Cache::Hit(_)));
-        f.assert_untouched();
-    }
-
-    #[test]
-    fn test_read_only_preprocessor_entry_leaves_entry_untouched() {
-        let f = read_only_fixture(Stored::PreprocessorEntry);
-        let found = f
-            .runtime
-            .block_on(f.reader().get_preprocessor_cache_entry(KEY))
-            .unwrap();
-        assert!(found.is_some());
-        f.assert_untouched();
-    }
-
-    #[test]
-    fn test_preprocessor_entry_written_by_another_cache_is_found() {
-        // A second cache on the same directory loads its index from disk, as an sccache
-        // server started later does.
-        let f = read_only_fixture(Stored::PreprocessorEntry);
-        let reader = disk_cache(f.dir.path(), &f.runtime, CacheMode::ReadWrite);
-        let found = f
-            .runtime
-            .block_on(reader.get_preprocessor_cache_entry(KEY))
-            .unwrap();
-        assert!(found.is_some());
-    }
-}
+#[path = "disk_test.rs"]
+mod tests;
