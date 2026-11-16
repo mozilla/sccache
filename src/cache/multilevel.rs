@@ -28,7 +28,10 @@ use crate::cache::build_single_cache;
 use crate::cache::disk::DiskCache;
 use crate::cache::{Cache, CacheMode, CacheWrite, Storage};
 use crate::compiler::PreprocessorCacheEntry;
-use crate::config::{Config, PreprocessorCacheModeConfig, WriteErrorPolicy};
+use crate::config::{
+    Config, DEFAULT_MULTILEVEL_SLOW_WRITE_CONCURRENCY, PreprocessorCacheModeConfig,
+    WriteErrorPolicy,
+};
 use crate::errors::*;
 
 /// Increment an atomic stats counter, handling the Option check.
@@ -313,8 +316,6 @@ impl MultiLevelStats {
     }
 }
 
-const DEFAULT_SLOW_LEVEL_WRITE_CONCURRENCY: usize = 4;
-
 #[derive(Default)]
 struct BackgroundTasks {
     pending: AtomicUsize,
@@ -415,7 +416,7 @@ impl MultiLevelStorage {
         Self::with_write_error_policy_and_concurrency(
             levels,
             write_error_policy,
-            DEFAULT_SLOW_LEVEL_WRITE_CONCURRENCY,
+            DEFAULT_MULTILEVEL_SLOW_WRITE_CONCURRENCY,
         )
     }
 

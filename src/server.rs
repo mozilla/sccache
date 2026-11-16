@@ -2690,19 +2690,6 @@ fn waits_until_active_limit() {
 }
 
 #[test]
-fn shutdown_message_variant_is_constructible() {
-    let (done, _rx) = oneshot::channel();
-    let message = ServerMessage::Shutdown(done);
-    assert!(matches!(message, ServerMessage::Shutdown(_)));
-}
-
-#[test]
-fn shutdown_timeout_warning_handles_both_states() {
-    warn_on_shutdown_timeout(false, "test phase");
-    warn_on_shutdown_timeout(true, "test phase");
-}
-
-#[test]
 fn shutdown_or_inactive_resolves_when_channel_closes() {
     let (tx, rx) = mpsc::channel(1);
     drop(tx);

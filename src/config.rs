@@ -76,8 +76,10 @@ impl fmt::Display for WriteErrorPolicy {
     }
 }
 
+pub(crate) const DEFAULT_MULTILEVEL_SLOW_WRITE_CONCURRENCY: usize = 4;
+
 fn default_multilevel_slow_write_concurrency() -> usize {
-    4
+    DEFAULT_MULTILEVEL_SLOW_WRITE_CONCURRENCY
 }
 
 /// Configuration for multi-level cache.
