@@ -329,7 +329,7 @@ struct BackgroundTaskGuard {
 impl Drop for BackgroundTaskGuard {
     fn drop(&mut self) {
         if self.tasks.pending.fetch_sub(1, Ordering::AcqRel) == 1 {
-            self.tasks.idle.notify_one();
+            self.tasks.idle.notify_waiters();
         }
     }
 }
@@ -356,10 +356,14 @@ impl BackgroundTasks {
 
     async fn drain(&self) {
         loop {
+            // Register before checking: notify_waiters does not retain a permit.
+            let notified = self.idle.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
             if self.pending.load(Ordering::Acquire) == 0 {
                 return;
             }
-            self.idle.notified().await;
+            notified.await;
         }
     }
 }
@@ -995,8 +999,12 @@ impl Storage for MultiLevelStorage {
                 let entry = preprocessor_cache_entry.clone();
                 let level = Arc::clone(level);
                 let semaphore = (idx > 0).then(|| Arc::clone(&self.slow_level_semaphore));
+                let background_tasks = Arc::clone(&self.background_tasks);
+                let (done_tx, done_rx) = tokio::sync::oneshot::channel();
 
-                tokio::spawn(async move {
+                // The request may be cancelled while waiting for these writes.
+                // Keep accepted writes tracked even if the join below is dropped.
+                background_tasks.spawn(async move {
                     let _permit = if let Some(semaphore) = semaphore {
                         match semaphore.acquire_owned().await {
                             Ok(permit) => Some(permit),
@@ -1011,11 +1019,14 @@ impl Storage for MultiLevelStorage {
                             idx, e
                         );
                     }
-                })
+                    let _ = done_tx.send(());
+                });
+                done_rx
             })
             .collect();
 
-        // Wait for all writes to complete (errors are logged, not propagated)
+        // Wait for all writes to complete (errors are logged, not propagated).
+        // A cancelled caller does not cancel the tracked cache tasks.
         futures::future::join_all(futures).await;
 
         Ok(())

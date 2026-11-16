@@ -3081,15 +3081,14 @@ fn test_multilevel_slow_write_concurrency_serde_default() {
 #[test]
 #[serial(config_from_env)]
 fn test_multilevel_slow_write_concurrency_env_override() {
-    unsafe {
-        env::set_var("SCCACHE_MULTILEVEL_CHAIN", "disk,s3");
-        env::set_var("SCCACHE_MULTILEVEL_SLOW_WRITE_CONCURRENCY", "7");
-    }
-    let config = config_from_env().unwrap();
-    unsafe {
-        env::remove_var("SCCACHE_MULTILEVEL_CHAIN");
-        env::remove_var("SCCACHE_MULTILEVEL_SLOW_WRITE_CONCURRENCY");
-    }
+    let config = temp_env::with_vars(
+        [
+            ("SCCACHE_MULTILEVEL_CHAIN", Some("disk,s3")),
+            ("SCCACHE_MULTILEVEL_SLOW_WRITE_CONCURRENCY", Some("7")),
+        ],
+        config_from_env,
+    )
+    .unwrap();
 
     assert_eq!(
         config.cache.multilevel,
@@ -3104,16 +3103,14 @@ fn test_multilevel_slow_write_concurrency_env_override() {
 #[test]
 #[serial(config_from_env)]
 fn test_zero_multilevel_slow_write_concurrency_env_is_rejected() {
-    unsafe {
-        env::set_var("SCCACHE_MULTILEVEL_CHAIN", "disk");
-        env::set_var("SCCACHE_MULTILEVEL_SLOW_WRITE_CONCURRENCY", "0");
-    }
-    let result = config_from_env();
-    unsafe {
-        env::remove_var("SCCACHE_MULTILEVEL_CHAIN");
-        env::remove_var("SCCACHE_MULTILEVEL_SLOW_WRITE_CONCURRENCY");
-    }
-    let error = result.unwrap_err();
+    let error = temp_env::with_vars(
+        [
+            ("SCCACHE_MULTILEVEL_CHAIN", Some("disk")),
+            ("SCCACHE_MULTILEVEL_SLOW_WRITE_CONCURRENCY", Some("0")),
+        ],
+        config_from_env,
+    )
+    .unwrap_err();
     assert!(
         error
             .to_string()

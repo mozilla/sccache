@@ -814,13 +814,18 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
             done
         };
 
-        let shutdown_ack = runtime.block_on(async {
+        let (shutdown_ack, listener_error) = match runtime.block_on(async {
             futures::select! {
                 server = server.fuse() => std::result::Result::map(server, |()| None),
                 _res = shutdown.fuse() => Ok(None),
                 done = shutdown_idle.fuse() => Ok::<_, io::Error>(done),
             }
-        })?;
+        }) {
+            Ok(ack) => (ack, None),
+            Err(error) => (None, Some(error)),
+        };
+        // An accept error must still run the same drain as normal shutdown.
+        // Accepted cache writes must not be cancelled by dropping the runtime.
 
         const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
         info!(
@@ -873,7 +878,7 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
 
         info!("ok, fully shutting down now");
 
-        Ok(())
+        listener_error.map_or(Ok(()), Err)
     }
 }
 
@@ -2597,30 +2602,47 @@ pub(crate) struct WaitUntilZero {
     allowed_remaining: usize,
 }
 
-#[derive(Clone)]
 #[allow(dead_code)]
 pub struct ActiveInfo {
     info: Arc<std::sync::Mutex<Info>>,
 }
 
 struct Info {
-    waker: Option<Waker>,
+    active: usize,
+    wakers: Vec<Waker>,
+}
+
+impl Clone for ActiveInfo {
+    fn clone(&self) -> Self {
+        let mut info = self.info.lock().unwrap_or_else(|err| err.into_inner());
+        info.active += 1;
+        let shared = Arc::clone(&self.info);
+        drop(info);
+        Self { info: shared }
+    }
 }
 
 impl Drop for ActiveInfo {
     fn drop(&mut self) {
-        if let Ok(info) = self.info.lock()
-            && let Some(waker) = info.waker.as_ref()
-        {
-            waker.wake_by_ref();
+        let wakers = {
+            let mut info = self.info.lock().unwrap_or_else(|err| err.into_inner());
+            info.active -= 1;
+            std::mem::take(&mut info.wakers)
+        };
+        // A wake may cause an immediate poll on another worker, so publish
+        // the new count and release the mutex before notifying.
+        for waker in wakers {
+            waker.wake();
         }
     }
 }
 
 impl WaitUntilZero {
-    #[rustfmt::skip]
     pub(crate) fn new() -> (WaitUntilZero, ActiveInfo) {
-        let info = Arc::new(std::sync::Mutex::new(Info { waker: None }));
+        let info = Arc::new(std::sync::Mutex::new(Info {
+            active: 1,
+            wakers: Vec::new(),
+        }));
 
         (
             WaitUntilZero {
@@ -2646,16 +2668,15 @@ impl std::future::Future for WaitUntilZero {
         match self.info.upgrade() {
             None => std::task::Poll::Ready(()),
             Some(arc) => {
-                // Serialize the count check with `ActiveInfo::drop()`. Otherwise a
-                // service could drop to the allowed count between the check and
-                // waker registration, leaving no later drop to wake this future.
-                let mut info = arc.lock().expect("we can't panic when holding lock");
-                // `upgrade` itself contributes one temporary strong reference.
-                let active = Arc::strong_count(&arc).saturating_sub(1);
-                if active <= self.allowed_remaining {
+                // Arc's strong count still includes the dropping reference
+                // during Drop, even after its waker has been signalled.
+                let mut info = arc.lock().unwrap_or_else(|err| err.into_inner());
+                if info.active <= self.allowed_remaining {
                     return std::task::Poll::Ready(());
                 }
-                info.waker = Some(cx.waker().clone());
+                if !info.wakers.iter().any(|w| w.will_wake(cx.waker())) {
+                    info.wakers.push(cx.waker().clone());
+                }
                 std::task::Poll::Pending
             }
         }
@@ -2687,6 +2708,31 @@ fn waits_until_active_limit() {
     let (wait, active) = WaitUntilZero::new();
     let _active2 = active.clone();
     assert_eq!(wait.with_allowed_remaining(1).now_or_never(), None);
+}
+
+#[test]
+fn waits_for_exact_active_count_and_wakes_all_waiters() {
+    let runtime = Runtime::new().unwrap();
+    runtime.block_on(async {
+        let (wait, original) = WaitUntilZero::new();
+        let remaining = original.clone();
+        let one = wait.with_allowed_remaining(1);
+        tokio::pin!(wait, one);
+
+        assert!(futures::poll!(wait.as_mut()).is_pending());
+        assert!(futures::poll!(one.as_mut()).is_pending());
+
+        drop(original);
+        time::timeout(Duration::from_secs(2), one)
+            .await
+            .expect("remaining=1 waiter must complete");
+        assert!(futures::poll!(wait.as_mut()).is_pending());
+
+        drop(remaining);
+        time::timeout(Duration::from_secs(2), wait)
+            .await
+            .expect("remaining=0 waiter must complete after last drop");
+    });
 }
 
 #[test]
@@ -2736,6 +2782,59 @@ mod tests {
         fn local_addr(&self) -> tokio::io::Result<Option<crate::net::SocketAddr>> {
             Ok(None)
         }
+    }
+
+    struct ObservedDrainStorage(Arc<std::sync::atomic::AtomicBool>);
+
+    #[async_trait::async_trait]
+    impl Storage for ObservedDrainStorage {
+        async fn get(&self, _key: &str) -> crate::errors::Result<crate::cache::Cache> {
+            Ok(crate::cache::Cache::Miss)
+        }
+
+        async fn put(
+            &self,
+            _key: &str,
+            _entry: crate::cache::CacheWrite,
+        ) -> crate::errors::Result<Duration> {
+            Ok(Duration::ZERO)
+        }
+
+        async fn drain_background(&self) {
+            sleep(Duration::from_millis(10)).await;
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+
+        fn location(&self) -> String {
+            "observed-drain".to_string()
+        }
+
+        async fn current_size(&self) -> crate::errors::Result<Option<u64>> {
+            Ok(None)
+        }
+
+        async fn max_size(&self) -> crate::errors::Result<Option<u64>> {
+            Ok(None)
+        }
+    }
+
+    #[test]
+    fn listener_failure_still_drains_background_cache_work() {
+        let runtime = Runtime::new().unwrap();
+        let drained = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let storage = Arc::new(ObservedDrainStorage(Arc::clone(&drained)));
+        let server: SccacheServer<FailingAcceptor> = SccacheServer::with_listener(
+            FailingAcceptor,
+            runtime,
+            Client::new(),
+            DistClientContainer::new_disabled(),
+            storage,
+            CacheMode::ReadWrite,
+        );
+
+        let error = server.run(future::pending::<()>()).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::ConnectionAborted);
+        assert!(drained.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[test]

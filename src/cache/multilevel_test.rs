@@ -329,6 +329,14 @@ impl Storage for SlowWriteStorage {
         Ok(self.delay)
     }
 
+    async fn put_preprocessor_cache_entry(
+        &self,
+        key: &str,
+        _entry: PreprocessorCacheEntry,
+    ) -> Result<()> {
+        self.put_raw(key, Bytes::new()).await.map(|_| ())
+    }
+
     async fn check(&self) -> Result<CacheMode> {
         Ok(CacheMode::ReadWrite)
     }
@@ -375,6 +383,62 @@ fn test_background_task_panic_is_drained() {
         tasks.spawn(async { panic!("expected background-task panic") });
         tasks.drain().await;
         assert_eq!(tasks.pending.load(Ordering::Acquire), 0);
+    });
+}
+
+#[test]
+fn test_concurrent_background_drains_wake_all() {
+    let runtime = RuntimeBuilder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        let tasks = Arc::new(BackgroundTasks::default());
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        tasks.spawn(async move {
+            let _ = release_rx.await;
+        });
+
+        let first = tasks.drain();
+        let second = tasks.drain();
+        tokio::pin!(first, second);
+        assert!(futures::poll!(first.as_mut()).is_pending());
+        assert!(futures::poll!(second.as_mut()).is_pending());
+
+        release_tx.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(first, second);
+        })
+        .await
+        .expect("both drain callers must observe the last completion");
+        assert_eq!(tasks.pending.load(Ordering::Acquire), 0);
+    });
+}
+
+#[test]
+fn test_cancelled_preprocessor_request_still_drains_accepted_writes() {
+    let runtime = RuntimeBuilder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let l1 = Arc::new(SlowWriteStorage::new(Duration::from_millis(10)));
+    let storage = MultiLevelStorage::new(vec![
+        Arc::new(InMemoryStorage::new()) as Arc<dyn Storage>,
+        l1.clone() as Arc<dyn Storage>,
+    ]);
+
+    runtime.block_on(async {
+        let mut request = Box::pin(
+            storage.put_preprocessor_cache_entry("cancelled", PreprocessorCacheEntry::default()),
+        );
+        assert!(futures::poll!(request.as_mut()).is_pending());
+        drop(request);
+
+        tokio::time::timeout(Duration::from_secs(2), storage.drain_background())
+            .await
+            .expect("accepted preprocessor writes must survive caller cancellation");
+        assert_eq!(l1.writes.load(Ordering::SeqCst), 1);
     });
 }
 
