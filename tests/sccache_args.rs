@@ -80,6 +80,53 @@ fn test_s3_invalid_args() -> Result<()> {
     Ok(())
 }
 
+/// `--monitor-interval` only makes sense with `--monitor`; it is rejected
+/// before any server is contacted.
+#[test]
+fn test_monitor_interval_requires_monitor() -> Result<()> {
+    Command::new(SCCACHE_BIN.as_os_str())
+        .args(["--show-stats", "--monitor-interval", "2"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains(
+            "`--monitor-interval` can only be used with `--monitor`",
+        ));
+
+    Ok(())
+}
+
+/// `--monitor-interval` outside 0.2 to 60 seconds is rejected.
+#[test]
+fn test_monitor_interval_out_of_range() -> Result<()> {
+    for secs in ["0.1", "61", "nan"] {
+        Command::new(SCCACHE_BIN.as_os_str())
+            .args(["--monitor", "--monitor-interval", secs])
+            .assert()
+            .failure()
+            .stdout(predicate::str::contains(
+                "`--monitor-interval` must be between 0.2 and 60 seconds",
+            ));
+    }
+
+    Ok(())
+}
+
+/// The dashboard refuses to draw into a pipe rather than filling it with
+/// escape sequences.
+#[cfg(feature = "monitor")]
+#[test]
+fn test_monitor_needs_a_terminal() -> Result<()> {
+    Command::new(SCCACHE_BIN.as_os_str())
+        .arg("--monitor")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "`--monitor` needs its output to be a terminal",
+        ));
+
+    Ok(())
+}
+
 /// An empty entry file reads as a valid, empty entry.
 fn write_empty_preprocessor_entry(cache_dir: &Path) -> Result<String> {
     let entries_dir = cache_dir.join("preprocessor");
