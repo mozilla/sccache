@@ -465,11 +465,10 @@ where
     // The response file lives until rustc has run, see `arguments_for_spawn`.
     let (dep_info_arguments, _response_file) =
         arguments_for_spawn(executable, &dep_info_arguments, COMMAND_LINE_LIMIT)?;
-    let mut cmd = creator.clone().new_command_sync(executable);
-    cmd.args(&dep_info_arguments)
-        .env_clear()
-        .envs(env_vars.to_vec())
-        .current_dir(cwd);
+    let mut cmd = creator
+        .clone()
+        .new_command_with_env(executable, env_vars.iter().cloned());
+    cmd.args(&dep_info_arguments).current_dir(cwd);
     trace!("[{}]: get dep-info: {:?}", crate_name, cmd);
     // Output of command is in file under dep_file, so we ignore stdout&stderr
     let _dep_info = run_input_output(cmd, None).await?;
@@ -803,11 +802,10 @@ where
     // The response file lives until rustc has run, see `arguments_for_spawn`.
     let (arguments, _response_file) =
         arguments_for_spawn(executable, &arguments, COMMAND_LINE_LIMIT)?;
-    let mut cmd = creator.clone().new_command_sync(executable);
-    cmd.args(&arguments)
-        .env_clear()
-        .envs(env_vars.to_vec())
-        .current_dir(cwd);
+    let mut cmd = creator
+        .clone()
+        .new_command_with_env(executable, env_vars.iter().cloned());
+    cmd.args(&arguments).current_dir(cwd);
     trace!("get_compiler_outputs: {:?}", cmd);
     let outputs = run_input_output(cmd, None).await?;
 
@@ -845,13 +843,11 @@ impl Rust {
             .to_string();
 
         // it's fine to use the `executable` directly no matter if proxied or not
-        let mut cmd = creator.new_command_sync(&executable);
+        let mut cmd = creator.new_command_with_env(&executable, env_vars.iter().cloned());
         cmd.stdout(process::Stdio::piped())
             .stderr(process::Stdio::null())
             .arg("--print=sysroot")
-            .arg("--print=target-libdir")
-            .env_clear()
-            .envs(env_vars.to_vec());
+            .arg("--print=target-libdir");
         let hashed_archive = dist_archive.clone();
         let sysroot_and_libs = async move {
             let output = run_input_output(cmd, None).await?;
@@ -1004,12 +1000,8 @@ where
         cwd: PathBuf,
         env: &[(OsString, OsString)],
     ) -> Pin<Box<dyn Future<Output = Result<(PathBuf, FileTime)>> + Send>> {
-        let mut child = creator.new_command_sync(&self.proxy_executable);
-        child
-            .current_dir(&cwd)
-            .env_clear()
-            .envs(env.to_vec())
-            .args(&["which", "rustc"]);
+        let mut child = creator.new_command_with_env(&self.proxy_executable, env.iter().cloned());
+        child.current_dir(&cwd).args(&["which", "rustc"]);
 
         Box::pin(async move {
             let output = run_input_output(child, None)
@@ -1087,8 +1079,8 @@ impl RustupProxy {
         // `rustc +stable` returns retcode 1 (!=0) if it is installed via i.e. rpm packages
 
         // verify rustc is proxy
-        let mut child = creator.new_command_sync(compiler_executable);
-        child.env_clear().envs(env.to_vec()).args(&["+stable"]);
+        let mut child = creator.new_command_with_env(compiler_executable, env.iter().cloned());
+        child.args(&["+stable"]);
         let state = run_input_output(child, None).await.map(move |output| {
             if output.status.success() {
                 trace!("proxy: Found a compiler proxy managed by rustup");
@@ -1150,8 +1142,9 @@ impl RustupProxy {
             Ok(ProxyPath::None) => Ok(Ok(None)),
             Ok(ProxyPath::Candidate(proxy_executable)) => {
                 // verify the candidate is a rustup
-                let mut child = creator.new_command_sync(&proxy_executable);
-                child.env_clear().envs(env.to_vec()).args(&["--version"]);
+                let mut child =
+                    creator.new_command_with_env(&proxy_executable, env.iter().cloned());
+                child.args(&["--version"]);
                 let rustup_candidate_check = run_input_output(child, None).await?;
 
                 let stdout = String::from_utf8(rustup_candidate_check.stdout)
