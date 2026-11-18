@@ -164,8 +164,8 @@ daemon with `RecordStats` before exiting.
 using a separate `StorageReadError` response. Hit and miss replies retain their
 existing wire format; older clients cannot decode the new error response as a
 miss. Restart the daemon after upgrading so both processes use the updated
-error handling. Invalid cached archives also produce lookup errors, whether
-the CLI reads a local path or receives raw bytes.
+error handling. If the CLI cannot decode a cached archive, the error identifies
+the local path or, for raw bytes received over IPC, the cache key.
 
 A compilation recorded as a cache miss also increments `Cache read errors` and
 `Cache errors` if the lookup failed. Ordinary misses increment neither error

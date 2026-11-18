@@ -82,7 +82,12 @@ impl Storage for IpcStorage {
             GetPathResult::Miss => Ok(Cache::Miss),
             // Backend doesn't support paths (S3, Redis, …); fall back to bytes over IPC.
             GetPathResult::Unsupported => match self.get_raw(key).await? {
-                Some(bytes) => Ok(Cache::Hit(CacheRead::from(Cursor::new(bytes))?)),
+                Some(bytes) => {
+                    let entry = CacheRead::from(Cursor::new(bytes)).with_context(|| {
+                        format!("IpcStorage::get: decode archive for key {key}")
+                    })?;
+                    Ok(Cache::Hit(entry))
+                }
                 None => Ok(Cache::Miss),
             },
         }

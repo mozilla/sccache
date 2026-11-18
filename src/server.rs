@@ -3116,6 +3116,22 @@ mod tests {
     }
 
     #[test]
+    fn ipc_invalid_raw_archive_error_identifies_key() {
+        let runtime = Runtime::new().unwrap();
+        let backend = Arc::new(crate::test::mock_storage::MockStorage::new(None, false));
+        backend.next_get_raw(Ok(Some(bytes::Bytes::from_static(b"not a zip"))));
+        let (storage, server) = connect_ipc_storage(&runtime, backend);
+
+        let key = "0123456789abcdef";
+        let error = runtime.block_on(storage.get(key)).err().unwrap();
+        assert!(error.to_string().contains(key), "{error:#}");
+        assert!(error.downcast_ref::<zip::result::ZipError>().is_some());
+
+        drop(storage);
+        runtime.block_on(server).unwrap().unwrap();
+    }
+
+    #[test]
     fn ipc_disk_lookup_preserves_hits_misses_and_archive_errors() {
         use crate::cache::{Cache, CacheWrite, GetPathResult};
 
