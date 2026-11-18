@@ -30,6 +30,13 @@ is set. The file is then preprocessed once per architecture, with only that
 `-arch` flag, and every output goes into the hash, so that code only one of
 the targets sees (e.g. under `__aarch64__`) is taken into account.
 
+[Native MSVC modules](MSVCModules.md) additionally use a front-end dependency
+scan to hash all reported imported IFCs, including transitive imports. These
+compilations bypass the preprocessor cache. They are location-dependent by
+default; explicit deterministic path mappings enable project/build-root reuse
+with producer context stored in the cache entry and a private local provenance
+index.
+
 We also take into account in the hash:
 * Hash of the compiler binary
 * Hash of the assembler binary the compiler hands the compilation off to, and
