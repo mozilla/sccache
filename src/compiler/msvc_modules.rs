@@ -943,14 +943,16 @@ mod test {
             mapped.imports(std::slice::from_ref(&path)).unwrap()[0].1,
             second
         );
-        let prior = Snapshot::read(&path).unwrap().stamp;
-        let written =
-            filetime::FileTime::from_last_modification_time(&fs::metadata(&path).unwrap());
-        fs::write(&path, b"identical IFC bytes").unwrap();
-        filetime::set_file_mtime(&path, written).unwrap();
-        let current = Snapshot::read(&path).unwrap().stamp;
-        assert_eq!(prior.id, current.id);
-        assert_eq!(prior.written, current.written);
+        // A same-tick rewrite need not advance the filesystem's change time.
+        // Age just the recorded change time to test it independently of the clock.
+        let snapshot = Snapshot::read(&path).unwrap();
+        let record_path =
+            OriginShard::new(&mapped.state_dir, &snapshot.key).record_path(&snapshot.key);
+        let mut record: OriginRecord =
+            serde_json::from_slice(&fs::read(&record_path).unwrap()).unwrap();
+        assert_eq!(record.stamp, snapshot.stamp);
+        record.stamp.changed -= 1;
+        fs::write(&record_path, serde_json::to_vec(&record).unwrap()).unwrap();
         assert!(
             mapped
                 .imports(std::slice::from_ref(&path))
@@ -961,7 +963,7 @@ mod test {
         meta.create("producer-two", &output()).unwrap();
         let written =
             filetime::FileTime::from_last_modification_time(&fs::metadata(&path).unwrap());
-        fs::remove_file(&path).unwrap();
+        fs::rename(&path, temp.path().join("old.ifc")).unwrap();
         fs::write(&path, b"identical IFC bytes").unwrap();
         filetime::set_file_mtime(&path, written).unwrap();
         assert!(mapped.imports(&[path]).is_err());
