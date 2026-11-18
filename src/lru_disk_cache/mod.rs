@@ -75,9 +75,6 @@ impl<K> Meter<K, u64> for FileSize {
 fn get_all_files<P: AsRef<Path>>(path: P) -> Box<dyn Iterator<Item = (PathBuf, u64)>> {
     let mut files: Vec<_> = WalkDir::new(path.as_ref())
         .into_iter()
-        .filter_entry(|entry| {
-            entry.depth() == 0 || entry.file_name() != crate::config::MSVC_MODULE_ORIGIN_DIR
-        })
         .filter_map(|e| {
             e.ok().and_then(|f| {
                 // Only look at files
@@ -800,23 +797,6 @@ mod tests {
         LruDiskCache::new(f.tmp(), 1024).unwrap();
         let tag = f.tmp().join(CACHEDIR_TAG_FILE_NAME);
         assert_eq!(fs::read(&tag).unwrap(), CACHEDIR_TAG_CONTENTS);
-    }
-
-    #[test]
-    fn test_module_provenance_is_not_evicted_as_an_artifact() {
-        let f = TestFixture::new();
-        let state = f.tmp().join(crate::config::MSVC_MODULE_ORIGIN_DIR);
-        fs::create_dir_all(&state).unwrap();
-        fs::write(state.join("origin.json"), b"producer context").unwrap();
-        let mut cache = LruDiskCache::new(f.tmp(), 1).unwrap();
-        assert_eq!(cache.size(), 0);
-        cache.insert_bytes("a", b"a").unwrap();
-        cache.insert_bytes("b", b"b").unwrap();
-        drop(cache);
-        assert_eq!(
-            fs::read(state.join("origin.json")).unwrap(),
-            b"producer context"
-        );
     }
 
     #[test]

@@ -15,8 +15,8 @@
 use crate::cache::{FileObjectSource, Storage};
 use crate::compiler::preprocessor_cache::preprocessor_cache_entry_hash_key;
 use crate::compiler::{
-    Cacheable, ColorMode, Compilation, CompilationCacheMetadata, CompileCommand, Compiler,
-    CompilerArguments, CompilerHasher, CompilerKind, HashResult, Language,
+    Cacheable, ColorMode, Compilation, CompileCommand, Compiler, CompilerArguments, CompilerHasher,
+    CompilerKind, HashResult, Language,
 };
 #[cfg(feature = "dist-client")]
 use crate::compiler::{DistPackagers, NoopOutputsRewriter};
@@ -159,7 +159,6 @@ struct CCompilation<I: CCompilerImpl> {
     parsed_args: ParsedArguments,
     is_locally_preprocessed: bool,
     preprocessor_stderr: Vec<u8>,
-    metadata: Option<Arc<dyn CompilationCacheMetadata>>,
     skip_cache: bool,
     #[cfg(feature = "dist-client")]
     preprocessed_input: Vec<u8>,
@@ -196,9 +195,6 @@ pub enum CCompilerKind {
 
 pub struct PreprocessorOutput {
     pub output: process::Output,
-    pub extra_args: Vec<OsString>,
-    pub hash_args: Option<Vec<OsString>>,
-    pub metadata: Option<Arc<dyn CompilationCacheMetadata>>,
     pub skip_cache: bool,
 }
 
@@ -206,9 +202,6 @@ impl From<process::Output> for PreprocessorOutput {
     fn from(output: process::Output) -> Self {
         Self {
             output,
-            extra_args: Vec::new(),
-            hash_args: None,
-            metadata: None,
             skip_cache: false,
         }
     }
@@ -252,7 +245,6 @@ pub trait CCompilerImpl: Clone + fmt::Debug + Send + Sync + 'static {
         may_dist: bool,
         rewrite_includes_only: bool,
         preprocessor_cache_mode: bool,
-        _basedirs: &[Vec<u8>],
     ) -> Result<PreprocessorOutput>
     where
         T: CommandCreatorSync,
@@ -561,9 +553,6 @@ where
             None
         };
 
-        let mut metadata = None;
-        let mut hash_args = None;
-        let mut extra_args = Vec::new();
         let mut skip_cache = false;
         let (preprocessor_output, preprocessor_stderr, include_files) = if needs_preprocessing {
             if let Some(preprocessor_key) = &preprocessor_key
@@ -613,7 +602,6 @@ where
                                 parsed_args: self.parsed_args.clone(),
                                 is_locally_preprocessed: false,
                                 preprocessor_stderr: Vec::new(),
-                                metadata: None,
                                 skip_cache: false,
                                 #[cfg(feature = "dist-client")]
                                 preprocessed_input: PREPROCESSING_SKIPPED_COMPILE_POISON.to_vec(),
@@ -641,7 +629,6 @@ where
                     may_dist,
                     rewrite_includes_only,
                     use_preprocessor_cache_mode,
-                    storage.basedirs(),
                 )
                 .await;
             let out_pretty = self.parsed_args.output_pretty().into_owned();
@@ -689,9 +676,6 @@ where
                     Err(err) => Err(err),
                 }
             })?;
-            extra_args = preprocessor_result.extra_args;
-            metadata = preprocessor_result.metadata;
-            hash_args = preprocessor_result.hash_args;
             skip_cache = preprocessor_result.skip_cache;
             let mut preprocessor_result = preprocessor_result.output;
 
@@ -735,13 +719,7 @@ where
 
         // Create an argument vector containing both common and arch args, to
         // use in creating a hash key
-        let basedirs = if hash_args.is_some() {
-            &[][..]
-        } else {
-            storage.basedirs()
-        };
-        let mut common_and_arch_args =
-            hash_args.unwrap_or_else(|| self.parsed_args.common_args.clone());
+        let mut common_and_arch_args = self.parsed_args.common_args.clone();
         common_and_arch_args.extend(self.parsed_args.arch_args.clone());
 
         let key = HashKeyParams::new(
@@ -753,7 +731,7 @@ where
         .with_extra_hashes(&extra_hashes)
         .with_env_vars(&env_vars)
         .with_plusplus(self.compiler.plusplus())
-        .with_basedirs(basedirs)
+        .with_basedirs(storage.basedirs())
         .with_assembler_digest(assembler_digest.as_deref())
         .with_input_file_name(hashed_input_file_name(
             self.parsed_args.language,
@@ -789,15 +767,12 @@ where
             self.executable.to_string_lossy(),
             self.executable_digest
         );
-        let mut parsed_args = self.parsed_args.clone();
-        parsed_args.common_args.extend(extra_args);
         Ok(HashResult {
             key,
             compilation: Box::new(CCompilation {
-                parsed_args,
+                parsed_args: self.parsed_args.clone(),
                 is_locally_preprocessed: true,
                 preprocessor_stderr,
-                metadata,
                 skip_cache,
                 #[cfg(feature = "dist-client")]
                 preprocessed_input: preprocessor_output,
@@ -1382,10 +1357,6 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I>
         }
         self.compiler
             .cached_stdout(&self.parsed_args, stdout, &self.preprocessor_stderr)
-    }
-
-    fn cache_metadata(&self) -> Option<Arc<dyn CompilationCacheMetadata>> {
-        self.metadata.clone()
     }
 
     fn skip_cache(&self) -> bool {

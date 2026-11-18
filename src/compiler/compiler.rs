@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cache::{Cache, CacheRead, CacheWrite, DecompressionFailure, FileObjectSource, Storage};
+use crate::cache::{Cache, CacheWrite, DecompressionFailure, FileObjectSource, Storage};
 use crate::compiler::args::*;
 use crate::compiler::c::{CCompiler, CCompilerKind};
 use crate::compiler::cicc::Cicc;
@@ -657,92 +657,52 @@ where
                 ..output
             })
             .collect::<Vec<_>>();
-        let metadata = compilation.cache_metadata();
 
         let lookup = match cache_status.await {
             (Ok(Ok(Cache::Hit(mut entry))), duration) => {
+                debug!(
+                    "[{}]: Cache hit in {}",
+                    out_pretty,
+                    fmt_duration_as_secs(&duration)
+                );
                 let output = process::Output {
                     status: exit_status(0),
                     stdout: compilation.cached_stdout(entry.get_stdout()),
                     stderr: entry.get_stderr(),
                 };
-                let locally_preprocessed = compilation.is_locally_preprocessed();
-                let result = async {
-                    let data = if let Some(handler) = metadata.clone() {
-                        let key = key.clone();
-                        let (cached_entry, data, usable) = pool
-                            .spawn_blocking(move || {
-                                let mut data = Vec::new();
-                                entry.get_object(handler.name(), &mut data)?;
-                                let usable = handler.validate(&key, &data, &mut entry)?;
-                                Ok::<_, Error>((entry, data, usable))
-                            })
-                            .await??;
-                        entry = cached_entry;
-                        if !usable {
-                            debug!(
-                                "[{}]: Cached compiler context cannot be relocated here",
-                                out_pretty
-                            );
-                            return Ok(CacheLookupResult::Miss(MissType::Normal));
-                        }
-                        Some(data)
-                    } else {
-                        None
-                    };
-                    debug!(
-                        "[{}]: Cache hit in {}",
-                        out_pretty,
-                        fmt_duration_as_secs(&duration)
-                    );
-                    let filtered_outputs = if locally_preprocessed {
-                        // In this mode, cache entries are exclusively distinguished by their preprocessed
-                        // source contents. But two files may differ in their names and / or the names of
-                        // included files while still producing the same preprocessed output, so they get the
-                        // same cache entry. That entry will have wrong (file names) dependency informaton in
-                        // the dependency file except for the compilation unit that originally produced it.
-                        // Since we did local preprocessing, that should already have produced the dependency
-                        // file - just leave that one alone and don't overwrite it from the cache.
-                        outputs
-                            .iter()
-                            .filter(|fobj_source| fobj_source.key != "d") // key "d" means dependency file
-                            .cloned()
-                            .collect()
-                    } else {
-                        // In this mode, no local preprocessing was done, so the dependency file (if any)
-                        // has not been created. But in this mode, the cache key also includes a lot of
-                        // information about filenames (and less relevant here, file hashes), so it *is* safe
-                        // to restore the dependency file from the cache.
-                        outputs.clone()
-                    };
 
-                    let hit = CompileResult::CacheHit(duration);
-                    entry.extract_objects(filtered_outputs, &pool).await?;
-                    if let (Some(handler), Some(data)) = (metadata.clone(), data) {
-                        let key = key.clone();
-                        if let Err(error) = pool
-                            .spawn_blocking(move || handler.restored(&key, &data))
-                            .await?
-                        {
-                            warn!(
-                                "[{}]: Cannot register restored compiler output: {error:#}",
-                                out_pretty
-                            );
-                            return Ok(CacheLookupResult::Miss(MissType::CacheReadError));
+                let filtered_outputs = if compilation.is_locally_preprocessed() {
+                    // In this mode, cache entries are exclusively distinguished by their preprocessed
+                    // source contents. But two files may differ in their names and / or the names of
+                    // included files while still producing the same preprocessed output, so they get the
+                    // same cache entry. That entry will have wrong (file names) dependency informaton in
+                    // the dependency file except for the compilation unit that originally produced it.
+                    // Since we did local preprocessing, that should already have produced the dependency
+                    // file - just leave that one alone and don't overwrite it from the cache.
+                    outputs
+                        .iter()
+                        .filter(|fobj_source| fobj_source.key != "d") // key "d" means dependency file
+                        .cloned()
+                        .collect()
+                } else {
+                    // In this mode, no local preprocessing was done, so the dependency file (if any)
+                    // has not been created. But in this mode, the cache key also includes a lot of
+                    // information about filenames (and less relevant here, file hashes), so it *is* safe
+                    // to restore the dependency file from the cache.
+                    outputs.clone()
+                };
+
+                let hit = CompileResult::CacheHit(duration);
+                match entry.extract_objects(filtered_outputs, &pool).await {
+                    Ok(()) => Ok(CacheLookupResult::Success(hit, output)),
+                    Err(e) => {
+                        if e.downcast_ref::<DecompressionFailure>().is_some() {
+                            debug!("[{}]: Failed to decompress object", out_pretty);
+                            Ok(CacheLookupResult::Miss(MissType::CacheReadError))
+                        } else {
+                            Err(e)
                         }
                     }
-                    Ok::<_, Error>(CacheLookupResult::Success(hit, output))
-                }
-                .await;
-                match result {
-                    Err(error) if error.downcast_ref::<DecompressionFailure>().is_some() => {
-                        debug!(
-                            "[{}]: Invalid cached compiler output: {error:#}",
-                            out_pretty
-                        );
-                        Ok(CacheLookupResult::Miss(MissType::CacheReadError))
-                    }
-                    result => result,
                 }
             }
             (Ok(Ok(Cache::Miss)), duration) => {
@@ -841,19 +801,6 @@ where
                         compiler_result,
                     ));
                 }
-                let metadata_data = if let Some(handler) = metadata.clone() {
-                    let key = key.clone();
-                    let output = compiler_result.clone();
-                    match pool.spawn_blocking(move || handler.create(&key, &output)).await? {
-                        Ok(data) => Some(data),
-                        Err(error) => {
-                            warn!("[{}]: Cannot record compiler cache metadata; outputs were built but not cached: {error:#}", out_pretty);
-                            return Ok((CompileResult::NotCacheable(dist_type, duration_compilation), compiler_result));
-                        }
-                    }
-                } else {
-                    None
-                };
                 if miss_type == MissType::ForcedNoCache {
                     // Do not cache
                     debug!(
@@ -888,12 +835,6 @@ where
                     .await
                     .context("failed to zip up compiler outputs")?;
 
-                if let (Some(handler), Some(data)) = (metadata, metadata_data)
-                    && let Err(error) = entry.put_object(handler.name(), &mut std::io::Cursor::new(data), None)
-                {
-                        warn!("[{}]: Cannot pack compiler cache metadata; outputs were built but not cached: {error:#}", out_pretty);
-                        return Ok((CompileResult::NotCacheable(dist_type, duration_compilation), compiler_result));
-                }
                 entry.put_stdout(&compiler_result.stdout)?;
                 entry.put_stderr(&compiler_result.stderr)?;
                 debug!(
@@ -1198,13 +1139,6 @@ impl<T: CommandCreatorSync> Clone for Box<dyn CompilerHasher<T>> {
     }
 }
 
-pub trait CompilationCacheMetadata: Send + Sync {
-    fn name(&self) -> &'static str;
-    fn create(&self, key: &str, output: &process::Output) -> Result<Vec<u8>>;
-    fn validate(&self, key: &str, data: &[u8], entry: &mut CacheRead) -> Result<bool>;
-    fn restored(&self, key: &str, data: &[u8]) -> Result<()>;
-}
-
 /// An interface to a compiler for actually invoking compilation.
 pub trait Compilation<T>: Send
 where
@@ -1233,17 +1167,13 @@ where
         true
     }
 
+    fn skip_cache(&self) -> bool {
+        false
+    }
+
     /// Adjust the stdout replayed from a cache hit for this compilation.
     fn cached_stdout(&self, stdout: Vec<u8>) -> Vec<u8> {
         stdout
-    }
-
-    fn cache_metadata(&self) -> Option<Arc<dyn CompilationCacheMetadata>> {
-        None
-    }
-
-    fn skip_cache(&self) -> bool {
-        false
     }
 
     /// Returns an iterator over the results of this compilation.

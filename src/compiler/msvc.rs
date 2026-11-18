@@ -15,8 +15,6 @@
 use crate::compiler::args::*;
 use crate::compiler::c::PreprocessorOutput;
 use crate::compiler::c::{ArtifactDescriptor, CCompilerImpl, CCompilerKind, ParsedArguments};
-#[cfg(windows)]
-use crate::compiler::msvc_modules::MappedModules;
 use crate::compiler::{
     CCompileCommand, Cacheable, ColorMode, CompileCommand, CompilerArguments, Language,
     SingleCompileCommand, clang, gcc, write_temp_file,
@@ -26,8 +24,6 @@ use crate::util::{
     Digest, OsStrExt, encode_path, env_var_name_matches, hash_all, run_input_output,
 };
 use crate::{counted_array, dist};
-#[cfg(windows)]
-use anyhow::ensure;
 use async_trait::async_trait;
 use fs::File;
 use fs_err as fs;
@@ -122,29 +118,11 @@ impl CCompilerImpl for Msvc {
         may_dist: bool,
         rewrite_includes_only: bool,
         preprocessor_cache_mode: bool,
-        _basedirs: &[Vec<u8>],
     ) -> Result<PreprocessorOutput>
     where
         T: CommandCreatorSync,
     {
         if !self.is_clang && is_native_module_compile(args) {
-            #[cfg(windows)]
-            if let Some(mapping) = MappedModules::new(args, cwd, env, _basedirs)? {
-                return preprocess_mapped_modules(
-                    creator,
-                    executable,
-                    args,
-                    cwd,
-                    env,
-                    &self.includes_prefix,
-                    mapping,
-                )
-                .await;
-            }
-            if has_pathmap(args) {
-                debug!("MSVC path mapping is not eligible for caching; compiling without caching");
-                return Ok(skip_module_cache());
-            }
             let scan = match scan_modules(creator, executable, args, cwd, env).await {
                 Ok(scan) => scan,
                 Err(error) if is_module_probe(args) => {
@@ -578,8 +556,8 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("Qvec-report:1", PassThrough),
     msvc_flag!("Qvec-report:2", PassThrough),
     msvc_take_arg!("RTC", OsString, Concatenated, PassThroughWithSuffix),
-    msvc_flag!("TC", PassThrough),
-    msvc_flag!("TP", PassThrough),
+    msvc_flag!("TC", PassThrough), // TODO: disable explicit language check, hope for the best for now?
+    msvc_flag!("TP", PassThrough), // As above.
     msvc_take_arg!("Tc", PathBuf, CanBeSeparated, CInput),
     msvc_take_arg!("Tp", PathBuf, CanBeSeparated, CxxInput),
     msvc_take_arg!("U", OsString, Concatenated, PreprocessorArgument),
@@ -701,7 +679,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("openmp-", PassThrough),
     msvc_take_arg!("openmp:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_flag!("options:strict", PassThrough),
-    msvc_take_arg!("pathmap:", OsString, Concatenated, PassThroughWithSuffix),
+    msvc_take_arg!("pathmap:", OsString, Concatenated, TooHard),
     msvc_flag!("permissive", PassThrough),
     msvc_flag!("permissive-", PassThrough),
     msvc_flag!("presetPadding", PassThrough),
@@ -795,7 +773,6 @@ pub fn parse_arguments(
     let mut input_arg = None;
     let mut explicit_language = None;
     let mut global_language = None;
-    let mut pdb_sync = false;
     let mut double_dash_input = false;
     let mut common_args = vec![];
     let mut unhashed_args = vec![];
@@ -957,8 +934,26 @@ pub fn parse_arguments(
                 arg.normalize(NormalizedDisposition::Separated)
                     .iter_os_strings(),
             ),
-            // /MP has no purpose for a single source, but implies /FS.
-            Some(Ignore) | Some(IgnoreWithSuffix(_)) => pdb_sync = true,
+            // We ignore -MP and -FS and never pass them down to the compiler.
+            //
+            // -MP tells the compiler to build with multiple processes and is used
+            // to spread multiple compilations when there are multiple inputs.
+            // Either we have multiple inputs on the command line, and we're going
+            // to bail out and not cache, or -MP is not going to be useful.
+            // -MP also implies -FS.
+            //
+            // -FS forces synchronous access to PDB files via a MSPDBSRV process.
+            // This option is only useful when multiple compiler invocations are going
+            // to share the same PDB file, which is not supported by sccache. So either
+            // -Fd was passed with a pdb that is not shared and sccache is going to
+            // handle the compile, in which case -FS is not needed, or -Fd was not passed
+            // and we're going to bail out and not cache.
+            //
+            // In both cases, the flag is not going to be useful if we are going to cache,
+            // so we just skip them entirely. -FS may also have a side effect of creating
+            // race conditions in which we may try to read the PDB before MSPDBSRC is done
+            // writing it, so we're better off ignoring the flags.
+            Some(Ignore) | Some(IgnoreWithSuffix(_)) => {}
             Some(CInput(_)) => explicit_language = Some(Language::C),
             Some(CxxInput(_)) => explicit_language = Some(Language::Cxx),
             _ => {}
@@ -1113,18 +1108,8 @@ pub fn parse_arguments(
     {
         cannot_cache!("MSVC compiler pass override");
     }
-    let pathmap = common_args
-        .iter()
-        .any(|arg| arg.starts_with("/pathmap:") || arg.starts_with("-pathmap:"));
-    // Mapped compiler PDB builds are uncached, so keep the caller's synchronization.
-    if pathmap && debug_info && pdb_sync && (native_module || module_probe) {
-        unhashed_args.push("-FS".into());
-    }
-    if pathmap && !native_module && !module_probe {
-        cannot_cache!("pathmap without native C++20 dependency scanning");
-    }
     if native_module || module_probe {
-        if native_module && debug_info && !pathmap {
+        if native_module && debug_info {
             cannot_cache!("MSVC modules with compiler PDB");
         }
         if common_args.iter().any(|arg| {
@@ -1296,10 +1281,7 @@ pub fn parse_arguments(
                 // program database cannot be tracked as a per-compilation
                 // artifact.
                 if p.as_os_str().to_string_lossy().ends_with(['\\', '/']) {
-                    if !pathmap || !(native_module || module_probe) {
-                        cannot_cache!("shared pdb");
-                    }
-                    None
+                    cannot_cache!("shared pdb");
                 } else {
                     let path = if p.extension().is_none() {
                         let mut path = p;
@@ -1321,10 +1303,7 @@ pub fn parse_arguments(
                 // -Zi and -ZI without -Fd defaults to vcxxx.pdb (where xxx depends on the
                 // MSVC version), and that's used for all compilations with the same
                 // working directory. We can't cache such a pdb.
-                if !pathmap || !(native_module || module_probe) {
-                    cannot_cache!("shared pdb");
-                }
-                None
+                cannot_cache!("shared pdb");
             }
         };
     }
@@ -1368,12 +1347,6 @@ fn is_native_module_compile(args: &ParsedArguments) -> bool {
 
 fn is_module_probe(args: &ParsedArguments) -> bool {
     args.too_hard_for_preprocessor_cache_mode.as_deref() == Some(OsStr::new(NATIVE_MODULE_PROBE))
-}
-
-fn has_pathmap(args: &ParsedArguments) -> bool {
-    args.common_args
-        .iter()
-        .any(|arg| arg.starts_with("/pathmap:") || arg.starts_with("-pathmap:"))
 }
 
 fn uses_compiler_pdb(args: &ParsedArguments) -> bool {
@@ -1627,135 +1600,6 @@ async fn preprocess_scanned_modules<T: CommandCreatorSync>(
     }
     output.stdout.extend_from_slice(digest.finish().as_bytes());
     Ok(output)
-}
-
-#[cfg(windows)]
-async fn preprocess_mapped_modules<T: CommandCreatorSync>(
-    creator: &T,
-    executable: &Path,
-    args: &ParsedArguments,
-    cwd: &Path,
-    env: &[(OsString, OsString)],
-    includes_prefix: &str,
-    mapping: MappedModules,
-) -> Result<PreprocessorOutput> {
-    use std::hash::Hash;
-    let mut scan = scan_modules(creator, executable, args, cwd, env).await?;
-    let dependencies = parse_module_dependencies(&scan.report)?;
-    let undeclared_output = is_module_probe(args) && !dependencies.data.provided_module.is_empty();
-    let mut imported: Vec<_> = dependencies
-        .data
-        .imported_modules
-        .into_iter()
-        .chain(dependencies.data.imported_header_units)
-        .map(|import| import.bmi)
-        .collect();
-    imported.sort();
-    imported.dedup();
-    let (mapping, contexts) = mapping.with_imports(imported.clone()).await?;
-    let extra_args = mapping.extra_args();
-    if !extra_args.is_empty() {
-        let mut compile_args = args.clone();
-        compile_args.common_args.extend(extra_args.clone());
-        scan = scan_modules(creator, executable, &compile_args, cwd, env).await?;
-        let updated = parse_module_dependencies(&scan.report)?;
-        let mut updated_imports: Vec<_> = updated
-            .data
-            .imported_modules
-            .into_iter()
-            .chain(updated.data.imported_header_units)
-            .map(|import| import.bmi)
-            .collect();
-        updated_imports.sort();
-        updated_imports.dedup();
-        ensure!(
-            updated_imports == imported,
-            "MSVC path mappings changed the imported module graph"
-        );
-    }
-    let files = module_dependency_files(&scan.report)?;
-    let hashes = hash_all(&files, &tokio::runtime::Handle::current()).await?;
-    let mut file_hashes: Vec<_> = files
-        .iter()
-        .zip(hashes)
-        .map(|(path, hash)| (mapping.path(path), hash))
-        .collect();
-    file_hashes.sort();
-    let mut outputs: Vec<_> = args
-        .outputs
-        .iter()
-        .map(|(key, out)| (key, mapping.path(&out.path)))
-        .collect();
-    outputs.sort();
-    let hash_args = mapping.arguments(&args.common_args);
-    let preprocessor_args = mapping.arguments(&args.preprocessor_args);
-    let mut preprocess_args = scan.args.clone();
-    preprocess_args
-        .common_args
-        .retain(|arg| !extra_args.contains(arg));
-    let mut output =
-        module_preprocessed(creator, executable, &preprocess_args, cwd, env, true).await?;
-    let final_dependencies: ModuleDependencies = serde_json::from_slice(&scan.report)?;
-    let mut textual_inputs = vec![final_dependencies.data.source];
-    textual_inputs.extend(final_dependencies.data.includes);
-    let raw_preprocessed = mapping.preprocessed_digest(&output.stdout, cwd, &textual_inputs)?;
-    if undeclared_output {
-        warn!("MSVC mapped module producer requires an explicit /ifcOutput filename for caching");
-        return Ok(PreprocessorOutput {
-            extra_args,
-            ..skip_module_cache()
-        });
-    }
-    let toolchain = match module_toolchain_hashes(executable).await {
-        Ok(toolchain) => Some(toolchain),
-        Err(error) => {
-            warn!(
-                "Cannot fingerprint native MSVC compiler passes; compiling without caching: {error:#}"
-            );
-            None
-        }
-    };
-    let mut diagnostics = Vec::new();
-    for bytes in [&scan.output.stdout, &scan.output.stderr] {
-        let text = from_local_codepage(bytes)?;
-        diagnostics.extend(
-            text.lines()
-                .filter(|line| !line.starts_with(includes_prefix))
-                .map(str::to_owned),
-        );
-    }
-    let mut digest = Digest::new();
-    let skip_cache = uses_compiler_pdb(args) || toolchain.is_none() || mapping.uncacheable_import;
-    (
-        "MSVC mapped modules v3",
-        toolchain,
-        mapping.path(cwd),
-        mapping.path(&args.input),
-        mapping.path(&dependencies.data.source),
-        outputs,
-        args.depfile.as_ref().map(|path| mapping.path(path)),
-        (
-            preprocessor_args,
-            &hash_args,
-            mapping.arguments(&args.dependency_args),
-            args.msvc_show_includes,
-        ),
-        (file_hashes, contexts, raw_preprocessed, diagnostics),
-    )
-        .hash(&mut crate::util::HashToDigest {
-            digest: &mut digest,
-        });
-    output.stdout = digest.finish().into_bytes();
-    if args.msvc_show_includes {
-        output.stderr = scan.output.stdout;
-    }
-    Ok(PreprocessorOutput {
-        output,
-        extra_args,
-        hash_args: Some(hash_args),
-        metadata: Some(mapping.metadata(args, cwd, includes_prefix, skip_cache)),
-        skip_cache,
-    })
 }
 
 #[cfg(windows)]
@@ -3872,32 +3716,21 @@ mod test {
     }
 
     #[test]
-    fn test_native_pathmap_is_not_an_input_file() {
-        let CompilerArguments::Ok(args) = parse_arguments(ovec![
-            "/c",
-            "/std:c++20",
-            "/FC",
-            "/experimental:deterministic",
-            "/pathmap:Q:\\checkout with spaces=X:\\logical",
-            "/interface",
-            "leaf.ixx",
-            "/ifcOutput",
-            "leaf.ifc"
-        ]) else {
-            panic!("native path mapping must be cacheable")
-        };
-        assert!(args.common_args.contains(&OsString::from(
-            "/pathmap:Q:\\checkout with spaces=X:\\logical"
-        )));
-        assert!(matches!(
+    fn test_native_pathmap_is_not_cacheable() {
+        assert_eq!(
             parse_arguments(ovec![
                 "/c",
-                "/std:c++17",
-                "/pathmap:Q:\\checkout=X:\\logical",
-                "source.cpp"
+                "/std:c++20",
+                "/FC",
+                "/experimental:deterministic",
+                "/pathmap:Q:\\checkout with spaces=X:\\logical",
+                "/interface",
+                "leaf.ixx",
+                "/ifcOutput",
+                "leaf.ifc"
             ]),
-            CompilerArguments::CannotCache(..)
-        ));
+            CompilerArguments::CannotCache("/pathmap:", None)
+        );
     }
 
     #[test]
@@ -3965,34 +3798,6 @@ mod test {
             parse_arguments(ovec!["/c", "source.cpp", "-ifcMapconfig.toml"]),
             CompilerArguments::CannotCache("-ifcMap", None)
         );
-    }
-
-    #[test]
-    fn test_uncached_mapped_pdb_preserves_explicit_and_implied_synchronization() {
-        for flag in ["/FS", "/MP", "-MP4"] {
-            let CompilerArguments::Ok(args) = parse_arguments(ovec![
-                "/c",
-                "/std:c++20",
-                "/Zi",
-                flag,
-                r"/pathmap:Q:\source\=X:\logical\",
-                "source.cpp"
-            ]) else {
-                panic!("mapped PDB commands must reach the native compiler")
-            };
-            assert_eq!(args.unhashed_args, ovec!["-FS"]);
-        }
-        let CompilerArguments::Ok(args) = parse_arguments(ovec![
-            "/c",
-            "/std:c++20",
-            "/Zi",
-            "/FS",
-            "/Fdprivate.pdb",
-            "source.cpp"
-        ]) else {
-            panic!("ordinary private PDB commands must remain cacheable")
-        };
-        assert!(args.unhashed_args.is_empty());
     }
 
     #[test]

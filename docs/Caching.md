@@ -32,10 +32,7 @@ the targets sees (e.g. under `__aarch64__`) is taken into account.
 
 [Native MSVC modules](MSVCModules.md) additionally use a front-end dependency
 scan to hash all reported imported IFCs, including transitive imports. These
-compilations bypass the preprocessor cache. They are location-dependent by
-default; explicit deterministic path mappings enable project/build-root reuse
-with producer context stored in the cache entry and a private local provenance
-index.
+compilations bypass the preprocessor cache and require matching absolute paths.
 
 We also take into account in the hash:
 * Hash of the compiler binary

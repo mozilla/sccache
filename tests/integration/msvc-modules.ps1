@@ -1,8 +1,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$Sccache,
     [Parameter(Mandatory = $true)][string]$WorkDir,
-    [switch]$ExpectUncached,
-    [switch]$Mapped
+    [switch]$ExpectUncached
 )
 
 $ErrorActionPreference = 'Stop'
@@ -44,14 +43,12 @@ $producerArgs = @('/nologo', '/c', '/std:c++20', '/EHsc', '/MD', '/Z7', '/utf-8'
 $consumerArgs = @('/nologo', '/c', '/std:c++20', '/EHsc', '/MD', '/Z7', '/utf-8',
     'consumer.cpp', '/reference', 'fmt=fmt.ifc', '/Foconsumer.obj',
     '/sourceDependencies', 'consumer.json')
-$fmtProducerArgs = $producerArgs
-$fmtConsumerArgs = $consumerArgs
 $artifacts = @('fmt.ifc', 'fmt.obj', 'consumer.obj')
 $linkObjects = @('fmt.obj', 'consumer.obj')
 $expectedOutput = 'The answer is 42'
 
-function Build-Phase([string]$Name, [bool]$Hit, [int]$ExpectedHits = -1) {
-    if ($ExpectedHits -lt 0) { $ExpectedHits = 2 * [int]$Hit }
+function Build-Phase([string]$Name, [bool]$Hit) {
+    $ExpectedHits = 2 * [int]$Hit
     Invoke-Checked $Sccache @('--zero-stats')
     $clock = [System.Diagnostics.Stopwatch]::StartNew()
     Invoke-Checked $Sccache (@($cl) + $producerArgs)
@@ -143,86 +140,9 @@ int main() {
     Start-Server
     foreach ($artifact in $artifacts) { Remove-Item -LiteralPath $artifact }
     Build-Phase 'header-unit-fresh-server' $true
-    if ($Mapped) {
-        if ($ExpectUncached) { throw 'Mapped mode requires the module-enabled executable.' }
-        Invoke-Checked $Sccache @('--stop-server')
-        $a = Join-Path $WorkDir 'mapped-producer'
-        $b = Join-Path $WorkDir 'mapped receiver with a longer path'
-        $null = New-Item -ItemType Directory -Path (Join-Path $a 'fmt')
-        foreach ($name in @('src', 'include', 'LICENSE')) {
-            Copy-Item -LiteralPath (Join-Path $WorkDir "fmt\$name") -Destination (Join-Path $a 'fmt') -Recurse
-        }
-        Copy-Item -LiteralPath consumer.cpp -Destination $a
-        Set-Content -LiteralPath (Join-Path $a 'unit.h') -Encoding ascii -Value @'
-#pragma once
-#include <source_location>
-inline int unit_count = 0;
-inline int unit_initialized = [] { ++unit_count; return 23; }();
-inline int unit_value() { return unit_initialized; }
-inline const char* unit_file() { return __FILE__; }
-inline const char* unit_location() { return std::source_location::current().file_name(); }
-'@
-        Set-Content -LiteralPath (Join-Path $a 'unit.cpp') -Encoding ascii -Value @'
-#include <cstdio>
-#include <cstring>
-import "unit.h";
-int main() {
-    std::printf("Header value: %d\n", unit_value());
-    return unit_value() == 23 && unit_count == 1
-        && std::strcmp(unit_file(), R"(X:\logical-source\unit.h)") == 0
-        && std::strcmp(unit_location(), R"(X:\logical-source\unit.h)") == 0 ? 0 : 1;
-}
-'@
-        Copy-Item -LiteralPath $a -Destination $b -Recurse
-        $env:SCCACHE_DIR = Join-Path $WorkDir 'mapped-cache'
-        $env:SCCACHE_BASEDIRS = "$a;$b"
-        $mappedCases = @(
-            @{ Name = 'fmt'; Producer = $fmtProducerArgs; Consumer = $fmtConsumerArgs
-                Files = @('fmt.ifc', 'fmt.obj', 'consumer.obj'); Objects = @('fmt.obj', 'consumer.obj')
-                Output = 'The answer is 42' },
-            @{ Name = 'header'; Producer = @('/nologo', '/c', '/std:c++20', '/EHsc', '/MD', '/Z7',
-                    '/exportHeader', '/headerName:quote', 'unit.h', '/ifcOutput', 'unit.ifc', '/Founit.obj')
-                Consumer = @('/nologo', '/c', '/std:c++20', '/EHsc', '/MD', '/Z7',
-                    'unit.cpp', '/headerUnit:quote', 'unit.h=unit.ifc', '/Founit-consumer.obj')
-                Files = @('unit.ifc', 'unit.obj', 'unit-consumer.obj'); Objects = @('unit.obj', 'unit-consumer.obj')
-                Output = 'Header value: 23' }
-        )
-        Start-Server
-        foreach ($root in @($a, $b)) {
-            Push-Location $root
-            try {
-                foreach ($case in $mappedCases) {
-                    $flags = @('/FC', '/experimental:deterministic', "/pathmap:$root\=X:\logical-source\")
-                    $producerArgs = $case.Producer + $flags
-                    $consumerArgs = $case.Consumer + $flags
-                    $artifacts = $case.Files
-                    $linkObjects = $case.Objects
-                    $expectedOutput = $case.Output
-                    Build-Phase "mapped-$($case.Name)-$([int]($root -eq $b))" ($root -eq $b)
-                }
-            } finally { Pop-Location }
-            if ($root -eq $a) {
-                Rename-Item -LiteralPath $a -NewName 'mapped-producer-offline'
-                Invoke-Checked $Sccache @('--stop-server')
-                Start-Server
-            }
-        }
-        Push-Location $b
-        try {
-            foreach ($case in $mappedCases) {
-                $flags = @('/FC', '/experimental:deterministic', "/pathmap:$b\=X:\logical-source\")
-                $producerArgs = $case.Producer + $flags
-                $consumerArgs = $case.Consumer + $flags + @('/DFRESH_MAPPED_CONSUMER=1')
-                $artifacts = $case.Files
-                $linkObjects = $case.Objects
-                $expectedOutput = $case.Output
-                Build-Phase "mapped-$($case.Name)-fresh-consumer" $false 1
-            }
-        } finally { Pop-Location }
-    }
     [pscustomobject]@{
         Compiler = (Get-Item -LiteralPath $cl).VersionInfo.FileVersion
-        FmtRevision = $revision; Baseline = [bool]$ExpectUncached; Mapped = [bool]$Mapped
+        FmtRevision = $revision; Baseline = [bool]$ExpectUncached
         Results = $results
     } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath results.json -Encoding ascii
     $results | Select-Object Phase, Hits, Misses, Uncached, Milliseconds | Format-Table

@@ -93,12 +93,12 @@ static CACHED_CONFIG: Mutex<Option<CachedFileConfig>> = Mutex::new(None);
 const ORGANIZATION: &str = "Mozilla";
 const APP_NAME: &str = "sccache";
 const DIST_APP_NAME: &str = "sccache-dist-client";
-pub(crate) const MSVC_MODULE_ORIGIN_DIR: &str = "msvc-module-origins-v3";
 const TEN_GIGS: u64 = 10 * 1024 * 1024 * 1024;
 
 pub const INSECURE_DIST_CLIENT_TOKEN: &str = "dangerously_insecure_client";
 
-// Only cached objects and reserved metadata directories belong under this root...
+// Unfortunately this means that nothing else can use the sccache cache dir as
+// this top level directory is used directly to store sccache cached objects...
 pub fn default_disk_cache_dir() -> PathBuf {
     ProjectDirs::from("", ORGANIZATION, APP_NAME)
         .expect("Unable to retrieve disk cache directory")
