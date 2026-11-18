@@ -175,7 +175,9 @@ pub fn parse_size(val: &str) -> Option<u64> {
     } else {
         val
     };
-    u64::from_str(val).ok().map(|size| size * multiplier)
+    u64::from_str(val)
+        .ok()
+        .and_then(|size| size.checked_mul(multiplier))
 }
 
 #[cfg(any_dist)]
@@ -1202,7 +1204,11 @@ fn config_from_env() -> Result<EnvConfig> {
 
     // ======= Local =======
     let disk_dir = env::var_os("SCCACHE_DIR").map(PathBuf::from);
-    let disk_sz = string_from_env_var("SCCACHE_CACHE_SIZE").and_then(|v| parse_size(&v));
+    let disk_sz = string_from_env_var("SCCACHE_CACHE_SIZE")
+        .map(|v| {
+            parse_size(&v).ok_or_else(|| anyhow!("SCCACHE_CACHE_SIZE value is invalid: {v:?}"))
+        })
+        .transpose()?;
 
     let mut preprocessor_mode_config = PreprocessorCacheModeConfig::activated();
     let preprocessor_mode_overridden = if let Some(value) = bool_from_env_var("SCCACHE_DIRECT")? {
@@ -1682,6 +1688,34 @@ fn test_parse_size() {
     assert_eq!(Some(10 * 1024 * 1024), parse_size("10M"));
     assert_eq!(Some(TEN_GIGS), parse_size("10G"));
     assert_eq!(Some(1024 * TEN_GIGS), parse_size("10T"));
+    assert_eq!(Some(u64::MAX), parse_size("18446744073709551615"));
+    assert_eq!(None, parse_size("18446744073709551615K"));
+    assert_eq!(None, parse_size("16777216T"));
+}
+
+#[test]
+#[serial(config_from_env)]
+fn test_env_cache_size() {
+    let config = temp_env::with_var("SCCACHE_CACHE_SIZE", Some("2G"), || {
+        config_from_env().unwrap()
+    });
+    assert_eq!(
+        config.cache.disk.expect("SCCACHE_CACHE_SIZE is set").size,
+        2 * 1024 * 1024 * 1024
+    );
+}
+
+#[test]
+#[serial(config_from_env)]
+fn test_env_cache_size_invalid() {
+    for value in ["20GB", "1.5G", "10 G", "G", "16777216T"] {
+        let error = temp_env::with_var("SCCACHE_CACHE_SIZE", Some(value), config_from_env)
+            .expect_err(value);
+        assert_eq!(
+            format!("SCCACHE_CACHE_SIZE value is invalid: {value:?}"),
+            error.to_string()
+        );
+    }
 }
 
 #[test]
