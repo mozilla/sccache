@@ -277,6 +277,17 @@ services:
       - test
       - clang
 
+  test-thinlto:
+    <<: *test-runner
+    image: docker.io/silkeh/clang:21-trixie
+    entrypoint: /sccache/tests/integration/scripts/test-thinlto.sh
+    environment:
+      <<: *common-env
+      SCCACHE_DIR: /build/sccache
+    profiles:
+      - test
+      - thinlto
+
   test-cmake:
     <<: *test-runner
     image: docker.io/silkeh/clang:21-trixie
