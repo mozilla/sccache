@@ -222,6 +222,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("-dsym-dir", OsString, CanBeSeparated, TooHard),
     take_arg!("-dumpdir", OsString, CanBeSeparated, TooHard),
     flag!("-emit-pch", PassThroughFlag),
+    take_arg!("-fauto-profile", PathBuf, Concatenated(b'='), ExtraHashFile),
     flag!("-fbuiltin-module-map", TooHardFlag),
     take_arg!("-fcodegen-data-generate", OsString, Concatenated(b'='), TooHard),
     flag!("-fcolor-diagnostics", DiagnosticsColorFlag),
@@ -258,7 +259,9 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     flag!("-fprofile-instr-generate", ProfileGenerate),
     // Note: the PathBuf argument is optional
     take_arg!("-fprofile-instr-use", PathBuf, Concatenated(b'='), ClangProfileUse),
+    take_arg!("-fprofile-list", PathBuf, Concatenated(b'='), ExtraHashFile),
     take_arg!("-fprofile-remapping-file", PathBuf, Concatenated(b'='), ExtraHashFile),
+    take_arg!("-fprofile-sample-use", PathBuf, Concatenated(b'='), ExtraHashFile),
     // Note: this overrides the -fprofile-use option in gcc.rs.
     take_arg!("-fprofile-use", PathBuf, Concatenated(b'='), ClangProfileUse),
     take_arg!("-frandomize-layout-seed-file", PathBuf, Concatenated(b'='), ExtraHashFile),
@@ -1239,6 +1242,32 @@ mod test {
                 "a.native.o"
             ])
         );
+        assert_eq!(
+            CompilerArguments::CannotCache("-fthinlto-index with a non-IR input", None),
+            parse_arguments_(stringvec![
+                "-c",
+                "-x",
+                "c",
+                "a.o",
+                "-fthinlto-index=a.bc",
+                "-o",
+                "a.native.o"
+            ])
+        );
+    }
+
+    #[test]
+    fn test_parse_thinlto_index_ir_inputs() {
+        for input in ["a.o", "a.obj", "a.bc", "a.ll"] {
+            let a = parses!(
+                "-c",
+                input,
+                "-fthinlto-index=a.thinlto.bc",
+                "-o",
+                "a.native.o"
+            );
+            assert_eq!(Language::LlvmIr, a.language, "{input}");
+        }
     }
 
     #[test]
@@ -1478,7 +1507,10 @@ mod test {
             "-fmodule-map-file=module.modulemap",
             "-fms-secure-hotpatch-functions-file=hotpatch.txt",
             "-fpass-plugin=plugin.so",
+            "-fauto-profile=auto.prof",
+            "-fprofile-list=funcs.txt",
             "-fprofile-remapping-file=remap.txt",
+            "-fprofile-sample-use=sample.prof",
             "-frandomize-layout-seed-file=seed.txt",
             "-fsanitize-system-ignorelist=list.txt",
             "-fxray-always-instrument=always.txt",
@@ -1493,7 +1525,10 @@ mod test {
                 "-fmodule-map-file=module.modulemap",
                 "-fms-secure-hotpatch-functions-file=hotpatch.txt",
                 "-fpass-plugin=plugin.so",
+                "-fauto-profile=auto.prof",
+                "-fprofile-list=funcs.txt",
                 "-fprofile-remapping-file=remap.txt",
+                "-fprofile-sample-use=sample.prof",
                 "-frandomize-layout-seed-file=seed.txt",
                 "-fsanitize-system-ignorelist=list.txt",
                 "-fxray-always-instrument=always.txt",
@@ -1510,7 +1545,10 @@ mod test {
                 cwd.join("module.modulemap"),
                 cwd.join("hotpatch.txt"),
                 cwd.join("plugin.so"),
+                cwd.join("auto.prof"),
+                cwd.join("funcs.txt"),
                 cwd.join("remap.txt"),
+                cwd.join("sample.prof"),
                 cwd.join("seed.txt"),
                 cwd.join("list.txt"),
                 cwd.join("always.txt"),
