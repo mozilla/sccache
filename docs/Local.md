@@ -41,6 +41,10 @@ On Linux and macOS, the server remembers the digest of each file it hashes for t
 mtime, ctime, device and inode are unchanged, so a cache hit does not re-read unchanged headers. Files changed less than two
 seconds before being hashed are not remembered, as their timestamps may not tell a quick rewrite apart.
 
+With MSVC, this mode preprocesses with `-E` instead of `-EP`, so that the line markers name the included files. The absolute
+paths in them become part of the hash, so builds in different directories generally do not share cache entries unless
+`SCCACHE_BASEDIRS` covers them. Turning the mode off restores `-EP`.
+
 Configuration options and their default values:
 
 - `use_preprocessor_cache_mode`: `true`. Whether to use preprocessor cache mode. This can be overridden for an sccache invocation by setting the environment variable `SCCACHE_DIRECT` to `true`/`on`/`1` or `false`/`off`/`0`.
