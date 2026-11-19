@@ -179,6 +179,10 @@ ArgData! { pub
     // arg parsing.
     IntegratedAs,
     NoIntegratedAs,
+    // Only valid for clang. lld names the index after its own PID, so the path
+    // stays out of the hash; the index records a hash of every module it
+    // imports from, so its content pins them.
+    ThinLtoIndex(PathBuf),
 }
 
 use self::ArgData::*;
@@ -336,6 +340,7 @@ where
     let mut color_mode = ColorMode::Auto;
     let mut seen_arch = None;
     let mut serialize_diagnostics = None;
+    let mut thinlto_index = false;
     let dont_cache_multiarch = env::var("SCCACHE_CACHE_MULTIARCH").is_err();
 
     // Custom iterator to expand `@` arguments which stand for reading a file
@@ -434,6 +439,7 @@ where
             Some(SerializeDiagnostics(path)) => {
                 serialize_diagnostics = Some(path.clone());
             }
+            Some(ThinLtoIndex(_)) => thinlto_index = true,
             Some(ExtraHashFile(_))
             | Some(ExtraHashFileClangModuleFile(_))
             | Some(PassThroughFlag)
@@ -463,6 +469,7 @@ where
                     "rs" => Some(Language::Rust),
                     "cuda" => Some(Language::Cuda),
                     "hip" => Some(Language::Hip),
+                    "ir" if kind == CCompilerKind::Clang => Some(Language::LlvmIr),
                     _ => cannot_cache!("-x"),
                 };
             }
@@ -518,6 +525,10 @@ where
             Some(ExtraHashFile(path)) => {
                 extra_hash_files.push(cwd.join(path));
                 &mut common_args
+            }
+            Some(ThinLtoIndex(path)) => {
+                extra_hash_files.push(cwd.join(path));
+                &mut unhashed_args
             }
             Some(ExtraHashFileClangModuleFile(val)) => {
                 extra_hash_files.push(cwd.join(module_file_path(val)));
@@ -583,6 +594,7 @@ where
             | Some(XClang(_))
             | Some(IntegratedAs)
             | Some(NoIntegratedAs)
+            | Some(ThinLtoIndex(_))
             | Some(TooHard(_)) => cannot_cache!(
                 arg.flag_str()
                     .unwrap_or("Can't handle complex arguments through clang",)
@@ -658,6 +670,18 @@ where
         Some(i) => i,
         // We can't cache compilation without an input.
         None => cannot_cache!("no input file"),
+    };
+    let language = match (language, thinlto_index) {
+        (None, true)
+            if matches!(
+                Path::new(&input).extension().and_then(OsStr::to_str),
+                Some("o" | "obj" | "bc" | "ll")
+            ) =>
+        {
+            Some(Language::LlvmIr)
+        }
+        (Some(Language::LlvmIr), true) | (_, false) => language,
+        (_, true) => cannot_cache!("-fthinlto-index with a non-IR input"),
     };
     let language = match language {
         None => {
@@ -1103,8 +1127,11 @@ where
     //    device preprocessor outputs and cannot compile preprocessed CUDA files.
     // 3. The dist command does not carry the -arch flags, so a multi-arch
     //    compilation would come back with a single-arch object.
+    // 4. A ThinLTO backend reads the modules it imports from by the paths in
+    //    its index, and those are not shipped.
     let dist_command = if has_verbose_flag
         || parsed_args.language == Language::Cuda
+        || parsed_args.language == Language::LlvmIr
         || parsed_args.is_multiarch()
     {
         None
@@ -3114,6 +3141,41 @@ mod test {
                 .is_none()
             );
         });
+    }
+
+    #[test]
+    #[cfg(feature = "dist-client")]
+    fn test_compile_llvm_ir_is_not_distributed() {
+        let f = TestFixture::new();
+        let dist_command = |args: &[&str]| {
+            let args = args.iter().map(OsString::from).collect::<Vec<_>>();
+            let parsed_args = match parse_arguments(
+                &args,
+                ".".as_ref(),
+                (&ARGS[..], &clang::ARGS[..]),
+                false,
+                CCompilerKind::Clang,
+            ) {
+                CompilerArguments::Ok(args) => args,
+                o => panic!("Got unexpected parse result: {:?}", o),
+            };
+            let mut path_transformer = dist::PathTransformer::new();
+            generate_compile_commands(
+                &mut path_transformer,
+                &f.bins[0],
+                &parsed_args,
+                f.tempdir.path(),
+                &[],
+                CCompilerKind::Clang,
+                false,
+                language_to_gcc_arg,
+            )
+            .unwrap()
+            .1
+        };
+        assert!(dist_command(&["-c", "foo.c", "-o", "foo.o"]).is_some());
+        assert!(dist_command(&["-c", "a.o", "-fthinlto-index=a.bc", "-o", "a.native.o"]).is_none());
+        assert!(dist_command(&["-c", "-x", "ir", "a.bc", "-o", "a.o"]).is_none());
     }
 
     #[test]

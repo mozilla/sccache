@@ -45,7 +45,7 @@ endgroup =
 endif
 
 BACKENDS := redis redis-deprecated memcached memcached-deprecated s3 azblob webdav basedirs multilevel multilevel-chain
-TOOLS := gcc clang cmake cmake-modules cmake-modules-v4 autotools coverage zstd file-prefix-map
+TOOLS := gcc clang cmake cmake-modules cmake-modules-v4 autotools coverage zstd file-prefix-map thinlto
 
 # Map backends to their compose profiles
 PROFILES_autotools := autotools
@@ -65,6 +65,7 @@ PROFILES_multilevel-chain := multilevel-chain redis memcached s3
 PROFILES_redis := redis
 PROFILES_redis-deprecated := redis
 PROFILES_s3 := s3
+PROFILES_thinlto := thinlto
 PROFILES_webdav := webdav
 PROFILES_zstd := zstd
 
@@ -86,6 +87,7 @@ SERVICES_multilevel-chain := redis memcached silo silo-setup
 SERVICES_redis := redis
 SERVICES_redis-deprecated := redis
 SERVICES_s3 := silo silo-setup
+SERVICES_thinlto :=
 SERVICES_webdav := webdav
 SERVICES_zstd :=
 
@@ -113,6 +115,7 @@ help:
 	@echo "  make test-cmake-modules      Run CMake C++20 modules test"
 	@echo "  make test-cmake-modules-v4   Run CMake 4.x C++20 modules test"
 	@echo "  make test-autotools          Run Autotools integration test"
+	@echo "  make test-thinlto            Run ThinLTO backend jobs (lld DTLTO) test"
 	@echo ""
 	@echo "Advanced Tests:"
 	@echo "  make test-coverage           Run Rust coverage instrumentation test"
