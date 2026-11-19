@@ -2196,8 +2196,26 @@ for job in data["jobs"]:
 "#;
 
 /// clang and an ld.lld of the same LLVM release that can hand ThinLTO backend
-/// jobs to a distributor.
+/// jobs to a distributor, plus python3 for the distributor. The clang is
+/// `$DTLTO_CLANG_PATH/clang` if that is set, so the `clang` on PATH, which the
+/// other tests use, can stay as it is; otherwise the `clang` on PATH.
 fn find_dtlto_toolchain() -> Option<(PathBuf, PathBuf, PathBuf)> {
+    match env::var_os("DTLTO_CLANG_PATH") {
+        Some(dir) => {
+            let clang = Path::new(&dir).join("clang");
+            let toolchain = probe_dtlto_toolchain(clang.clone());
+            assert!(
+                toolchain.is_some(),
+                "DTLTO_CLANG_PATH is set, but {} has no matching DTLTO-capable ld.lld, or python3 is missing",
+                clang.display()
+            );
+            toolchain
+        }
+        None => probe_dtlto_toolchain(which("clang").ok()?),
+    }
+}
+
+fn probe_dtlto_toolchain(clang: PathBuf) -> Option<(PathBuf, PathBuf, PathBuf)> {
     let stdout = |exe: &Path, arg: &str| -> Option<String> {
         let output = Command::new(exe).arg(arg).output().ok()?;
         Some(String::from_utf8_lossy(&output.stdout).into_owned())
@@ -2206,7 +2224,6 @@ fn find_dtlto_toolchain() -> Option<(PathBuf, PathBuf, PathBuf)> {
         let (_, rest) = text.split_once(marker)?;
         Some(rest.split_whitespace().next()?.to_owned())
     };
-    let clang = which("clang").ok()?;
     let lld = PathBuf::from(stdout(&clang, "-print-prog-name=ld.lld")?.trim());
     if !stdout(&lld, "--help")?.contains("--thinlto-distributor=") {
         return None;
