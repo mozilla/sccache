@@ -24,6 +24,8 @@ mod cudafe;
 mod diab;
 mod gcc;
 mod msvc;
+#[cfg(windows)]
+mod msvc_modules;
 mod nvcc;
 mod nvhpc;
 mod preprocessor_cache;
