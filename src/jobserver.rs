@@ -1,10 +1,11 @@
 use std::io;
-use std::process::Command;
+use std::process::{Command, ExitStatus};
 use std::sync::Arc;
 
 use futures::StreamExt;
 use futures::channel::mpsc;
 use futures::channel::oneshot;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
 
 use crate::errors::*;
 
@@ -35,14 +36,48 @@ use crate::errors::*;
 
 #[derive(Clone)]
 pub struct Client {
-    helper: Option<Arc<jobserver::HelperThread>>,
-    tx: Option<mpsc::UnboundedSender<oneshot::Sender<io::Result<jobserver::Acquired>>>>,
+    fifo: Option<jobserver::Client>,
+    current: Option<Arc<watch::Sender<Arc<Pool>>>>,
+    // Caps our children across pool replacements, while older pools drain.
+    slots: Option<Arc<Semaphore>>,
+    limit: usize,
+}
+
+struct Pool {
+    // Close the sender before joining a helper waiting for a request.
+    tx: mpsc::UnboundedSender<oneshot::Sender<io::Result<jobserver::Acquired>>>,
+    helper: jobserver::HelperThread,
     inner: jobserver::Client,
-    fifo: bool,
 }
 
 pub struct Acquired {
     _token: Option<jobserver::Acquired>,
+    pool: Option<Arc<Pool>>,
+    client: Client,
+    shared: bool,
+    exited: bool,
+    _slot: Option<OwnedSemaphorePermit>,
+}
+
+impl Pool {
+    fn new(num: usize) -> Result<Pool> {
+        let inner = jobserver::Client::new(num).context("failed to create jobserver")?;
+        let (tx, mut rx) = mpsc::unbounded::<oneshot::Sender<_>>();
+        let helper = inner
+            .clone()
+            .into_helper_thread(move |token| {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .build()
+                    .unwrap();
+                rt.block_on(async {
+                    if let Some(sender) = rx.next().await {
+                        drop(sender.send(token));
+                    }
+                });
+            })
+            .context("failed to spawn jobserver helper thread")?;
+        Ok(Pool { tx, helper, inner })
+    }
 }
 
 impl Client {
@@ -63,52 +98,28 @@ impl Client {
         // SAFETY: a `fifo:` jobserver is opened by path; no inherited file
         // descriptors are taken over.
         let inner = unsafe { jobserver::Client::from_env() }?;
-        Some(Client::_new(inner, true))
+        Some(Client {
+            fifo: Some(inner),
+            current: None,
+            slots: None,
+            limit: 0,
+        })
     }
 
     pub fn new_num(num: usize) -> Client {
-        let inner = jobserver::Client::new(num).expect("failed to create jobserver");
-        Client::_new(inner, false)
-    }
-
-    fn _new(inner: jobserver::Client, fifo: bool) -> Client {
-        let (helper, tx) = if fifo {
-            (None, None)
-        } else {
-            let (tx, mut rx) = mpsc::unbounded::<oneshot::Sender<_>>();
-            let helper = inner
-                .clone()
-                .into_helper_thread(move |token| {
-                    let rt = tokio::runtime::Builder::new_current_thread()
-                        .build()
-                        .unwrap();
-                    rt.block_on(async {
-                        if let Some(sender) = rx.next().await {
-                            drop(sender.send(token));
-                        }
-                    });
-                })
-                .expect("failed to spawn helper thread");
-            (Some(Arc::new(helper)), Some(tx))
-        };
-
+        let pool = Pool::new(num).expect("failed to create jobserver");
         Client {
-            inner,
-            helper,
-            tx,
-            fifo,
+            fifo: None,
+            current: Some(Arc::new(watch::Sender::new(Arc::new(pool)))),
+            slots: Some(Arc::new(Semaphore::new(num))),
+            limit: num,
         }
     }
 
     /// Whether this is the build's own jobserver, opened by path (see
     /// [`Client::from_env_fifo`]), rather than a private pool.
     pub fn is_fifo(&self) -> bool {
-        self.fifo
-    }
-
-    /// Configures this jobserver to be inherited by the specified command
-    pub fn configure(&self, cmd: &mut Command) {
-        self.inner.configure(cmd);
+        self.fifo.is_some()
     }
 
     /// Returns a future that represents an acquired jobserver token.
@@ -117,22 +128,101 @@ impl Client {
     /// definition of "work" is) to ensure that the system is properly
     /// rate-limiting itself.
     pub async fn acquire(&self) -> Result<Acquired> {
-        let (helper, tx) = match (self.helper.as_ref(), self.tx.as_ref()) {
-            (Some(a), Some(b)) => (a, b),
-            _ => return Ok(Acquired { _token: None }),
+        let (Some(current), Some(slots)) = (&self.current, &self.slots) else {
+            return Ok(Acquired {
+                _token: None,
+                pool: None,
+                client: self.clone(),
+                shared: false,
+                exited: false,
+                _slot: None,
+            });
         };
-        let (mytx, myrx) = oneshot::channel();
-        helper.request_token();
-        tx.unbounded_send(mytx).unwrap();
-
-        let acquired = myrx
+        let slot = slots
+            .clone()
+            .acquire_owned()
             .await
-            .context("jobserver helper panicked")?
-            .context("failed to acquire jobserver token")?;
+            .context("jobserver slots closed")?;
+        let mut current = current.subscribe();
+        loop {
+            let pool = current.borrow_and_update().clone();
+            let (mytx, myrx) = oneshot::channel();
+            pool.tx.unbounded_send(mytx).unwrap();
+            pool.helper.request_token();
+            tokio::select! {
+                acquired = myrx => {
+                    let acquired = acquired
+                        .context("jobserver helper panicked")?
+                        .context("failed to acquire jobserver token")?;
+                    if !Arc::ptr_eq(&pool, &current.borrow()) {
+                        continue;
+                    }
+                    return Ok(Acquired {
+                        _token: Some(acquired),
+                        pool: Some(pool),
+                        client: self.clone(),
+                        shared: false,
+                        exited: false,
+                        _slot: Some(slot),
+                    });
+                }
+                // A retired pool may never get another token.
+                _ = current.changed() => {}
+            }
+        }
+    }
 
-        Ok(Acquired {
-            _token: Some(acquired),
-        })
+    fn retire(&self, pool: &Arc<Pool>) {
+        if let Some(current) = &self.current {
+            current.send_if_modified(|current| {
+                if !Arc::ptr_eq(current, pool) {
+                    return false;
+                }
+                match Pool::new(self.limit) {
+                    Ok(fresh) => {
+                        warn!("A compiler sharing the jobserver did not exit on its own; using a fresh token pool");
+                        *current = Arc::new(fresh);
+                        true
+                    }
+                    Err(e) => {
+                        warn!("Keeping a jobserver that may have lost tokens: {e:?}");
+                        false
+                    }
+                }
+            });
+        }
+    }
+}
+
+impl Acquired {
+    pub fn configure(&mut self, cmd: &mut Command) {
+        if let Some(pool) = &self.pool {
+            self.shared = true;
+            pool.inner.configure(cmd);
+        } else if let Some(fifo) = &self.client.fifo {
+            fifo.configure(cmd);
+        }
+    }
+
+    pub fn exited(&mut self, status: Option<&ExitStatus>) {
+        #[cfg(unix)]
+        let on_its_own =
+            status.is_some_and(|s| std::os::unix::process::ExitStatusExt::signal(s).is_none());
+        #[cfg(not(unix))]
+        let on_its_own = status.is_some();
+        self.exited = on_its_own;
+    }
+}
+
+impl Drop for Acquired {
+    fn drop(&mut self) {
+        // A killed compiler may have taken tokens directly from the pipe.
+        if self.shared
+            && !self.exited
+            && let Some(pool) = &self.pool
+        {
+            self.client.retire(pool);
+        }
     }
 }
 
