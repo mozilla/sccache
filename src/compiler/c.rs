@@ -158,6 +158,7 @@ impl ParsedArguments {
 struct CCompilation<I: CCompilerImpl> {
     parsed_args: ParsedArguments,
     is_locally_preprocessed: bool,
+    preprocessor_stderr: Vec<u8>,
     #[cfg(feature = "dist-client")]
     preprocessed_input: Vec<u8>,
     executable: PathBuf,
@@ -204,6 +205,15 @@ pub trait CCompilerImpl: Clone + fmt::Debug + Send + Sync + 'static {
     /// runs one at all.
     fn assembler_digest(&self) -> Option<String> {
         None
+    }
+    /// Adjust the stdout replayed from a cache hit.
+    fn cached_stdout(
+        &self,
+        _parsed_args: &ParsedArguments,
+        stdout: Vec<u8>,
+        _preprocessor_stderr: &[u8],
+    ) -> Vec<u8> {
+        stdout
     }
     /// Determine whether `arguments` are supported by this compiler.
     fn parse_arguments(
@@ -496,7 +506,7 @@ where
             None
         };
 
-        let (preprocessor_output, include_files) = if needs_preprocessing {
+        let (preprocessor_output, preprocessor_stderr, include_files) = if needs_preprocessing {
             if let Some(preprocessor_key) = &preprocessor_key
                 && cache_control == CacheControl::Default
                 && let Some(mut seekable) = storage
@@ -543,6 +553,7 @@ where
                             compilation: Box::new(CCompilation {
                                 parsed_args: self.parsed_args.clone(),
                                 is_locally_preprocessed: false,
+                                preprocessor_stderr: Vec::new(),
                                 #[cfg(feature = "dist-client")]
                                 preprocessed_input: PREPROCESSING_SKIPPED_COMPILE_POISON.to_vec(),
                                 executable: self.executable.clone(),
@@ -640,11 +651,16 @@ where
                 preprocessor_result.stdout.len()
             );
 
-            (preprocessor_result.stdout, include_files)
+            (
+                preprocessor_result.stdout,
+                preprocessor_result.stderr,
+                include_files,
+            )
         } else {
             // No preprocessing is supported - input is already preprocessed
             (
                 std::fs::read(absolute_input_path.as_path())?,
+                Vec::new(),
                 HashMap::new(),
             )
         };
@@ -704,6 +720,7 @@ where
             compilation: Box::new(CCompilation {
                 parsed_args: self.parsed_args.clone(),
                 is_locally_preprocessed: true,
+                preprocessor_stderr,
                 #[cfg(feature = "dist-client")]
                 preprocessed_input: preprocessor_output,
                 executable: self.executable.clone(),
@@ -1279,6 +1296,14 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I>
 
     fn is_locally_preprocessed(&self) -> bool {
         self.is_locally_preprocessed
+    }
+
+    fn cached_stdout(&self, stdout: Vec<u8>) -> Vec<u8> {
+        if !self.is_locally_preprocessed {
+            return stdout;
+        }
+        self.compiler
+            .cached_stdout(&self.parsed_args, stdout, &self.preprocessor_stderr)
     }
 
     fn outputs<'a>(&'a self) -> Box<dyn Iterator<Item = FileObjectSource> + 'a> {
@@ -2146,6 +2171,66 @@ int value;
             include_files.get(&header).map(String::as_str),
             Some("a93900c371d997927c5bc568ea538bed59ae5c960021dcfe7b0b369da5267528")
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_process_preprocessed_file_msvc_line_markers() {
+        // As cl.exe -E writes a header included with quotes, and clang-cl -E one in the
+        // working directory.
+        let absolute = PathBuf::from(r"D:\t\src\foo.h");
+        let relative = PathBuf::from("bar.h");
+        let meta = PreprocessorFileMetadata {
+            is_dir: false,
+            is_file: true,
+            modified: Some(Timestamp::new(12341234, 0)),
+            ctime_or_creation: None,
+        };
+        let fs_impl = TestFs {
+            metadata_results: Mutex::new(
+                [(absolute.clone(), meta.clone()), (relative.clone(), meta)]
+                    .into_iter()
+                    .collect(),
+            ),
+            open_results: Mutex::new(
+                [
+                    (
+                        absolute.clone(),
+                        Box::new(&b"int foo;"[..]) as Box<dyn std::io::Read>,
+                    ),
+                    (
+                        relative.clone(),
+                        Box::new(&b"int bar;"[..]) as Box<dyn std::io::Read>,
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            ),
+        };
+        let mut bytes = br#"#line 1 "src\\main.c"
+#line 1 "D:\\t\\src\\foo.h"
+int foo;
+# 1 ".\\bar.h"
+int bar;
+"#
+        .to_vec();
+        let mut include_files = HashMap::new();
+
+        let success = process_preprocessed_file(
+            Path::new(r"src\main.c"),
+            Path::new(""),
+            &mut bytes,
+            &mut include_files,
+            PreprocessorCacheModeConfig::activated(),
+            std::time::SystemTime::now(),
+            fs_impl,
+        )
+        .unwrap();
+
+        assert!(success);
+        assert_eq!(include_files.len(), 2);
+        assert!(include_files.contains_key(&absolute));
+        assert!(include_files.contains_key(&relative));
     }
 
     /// A filesystem interface that only panics to test that we don't access it.

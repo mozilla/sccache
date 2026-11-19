@@ -20,7 +20,6 @@ use crate::config::Config;
 use crate::config::PreprocessorCacheModeConfig;
 use bytes::Bytes;
 use std::collections::HashMap;
-use std::env;
 use std::fs;
 use std::io::Cursor;
 use std::sync::Arc;
@@ -586,24 +585,22 @@ fn test_config_validation_invalid_level_name() {
         .unwrap();
 
     // Set invalid level name
-    unsafe {
-        env::set_var("SCCACHE_MULTILEVEL_CHAIN", "disk,invalid_backend,s3");
-        env::set_var("SCCACHE_DIR", "/tmp/test-cache");
-    }
-
-    let config = Config::load().unwrap();
-    let result = MultiLevelStorage::from_config(&config, runtime.handle());
+    let result = temp_env::with_vars(
+        [
+            ("SCCACHE_MULTILEVEL_CHAIN", Some("disk,invalid_backend,s3")),
+            ("SCCACHE_DIR", Some("/tmp/test-cache")),
+        ],
+        || {
+            let config = Config::load().unwrap();
+            MultiLevelStorage::from_config(&config, runtime.handle())
+        },
+    );
 
     let err = result
         .err()
         .expect("invalid level must be rejected")
         .to_string();
     assert_eq!(err, "Unknown cache level: 'invalid_backend'");
-
-    unsafe {
-        env::remove_var("SCCACHE_MULTILEVEL_CHAIN");
-        env::remove_var("SCCACHE_DIR");
-    }
 }
 
 #[test]
@@ -665,15 +662,18 @@ fn test_config_level_not_configured() {
         .unwrap();
 
     // Set level without configuration
-    unsafe {
-        env::set_var("SCCACHE_MULTILEVEL_CHAIN", "redis");
-        // Don't set SCCACHE_REDIS_ENDPOINT
-        env::remove_var("SCCACHE_REDIS");
-        env::remove_var("SCCACHE_REDIS_ENDPOINT");
-    }
-
-    let config = Config::load().unwrap();
-    let result = MultiLevelStorage::from_config(&config, runtime.handle());
+    let result = temp_env::with_vars(
+        [
+            ("SCCACHE_MULTILEVEL_CHAIN", Some("redis")),
+            // Don't set SCCACHE_REDIS_ENDPOINT
+            ("SCCACHE_REDIS", None),
+            ("SCCACHE_REDIS_ENDPOINT", None),
+        ],
+        || {
+            let config = Config::load().unwrap();
+            MultiLevelStorage::from_config(&config, runtime.handle())
+        },
+    );
 
     let err = result
         .err()
@@ -686,10 +686,6 @@ fn test_config_level_not_configured() {
     );
     #[cfg(not(feature = "redis"))]
     assert_eq!(err, "Cache level 'redis' requires the 'redis' feature");
-
-    unsafe {
-        env::remove_var("SCCACHE_MULTILEVEL_CHAIN");
-    }
 }
 
 #[test]

@@ -1,0 +1,4 @@
+disallowed-methods = [
+  { path = "std::env::set_var", reason = "not thread-safe; use temp_env in tests or pass env to the child Command" },
+  { path = "std::env::remove_var", reason = "not thread-safe; use temp_env in tests or pass env to the child Command" },
+]

@@ -19,7 +19,7 @@ use crate::compiler::{
     SingleCompileCommand, clang, gcc, write_temp_file,
 };
 use crate::mock_command::{CommandCreatorSync, RunCommand};
-use crate::util::{OsStrExt, encode_path, run_input_output};
+use crate::util::{OsStrExt, encode_path, env_var_name_matches, run_input_output};
 use crate::{counted_array, dist};
 use async_trait::async_trait;
 use fs::File;
@@ -86,7 +86,7 @@ impl CCompilerImpl for Msvc {
         env_vars: &[(OsString, OsString)],
         may_dist: bool,
         rewrite_includes_only: bool,
-        _preprocessor_cache_mode: bool,
+        preprocessor_cache_mode: bool,
     ) -> Result<process::Output>
     where
         T: CommandCreatorSync,
@@ -100,9 +100,25 @@ impl CCompilerImpl for Msvc {
             may_dist,
             &self.includes_prefix,
             rewrite_includes_only,
+            preprocessor_cache_mode,
             self.is_clang,
         )
         .await
+    }
+
+    fn cached_stdout(
+        &self,
+        parsed_args: &ParsedArguments,
+        stdout: Vec<u8>,
+        preprocessor_stderr: &[u8],
+    ) -> Vec<u8> {
+        if !parsed_args.msvc_show_includes {
+            return stdout;
+        }
+        // Include paths are not part of the cache key, so the entry may come
+        // from a compile in another directory. Report the includes that this
+        // compile's own preprocessor run found instead of the stored ones.
+        replace_show_includes(&stdout, preprocessor_stderr, &self.includes_prefix)
     }
 
     fn generate_compile_commands<T>(
@@ -262,6 +278,33 @@ where
     );
 
     bail!("Failed to detect showIncludes prefix")
+}
+
+fn replace_show_includes(
+    stdout: &[u8],
+    preprocessor_stderr: &[u8],
+    includes_prefix: &str,
+) -> Vec<u8> {
+    let is_include =
+        |line: &[u8]| from_local_codepage(line).is_ok_and(|line| line.starts_with(includes_prefix));
+
+    let current_includes = preprocessor_stderr
+        .split_inclusive(|&b| b == b'\n')
+        .filter(|line| is_include(line));
+
+    let mut lines = stdout.split_inclusive(|&b| b == b'\n').collect::<Vec<_>>();
+    // cl.exe echoes the source file name before the includes, both when
+    // compiling and when preprocessing. clang-cl does not.
+    let position = lines
+        .iter()
+        .position(|line| is_include(line))
+        .unwrap_or_else(|| {
+            let first_stderr_line = preprocessor_stderr.split_inclusive(|&b| b == b'\n').next();
+            usize::from(!lines.is_empty() && lines.first() == first_stderr_line.as_ref())
+        });
+    lines.retain(|line| !is_include(line));
+    lines.splice(position..position, current_includes);
+    lines.concat()
 }
 
 ArgData! {
@@ -576,17 +619,6 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
 
 // TODO: what to do with precompiled header flags? eg: /Yc, /YI, /Yu
 
-fn cl_env_var_matches(key: &OsStr, name: &str) -> bool {
-    #[cfg(windows)]
-    {
-        key.eq_ignore_ascii_case(name)
-    }
-    #[cfg(not(windows))]
-    {
-        key == name
-    }
-}
-
 /// Options from `CL` are prepended and options from `_CL_` are appended.
 /// The first `#` in each token stands for `=`.
 fn cl_env_args(
@@ -595,7 +627,7 @@ fn cl_env_args(
 ) -> std::result::Result<Vec<OsString>, &'static str> {
     let Some((_, value)) = env_vars
         .iter()
-        .find(|(key, _)| cl_env_var_matches(key, name))
+        .find(|(key, _)| env_var_name_matches(key, name))
     else {
         return Ok(Vec::new());
     };
@@ -614,7 +646,7 @@ fn cl_env_args(
 }
 
 fn is_cl_env_var(key: &OsStr) -> bool {
-    cl_env_var_matches(key, "CL") || cl_env_var_matches(key, "_CL_")
+    env_var_name_matches(key, "CL") || env_var_name_matches(key, "_CL_")
 }
 
 /// `cl` applies `CL` and `_CL_` itself, so drop them after they have been
@@ -646,6 +678,7 @@ pub fn parse_arguments(
     let mut debug_info = false;
     let mut pdb = None;
     let mut depfile = None;
+    let mut too_hard_for_preprocessor_cache_mode = None;
     let mut show_includes = false;
     let mut xclangs: Vec<OsString> = vec![];
     let mut clangs: Vec<OsString> = vec![];
@@ -686,7 +719,11 @@ pub fn parse_arguments(
                     cannot_cache!("output to nul")
                 }
             }
-            Some(DepFile(p)) => depfile = Some(p.clone()),
+            Some(DepFile(p)) => {
+                depfile = Some(p.clone());
+                // The preprocessor writes the dependency file, and a preprocessor cache hit skips it.
+                too_hard_for_preprocessor_cache_mode = Some(arg.to_os_string());
+            }
             Some(ProgramDatabase(p)) => pdb = Some(p.clone()),
             Some(DebugInfo) => debug_info = true,
             Some(PreprocessorArgument(_))
@@ -1058,7 +1095,7 @@ pub fn parse_arguments(
         // FIXME: implement color_mode for msvc.
         color_mode: ColorMode::Auto,
         suppress_rewrite_includes_only: false,
-        too_hard_for_preprocessor_cache_mode: None,
+        too_hard_for_preprocessor_cache_mode,
     })
 }
 
@@ -1120,6 +1157,7 @@ fn preprocess_cmd<T>(
     env_vars: &[(OsString, OsString)],
     may_dist: bool,
     rewrite_includes_only: bool,
+    preprocessor_cache_mode: bool,
     is_clang: bool,
 ) where
     T: RunCommand,
@@ -1128,9 +1166,10 @@ fn preprocess_cmd<T>(
     // reporting and to not cause spurious compilation failure (e.g. no exceptions build
     // fails due to exceptions transitively included in the stdlib).
     // With -fprofile-generate line number information is important, so use -E.
+    // The preprocessor cache needs the #line markers of -E to find the included files.
     // Otherwise, use -EP to maximize cache hits (because no absolute file paths are
     // emitted) and improve performance.
-    if may_dist || parsed_args.profile_generate {
+    if may_dist || parsed_args.profile_generate || preprocessor_cache_mode {
         cmd.arg("-E");
     } else {
         cmd.arg("-EP");
@@ -1180,6 +1219,7 @@ pub async fn preprocess<T>(
     may_dist: bool,
     includes_prefix: &str,
     rewrite_includes_only: bool,
+    preprocessor_cache_mode: bool,
     is_clang: bool,
 ) -> Result<process::Output>
 where
@@ -1193,6 +1233,7 @@ where
         env_vars,
         may_dist,
         rewrite_includes_only,
+        preprocessor_cache_mode,
         is_clang,
     );
 
@@ -1667,6 +1708,27 @@ mod test {
     }
 
     #[test]
+    fn test_replace_show_includes() {
+        let stdout = b"foo.c\r\nNote: including file: C:\\a\\inc\\h.h\r\nwarning text\r\n";
+        let preprocessor_stderr = b"foo.c\r\nNote: including file: C:\\b\\inc\\h.h\r\n";
+        let includes_prefix = "Note: including file: ";
+        assert_eq!(
+            replace_show_includes(stdout, preprocessor_stderr, includes_prefix),
+            b"foo.c\r\nNote: including file: C:\\b\\inc\\h.h\r\nwarning text\r\n".to_vec()
+        );
+        let stdout = b"foo.c\r\nwarning text\r\n";
+        assert_eq!(
+            replace_show_includes(stdout, preprocessor_stderr, includes_prefix),
+            b"foo.c\r\nNote: including file: C:\\b\\inc\\h.h\r\nwarning text\r\n".to_vec()
+        );
+        let preprocessor_stderr = b"Note: including file: .\\h.h\n";
+        assert_eq!(
+            replace_show_includes(b"", preprocessor_stderr, includes_prefix),
+            preprocessor_stderr.to_vec()
+        );
+    }
+
+    #[test]
     fn test_parse_arguments_simple() {
         let args = ovec!["-c", "foo.c", "-Fofoo.obj"];
         let ParsedArguments {
@@ -2094,6 +2156,7 @@ mod test {
                 msvc_show_includes,
                 common_args,
                 depfile,
+                too_hard_for_preprocessor_cache_mode,
                 ..
             } = match parse_arguments(args) {
                 CompilerArguments::Ok(args) => args,
@@ -2102,6 +2165,7 @@ mod test {
             assert_eq!(Some("foo.c"), input.to_str());
             assert_eq!(Language::C, language);
             assert_eq!(Some(PathBuf::from_str("foo.obj.json").unwrap()), depfile);
+            assert!(too_hard_for_preprocessor_cache_mode.is_some());
             assert_map_contains!(
                 outputs,
                 (
@@ -3509,9 +3573,45 @@ mod test {
             child: None,
             args: vec![],
         };
-        preprocess_cmd(&mut cmd, &parsed_args, Path::new(""), &[], true, true, true);
+        preprocess_cmd(
+            &mut cmd,
+            &parsed_args,
+            Path::new(""),
+            &[],
+            true,
+            true,
+            false,
+            true,
+        );
         let expected_args = ovec!["-E", "-nologo", "-clang:-frewrite-includes", "--", "foo.c"];
         assert_eq!(cmd.args, expected_args);
+    }
+
+    #[test]
+    fn test_preprocess_keeps_line_markers_for_preprocessor_cache() {
+        let parsed_args = match parse_arguments(ovec!["-c", "foo.c", "-Fofoo.obj"]) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        let preprocess_flag = |preprocessor_cache_mode| {
+            let mut cmd = MockCommand {
+                child: None,
+                args: vec![],
+            };
+            preprocess_cmd(
+                &mut cmd,
+                &parsed_args,
+                Path::new(""),
+                &[],
+                false,
+                false,
+                preprocessor_cache_mode,
+                false,
+            );
+            cmd.args[0].clone()
+        };
+        assert_eq!(preprocess_flag(true), "-E");
+        assert_eq!(preprocess_flag(false), "-EP");
     }
 
     #[test]
@@ -3616,6 +3716,7 @@ mod test {
                 &parsed_args,
                 Path::new(""),
                 &[],
+                false,
                 false,
                 false,
                 false,
