@@ -13,15 +13,22 @@ every job to an external program, the *distributor*, as an ordinary command:
 clang -c <module>.o -fthinlto-index=<module>.thinlto.bc -o <module>.native.o [flags...]
 ```
 
-sccache caches this command like any other compilation. Its statistics show up
-as `LLVM IR`.
+sccache can be the distributor itself: `sccache --dtlto` runs every job as
+`sccache <compiler> <args>` and caches it like any other compilation. Its
+statistics show up as `LLVM IR`.
 
 ## What goes into the cache key
 
-* the content of the bitcode module;
+* the content of the bitcode module, and its file name;
 * the content of the index file passed with `-fthinlto-index=`. The index
   records a hash of every module the job imports functions from, so a change in
   any of them is a cache miss even if the module itself didn't change;
+* with `sccache --dtlto`, also the content of the files lld lists as the job's
+  inputs: the modules it imports from, and files every job needs, such as a
+  sample profile. This doesn't rely on the hashes in the index, which are
+  missing for bitcode written without one. Each file is hashed once per link;
+* the content of profiles passed with `-fprofile-sample-use=`,
+  `-fauto-profile=` or `-fprofile-list=`;
 * the compiler and the other arguments, as for any compilation.
 
 The *path* of the index file is not part of the key: lld names the files after
@@ -47,25 +54,24 @@ absolute ones make every other directory miss.
 * Static libraries built as thin archives (`llvm-ar` with the `T` modifier). lld
   extracts members of regular archives to files with per-link names, and those
   names end up in the index, so every link would be a cache miss.
-* A distributor. LLVM doesn't install one; it is a small script that reads the
-  job description lld writes and runs the jobs. See
-  [`tests/integration/thinlto/distributor.py`](../tests/integration/thinlto/distributor.py)
-  for one that runs them in parallel behind a launcher such as sccache.
 
 ## Setup
 
-lld calls the distributor as `<distributor> [arguments...] <jobs.json>`. With the
-distributor above, pass sccache as its argument:
+Add to the link flags:
 
 ```text
 -fuse-ld=lld
--fthinlto-distributor=/usr/bin/python3
--Xthinlto-distributor=/path/to/distributor.py
--Xthinlto-distributor=/path/to/sccache
+-fthinlto-distributor=/path/to/sccache
+-Xthinlto-distributor=--dtlto
 ```
 
-lld 22 and newer can also put sccache in front of the backend commands itself,
-with any distributor:
+lld runs `sccache --dtlto <jobs.json>`, which runs the jobs in parallel, as many
+at a time as there are CPUs or as `SCCACHE_DTLTO_JOBS` says. Once a job fails,
+no more jobs are started; the running ones finish, `sccache --dtlto` exits with
+the exit code of the first failure, and lld fails the link.
+
+To keep another distributor, lld 22 and newer can put sccache in front of each
+backend command instead:
 
 ```text
 -Wl,--thinlto-remote-compiler=/path/to/sccache
@@ -82,8 +88,8 @@ cmake \
   -DCMAKE_AR="$(command -v llvm-ar)" \
   -DCMAKE_CXX_ARCHIVE_CREATE="<CMAKE_AR> qcT <TARGET> <LINK_FLAGS> <OBJECTS>" \
   -DCMAKE_CXX_ARCHIVE_APPEND="<CMAKE_AR> qT <TARGET> <LINK_FLAGS> <OBJECTS>" \
-  -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld -fthinlto-distributor=$(command -v python3) \
-    -Xthinlto-distributor=/path/to/distributor.py -Xthinlto-distributor=$(command -v sccache)" \
+  -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld \
+    -fthinlto-distributor=$(command -v sccache) -Xthinlto-distributor=--dtlto" \
   ...
 ```
 

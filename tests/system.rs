@@ -2176,30 +2176,18 @@ fn test_assembler_affects_cache(preprocessor_cache_mode: bool) {
     stop_local_daemon();
 }
 
-// Runs the jobs from lld's DTLTO description, behind the launcher given before
-// the description, and keeps each native object as `<keep>/<module>.o`, since
-// lld deletes them after the link.
-const DTLTO_DISTRIBUTOR: &str = r#"
-import json, os, shutil, subprocess, sys
-data = json.load(open(sys.argv[-1]))
-for job in data["jobs"]:
-    subprocess.check_call(sys.argv[1:-1] + data["common"]["args"] + job["args"])
-    out = job["outputs"][0]
-    shutil.copy(out, os.path.join(os.environ["DTLTO_KEEP"], out.split(".")[0] + ".o"))
-"#;
-
 /// clang and an ld.lld of the same LLVM release that can hand ThinLTO backend
-/// jobs to a distributor, plus python3 for the distributor. The clang is
+/// jobs to a distributor. The clang is
 /// `$DTLTO_CLANG_PATH/clang` if that is set, so the `clang` on PATH, which the
 /// other tests use, can stay as it is; otherwise the `clang` on PATH.
-fn find_dtlto_toolchain() -> Option<(PathBuf, PathBuf, PathBuf)> {
+fn find_dtlto_toolchain() -> Option<(PathBuf, PathBuf)> {
     match env::var_os("DTLTO_CLANG_PATH") {
         Some(dir) => {
             let clang = Path::new(&dir).join("clang");
             let toolchain = probe_dtlto_toolchain(clang.clone());
             assert!(
                 toolchain.is_some(),
-                "DTLTO_CLANG_PATH is set, but {} has no matching DTLTO-capable ld.lld, or python3 is missing",
+                "DTLTO_CLANG_PATH is set, but {} has no matching DTLTO-capable ld.lld",
                 clang.display()
             );
             toolchain
@@ -2208,7 +2196,7 @@ fn find_dtlto_toolchain() -> Option<(PathBuf, PathBuf, PathBuf)> {
     }
 }
 
-fn probe_dtlto_toolchain(clang: PathBuf) -> Option<(PathBuf, PathBuf, PathBuf)> {
+fn probe_dtlto_toolchain(clang: PathBuf) -> Option<(PathBuf, PathBuf)> {
     let stdout = |exe: &Path, arg: &str| -> Option<String> {
         let output = Command::new(exe).arg(arg).output().ok()?;
         Some(String::from_utf8_lossy(&output.stdout).into_owned())
@@ -2229,20 +2217,20 @@ fn probe_dtlto_toolchain(clang: PathBuf) -> Option<(PathBuf, PathBuf, PathBuf)> 
     {
         return None;
     }
-    Some((clang, lld, which("python3").ok()?))
+    Some((clang, lld))
 }
 
-/// ThinLTO backend jobs go through sccache via lld's DTLTO. The job for `b`
-/// imports from `a`, so changing only `a` has to miss `b` too, even though
-/// `b.o` is the same; and the per-link names lld gives the index files must
-/// not get in the way of hits.
+/// lld's DTLTO hands the ThinLTO backend jobs to `sccache --dtlto`. The job
+/// for `b` imports from `a`, so changing only `a` has to miss `b` too, even
+/// though `b.o` is the same; and the per-link names lld gives the index files
+/// must not get in the way of hits.
 #[test]
 #[serial]
 #[cfg(unix)]
 fn test_thinlto_backend_compiles() {
     let _ = env_logger::try_init();
-    let Some((clang, lld, python)) = find_dtlto_toolchain() else {
-        warn!("No clang with a DTLTO-capable ld.lld and python3 found, skipping test");
+    let Some((clang, lld)) = find_dtlto_toolchain() else {
+        warn!("No clang with a DTLTO-capable ld.lld found, skipping test");
         return;
     };
     let tempdir = tempfile::Builder::new()
@@ -2256,7 +2244,6 @@ fn test_thinlto_backend_compiles() {
         "b.c",
         "int helper(int);\nint entry(int x) { return helper(x); }\n",
     );
-    write_source(dir, "dist.py", DTLTO_DISTRIBUTOR);
     // DTLTO is ELF and COFF only; -nostdlib -shared needs no target sysroot.
     let target = format!("--target={}-unknown-linux-gnu", env::consts::ARCH);
 
@@ -2268,7 +2255,9 @@ fn test_thinlto_backend_compiles() {
         &dir.join("sccache-cached-cfg"),
     );
 
-    let link = |body: u32, through_sccache: bool| -> HashMap<String, Vec<u8>> {
+    // Returns the linked library; the first link of each body misses
+    // everything, so it is what clang itself builds.
+    let link = |body: u32, hits: u64, misses: u64| -> Vec<u8> {
         for (src, obj) in [("a.c", "a.o"), ("b.c", "b.o")] {
             prune_command(Command::new(&clang))
                 .args([&target, "-O2", "-flto=thin", "-c", src, "-o", obj])
@@ -2277,32 +2266,19 @@ fn test_thinlto_backend_compiles() {
                 .assert()
                 .success();
         }
-        let keep = dir.join("keep");
-        fs::remove_dir_all(&keep).ok();
-        fs::create_dir_all(&keep).unwrap();
-        let mut cmd = prune_command(Command::new(&clang));
-        cmd.args([&target, "-O2", "-flto=thin", "-nostdlib", "-shared"])
+        zero_stats();
+        prune_command(Command::new(&clang))
+            .args([&target, "-O2", "-flto=thin", "-nostdlib", "-shared"])
             .arg(format!("--ld-path={}", lld.display()))
             .args(["b.o", "a.o", "-o", "lib.so"])
-            .arg(format!("-fthinlto-distributor={}", python.display()))
-            .arg("-Xthinlto-distributor=dist.py")
-            .env("DTLTO_KEEP", &keep)
-            .current_dir(dir);
-        if through_sccache {
-            cmd.arg(format!(
-                "-Xthinlto-distributor={}",
+            .arg(format!(
+                "-fthinlto-distributor={}",
                 env!("CARGO_BIN_EXE_sccache")
-            ));
-        }
-        cmd.assert().success();
-        ["a", "b"]
-            .into_iter()
-            .map(|m| (m.to_owned(), fs::read(keep.join(format!("{m}.o"))).unwrap()))
-            .collect()
-    };
-    let link_cached = |body: u32, hits: u64, misses: u64| {
-        zero_stats();
-        let objects = link(body, true);
+            ))
+            .arg("-Xthinlto-distributor=--dtlto")
+            .current_dir(dir)
+            .assert()
+            .success();
         get_stats(move |info| {
             assert_eq!(hits, *info.stats.cache_hits.get("LLVM IR").unwrap_or(&0));
             assert_eq!(
@@ -2311,17 +2287,14 @@ fn test_thinlto_backend_compiles() {
             );
             assert_eq!(0, info.stats.cache_errors.all());
         });
-        objects
+        fs::read(dir.join("lib.so")).unwrap()
     };
 
-    let reference_3 = link(3, false);
-    assert_eq!(reference_3, link_cached(3, 0, 2));
-    assert_eq!(reference_3, link_cached(3, 2, 0));
-
-    let reference_5 = link(5, false);
-    assert_ne!(reference_3["b"], reference_5["b"], "b must import from a");
-    assert_eq!(reference_5, link_cached(5, 0, 2));
-    assert_eq!(reference_3, link_cached(3, 2, 0));
+    let built_3 = link(3, 0, 2);
+    assert_eq!(built_3, link(3, 2, 0));
+    let built_5 = link(5, 0, 2);
+    assert_ne!(built_3, built_5);
+    assert_eq!(built_3, link(3, 2, 0));
     stop_local_daemon();
 }
 

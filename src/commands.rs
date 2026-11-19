@@ -22,11 +22,12 @@ use crate::lru_disk_cache::CACHEDIR_TAG_FILE_NAME;
 use crate::mock_command::{CommandChild, CommandCreatorSync, ProcessCommandCreator, RunCommand};
 use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
 use crate::server::{self, DistInfo, ServerInfo, ServerStartup, ServerStats};
-use crate::util::{daemonize, new_client_runtime, run_input_output};
+use crate::util::{Digest, daemonize, new_client_runtime, run_input_output};
 use byteorder::{BigEndian, ByteOrder};
 use fs::{File, OpenOptions};
 use fs_err as fs;
 use log::Level::Trace;
+use std::collections::HashMap;
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::io::{self, IsTerminal, Write};
@@ -36,7 +37,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::process::ExitStatusExt;
 #[cfg(windows)]
 use std::os::windows::io::AsRawHandle;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::Arc;
 use std::time::Duration;
@@ -799,6 +800,132 @@ fn empty_server_info(config: &Config) -> Result<ServerInfo> {
     runtime.block_on(ServerInfo::new(ServerStats::default(), storage.as_deref()))
 }
 
+#[derive(serde::Deserialize)]
+struct DtltoArgs {
+    args: Vec<String>,
+    #[serde(default)]
+    inputs: Vec<String>,
+}
+
+/// The part of lld's DTLTO job file sccache needs: the command of job `n` is
+/// `common.args` followed by `jobs[n].args`, with the compiler first. A job's
+/// `inputs` start with its module and its index, followed by the modules it
+/// imports from; `common.inputs` are needed by every job, e.g. profiles.
+#[derive(serde::Deserialize)]
+struct DtltoJobs {
+    common: DtltoArgs,
+    jobs: Vec<DtltoArgs>,
+}
+
+/// The digest of the files a ThinLTO backend job reads besides its module and
+/// index, passed to the job in this variable, which is part of the cache key.
+pub const DTLTO_INPUTS_DIGEST_VAR: &str = "SCCACHE_DTLTO_INPUTS_DIGEST";
+
+/// The digest of `job`'s imported modules and the common inputs. The index
+/// already records a hash of each imported module, but only if the module was
+/// written with one, so this does not rely on it. Files are hashed once per
+/// link, however many jobs read them.
+fn dtlto_inputs_digest(
+    jobs: &DtltoJobs,
+    job: &DtltoArgs,
+    digests: &std::sync::Mutex<HashMap<String, String>>,
+) -> Result<String> {
+    let mut m = Digest::new();
+    for input in jobs.common.inputs.iter().chain(job.inputs.iter().skip(2)) {
+        let cached = digests.lock().unwrap().get(input).cloned();
+        let digest = match cached {
+            Some(digest) => digest,
+            None => {
+                let digest = Digest::reader_sync(File::open(input)?)?;
+                digests
+                    .lock()
+                    .unwrap()
+                    .insert(input.clone(), digest.clone());
+                digest
+            }
+        };
+        m.update(digest.as_bytes());
+    }
+    Ok(m.finish())
+}
+
+/// The sccache to run the jobs with. `current_exe()` resolves symlinks, and if
+/// the file behind them isn't named `sccache`, it would act as a compiler.
+fn dtlto_sccache_exe() -> Result<PathBuf> {
+    match env::args_os().next().map(PathBuf::from) {
+        Some(argv0) if argv0.components().count() > 1 && argv0.is_file() => Ok(argv0),
+        _ => env::current_exe().context("cannot locate the sccache executable"),
+    }
+}
+
+/// Run every ThinLTO backend job from lld's DTLTO job file as
+/// `sccache <compiler> <args>`, so each one goes through the usual client.
+/// Once a job fails, no more jobs are taken; the running ones finish, and the
+/// first failure's exit code is returned. A job that cannot be started is an
+/// error instead.
+fn run_dtlto_jobs(path: &Path) -> Result<i32> {
+    use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering::Relaxed};
+
+    let jobs: DtltoJobs = File::open(path)
+        .map_err(Error::from)
+        .and_then(|f| Ok(serde_json::from_reader(io::BufReader::new(f))?))
+        .with_context(|| format!("failed to read DTLTO jobs from {}", path.display()))?;
+    if jobs.common.args.is_empty() {
+        bail!("no compiler in DTLTO jobs from {}", path.display());
+    }
+    let sccache = dtlto_sccache_exe()?;
+    let workers = match env::var("SCCACHE_DTLTO_JOBS") {
+        Ok(n) if !n.is_empty() => n
+            .parse::<usize>()
+            .ok()
+            .filter(|&n| n > 0)
+            .with_context(|| format!("SCCACHE_DTLTO_JOBS={n} is not a positive number"))?,
+        _ => crate::util::num_cpus(),
+    }
+    .min(jobs.jobs.len());
+    let digests = std::sync::Mutex::new(HashMap::new());
+    let next = AtomicUsize::new(0);
+    // The first failure's exit code; 0 while every job has succeeded.
+    let failed = AtomicI32::new(0);
+    let fail = |code| {
+        let _ = failed.compare_exchange(0, code, Relaxed, Relaxed);
+    };
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..workers)
+            .map(|_| {
+                scope.spawn(|| -> Result<()> {
+                    while failed.load(Relaxed) == 0
+                        && let Some(job) = jobs.jobs.get(next.fetch_add(1, Relaxed))
+                    {
+                        let status = dtlto_inputs_digest(&jobs, job, &digests)
+                            .context("failed to hash the inputs of a DTLTO job")
+                            .and_then(|digest| {
+                                process::Command::new(&sccache)
+                                    .args(&jobs.common.args)
+                                    .args(&job.args)
+                                    .env(DTLTO_INPUTS_DIGEST_VAR, digest)
+                                    .status()
+                                    .context("failed to run a DTLTO job")
+                            })
+                            .inspect_err(|_| fail(1))?;
+                        if !status.success() {
+                            fail(status.code().filter(|&c| c != 0).unwrap_or(1));
+                        }
+                    }
+                    Ok(())
+                })
+            })
+            .collect();
+        // Join every worker before reporting, so no job outlives the command.
+        let results: Vec<_> = workers
+            .into_iter()
+            .map(|worker| worker.join().expect("DTLTO worker panicked"))
+            .collect();
+        results.into_iter().collect::<Result<()>>()
+    })?;
+    Ok(failed.into_inner())
+}
+
 /// Run `cmd` and return the process exit status.
 pub fn run_command(cmd: Command) -> Result<i32> {
     // Config isn't required for all commands, but if it's broken then we should flag
@@ -985,6 +1112,10 @@ pub fn run_command(cmd: Command) -> Result<i32> {
         Command::PackageToolchain(_executable, _out) => bail!(
             "Toolchain packaging not compiled in, please rebuild with the dist-client feature"
         ),
+        Command::Dtlto(jobs) => {
+            trace!("Command::Dtlto({})", jobs.display());
+            return run_dtlto_jobs(&jobs);
+        }
         Command::Compile {
             exe,
             cmdline,
