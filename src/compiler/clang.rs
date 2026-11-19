@@ -279,6 +279,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("-ivfsoverlay", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
     take_arg!("-load", PathBuf, Separated, ExtraHashFile),
     flag!("-mconstructor-aliases", PassThroughFlag),
+    take_arg!("-meabi", OsString, Separated, PassThrough),
     take_arg!("-mllvm", OsString, Separated, PassThrough),
     take_arg!("-mmlir", OsString, Separated, PassThrough),
     take_arg!("-module-dependency-dir", OsString, Separated, TooHard),
@@ -921,6 +922,15 @@ mod test {
             ovec!["-Xclang", "-add-plugin", "-Xclang", "foo"],
             a.common_args
         );
+    }
+
+    #[test]
+    fn test_parse_meabi() {
+        // The Linux kernel passes `-meabi gnu` on 32-bit ARM; `gnu` is the
+        // option's value, not a second input file.
+        let a = parses!("-c", "foo.c", "-o", "foo.o", "-meabi", "gnu");
+        assert_eq!(Some("foo.c"), a.input.to_str());
+        assert_eq!(ovec!["-meabi", "gnu"], a.common_args);
     }
 
     #[test]
