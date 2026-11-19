@@ -178,17 +178,20 @@ impl CommandChild for Child {
     }
 
     async fn wait(self) -> io::Result<ExitStatus> {
-        let Child { mut inner, token } = self;
-        inner.wait().await.inspect(|_ret| {
-            drop(token);
-        })
+        let Child {
+            mut inner,
+            mut token,
+        } = self;
+        let ret = inner.wait().await;
+        token.exited(ret.as_ref().ok());
+        ret
     }
 
     async fn wait_with_output(self) -> io::Result<Output> {
-        let Child { inner, token } = self;
-        inner.wait_with_output().await.inspect(|_ret| {
-            drop(token);
-        })
+        let Child { inner, mut token } = self;
+        let ret = inner.wait_with_output().await;
+        token.exited(ret.as_ref().ok().map(|o| &o.status));
+        ret
     }
 }
 
@@ -297,6 +300,8 @@ impl RunCommand for AsyncCommand {
     }
     async fn spawn(&mut self) -> Result<Child> {
         let mut inner = self.inner.take().unwrap();
+        // The token rate-limits our children, independently of sharing the pool.
+        let mut token = self.jobserver.acquire().await?;
         // If the build that asked for this compile named its jobserver by
         // path, the child keeps it and opens it the way it would have without
         // sccache, so it stays within that build's (or a system-wide) limit
@@ -312,14 +317,10 @@ impl RunCommand for AsyncCommand {
             // probes and C/C++ compilers all ignore it -- so the default is
             // not to share, and the callers that spawn `rustc` ask for it.
             if self.share_jobserver {
-                self.jobserver.configure(&mut inner);
+                token.configure(&mut inner);
             }
         }
 
-        // The token is acquired either way: it rate-limits how many children
-        // *we* run, which is separate from whether the child can acquire
-        // tokens of its own.
-        let token = self.jobserver.acquire().await?;
         let mut inner = tokio::process::Command::from(inner);
         let child = inner
             .kill_on_drop(true)
@@ -853,5 +854,67 @@ mod test {
             ("CARGO_MAKEFLAGS", "--jobserver-auth=3,4"),
             ("MAKEFLAGS", "--jobserver-auth=fifo:/dev/x"),
         ]));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn killed_child_does_not_leak_jobserver_tokens() {
+        use std::os::unix::process::ExitStatusExt;
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let client = Client::new_num(2);
+            let mut creator = <ProcessCommandCreator as CommandCreator>::new(&client);
+            let mut cmd = creator.new_command("/bin/sh");
+            cmd.args(&[
+                "-c",
+                r#"a=${CARGO_MAKEFLAGS##*--jobserver-auth=}; [ "$(head -c1 /proc/self/fd/${a%,*} | wc -c)" -eq 1 ] && kill -9 $$"#,
+            ]);
+            cmd.share_jobserver();
+            let timeout = std::time::Duration::from_secs(10);
+            let child = async { cmd.spawn().await.unwrap().wait().await.unwrap() };
+            let status = tokio::time::timeout(timeout, child)
+                .await
+                .expect("the child never got a token");
+            assert_eq!(status.signal(), Some(9));
+            let both = async { (client.acquire().await, client.acquire().await) };
+            let (a, b) = tokio::time::timeout(timeout, both)
+                .await
+                .expect("the killed child's token was never replaced");
+            a.unwrap();
+            b.unwrap();
+        });
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn replaced_pool_keeps_the_child_limit() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let client = Client::new_num(3);
+            let mut creator = <ProcessCommandCreator as CommandCreator>::new(&client);
+            let mut hold = creator.new_command("/bin/sh");
+            hold.args(&["-c", "sleep 30"]);
+            let hold = hold.spawn().await.unwrap();
+            let mut victim = creator.new_command("/bin/sh");
+            victim.args(&[
+                "-c",
+                r#"a=${CARGO_MAKEFLAGS##*--jobserver-auth=}; [ "$(head -c1 /proc/self/fd/${a%,*} | wc -c)" -eq 1 ] && kill -9 $$"#,
+            ]);
+            victim.share_jobserver();
+            let timeout = std::time::Duration::from_secs(10);
+            let victim = async { victim.spawn().await.unwrap().wait().await.unwrap() };
+            tokio::time::timeout(timeout, victim).await.unwrap();
+            let free = async { (client.acquire().await, client.acquire().await) };
+            let (a, b) = tokio::time::timeout(timeout, free).await.unwrap();
+            let _held = (a.unwrap(), b.unwrap());
+            let over =
+                tokio::time::timeout(std::time::Duration::from_millis(200), client.acquire());
+            assert!(over.await.is_err(), "a fresh pool ignored the running child");
+            drop(hold);
+            tokio::time::timeout(timeout, client.acquire())
+                .await
+                .unwrap()
+                .unwrap();
+        });
     }
 }
