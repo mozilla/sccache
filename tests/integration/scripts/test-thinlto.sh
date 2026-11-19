@@ -16,10 +16,8 @@ done
 
 "$SCCACHE" --start-server || true
 
-# lld hands every ThinLTO backend job to the distributor, which runs it as
+# lld hands every ThinLTO backend job to `sccache --dtlto`, which runs it as
 # `sccache clang -c <module> -fthinlto-index=<index> -o <native object>`.
-# lld 21 has no --thinlto-remote-compiler-prepend-arg, so the distributor
-# puts sccache in front.
 # The library is a thin archive: lld would extract members of a regular one
 # under per-link names, which end up in the indexes.
 build() {
@@ -33,9 +31,7 @@ build() {
         -DCMAKE_CXX_ARCHIVE_CREATE="<CMAKE_AR> qcT <TARGET> <LINK_FLAGS> <OBJECTS>" \
         -DCMAKE_CXX_ARCHIVE_APPEND="<CMAKE_AR> qT <TARGET> <LINK_FLAGS> <OBJECTS>" \
         -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld \
-            -fthinlto-distributor=$(command -v python3) \
-            -Xthinlto-distributor=$PROJECT/distributor.py \
-            -Xthinlto-distributor=$SCCACHE" \
+            -fthinlto-distributor=$SCCACHE -Xthinlto-distributor=--dtlto" \
         -DHELPER_FACTOR="$factor" >/dev/null
     "$SCCACHE" --zero-stats >/dev/null
     cmake --build "$PROJECT/build" -- VERBOSE=1
