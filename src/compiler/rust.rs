@@ -4831,10 +4831,12 @@ foo.rs:
         assert_eq!(key(&a, "x", vec![]), key(&a, "x", vec![elsewhere]));
     }
 
-    /// An env-dep equal to a basedir is keyed apart from an unset one, which rustc
-    /// writes as `# env-dep:Y` for an `option_env!("Y")`.
+    /// `option_env!("Y")` is `None` when `Y` is unset and `Some("")` when it is empty,
+    /// which rustc writes as `# env-dep:Y` and `# env-dep:Y=`. A crate that read it in
+    /// one state must not be served the output of another, whether that is an empty
+    /// value, some other value or one equal to a basedir.
     #[test]
-    fn test_hash_env_dep_equal_to_basedir_is_not_unset() {
+    fn test_hash_unset_env_dep_is_keyed_apart() {
         let f = TestFixture::new();
         let root = f.tempdir.path().to_owned();
         // rustc reads `Y` from the environment, so a set `Y` is there too. Without
@@ -4861,7 +4863,15 @@ foo.rs:
                 MockStorage::new(None, false).with_basedirs(vec![basedir(&root)]),
             )
         };
-        assert_ne!(key(None), key(Some(root.clone().into())));
+        let unset = key(None);
+        let empty = key(Some("".into()));
+        assert_ne!(unset, empty);
+        assert_ne!(unset, key(Some("x".into())));
+        assert_ne!(unset, key(Some(root.clone().into())));
+        assert_ne!(empty, key(Some("x".into())));
+        // The same state keeps its key.
+        assert_eq!(unset, key(None));
+        assert_eq!(empty, key(Some("".into())));
     }
 
     /// SCCACHE_BASEDIRS_VERBATIM_ENV_DEPS keeps a crate that read a listed env-dep keyed
@@ -4943,45 +4953,6 @@ foo.rs:
                 key(&b, None, reads, &both)
             );
         }
-    }
-
-    /// `option_env!("X")` is `None` when X is unset and `Some("")` when it is empty,
-    /// so a crate that read it in one state must not be served the other's output.
-    #[test]
-    fn test_hash_unset_env_dep_differs_from_empty() {
-        fn key(f: &TestFixture, kind: &str, env_dep: Option<OsString>) -> String {
-            // Keeps the remembered dep-info of the cases apart.
-            let env_vars: Vec<(OsString, OsString)> = vec![("KIND".into(), kind.into())];
-            hash_key_with(
-                f,
-                &[
-                    "--emit",
-                    "link",
-                    "foo.rs",
-                    "--out-dir",
-                    "out",
-                    "--crate-name",
-                    "foo",
-                    "--crate-type",
-                    "lib",
-                ],
-                &env_vars,
-                &[("SCCACHE_TEST_OPTION_ENV", env_dep)],
-                nothing,
-                MockStorage::new(None, false),
-            )
-        }
-
-        let f = TestFixture::new();
-        let unset = key(&f, "unset", None);
-        let empty = key(&f, "empty", Some("".into()));
-        let value = key(&f, "value", Some("x".into()));
-        assert_ne!(unset, empty);
-        assert_ne!(empty, value);
-        assert_ne!(unset, value);
-        // The same state keeps its key.
-        assert_eq!(unset, key(&f, "unset-again", None));
-        assert_eq!(empty, key(&f, "empty-again", Some("".into())));
     }
 
     #[test_case(true ; "with preprocessor cache")]
