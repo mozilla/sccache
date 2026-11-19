@@ -1252,15 +1252,14 @@ impl IntoArg for ArgCrateTypes {
 
 #[derive(Clone, Debug, PartialEq)]
 struct ArgLinkLibrary {
-    kind: String,
+    kind: Option<String>,
     name: String,
 }
 impl FromArg for ArgLinkLibrary {
     fn process(arg: OsString) -> ArgParseResult<Self> {
         let (kind, name) = match split_os_string_arg(arg, "=")? {
-            (kind, Some(name)) => (kind, name),
-            // If no kind is specified, the default is dylib.
-            (name, None) => ("dylib".to_owned(), name),
+            (kind, Some(name)) => (Some(kind), name),
+            (name, None) => (None, name),
         };
         Ok(ArgLinkLibrary { kind, name })
     }
@@ -1268,11 +1267,19 @@ impl FromArg for ArgLinkLibrary {
 impl IntoArg for ArgLinkLibrary {
     fn into_arg_os_string(self) -> OsString {
         let ArgLinkLibrary { kind, name } = self;
-        make_os_string!(kind, "=", name)
+        if let Some(kind) = kind {
+            make_os_string!(kind, "=", name)
+        } else {
+            make_os_string!(name)
+        }
     }
     fn into_arg_string(self, _transformer: PathTransformerFn<'_>) -> ArgToStringResult {
         let ArgLinkLibrary { kind, name } = self;
-        Ok(format!("{}={}", kind, name))
+        if let Some(kind) = kind {
+            Ok(format!("{}={}", kind, name))
+        } else {
+            Ok(name)
+        }
     }
 }
 
@@ -1703,12 +1710,16 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
             Some(LinkLibrary(ArgLinkLibrary { kind, name })) => {
                 // Link modifiers follow the kind (e.g. `static:+bundle`), and `-bundle` libraries
                 // aren't copied into the rlib, so they don't change the output.
-                let bundled_static = match kind.split_once(':') {
+                // Libraries without a kind are never bundled.
+                let kind_and_modifiers = kind
+                    .as_deref()
+                    .map(|kind| kind.split_once(':').unwrap_or((kind, "")));
+                let bundled_static = match kind_and_modifiers {
                     Some((kind, modifiers)) => {
                         kind == "static"
                             && !modifiers.split(',').any(|modifier| modifier == "-bundle")
                     }
-                    None => kind == "static",
+                    None => false,
                 };
                 if bundled_static {
                     static_lib_names.push(name.to_owned());
