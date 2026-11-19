@@ -1946,6 +1946,863 @@ fn find_compilers() -> Vec<Compiler> {
     }]
 }
 
+#[cfg(target_env = "msvc")]
+#[test_case(false ; "server side")]
+#[test_case(true ; "client side")]
+#[serial]
+fn test_msvc_modules(client_side: bool) {
+    struct StopServer;
+    impl Drop for StopServer {
+        fn drop(&mut self) {
+            stop_local_daemon();
+        }
+    }
+    let temp = tempfile::Builder::new()
+        .prefix("sccache_modules")
+        .tempdir()
+        .unwrap();
+    let cwd = temp.path();
+    let compiler = find_compilers().remove(0);
+    stop_local_daemon();
+    let mut cfg = sccache_client_cfg(cwd, true);
+    cfg.client_side_mode = client_side;
+    write_json_cfg(cwd, "config.json", &cfg);
+    let start = || start_local_daemon(&cwd.join("config.json"), &cwd.join("cached-config"));
+    let _stop_server = StopServer;
+    start();
+    let compile = |args: &[&str], hit: bool| {
+        zero_stats();
+        let output = sccache_command()
+            .arg(&compiler.exe)
+            .args(["/nologo", "/c", "/std:c++20", "/EHsc", "/Z7"])
+            .args(args)
+            .envs(compiler.env_vars.clone())
+            .current_dir(cwd)
+            .assert()
+            .success()
+            .get_output()
+            .clone();
+        let command = args.join(" ");
+        get_stats(move |s| {
+            assert_eq!(s.stats.cache_hits.all(), u64::from(hit), "{command}: {s:?}");
+            assert_eq!(
+                s.stats.cache_misses.all(),
+                u64::from(!hit),
+                "{command}: {s:?}"
+            );
+        });
+        output
+    };
+    let restored = |args: &[&str], files: &[&str]| {
+        let output = compile(args, false);
+        let bytes: Vec<_> = files
+            .iter()
+            .map(|f| fs::read(cwd.join(f)).unwrap())
+            .collect();
+        for file in files {
+            fs::remove_file(cwd.join(file)).unwrap();
+        }
+        let cached = compile(args, true);
+        assert_eq!(output.stdout, cached.stdout);
+        assert_eq!(output.stderr, cached.stderr);
+        for (file, bytes) in files.iter().zip(bytes) {
+            assert_eq!(fs::read(cwd.join(file)).unwrap(), bytes, "{file}");
+        }
+    };
+    write_source(
+        cwd,
+        "leaf.ixx",
+        "export module leaf;\nexport inline constexpr int leaf_value = 42;\n",
+    );
+    write_source(
+        cwd,
+        "middle.ixx",
+        "export module middle;\nexport import leaf;\nexport int answer();\n",
+    );
+    write_source(
+        cwd,
+        "impl.cpp",
+        "module middle;\nint answer() { return leaf_value; }\n",
+    );
+    write_source(
+        cwd,
+        "main.cpp",
+        "import middle;\nint main() { return answer() == leaf_value ? 0 : 1; }\n",
+    );
+    let leaf = [
+        "/interface",
+        "leaf.ixx",
+        "/ifcOutput",
+        "leaf.ifc",
+        "/Foleaf.obj",
+    ];
+    let middle = [
+        "/interface",
+        "middle.ixx",
+        "/reference",
+        "leaf=leaf.ifc",
+        "/ifcOutput",
+        "middle.ifc",
+        "/Fomiddle.obj",
+    ];
+    let implementation = ["impl.cpp", "/reference", "middle=middle.ifc", "/Foimpl.obj"];
+    let main = [
+        "main.cpp",
+        "/reference",
+        "middle=middle.ifc",
+        "/Fomain.obj",
+        "/sourceDependencies",
+        "main.json",
+        "/showIncludes",
+    ];
+    restored(&leaf, &["leaf.ifc", "leaf.obj"]);
+    restored(&middle, &["middle.ifc", "middle.obj"]);
+    restored(&implementation, &["impl.obj"]);
+    restored(&main, &["main.obj", "main.json"]);
+    write_source(cwd, "ordinary.cpp", "int f() { return 7; }\n");
+    restored(
+        &["ordinary.cpp", "/Zi", "/Fdordinary.pdb", "/Foordinary.obj"],
+        &["ordinary.obj", "ordinary.pdb"],
+    );
+    fs::create_dir(cwd.join("reports")).unwrap();
+    let mut directory_deps = main;
+    let destination = directory_deps
+        .iter()
+        .position(|arg| *arg == "main.json")
+        .unwrap();
+    directory_deps[destination] = "reports";
+    restored(&directory_deps, &["main.obj", "reports\\main.cpp.json"]);
+    write_source(
+        cwd,
+        "implicit.cpp",
+        "import leaf;\nint implicit() { return leaf_value; }\n",
+    );
+    restored(&["implicit.cpp", "/Foimplicit.obj"], &["implicit.obj"]);
+    write_source(
+        cwd,
+        "implicit.c",
+        "import leaf;\nint implicit_cxx() { return leaf_value; }\n",
+    );
+    let forced_cxx = ["/TP", "implicit.c", "/Foforced-cxx.obj"];
+    restored(&forced_cxx, &["forced-cxx.obj"]);
+    fs::create_dir(cwd.join("source")).unwrap();
+    write_source(
+        cwd,
+        "source\\default.ixx",
+        "export module default_output;\nexport int default_value() { return 1; }\n",
+    );
+    restored(
+        &[
+            "source\\default.ixx",
+            "/interface",
+            "/ifcOutput",
+            "default.ifc",
+        ],
+        &["default.ifc", "default.obj"],
+    );
+    let deps: serde_json::Value =
+        serde_json::from_slice(&fs::read(cwd.join("main.json")).unwrap()).unwrap();
+    assert_eq!(deps["Data"]["ImportedModules"].as_array().unwrap().len(), 2);
+    let link_and_run = |objects: &[&str], exe: &str| {
+        Command::new(&compiler.exe)
+            .args(["/nologo"])
+            .args(objects)
+            .arg(format!("/Fe{exe}"))
+            .envs(compiler.env_vars.clone())
+            .current_dir(cwd)
+            .assert()
+            .success();
+        Command::new(cwd.join(exe)).assert().success();
+    };
+    link_and_run(
+        &["leaf.obj", "middle.obj", "impl.obj", "main.obj"],
+        "named.exe",
+    );
+    stop_local_daemon();
+    start();
+    fs::remove_file(cwd.join("leaf.ifc")).unwrap();
+    fs::remove_file(cwd.join("leaf.obj")).unwrap();
+    compile(&leaf, true);
+    compile(&main, true);
+    let middle_ifc = fs::read(cwd.join("middle.ifc")).unwrap();
+    write_source(
+        cwd,
+        "leaf.ixx",
+        "export module leaf;\nexport inline constexpr int leaf_value = 43;\n",
+    );
+    compile(&leaf, false);
+    compile(&implementation, false);
+    compile(&main, false);
+    compile(&forced_cxx, false);
+    assert_eq!(middle_ifc, fs::read(cwd.join("middle.ifc")).unwrap());
+    link_and_run(
+        &["leaf.obj", "middle.obj", "impl.obj", "main.obj"],
+        "named.exe",
+    );
+    fs::copy(cwd.join("middle.ifc"), cwd.join("alternate.ifc")).unwrap();
+    let mut remapped = main;
+    remapped[2] = "middle=alternate.ifc";
+    compile(&remapped, false);
+    compile(&remapped, true);
+    let mut flags = main.to_vec();
+    flags.push("/DUNUSED_FLAG=1");
+    compile(&flags, false);
+    compile(&flags, true);
+    flags.pop();
+    flags.push("/DUNUSED_FLAG=2");
+    compile(&flags, false);
+    write_source(
+        cwd,
+        "main.cpp",
+        "import middle;\nint main() { return leaf_value == 43 ? 0 : 1; }\n",
+    );
+    compile(&main, false);
+
+    write_source(cwd, "detail.h", "#define DETAIL 23\n");
+    write_source(
+        cwd,
+        "unit.h",
+        "#pragma once\n#include \"detail.h\"\ninline int unit_value() { return DETAIL; }\n",
+    );
+    write_source(
+        cwd,
+        "outer.h",
+        "#pragma once\nimport \"unit.h\";\ninline int outer_value() { return unit_value(); }\n",
+    );
+    write_source(
+        cwd,
+        "header.cpp",
+        "import \"outer.h\";\nint main() { return outer_value() == 23 && DETAIL == 23 ? 0 : 1; }\n",
+    );
+    let unit = [
+        "/exportHeader",
+        "/headerName:quote",
+        "unit.h",
+        "/ifcOutput",
+        "unit.ifc",
+        "/Founit.obj",
+    ];
+    let outer = [
+        "/exportHeader",
+        "/headerName:quote",
+        "outer.h",
+        "/headerUnit:quote",
+        "unit.h=unit.ifc",
+        "/ifcOutput",
+        "outer.ifc",
+        "/Foouter.obj",
+    ];
+    let header = [
+        "header.cpp",
+        "/headerUnit:quote",
+        "outer.h=outer.ifc",
+        "/headerUnit:quote",
+        "unit.h=unit.ifc",
+        "/Foheader.obj",
+        "/sourceDependencies",
+        "header.json",
+    ];
+    restored(&unit, &["unit.ifc", "unit.obj"]);
+    restored(&outer, &["outer.ifc", "outer.obj"]);
+    restored(&header, &["header.obj", "header.json"]);
+    let deps: serde_json::Value =
+        serde_json::from_slice(&fs::read(cwd.join("header.json")).unwrap()).unwrap();
+    assert_eq!(
+        deps["Data"]["ImportedHeaderUnits"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    link_and_run(&["unit.obj", "outer.obj", "header.obj"], "header.exe");
+    write_source(cwd, "detail.h", "#define DETAIL 24\n");
+    compile(&unit, false);
+    let outer_ifc = fs::read(cwd.join("outer.ifc")).unwrap();
+    compile(&header, false);
+    assert_eq!(outer_ifc, fs::read(cwd.join("outer.ifc")).unwrap());
+    compile(&outer, false);
+    let outer_changed = outer_ifc != fs::read(cwd.join("outer.ifc")).unwrap();
+    compile(&header, !outer_changed);
+    compile(&header, true);
+    // Both changes must reach an importer, including macros imported from the inner unit.
+    write_source(
+        cwd,
+        "header.cpp",
+        "import \"outer.h\";\nint main() { return outer_value() == 24 && DETAIL == 24 ? 0 : 1; }\n",
+    );
+    compile(&header, false);
+    link_and_run(&["unit.obj", "outer.obj", "header.obj"], "header.exe");
+
+    restored(
+        &[
+            "/interface",
+            "leaf.ixx",
+            "/ifcOnly",
+            "/ifcOutput",
+            "only.ifc",
+        ],
+        &["only.ifc"],
+    );
+    write_source(cwd, "untouched.obj", "not an output of /ifcOnly");
+    restored(
+        &[
+            "/interface",
+            "leaf.ixx",
+            "/ifcOnly",
+            "/ifcOutput",
+            "only-fo.ifc",
+            "/Fountouched.obj",
+        ],
+        &["only-fo.ifc"],
+    );
+    assert_eq!(
+        fs::read(cwd.join("untouched.obj")).unwrap(),
+        b"not an output of /ifcOnly"
+    );
+    restored(
+        &[
+            "/exportHeader",
+            "/headerName:angle",
+            "unit.h",
+            "/I.",
+            "/ifcOutput",
+            "angle.ifc",
+        ],
+        &["angle.ifc"],
+    );
+
+    write_source(
+        cwd,
+        "part.cpp",
+        "module parted:detail;\nint hidden() { return 7; }\n",
+    );
+    write_source(
+        cwd,
+        "parted.ixx",
+        "export module parted;\nimport :detail;\nexport inline int exposed() { return hidden(); }\n",
+    );
+    write_source(
+        cwd,
+        "partition.cpp",
+        "import parted;\nint main() { return exposed() == 7 ? 0 : 1; }\n",
+    );
+    restored(
+        &[
+            "/internalPartition",
+            "part.cpp",
+            "/ifcOutput",
+            "part.ifc",
+            "/Fopart.obj",
+        ],
+        &["part.ifc", "part.obj"],
+    );
+    restored(
+        &[
+            "/interface",
+            "parted.ixx",
+            "/reference",
+            "parted:detail=part.ifc",
+            "/ifcOutput",
+            "parted.ifc",
+            "/Foparted.obj",
+        ],
+        &["parted.ifc", "parted.obj"],
+    );
+    restored(
+        &[
+            "partition.cpp",
+            "/reference",
+            "parted=parted.ifc",
+            "/reference",
+            "parted:detail=part.ifc",
+            "/Fopartition.obj",
+        ],
+        &["partition.obj"],
+    );
+    link_and_run(
+        &["part.obj", "parted.obj", "partition.obj"],
+        "partition.exe",
+    );
+
+    // An absent transitive import must fail, not reuse an old successful object.
+    fs::rename(cwd.join("unit.ifc"), cwd.join("saved.ifc")).unwrap();
+    zero_stats();
+    sccache_command()
+        .arg(&compiler.exe)
+        .args(["/nologo", "/c", "/std:c++20", "/EHsc", "/Z7"])
+        .args(header)
+        .envs(compiler.env_vars.clone())
+        .current_dir(cwd)
+        .assert()
+        .failure();
+    get_stats(|s| assert_eq!(s.stats.cache_hits.all(), 0));
+    fs::rename(cwd.join("saved.ifc"), cwd.join("unit.ifc")).unwrap();
+
+    write_source(
+        cwd,
+        "invalid.cpp",
+        "int main() { return missing_identifier; }\n",
+    );
+    let invalid = [
+        "/nologo",
+        "/c",
+        "/std:c++20",
+        "invalid.cpp",
+        "/sourceDependencies",
+        "invalid.json",
+    ];
+    let direct = Command::new(&compiler.exe)
+        .args(invalid)
+        .envs(compiler.env_vars.clone())
+        .current_dir(cwd)
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+    fs::remove_file(cwd.join("invalid.json")).unwrap();
+    let wrapped = sccache_command()
+        .arg(&compiler.exe)
+        .args(invalid)
+        .envs(compiler.env_vars.clone())
+        .current_dir(cwd)
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+    assert_eq!(strip_ansi_escapes::strip(direct.stdout), wrapped.stdout);
+    assert_eq!(strip_ansi_escapes::strip(direct.stderr), wrapped.stderr);
+    assert!(cwd.join("invalid.json").exists());
+
+    zero_stats();
+    sccache_command()
+        .arg(&compiler.exe)
+        .args([
+            "/nologo",
+            "/c",
+            "/std:c++20",
+            "/EHsc",
+            "/Zi",
+            "/Fdprivate.pdb",
+        ])
+        .args(leaf)
+        .envs(compiler.env_vars.clone())
+        .current_dir(cwd)
+        .assert()
+        .success();
+    get_stats(|s| {
+        assert_eq!(s.stats.cache_hits.all(), 0);
+        assert_eq!(s.stats.requests_not_cacheable, 1);
+    });
+    stop_local_daemon();
+}
+
+#[cfg(target_env = "msvc")]
+#[test_case(false ; "server side")]
+#[test_case(true ; "client side")]
+#[serial]
+fn test_msvc_mapped_modules(client_side: bool) {
+    struct StopServer;
+    impl Drop for StopServer {
+        fn drop(&mut self) {
+            stop_local_daemon();
+        }
+    }
+    let temp = tempfile::Builder::new()
+        .prefix("sccache_mapped_modules")
+        .tempdir()
+        .unwrap();
+    let canonical = fs::canonicalize(temp.path()).unwrap();
+    let root = PathBuf::from(canonical.to_str().unwrap().strip_prefix(r"\\?\").unwrap());
+    let a = root.join("producer");
+    let b = root.join("producer copy with spaces");
+    let c = root.join("another receiver");
+    let sources = [
+        (
+            "leaf.ixx",
+            r#"module;
+#include <source_location>
+export module mapped_leaf;
+export inline int named_count = 0;
+export inline int named_initialized = [] { ++named_count; return 42; }();
+export inline const char* named_file() { return __FILE__; }
+export inline const char* named_location() { return std::source_location::current().file_name(); }
+"#,
+        ),
+        (
+            "middle.ixx",
+            "export module mapped_middle;\nexport import mapped_leaf;\nexport inline int middle_value = named_initialized + 1;\n",
+        ),
+        (
+            "named.cpp",
+            r#"#include <cstring>
+#include <cstdio>
+import mapped_middle;
+int main() {
+    std::printf("named: %d,%d,%d %s %s\n", named_initialized, middle_value, named_count, named_file(), named_location());
+    return named_initialized == 42 && middle_value == 43 && named_count == 1
+        && std::strcmp(named_file(), R"(X:\sccache-mapped\leaf.ixx)") == 0
+        && std::strcmp(named_location(), R"(X:\sccache-mapped\leaf.ixx)") == 0 ? 0 : 1;
+}
+"#,
+        ),
+        (
+            "unit.h",
+            r#"#pragma once
+#include <source_location>
+#define HEADER_VALUE 23
+inline int header_count = 0;
+inline int header_initialized = [] { ++header_count; return HEADER_VALUE; }();
+inline const char* header_file() { return __FILE__; }
+inline const char* header_location() { return std::source_location::current().file_name(); }
+"#,
+        ),
+        (
+            "outer.h",
+            "#pragma once\nimport \"unit.h\";\ninline int outer_value() { return header_initialized + 1; }\n",
+        ),
+        (
+            "header.cpp",
+            r#"#include <cstring>
+#include <cstdio>
+import "outer.h";
+int main() {
+    std::printf("header: %d,%d,%d %s %s\n", header_initialized, outer_value(), header_count, header_file(), header_location());
+    return header_initialized == 23 && outer_value() == 24 && header_count == 1 && HEADER_VALUE == 23
+        && std::strcmp(header_file(), R"(X:\sccache-mapped\unit.h)") == 0
+        && std::strcmp(header_location(), R"(X:\sccache-mapped\unit.h)") == 0 ? 0 : 1;
+}
+"#,
+        ),
+    ];
+    for root in [&a, &b, &c] {
+        fs::create_dir(root).unwrap();
+        for (name, source) in sources {
+            write_source(root, name, source);
+        }
+    }
+    let cases: Vec<(Vec<&str>, Vec<&str>)> = vec![
+        (
+            vec![
+                "/interface",
+                "leaf.ixx",
+                "-ifcOutputleaf.ifc",
+                "/Foleaf.obj",
+                "/reference",
+                "unused=absent.ifc",
+            ],
+            vec!["leaf.ifc", "leaf.obj"],
+        ),
+        (
+            vec![
+                "/interface",
+                "middle.ixx",
+                "/reference",
+                "mapped_leaf=leaf.ifc",
+                "/ifcOutput",
+                "middle.ifc",
+                "/Fomiddle.obj",
+            ],
+            vec!["middle.ifc", "middle.obj"],
+        ),
+        (
+            vec![
+                "named.cpp",
+                "/reference",
+                "mapped_middle=middle.ifc",
+                "/reference",
+                "mapped_leaf=leaf.ifc",
+                "/Fonamed.obj",
+                "/sourceDependencies",
+                "named.json",
+                "/showIncludes",
+            ],
+            vec!["named.obj"],
+        ),
+        (
+            vec![
+                "/exportHeader",
+                "/headerName:quote",
+                "unit.h",
+                "/ifcOutput",
+                "unit.ifc",
+                "/Founit.obj",
+            ],
+            vec!["unit.ifc", "unit.obj"],
+        ),
+        (
+            vec![
+                "/exportHeader",
+                "/headerName:quote",
+                "outer.h",
+                "/headerUnit:quote",
+                "unit.h=unit.ifc",
+                "/ifcOutput",
+                "outer.ifc",
+                "/Foouter.obj",
+            ],
+            vec!["outer.ifc", "outer.obj"],
+        ),
+        (
+            vec![
+                "header.cpp",
+                "/headerUnit:quote",
+                "outer.h=outer.ifc",
+                "/headerUnit:quote",
+                "unit.h=unit.ifc",
+                "/Foheader.obj",
+                "/sourceDependencies",
+                "header.json",
+                "/showIncludes",
+            ],
+            vec!["header.obj"],
+        ),
+    ];
+    let compiler = find_compilers().remove(0);
+    stop_local_daemon();
+    let mut cfg = sccache_client_cfg(temp.path(), true);
+    cfg.client_side_mode = client_side;
+    cfg.basedirs = [&a, &b, &c]
+        .map(|root| root.to_string_lossy().into_owned())
+        .into();
+    write_json_cfg(temp.path(), "config.json", &cfg);
+    let start = || {
+        start_local_daemon(
+            &temp.path().join("config.json"),
+            &temp.path().join("cached-config"),
+        );
+    };
+    let _stop = StopServer;
+    start();
+    let command = |root: &Path, args: &[&str]| {
+        let mut command = sccache_command();
+        command
+            .arg(&compiler.exe)
+            .args([
+                "/nologo",
+                "/c",
+                "/std:c++20",
+                "/EHsc",
+                "/Z7",
+                "/FC",
+                "/experimental:deterministic",
+            ])
+            .arg(format!(r"/pathmap:{}\=X:\sccache-mapped\", root.display()))
+            .args(args)
+            .envs(compiler.env_vars.clone())
+            .env("SCCACHE_DIR", temp.path().join("client-cache"))
+            .current_dir(root);
+        command
+    };
+    let compile = |root: &Path, args: &[&str], hit: bool| {
+        zero_stats();
+        let output = command(root, args).assert().success().get_output().clone();
+        let description = format!("{}: {args:?}", root.display());
+        get_stats(move |s| {
+            assert_eq!(
+                s.stats.cache_hits.all(),
+                u64::from(hit),
+                "{description}: {s:?}"
+            );
+            assert_eq!(
+                s.stats.cache_misses.all(),
+                u64::from(!hit),
+                "{description}: {s:?}"
+            );
+        });
+        output
+    };
+    let run = |root: &Path, suffix: &str| {
+        for (objects, name) in [
+            (vec!["leaf.obj", "middle.obj", "named.obj"], "named"),
+            (vec!["unit.obj", "outer.obj", "header.obj"], "header"),
+        ] {
+            let exe = format!("{name}-{suffix}.exe");
+            Command::new(&compiler.exe)
+                .arg("/nologo")
+                .args(objects)
+                .arg(format!("/Fe{exe}"))
+                .envs(compiler.env_vars.clone())
+                .current_dir(root)
+                .assert()
+                .success();
+            Command::new(root.join(exe)).assert().success();
+        }
+    };
+    let mut artifacts = HashMap::new();
+    for (args, files) in &cases {
+        compile(&a, args, false);
+        for file in files {
+            artifacts.insert(*file, fs::read(a.join(file)).unwrap());
+        }
+    }
+    run(&a, "cold");
+    fs::rename(&a, temp.path().join("producer offline")).unwrap();
+    for (args, files) in &cases {
+        compile(&b, args, true);
+        for file in files {
+            assert_eq!(fs::read(b.join(file)).unwrap(), artifacts[file]);
+        }
+    }
+    run(&b, "restored");
+    let deps: serde_json::Value =
+        serde_json::from_slice(&fs::read(b.join("named.json")).unwrap()).unwrap();
+    assert!(
+        deps["Data"]["Source"]
+            .as_str()
+            .unwrap()
+            .eq_ignore_ascii_case(b.join("named.cpp").to_str().unwrap())
+    );
+    stop_local_daemon();
+    start();
+    for (args, files) in &cases {
+        for file in files {
+            fs::remove_file(b.join(file)).unwrap();
+        }
+        compile(&b, args, true);
+    }
+    for (index, name) in [(1, "middle.ixx"), (4, "outer.h")] {
+        let source = fs::read_to_string(b.join(name)).unwrap() + "\n// rebuild this importer\n";
+        write_source(&b, name, &source);
+        write_source(&c, name, &source);
+        compile(&b, &cases[index].0, false);
+    }
+    compile(&b, &cases[2].0, false);
+    compile(&b, &cases[5].0, false);
+    run(&b, "mixed");
+    fs::rename(&b, temp.path().join("second producer offline")).unwrap();
+    for (index, (args, _)) in cases.iter().enumerate() {
+        let mut args = args.clone();
+        let hit = index != 2 && index != 5;
+        if !hit {
+            args.push("/DRELOCATED_CONSUMER=1");
+        }
+        compile(&c, &args, hit);
+    }
+    run(&c, "two-origins");
+    let mut pdb_import = cases[2].0.clone();
+    pdb_import.extend(["/Zi", "/Fdmapped-import.pdb"]);
+    zero_stats();
+    command(&c, &pdb_import).assert().success();
+    assert!(c.join("mapped-import.pdb").exists());
+    get_stats(|s| {
+        assert_eq!(s.stats.cache_hits.all(), 0);
+        assert_eq!(s.stats.cache_writes, 0);
+    });
+    let mut literal = cases[2].0.clone();
+    let first_literal = format!("/DUNUSED_LITERAL={}", a.display()).replace('\\', "/");
+    let second_literal = format!("/DUNUSED_LITERAL={}", b.display()).replace('\\', "/");
+    literal.push(&first_literal);
+    compile(&c, &literal, false);
+    literal.pop();
+    literal.push(&second_literal);
+    compile(&c, &literal, false);
+    let synthetic = format!(
+        "#line 42 {}\n{}",
+        serde_json::to_string(&a.join("fiction.cpp")).unwrap(),
+        sources[2].1
+    );
+    write_source(&c, "named.cpp", &synthetic);
+    let failure = command(&c, &cases[2].0)
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+    assert!(String::from_utf8_lossy(&failure.stderr).contains("#line"));
+    write_source(&c, "named.cpp", sources[2].1);
+    fs::remove_dir_all(
+        temp.path()
+            .join("client-cache")
+            .join("msvc-module-origins-v3"),
+    )
+    .unwrap();
+    let failure = command(&c, &cases[2].0)
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+    assert!(String::from_utf8_lossy(&failure.stderr).contains("producer context"));
+    let failure = command(&c, &pdb_import)
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+    assert!(String::from_utf8_lossy(&failure.stderr).contains("producer context"));
+    compile(&c, &cases[0].0, true);
+    compile(&c, &cases[1].0, true);
+    compile(&c, &cases[2].0, true);
+    let unchanged_middle = fs::read(c.join("middle.ifc")).unwrap();
+    let old_leaf = fs::read(c.join("leaf.ifc")).unwrap();
+    write_source(
+        &c,
+        "leaf.ixx",
+        &(sources[0].1.to_owned() + "\n// changed transitive IFC\n"),
+    );
+    compile(&c, &cases[0].0, false);
+    assert_ne!(old_leaf, fs::read(c.join("leaf.ifc")).unwrap());
+    compile(&c, &cases[2].0, false);
+    assert_eq!(unchanged_middle, fs::read(c.join("middle.ifc")).unwrap());
+
+    // An unavailable local index must not turn a successful producer into an error.
+    let bad_dir = temp.path().join("not-a-directory");
+    fs::write(&bad_dir, b"regular file").unwrap();
+    write_source(&c, "leaf.ixx", sources[0].1);
+    zero_stats();
+    command(&c, &cases[0].0)
+        .env("SCCACHE_DIR", bad_dir)
+        .assert()
+        .success();
+    get_stats(|s| {
+        assert_eq!(s.stats.cache_hits.all(), 0);
+        assert_eq!(s.stats.cache_writes, 0);
+        assert_eq!(s.stats.non_cacheable_compilations, 1);
+    });
+
+    let mut pdb_producer = cases[0].0.clone();
+    pdb_producer.extend(["/Zi", "/Fdleaf.pdb"]);
+    zero_stats();
+    command(&c, &pdb_producer).assert().success();
+    assert!(c.join("leaf.pdb").exists());
+    write_source(
+        &c,
+        "pdb-consumer.cpp",
+        "import mapped_leaf;\nint from_leaf() { return named_initialized; }\n",
+    );
+    let local_import = [
+        "pdb-consumer.cpp",
+        "/reference",
+        "mapped_leaf=leaf.ifc",
+        "/Fopdb-consumer.obj",
+    ];
+    command(&c, &local_import).assert().success();
+    command(&c, &local_import).assert().success();
+    get_stats(|s| {
+        assert_eq!(s.stats.cache_hits.all(), 0);
+        assert_eq!(s.stats.cache_writes, 0);
+        assert_eq!(s.stats.compilations, 3);
+    });
+
+    write_source(&c, "unmapped.cpp", "int f() { return 7; }\n");
+    zero_stats();
+    command(&c, &["unmapped.cpp", "/Founmapped.obj"])
+        .env_remove("SCCACHE_DIR")
+        .assert()
+        .success();
+    get_stats(|s| {
+        assert_eq!(s.stats.cache_hits.all(), 0);
+        assert_eq!(s.stats.cache_writes, 0);
+    });
+    assert_eq!(
+        fs::read_dir(&c)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().extension() == Some(OsStr::new("json"))
+                && entry.file_name() != "named.json"
+                && entry.file_name() != "header.json")
+            .count(),
+        0
+    );
+}
+
 fn find_cuda_compilers() -> Vec<Compiler> {
     let cwd = env::current_dir().unwrap();
 
