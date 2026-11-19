@@ -23,7 +23,7 @@ Preprocessor cache mode will be disabled in any of the following cases:
 
 - Not compiling C or C++
 - The configuration option is false
-- Not using GCC or Clang
+- Not using GCC, Clang or MSVC
 - Not using local storage for the cache
 - Any of the compiler options `-MP`, `-Xpreprocessor`, `-Wp,` are present
 - The modification time of one of the header files is too new (avoids a race condition)
@@ -40,6 +40,10 @@ The preprocessor cache may silently produce stale results in any of the followin
 On Linux and macOS, the server remembers the digest of each file it hashes for this mode and reuses it while the file's size,
 mtime, ctime, device and inode are unchanged, so a cache hit does not re-read unchanged headers. Files changed less than two
 seconds before being hashed are not remembered, as their timestamps may not tell a quick rewrite apart.
+
+With MSVC, this mode preprocesses with `-E` instead of `-EP`, so that the line markers name the included files. The absolute
+paths in them become part of the hash, so builds in different directories generally do not share cache entries unless
+`SCCACHE_BASEDIRS` covers them. Turning the mode off restores `-EP`.
 
 Configuration options and their default values:
 

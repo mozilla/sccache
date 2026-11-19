@@ -461,7 +461,11 @@ fn test_msvc_responsefile(compiler: Compiler, tempdir: &Path) {
     fs::remove_file(&out_file).unwrap();
 }
 
-fn test_msvc_show_includes_cache_hit(compiler: Compiler, tempdir: &Path) {
+fn test_msvc_show_includes_cache_hit(
+    compiler: Compiler,
+    tempdir: &Path,
+    preprocessor_cache_mode: bool,
+) {
     let Compiler {
         name,
         exe,
@@ -518,9 +522,12 @@ fn test_msvc_show_includes_cache_hit(compiler: Compiler, tempdir: &Path) {
         }
     }
 
-    get_stats(|info| {
-        assert_eq!(1, info.stats.cache_hits.all());
-        assert_eq!(1, info.stats.cache_misses.all());
+    get_stats(move |info| {
+        // The preprocessor cache has cl.exe keep the line markers, and the
+        // header's one names its directory.
+        let hits = if preprocessor_cache_mode { 0 } else { 1 };
+        assert_eq!(hits, info.stats.cache_hits.all());
+        assert_eq!(2 - hits, info.stats.cache_misses.all());
     });
 }
 
@@ -810,7 +817,7 @@ fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path, preprocessor_ca
     if compiler.name == "cl.exe" {
         test_msvc_deps(compiler.clone(), tempdir);
         test_msvc_responsefile(compiler.clone(), tempdir);
-        test_msvc_show_includes_cache_hit(compiler.clone(), tempdir);
+        test_msvc_show_includes_cache_hit(compiler.clone(), tempdir, preprocessor_cache_mode);
     }
     if compiler.name == "gcc" {
         test_gcc_mp_werror(compiler.clone(), tempdir);
