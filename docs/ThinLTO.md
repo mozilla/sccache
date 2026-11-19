@@ -27,6 +27,19 @@ as `LLVM IR`.
 The *path* of the index file is not part of the key: lld names the files after
 its process ID, so it differs on every link.
 
+## Base directories
+
+With [`SCCACHE_BASEDIRS`](Configuration.md), a build in another directory gets
+the backend jobs from the cache as long as its bitcode also came from the cache:
+the compile step then returns the bitcode built in the first directory, and the
+backend jobs see the same modules. Bitcode compiled outside of sccache records
+the absolute source path, even with `-ffile-prefix-map`, so its backend jobs
+miss in every other directory.
+
+The index stores the module paths the way the linker got them. Paths relative
+to the build directory, which CMake uses, are the same in every checkout;
+absolute ones make every other directory miss.
+
 ## Requirements
 
 * clang and lld from the same LLVM release, 21 or newer. LLVM only supports
