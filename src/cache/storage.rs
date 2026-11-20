@@ -28,7 +28,7 @@ use crate::config::PreprocessorCacheModeConfig;
 use crate::errors::*;
 
 /// Result of [`Storage::get_path`].
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum GetPathResult {
     /// Cache hit: the entry lives at this filesystem path.
     Found(PathBuf),

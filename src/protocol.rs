@@ -189,19 +189,11 @@ mod tests {
             else {
                 panic!("expected a legacy path lookup reply");
             };
+            assert_eq!(old_client, expected);
             let Response::StorageGetPath(new_client) = bincode::deserialize(&old).unwrap() else {
                 panic!("expected a path lookup reply");
             };
-            for actual in [old_client, new_client] {
-                match (&expected, actual) {
-                    (GetPathResult::Found(expected), GetPathResult::Found(actual)) => {
-                        assert_eq!(*expected, actual);
-                    }
-                    (GetPathResult::Miss, GetPathResult::Miss)
-                    | (GetPathResult::Unsupported, GetPathResult::Unsupported) => {}
-                    (_, actual) => panic!("expected {expected:?}, got {actual:?}"),
-                }
-            }
+            assert_eq!(new_client, expected);
         }
     }
 
