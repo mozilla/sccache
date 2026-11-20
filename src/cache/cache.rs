@@ -298,6 +298,7 @@ pub fn storage_from_config(
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::cache::CacheStorage;
     use crate::{
         PreprocessorCacheEntry, cache::CacheMode, cache::CacheWrite, config::CacheModeConfig,
     };
@@ -487,7 +488,6 @@ mod test {
     #[cfg(feature = "redis")]
     fn test_operator_storage_redis_with_read_only() {
         // Create Redis operator
-
         use crate::test::utils::Waiter;
         let operator = crate::cache::redis::RedisCache::build_single(
             "redis://localhost:6379",

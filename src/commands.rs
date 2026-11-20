@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cache::{CacheMode, IpcStorage, Storage, storage_from_config};
+use crate::cache::{CacheMode, CacheStorage as _, IpcStorage, storage_from_config};
 use crate::client::{ServerConnection, connect_to_server, connect_with_retry};
 use crate::cmdline::{Command, StatsFormat};
 use crate::compiler::{ColorMode, is_rmeta_artifact_notification};
