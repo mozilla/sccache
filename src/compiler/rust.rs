@@ -2247,11 +2247,14 @@ where
             // CARGO_REGISTRIES_*_TOKEN contains non-cacheable secrets.
             // Registry override config doesn't need to be hashed, because deps' package IDs
             // already uniquely identify the relevant registries.
-            // CARGO_BUILD_JOBS only affects Cargo's parallelism, not rustc output.
+            // CARGO_TARGET_DIR and CARGO_BUILD_* configure Cargo. What they change for rustc
+            // arrives as arguments, which are hashed. A crate that reads one with `env!` gets it
+            // through dep-info, also hashed.
             // CARGO_ENCODED_RUSTFLAGS is already cached in argument list
             if var == "CARGO_MAKEFLAGS"
                 || var.starts_with("CARGO_REGISTRIES_")
-                || var == "CARGO_BUILD_JOBS"
+                || var == "CARGO_TARGET_DIR"
+                || var.starts_with("CARGO_BUILD_")
                 || var == "CARGO_ENCODED_RUSTFLAGS"
             {
                 continue;
@@ -4505,6 +4508,14 @@ hash 42fac6f0 stable_crate_id StableCrateId(12206970385906972588)
                     ),
                     (
                         OsString::from("CARGO_BUILD_JOBS"),
+                        OsString::from("ignored"),
+                    ),
+                    (
+                        OsString::from("CARGO_TARGET_DIR"),
+                        OsString::from("ignored"),
+                    ),
+                    (
+                        OsString::from("CARGO_BUILD_BUILD_DIR"),
                         OsString::from("ignored"),
                     ),
                 ]
