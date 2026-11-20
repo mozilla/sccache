@@ -1536,6 +1536,7 @@ static CACHED_ENV_VARS: LazyLock<HashSet<&'static OsStr>> = LazyLock::new(|| {
         // One can set it to different values for different invocations
         // to prevent cache reuse between them.
         "SCCACHE_C_CUSTOM_CACHE_BUSTER",
+        crate::commands::DTLTO_INPUTS_DIGEST_VAR,
         "MACOSX_DEPLOYMENT_TARGET",
         "IPHONEOS_DEPLOYMENT_TARGET",
         "TVOS_DEPLOYMENT_TARGET",

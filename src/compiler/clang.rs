@@ -222,6 +222,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("-dsym-dir", OsString, CanBeSeparated, TooHard),
     take_arg!("-dumpdir", OsString, CanBeSeparated, TooHard),
     flag!("-emit-pch", PassThroughFlag),
+    take_arg!("-fauto-profile", PathBuf, Concatenated(b'='), ExtraHashFile),
     flag!("-fbuiltin-module-map", TooHardFlag),
     take_arg!("-fcodegen-data-generate", OsString, Concatenated(b'='), TooHard),
     flag!("-fcolor-diagnostics", DiagnosticsColorFlag),
@@ -258,7 +259,9 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     flag!("-fprofile-instr-generate", ProfileGenerate),
     // Note: the PathBuf argument is optional
     take_arg!("-fprofile-instr-use", PathBuf, Concatenated(b'='), ClangProfileUse),
+    take_arg!("-fprofile-list", PathBuf, Concatenated(b'='), ExtraHashFile),
     take_arg!("-fprofile-remapping-file", PathBuf, Concatenated(b'='), ExtraHashFile),
+    take_arg!("-fprofile-sample-use", PathBuf, Concatenated(b'='), ExtraHashFile),
     // Note: this overrides the -fprofile-use option in gcc.rs.
     take_arg!("-fprofile-use", PathBuf, Concatenated(b'='), ClangProfileUse),
     take_arg!("-frandomize-layout-seed-file", PathBuf, Concatenated(b'='), ExtraHashFile),
@@ -267,6 +270,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("-fsanitize-system-ignorelist", PathBuf, Concatenated(b'='), ExtraHashFile),
     take_arg!("-fsave-optimization-record", OsString, Concatenated(b'='), TooHard),
     take_arg!("-fthin-link-bitcode", OsString, Concatenated(b'='), TooHard),
+    take_arg!("-fthinlto-index", PathBuf, Concatenated(b'='), ThinLtoIndex),
     take_arg!("-ftime-trace", OsString, Concatenated(b'='), TooHard),
     flag!("-fuse-ctor-homing", PassThroughFlag),
     take_arg!("-fxray-always-instrument", PathBuf, Concatenated(b'='), ExtraHashFile),
@@ -1180,6 +1184,118 @@ mod test {
     }
 
     #[test]
+    fn test_parse_thinlto_backend() {
+        // The command lld's DTLTO distributor runs for one backend job.
+        let a = parses!(
+            "-c",
+            "-O2",
+            "a.o",
+            "-fthinlto-index=a.1.10.native.o.thinlto.bc",
+            "-o",
+            "a.1.10.native.o"
+        );
+        assert_eq!(Language::LlvmIr, a.language);
+        assert_eq!(Some("a.o"), a.input.to_str());
+        assert_eq!(ovec!["-O2"], a.common_args);
+        assert_eq!(
+            ovec!["-fthinlto-index=a.1.10.native.o.thinlto.bc"],
+            a.unhashed_args
+        );
+        assert_eq!(
+            ovec![
+                std::env::current_dir()
+                    .unwrap()
+                    .join("a.1.10.native.o.thinlto.bc")
+            ],
+            a.extra_hash_files
+        );
+        assert!(!a.language.needs_c_preprocessing());
+    }
+
+    #[test]
+    fn test_parse_x_ir() {
+        let a = parses!(
+            "-c",
+            "-x",
+            "ir",
+            "a.o",
+            "-fthinlto-index=a.bc",
+            "-o",
+            "a.native.o"
+        );
+        assert_eq!(Language::LlvmIr, a.language);
+        let a = parses!("-c", "-x", "ir", "a.bc", "-o", "a.o");
+        assert_eq!(Language::LlvmIr, a.language);
+        assert!(a.extra_hash_files.is_empty());
+    }
+
+    #[test]
+    fn test_parse_thinlto_index_non_ir() {
+        assert_eq!(
+            CompilerArguments::CannotCache("-fthinlto-index with a non-IR input", None),
+            parse_arguments_(stringvec![
+                "-c",
+                "foo.c",
+                "-fthinlto-index=foo.bc",
+                "-o",
+                "foo.o"
+            ])
+        );
+        assert_eq!(
+            CompilerArguments::CannotCache("-fthinlto-index", None),
+            parse_arguments_(stringvec![
+                "-c",
+                "a.o",
+                "-Xclang",
+                "-fthinlto-index=a.bc",
+                "-o",
+                "a.native.o"
+            ])
+        );
+        assert_eq!(
+            CompilerArguments::CannotCache("-fthinlto-index with a non-IR input", None),
+            parse_arguments_(stringvec![
+                "-c",
+                "-x",
+                "c",
+                "a.o",
+                "-fthinlto-index=a.bc",
+                "-o",
+                "a.native.o"
+            ])
+        );
+    }
+
+    #[test]
+    fn test_parse_thinlto_index_ir_inputs() {
+        for input in ["a.o", "a.obj", "a.bc", "a.ll"] {
+            let a = parses!(
+                "-c",
+                input,
+                "-fthinlto-index=a.thinlto.bc",
+                "-o",
+                "a.native.o"
+            );
+            assert_eq!(Language::LlvmIr, a.language, "{input}");
+        }
+    }
+
+    #[test]
+    fn test_parse_x_ir_is_clang_only() {
+        let args = ["-c", "-x", "ir", "a.bc", "-o", "a.o"].map(OsString::from);
+        assert_eq!(
+            CompilerArguments::CannotCache("-x", None),
+            gcc::parse_arguments(
+                &args,
+                ".".as_ref(),
+                &gcc::ARGS[..],
+                false,
+                CCompilerKind::Gcc
+            )
+        );
+    }
+
+    #[test]
     fn test_parse_color_diags() {
         let a = parses!("-c", "foo.c", "-o", "foo.o", "-fcolor-diagnostics");
         assert_eq!(a.color_mode, ColorMode::On);
@@ -1401,7 +1517,10 @@ mod test {
             "-fmodule-map-file=module.modulemap",
             "-fms-secure-hotpatch-functions-file=hotpatch.txt",
             "-fpass-plugin=plugin.so",
+            "-fauto-profile=auto.prof",
+            "-fprofile-list=funcs.txt",
             "-fprofile-remapping-file=remap.txt",
+            "-fprofile-sample-use=sample.prof",
             "-frandomize-layout-seed-file=seed.txt",
             "-fsanitize-system-ignorelist=list.txt",
             "-fxray-always-instrument=always.txt",
@@ -1416,7 +1535,10 @@ mod test {
                 "-fmodule-map-file=module.modulemap",
                 "-fms-secure-hotpatch-functions-file=hotpatch.txt",
                 "-fpass-plugin=plugin.so",
+                "-fauto-profile=auto.prof",
+                "-fprofile-list=funcs.txt",
                 "-fprofile-remapping-file=remap.txt",
+                "-fprofile-sample-use=sample.prof",
                 "-frandomize-layout-seed-file=seed.txt",
                 "-fsanitize-system-ignorelist=list.txt",
                 "-fxray-always-instrument=always.txt",
@@ -1433,7 +1555,10 @@ mod test {
                 cwd.join("module.modulemap"),
                 cwd.join("hotpatch.txt"),
                 cwd.join("plugin.so"),
+                cwd.join("auto.prof"),
+                cwd.join("funcs.txt"),
                 cwd.join("remap.txt"),
+                cwd.join("sample.prof"),
                 cwd.join("seed.txt"),
                 cwd.join("list.txt"),
                 cwd.join("always.txt"),

@@ -20,8 +20,8 @@
 #[macro_use]
 extern crate log;
 use crate::harness::{
-    get_stats, sccache_client_cfg, sccache_command, start_local_daemon, stop_local_daemon,
-    write_json_cfg, write_source, zero_stats,
+    get_stats, prune_command, sccache_client_cfg, sccache_command, start_local_daemon,
+    stop_local_daemon, write_json_cfg, write_source, zero_stats,
 };
 use assert_cmd::prelude::*;
 use fs::File;
@@ -2180,6 +2180,128 @@ fn test_assembler_affects_cache(preprocessor_cache_mode: bool) {
     compile(&wrapper_first, 0);
     // Back to the assembler the cache was populated with.
     compile(&path, 1);
+    stop_local_daemon();
+}
+
+/// clang and an ld.lld of the same LLVM release that can hand ThinLTO backend
+/// jobs to a distributor. The clang is
+/// `$DTLTO_CLANG_PATH/clang` if that is set, so the `clang` on PATH, which the
+/// other tests use, can stay as it is; otherwise the `clang` on PATH.
+fn find_dtlto_toolchain() -> Option<(PathBuf, PathBuf)> {
+    match env::var_os("DTLTO_CLANG_PATH") {
+        Some(dir) => {
+            let clang = Path::new(&dir).join("clang");
+            let toolchain = probe_dtlto_toolchain(clang.clone());
+            assert!(
+                toolchain.is_some(),
+                "DTLTO_CLANG_PATH is set, but {} has no matching DTLTO-capable ld.lld",
+                clang.display()
+            );
+            toolchain
+        }
+        None => probe_dtlto_toolchain(which("clang").ok()?),
+    }
+}
+
+fn probe_dtlto_toolchain(clang: PathBuf) -> Option<(PathBuf, PathBuf)> {
+    let stdout = |exe: &Path, arg: &str| -> Option<String> {
+        let output = Command::new(exe).arg(arg).output().ok()?;
+        Some(String::from_utf8_lossy(&output.stdout).into_owned())
+    };
+    let version_after = |text: &str, marker: &str| -> Option<String> {
+        let (_, rest) = text.split_once(marker)?;
+        Some(rest.split_whitespace().next()?.to_owned())
+    };
+    let lld = PathBuf::from(stdout(&clang, "-print-prog-name=ld.lld")?.trim());
+    if !stdout(&lld, "--help")?.contains("--thinlto-distributor=") {
+        return None;
+    }
+    let clang_version = stdout(&clang, "--version")?;
+    // Apple clang numbers its releases differently from LLVM.
+    if clang_version.starts_with("Apple")
+        || version_after(&clang_version, "clang version ")
+            != version_after(&stdout(&lld, "--version")?, "LLD ")
+    {
+        return None;
+    }
+    Some((clang, lld))
+}
+
+/// lld's DTLTO hands the ThinLTO backend jobs to `sccache --dtlto`. The job
+/// for `b` imports from `a`, so changing only `a` has to miss `b` too, even
+/// though `b.o` is the same; and the per-link names lld gives the index files
+/// must not get in the way of hits.
+#[test]
+#[serial]
+#[cfg(unix)]
+fn test_thinlto_backend_compiles() {
+    let _ = env_logger::try_init();
+    let Some((clang, lld)) = find_dtlto_toolchain() else {
+        warn!("No clang with a DTLTO-capable ld.lld found, skipping test");
+        return;
+    };
+    let tempdir = tempfile::Builder::new()
+        .prefix("sccache_system_test")
+        .tempdir()
+        .unwrap();
+    let dir = tempdir.path();
+    write_source(dir, "a.c", "int helper(int x) { return x * BODY; }\n");
+    write_source(
+        dir,
+        "b.c",
+        "int helper(int);\nint entry(int x) { return helper(x); }\n",
+    );
+    // DTLTO is ELF and COFF only; -nostdlib -shared needs no target sysroot.
+    let target = format!("--target={}-unknown-linux-gnu", env::consts::ARCH);
+
+    let sccache_cfg = sccache_client_cfg(dir, false);
+    write_json_cfg(dir, "sccache-cfg.json", &sccache_cfg);
+    stop_local_daemon();
+    start_local_daemon(
+        &dir.join("sccache-cfg.json"),
+        &dir.join("sccache-cached-cfg"),
+    );
+
+    // Returns the linked library; the first link of each body misses
+    // everything, so it is what clang itself builds.
+    let link = |body: u32, hits: u64, misses: u64| -> Vec<u8> {
+        for (src, obj) in [("a.c", "a.o"), ("b.c", "b.o")] {
+            prune_command(Command::new(&clang))
+                .args([&target, "-O2", "-flto=thin", "-c", src, "-o", obj])
+                .arg(format!("-DBODY={body}"))
+                .current_dir(dir)
+                .assert()
+                .success();
+        }
+        zero_stats();
+        prune_command(Command::new(&clang))
+            .args([&target, "-O2", "-flto=thin", "-nostdlib", "-shared"])
+            .arg(format!("--ld-path={}", lld.display()))
+            .args(["b.o", "a.o", "-o", "lib.so"])
+            .arg(format!(
+                "-fthinlto-distributor={}",
+                env!("CARGO_BIN_EXE_sccache")
+            ))
+            .arg("-Xthinlto-distributor=--dtlto")
+            .current_dir(dir)
+            .assert()
+            .success();
+        get_stats(move |info| {
+            assert_eq!(hits, *info.stats.cache_hits.get("LLVM IR").unwrap_or(&0));
+            assert_eq!(
+                misses,
+                *info.stats.cache_misses.get("LLVM IR").unwrap_or(&0)
+            );
+            assert_eq!(0, info.stats.cache_errors.all());
+        });
+        fs::read(dir.join("lib.so")).unwrap()
+    };
+
+    let built_3 = link(3, 0, 2);
+    assert_eq!(built_3, link(3, 2, 0));
+    let built_5 = link(5, 0, 2);
+    assert_ne!(built_3, built_5);
+    assert_eq!(built_3, link(3, 2, 0));
     stop_local_daemon();
 }
 
