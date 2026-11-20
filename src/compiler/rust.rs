@@ -1242,15 +1242,14 @@ impl IntoArg for ArgCrateTypes {
 
 #[derive(Clone, Debug, PartialEq)]
 struct ArgLinkLibrary {
-    kind: String,
+    kind: Option<String>,
     name: String,
 }
 impl FromArg for ArgLinkLibrary {
     fn process(arg: OsString) -> ArgParseResult<Self> {
         let (kind, name) = match split_os_string_arg(arg, "=")? {
-            (kind, Some(name)) => (kind, name),
-            // If no kind is specified, the default is dylib.
-            (name, None) => ("dylib".to_owned(), name),
+            (kind, Some(name)) => (Some(kind), name),
+            (name, None) => (None, name),
         };
         Ok(ArgLinkLibrary { kind, name })
     }
@@ -1258,11 +1257,19 @@ impl FromArg for ArgLinkLibrary {
 impl IntoArg for ArgLinkLibrary {
     fn into_arg_os_string(self) -> OsString {
         let ArgLinkLibrary { kind, name } = self;
-        make_os_string!(kind, "=", name)
+        if let Some(kind) = kind {
+            make_os_string!(kind, "=", name)
+        } else {
+            make_os_string!(name)
+        }
     }
     fn into_arg_string(self, _transformer: PathTransformerFn<'_>) -> ArgToStringResult {
         let ArgLinkLibrary { kind, name } = self;
-        Ok(format!("{}={}", kind, name))
+        if let Some(kind) = kind {
+            Ok(format!("{}={}", kind, name))
+        } else {
+            Ok(name)
+        }
     }
 }
 
@@ -1707,13 +1714,13 @@ fn parse_arguments(
             Some(LinkLibrary(ArgLinkLibrary { kind, name })) => {
                 // Link modifiers follow the kind (e.g. `static:+bundle`), and `-bundle` libraries
                 // aren't copied into the rlib, so they don't change the output.
-                let bundled_static = match kind.split_once(':') {
-                    Some((kind, modifiers)) => {
-                        kind == "static"
-                            && !modifiers.split(',').any(|modifier| modifier == "-bundle")
-                    }
-                    None => kind == "static",
-                };
+                // Libraries without a kind are never bundled.
+                let bundled_static = kind.as_deref().is_some_and(|kind| {
+                    matches!(
+                        kind.split_once(':').unwrap_or((kind, "")),
+                        ("static", modifiers) if !modifiers.split(',').any(|m| m == "-bundle")
+                    )
+                });
                 if bundled_static {
                     static_lib_names.push(name.to_owned());
                 }
@@ -3769,6 +3776,35 @@ LLVM version: 15.0.2
             "--out-dir",
             "out"
         );
+    }
+
+    /// `-l` reaches rustc as it was given. In particular a library without a kind must not
+    /// become `dylib`: rustc picks the kind per target (e.g. static with `crt-static`).
+    #[test_case("bar" ; "without kind")]
+    #[test_case("static=bar" ; "static")]
+    #[test_case("static:-bundle=bar" ; "static with modifiers")]
+    #[test_case("dylib=bar" ; "dylib")]
+    fn test_parse_arguments_link_library_is_passed_unchanged(lib: &str) {
+        let h = parses!(
+            "--crate-name",
+            "foo",
+            "--crate-type",
+            "lib",
+            "--emit",
+            "link",
+            "-l",
+            lib,
+            "foo.rs",
+            "--out-dir",
+            "out"
+        );
+        let arguments: Vec<OsString> = h
+            .arguments
+            .iter()
+            .flat_map(|arg| arg.iter_os_strings())
+            .collect();
+        let position = arguments.iter().position(|arg| arg == "-l").unwrap();
+        assert_eq!(arguments[position + 1], lib);
     }
 
     #[test_case("static", true ; "without modifiers")]
