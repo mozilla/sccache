@@ -3762,6 +3762,35 @@ LLVM version: 15.0.2
         );
     }
 
+    /// `-l` reaches rustc as it was given. In particular a library without a kind must not
+    /// become `dylib`: rustc picks the kind per target (e.g. static with `crt-static`).
+    #[test_case("bar" ; "without kind")]
+    #[test_case("static=bar" ; "static")]
+    #[test_case("static:-bundle=bar" ; "static with modifiers")]
+    #[test_case("dylib=bar" ; "dylib")]
+    fn test_parse_arguments_link_library_is_passed_unchanged(lib: &str) {
+        let h = parses!(
+            "--crate-name",
+            "foo",
+            "--crate-type",
+            "lib",
+            "--emit",
+            "link",
+            "-l",
+            lib,
+            "foo.rs",
+            "--out-dir",
+            "out"
+        );
+        let arguments: Vec<OsString> = h
+            .arguments
+            .iter()
+            .flat_map(|arg| arg.iter_os_strings())
+            .collect();
+        let position = arguments.iter().position(|arg| arg == "-l").unwrap();
+        assert_eq!(arguments[position + 1], lib);
+    }
+
     #[test_case("static", true ; "without modifiers")]
     #[test_case("static:+bundle", true ; "with bundle")]
     #[test_case("static:+whole-archive", true ; "with whole-archive")]
