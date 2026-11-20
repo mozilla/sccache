@@ -1711,16 +1711,14 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                 // Link modifiers follow the kind (e.g. `static:+bundle`), and `-bundle` libraries
                 // aren't copied into the rlib, so they don't change the output.
                 // Libraries without a kind are never bundled.
-                let kind_and_modifiers = kind
+                let bundled_static = kind
                     .as_deref()
-                    .map(|kind| kind.split_once(':').unwrap_or((kind, "")));
-                let bundled_static = match kind_and_modifiers {
-                    Some((kind, modifiers)) => {
-                        kind == "static"
-                            && !modifiers.split(',').any(|modifier| modifier == "-bundle")
-                    }
-                    None => false,
-                };
+                    .is_some_and(|kind| {
+                        matches!(
+                            kind.split_once(':').unwrap_or((kind, "")),
+                            ("static", modifiers) if !modifiers.split(',').any(|m| m == "-bundle")
+                        )
+                    });
                 if bundled_static {
                     static_lib_names.push(name.to_owned());
                 }
