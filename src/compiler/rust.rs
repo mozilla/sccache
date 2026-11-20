@@ -444,7 +444,7 @@ async fn get_source_files_and_env_deps<T>(
     cwd: &Path,
     env_vars: &[(OsString, OsString)],
     pool: &tokio::runtime::Handle,
-) -> Result<(Vec<PathBuf>, Vec<(OsString, OsString)>, String)>
+) -> Result<(Vec<PathBuf>, Vec<(OsString, Option<OsString>)>, String)>
 where
     T: CommandCreatorSync,
 {
@@ -505,7 +505,7 @@ struct RememberedDepInfo {
     inputs: DepInfoInputs,
     source_files: Vec<PathBuf>,
     source_hashes: Vec<String>,
-    env_deps: Vec<(OsString, OsString)>,
+    env_deps: Vec<(OsString, Option<OsString>)>,
     dep_info: String,
     outputs: Vec<String>,
 }
@@ -581,7 +581,12 @@ fn remembered_dep_info(key: &str) -> Option<RememberedDepInfo> {
         .cloned()
 }
 
-type SourcesAndEnvDeps = (Vec<PathBuf>, Vec<String>, Vec<(OsString, OsString)>, String);
+type SourcesAndEnvDeps = (
+    Vec<PathBuf>,
+    Vec<String>,
+    Vec<(OsString, Option<OsString>)>,
+    String,
+);
 
 fn remember_dep_info(
     key: String,
@@ -618,7 +623,7 @@ fn remember_dep_info(
 fn parse_dep_file<T, U>(
     file: T,
     cwd: U,
-) -> Result<(Vec<PathBuf>, Vec<(OsString, OsString)>, String)>
+) -> Result<(Vec<PathBuf>, Vec<(OsString, Option<OsString>)>, String)>
 where
     T: AsRef<Path>,
     U: AsRef<Path>,
@@ -680,16 +685,21 @@ where
     deps
 }
 
-fn parse_env_dep_info(dep_info: &str) -> Vec<(OsString, OsString)> {
+/// The value is `None` for a variable that was unset, which rustc writes as `NAME`
+/// rather than `NAME=` for one set to the empty string.
+fn parse_env_dep_info(dep_info: &str) -> Vec<(OsString, Option<OsString>)> {
     let mut env_deps = Vec::new();
     for line in dep_info.lines() {
         if let Some(env_dep) = line.strip_prefix("# env-dep:") {
             let mut split = env_dep.splitn(2, '=');
             match (split.next(), split.next()) {
                 (Some(var), Some(val)) => {
-                    env_deps.push((unescape_dep_env(var).into(), unescape_dep_env(val).into()));
+                    env_deps.push((
+                        unescape_dep_env(var).into(),
+                        Some(unescape_dep_env(val).into()),
+                    ));
                 }
-                _ => env_deps.push((unescape_dep_env(env_dep).into(), "".into())),
+                _ => env_deps.push((unescape_dep_env(env_dep).into(), None)),
             }
         }
     }
@@ -966,9 +976,9 @@ where
         &self,
         arguments: &[OsString],
         cwd: &Path,
-        _env_vars: &[(OsString, OsString)],
+        env_vars: &[(OsString, OsString)],
     ) -> CompilerArguments<Box<dyn CompilerHasher<T> + 'static>> {
-        match parse_arguments(arguments, cwd) {
+        match parse_arguments(arguments, cwd, env_vars) {
             CompilerArguments::Ok(args) => CompilerArguments::Ok(Box::new(RustHasher {
                 executable: self.executable.clone(), // if rustup exists, this must already contain the true resolved compiler path
                 host: self.host.clone(),
@@ -1655,7 +1665,22 @@ impl<C: CompileCommandImpl> CompileCommandImpl for WithResponseFile<C> {
     }
 }
 
-fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<ParsedArguments> {
+fn is_incremental_arg(arg: &Argument<ArgData>) -> bool {
+    matches!(arg.get_data(), Some(CodeGen(ArgCodegen { opt, .. })) if opt == "incremental")
+}
+
+/// `SCCACHE_ALLOW_INCREMENTAL=cache`; with `1` incremental compiles only go uncached.
+fn cache_incremental(env_vars: &[(OsString, OsString)]) -> bool {
+    env_vars
+        .iter()
+        .any(|(k, v)| env_var_name_matches(k, "SCCACHE_ALLOW_INCREMENTAL") && v == "cache")
+}
+
+fn parse_arguments(
+    arguments: &[OsString],
+    cwd: &Path,
+    env_vars: &[(OsString, OsString)],
+) -> CompilerArguments<ParsedArguments> {
     let mut args = vec![];
 
     let mut emit: Option<HashSet<String>> = None;
@@ -1745,14 +1770,9 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                     ("extra-filename", Some(value)) => extra_filename = Some(value.to_owned()),
                     ("extra-filename", None) => cannot_cache!("extra-filename"),
                     ("profile-use", Some(v)) => profile = Some(v.clone()),
-                    // Incremental compilation makes a mess of sccache's entire world
-                    // view. It produces additional compiler outputs that we don't cache,
-                    // and just letting rustc do its work in incremental mode is likely
-                    // to be faster than trying to fetch a result from cache anyway, so
-                    // don't bother caching compiles where it's enabled currently.
-                    // Longer-term we would like to figure out better integration between
-                    // sccache and rustc in the incremental scenario:
-                    // https://github.com/mozilla/sccache/issues/236
+                    // Not cached by default: rustc reusing the incremental directory is
+                    // likely faster than a cache hit. See #236.
+                    ("incremental", Some(_)) if cache_incremental(env_vars) => {}
                     ("incremental", _) => cannot_cache!("incremental"),
                     (_, _) => (),
                 }
@@ -1984,11 +2004,15 @@ where
     ) -> Result<HashResult<T>> {
         trace!("[{}]: generate_hash_key", self.parsed_args.crate_name);
         let basedirs = storage.basedirs();
+        // Keep the incremental directory out of the key, and out of the dep-info and
+        // file-names runs so they don't touch it.
+        let incremental = self.parsed_args.arguments.iter().any(is_incremental_arg);
         // TODO: this doesn't produce correct arguments if they should be concatenated - should use iter_os_strings
         let os_string_arguments: Vec<(OsString, Option<OsString>)> = self
             .parsed_args
             .arguments
             .iter()
+            .filter(|arg| !is_incremental_arg(arg))
             .map(|arg| {
                 (
                     arg.to_os_string(),
@@ -2186,6 +2210,10 @@ where
                 })
         };
         args.hash(&mut HashToDigest { digest: &mut m });
+        // rustc's outputs differ when incremental, e.g. in the default codegen-units.
+        if incremental {
+            m.delimiter(b"incremental");
+        }
         // 4. The digest of all source files (this includes src file from cmdline).
         // 5. The digest of all files listed on the commandline (self.externs).
         // 6. The digest of all static libraries listed on the commandline (self.staticlibs).
@@ -2207,6 +2235,12 @@ where
         let verbatim = basedirs_verbatim_env_deps(&env_vars, basedirs);
         for (var, val) in env_deps.iter() {
             var.hash(&mut HashToDigest { digest: &mut m });
+            let Some(val) = val else {
+                // `option_env!` yields `None` for an unset variable and `Some("")` for an
+                // empty one, so the two must not share a key.
+                m.update(b"\0");
+                continue;
+            };
             m.update(b"=");
             if verbatim(var) {
                 val.hash(&mut HashToDigest { digest: &mut m });
@@ -2231,11 +2265,14 @@ where
             // CARGO_REGISTRIES_*_TOKEN contains non-cacheable secrets.
             // Registry override config doesn't need to be hashed, because deps' package IDs
             // already uniquely identify the relevant registries.
-            // CARGO_BUILD_JOBS only affects Cargo's parallelism, not rustc output.
+            // CARGO_TARGET_DIR and CARGO_BUILD_* configure Cargo. What they change for rustc
+            // arrives as arguments, which are hashed. A crate that reads one with `env!` gets it
+            // through dep-info, also hashed.
             // CARGO_ENCODED_RUSTFLAGS is already cached in argument list
             if var == "CARGO_MAKEFLAGS"
                 || var.starts_with("CARGO_REGISTRIES_")
-                || var == "CARGO_BUILD_JOBS"
+                || var == "CARGO_TARGET_DIR"
+                || var.starts_with("CARGO_BUILD_")
                 || var == "CARGO_ENCODED_RUSTFLAGS"
             {
                 continue;
@@ -2483,6 +2520,11 @@ impl<T: CommandCreatorSync> Compilation<T> for RustCompilation {
                         }
                     }
                 };
+            }
+
+            // The incremental directory is local state.
+            if arguments.iter().any(is_incremental_arg) {
+                return None;
             }
 
             let mut dist_arguments = vec![];
@@ -3427,7 +3469,28 @@ mod test {
 
     fn _parse_arguments(arguments: &[String]) -> CompilerArguments<ParsedArguments> {
         let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
-        parse_arguments(&arguments, ".".as_ref())
+        parse_arguments(&arguments, ".".as_ref(), &[])
+    }
+
+    /// A lib compile, with `-C incremental=<dir>` when `dir` is given.
+    fn lib_args(dir: Option<&str>) -> Vec<OsString> {
+        let mut args = [
+            "--emit",
+            "link",
+            "foo.rs",
+            "--out-dir",
+            "out",
+            "--crate-name",
+            "foo",
+            "--crate-type",
+            "lib",
+        ]
+        .map(OsString::from)
+        .to_vec();
+        if let Some(dir) = dir {
+            args.extend(["-C".into(), format!("incremental={dir}").into()]);
+        }
+        args
     }
 
     macro_rules! parses {
@@ -3650,31 +3713,30 @@ LLVM version: 15.0.2
 
     #[test]
     fn test_parse_arguments_incremental() {
-        parses!(
-            "--emit",
-            "link",
-            "foo.rs",
-            "--out-dir",
-            "out",
-            "--crate-name",
-            "foo",
-            "--crate-type",
-            "lib"
+        let parse = |dir: Option<&str>, var: &str, val: &str| {
+            let env_vars = [(var.into(), val.into())];
+            parse_arguments(&lib_args(dir), ".".as_ref(), &env_vars)
+        };
+        assert!(matches!(parse(None, "", ""), CompilerArguments::Ok(_)));
+        let cannot_cache = CompilerArguments::CannotCache("incremental", None);
+        for val in ["", "0", "1", "true", "Cache"] {
+            assert_eq!(
+                parse(Some("/foo"), "SCCACHE_ALLOW_INCREMENTAL", val),
+                cannot_cache
+            );
+        }
+        match parse(Some("/foo"), "SCCACHE_ALLOW_INCREMENTAL", "cache") {
+            CompilerArguments::Ok(a) => assert!(a.arguments.iter().any(is_incremental_arg)),
+            o => panic!("Got unexpected parse result: {:?}", o),
+        }
+        // The client reads it with `env::var`, which ignores case on Windows.
+        assert_eq!(
+            matches!(
+                parse(Some("/foo"), "sccache_allow_incremental", "cache"),
+                CompilerArguments::Ok(_)
+            ),
+            cfg!(windows)
         );
-        let r = fails!(
-            "--emit",
-            "link",
-            "foo.rs",
-            "--out-dir",
-            "out",
-            "--crate-name",
-            "foo",
-            "--crate-type",
-            "lib",
-            "-C",
-            "incremental=/foo"
-        );
-        assert_eq!(r, CompilerArguments::CannotCache("incremental", None));
     }
 
     #[test]
@@ -3978,9 +4040,9 @@ bar.rs:
         assert_eq!(
             parse_env_dep_info(deps),
             [
-                ("OUT_DIR".into(), r"C:\dir\out".into()),
-                ("X".into(), "a\nb\rc=d".into()),
-                ("Y".into(), "".into()),
+                ("OUT_DIR".into(), Some(r"C:\dir\out".into())),
+                ("X".into(), Some("a\nb\rc=d".into())),
+                ("Y".into(), None),
             ]
         );
     }
@@ -4338,6 +4400,12 @@ hash 42fac6f0 stable_crate_id StableCrateId(12206970385906972588)
             .replace('\r', r"\r")
     }
 
+    /// rustc's runs for the cache key must not touch the incremental directory.
+    fn assert_no_incremental_dir(args: &[OsString]) {
+        let incremental = |a: &OsString| a.to_string_lossy().starts_with("incremental=");
+        assert!(!args.iter().any(incremental), "{args:?}");
+    }
+
     fn mock_dep_info(creator: &Arc<Mutex<MockCommandCreator>>, dep_srcs: &[&str]) {
         mock_dep_info_with_env(creator, dep_srcs, &[]);
     }
@@ -4345,7 +4413,7 @@ hash 42fac6f0 stable_crate_id StableCrateId(12206970385906972588)
     fn mock_dep_info_with_env(
         creator: &Arc<Mutex<MockCommandCreator>>,
         dep_srcs: &[&str],
-        env_deps: &[(&str, OsString)],
+        env_deps: &[(&str, Option<OsString>)],
     ) {
         // Mock the `rustc --emit=dep-info` process by writing
         // a dep-info file.
@@ -4354,13 +4422,18 @@ hash 42fac6f0 stable_crate_id StableCrateId(12206970385906972588)
             .map(|s| (*s).to_string())
             .collect::<Vec<String>>();
         sorted_deps.sort();
+        // rustc writes `NAME` for a variable that was unset and `NAME=` for an empty one.
         let env_deps = env_deps
             .iter()
-            .map(|(var, val)| format!("# env-dep:{var}={}", escape_dep_env(val)))
+            .map(|(var, val)| match val {
+                Some(val) => format!("# env-dep:{var}={}", escape_dep_env(val)),
+                None => format!("# env-dep:{var}"),
+            })
             .collect::<Vec<String>>();
         next_command_calls(creator, move |args| {
             // A long command line comes as a response file, see `arguments_for_spawn`.
             let args: Vec<OsString> = ExpandResponseFile::new(Path::new(""), args).collect();
+            assert_no_incremental_dir(&args);
             let mut dep_info_path = None;
             let mut it = args.iter();
             while let Some(a) = it.next() {
@@ -4384,14 +4457,12 @@ hash 42fac6f0 stable_crate_id StableCrateId(12206970385906972588)
 
     fn mock_file_names(creator: &Arc<Mutex<MockCommandCreator>>, filenames: &[&str]) {
         // Mock the `rustc --print=file-names` process output.
-        next_command(
-            creator,
-            Ok(MockChild::new(
-                exit_status(0),
-                filenames.iter().join("\n"),
-                "",
-            )),
-        );
+        let stdout = filenames.iter().join("\n");
+        next_command_calls(creator, move |args| {
+            let args: Vec<OsString> = ExpandResponseFile::new(Path::new(""), args).collect();
+            assert_no_incremental_dir(&args);
+            Ok(MockChild::new(exit_status(0), stdout.clone(), ""))
+        });
     }
 
     #[test_case(true ; "with preprocessor cache")]
@@ -4485,6 +4556,14 @@ hash 42fac6f0 stable_crate_id StableCrateId(12206970385906972588)
                     ),
                     (
                         OsString::from("CARGO_BUILD_JOBS"),
+                        OsString::from("ignored"),
+                    ),
+                    (
+                        OsString::from("CARGO_TARGET_DIR"),
+                        OsString::from("ignored"),
+                    ),
+                    (
+                        OsString::from("CARGO_BUILD_BUILD_DIR"),
                         OsString::from("ignored"),
                     ),
                 ]
@@ -4727,7 +4806,7 @@ foo.rs:
         f: &TestFixture,
         args: &[A],
         env_vars: &[(OsString, OsString)],
-        env_deps: &[(&str, OsString)],
+        env_deps: &[(&str, Option<OsString>)],
         pre_func: F,
         storage: MockStorage,
     ) -> String
@@ -4742,7 +4821,7 @@ foo.rs:
         f: &TestFixture,
         args: &[A],
         env_vars: &[(OsString, OsString)],
-        env_deps: &[(&str, OsString)],
+        env_deps: &[(&str, Option<OsString>)],
         pre_func: F,
         storage: MockStorage,
     ) -> HashResult<Arc<Mutex<MockCommandCreator>>>
@@ -4754,7 +4833,7 @@ foo.rs:
             .iter()
             .map(|a| a.as_ref().to_owned())
             .collect::<Vec<OsString>>();
-        let parsed_args = match parse_arguments(&oargs, f.tempdir.path()) {
+        let parsed_args = match parse_arguments(&oargs, f.tempdir.path(), env_vars) {
             CompilerArguments::Ok(parsed_args) => parsed_args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
@@ -4847,7 +4926,7 @@ foo.rs:
                     ("CARGO_MANIFEST_DIR".into(), root.into()),
                     ("CARGO_OUTSIDE".into(), outside.into()),
                 ],
-                &[("OUT_DIR", root.join("target").join("out").into())],
+                &[("OUT_DIR", Some(root.join("target").join("out").into()))],
                 nothing,
                 MockStorage::new(None, false).with_basedirs(basedirs),
             )
@@ -4865,10 +4944,61 @@ foo.rs:
         assert_eq!(key(&a, "x", vec![]), key(&a, "x", vec![elsewhere]));
     }
 
-    /// An env-dep equal to a basedir is keyed apart from an unset one, which rustc
-    /// writes as `# env-dep:Y` for an `option_env!("Y")`.
     #[test]
-    fn test_hash_env_dep_equal_to_basedir_is_not_unset() {
+    fn test_hash_key_cache_incremental() {
+        let f = TestFixture::new();
+        // `RUN` is in the dep-info key only: a value used before reuses that dep-info.
+        let key_with = |dir: Option<&str>, run: &str, env: &[(&str, &str)]| {
+            let mut env_vars: Vec<(OsString, OsString)> = vec![("RUN".into(), run.into())];
+            env_vars.extend(env.iter().map(|(k, v)| ((*k).into(), (*v).into())));
+            let res = hash_result_with(
+                &f,
+                &lib_args(dir),
+                &env_vars,
+                &[],
+                nothing,
+                MockStorage::new(None, false),
+            );
+            let (command, dist_command, _) = res
+                .compilation
+                .generate_compile_commands(&mut dist::PathTransformer::new(), false)
+                .unwrap();
+            let incremental_arg = dir.map(|dir| OsString::from(format!("incremental={dir}")));
+            assert_eq!(
+                command
+                    .get_arguments()
+                    .into_iter()
+                    .find(|a| a.to_string_lossy().starts_with("incremental=")),
+                incremental_arg
+            );
+            assert_eq!(
+                dist_command.is_some(),
+                cfg!(feature = "dist-client") && dir.is_none()
+            );
+            res.key
+        };
+        let allow = ("SCCACHE_ALLOW_INCREMENTAL", "cache");
+        let key = |dir: Option<&str>, run: &str| key_with(dir, run, &[allow]);
+        let plain = key(None, "1");
+        let incremental = key(Some("/inc/a"), "2");
+        assert_ne!(incremental, plain);
+        assert_eq!(key(Some("/inc/b"), "3"), incremental);
+        // Reusing the dep-info of a non-incremental compile, and the other way around.
+        assert_eq!(key(Some("/inc/c"), "1"), incremental);
+        assert_eq!(key(None, "2"), plain);
+        // The opt-in alone doesn't change the key.
+        assert_eq!(key_with(None, "4", &[]), plain);
+        // `CARGO_INCREMENTAL=1` and the profile's default give different keys.
+        let forced = key_with(Some("/inc/d"), "5", &[allow, ("CARGO_INCREMENTAL", "1")]);
+        assert_ne!(forced, incremental);
+    }
+
+    /// `option_env!("Y")` is `None` when `Y` is unset and `Some("")` when it is empty,
+    /// which rustc writes as `# env-dep:Y` and `# env-dep:Y=`. A crate that read it in
+    /// one state must not be served the output of another, whether that is an empty
+    /// value, some other value or one equal to a basedir.
+    #[test]
+    fn test_hash_unset_env_dep_is_keyed_apart() {
         let f = TestFixture::new();
         let root = f.tempdir.path().to_owned();
         // rustc reads `Y` from the environment, so a set `Y` is there too. Without
@@ -4890,12 +5020,20 @@ foo.rs:
                     "lib",
                 ],
                 &env_vars,
-                &[("Y", val.unwrap_or_default())],
+                &[("Y", val)],
                 nothing,
                 MockStorage::new(None, false).with_basedirs(vec![basedir(&root)]),
             )
         };
-        assert_ne!(key(None), key(Some(root.clone().into())));
+        let unset = key(None);
+        let empty = key(Some("".into()));
+        assert_ne!(unset, empty);
+        assert_ne!(unset, key(Some("x".into())));
+        assert_ne!(unset, key(Some(root.clone().into())));
+        assert_ne!(empty, key(Some("x".into())));
+        // The same state keeps its key.
+        assert_eq!(unset, key(None));
+        assert_eq!(empty, key(Some("".into())));
     }
 
     /// SCCACHE_BASEDIRS_VERBATIM_ENV_DEPS keeps a crate that read a listed env-dep keyed
@@ -4916,8 +5054,8 @@ foo.rs:
                 ("READS".into(), reads.unwrap_or_default().into()),
             ];
             env_vars.extend(verbatim.map(|(var, v)| (var.into(), v.into())));
-            let mut env_deps = vec![("OUT_DIR", root.join("target").join("out").into())];
-            env_deps.extend(reads.map(|name| (name, root.into())));
+            let mut env_deps = vec![("OUT_DIR", Some(root.join("target").join("out").into()))];
+            env_deps.extend(reads.map(|name| (name, Some(root.into()))));
             hash_key_with(
                 f,
                 &[
@@ -5531,7 +5669,7 @@ foo.rs:
             .unwrap();
         let arg = format!("@{}", td.path().join("args").display());
         let args: Vec<OsString> = vec![OsString::from(arg)];
-        let result = parse_arguments(&args, td.path());
+        let result = parse_arguments(&args, td.path(), &[]);
         let parsed = match result {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
@@ -5548,7 +5686,7 @@ foo.rs:
         // to missing --out-dir / --emit etc.
         let cwd = Path::new("/nonexistent");
         let args: Vec<OsString> = vec![OsString::from("@missing_file")];
-        let result = parse_arguments(&args, cwd);
+        let result = parse_arguments(&args, cwd, &[]);
         assert!(matches!(result, CompilerArguments::CannotCache(..)));
     }
 
