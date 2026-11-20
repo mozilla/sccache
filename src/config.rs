@@ -28,6 +28,7 @@ use serde::{
 use serial_test::serial;
 use std::env;
 use std::io::{Read, Write};
+use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::result::Result as StdResult;
 use std::str::FromStr;
@@ -175,7 +176,9 @@ pub fn parse_size(val: &str) -> Option<u64> {
     } else {
         val
     };
-    u64::from_str(val).ok().map(|size| size * multiplier)
+    u64::from_str(val)
+        .ok()
+        .and_then(|size| size.checked_mul(multiplier))
 }
 
 #[cfg(any_dist)]
@@ -441,6 +444,8 @@ pub struct RedisCacheConfig {
     /// Default to infinity (0)
     #[serde(default, alias = "expiration")]
     pub ttl: u64,
+
+    pub io_timeout_secs: Option<NonZeroU64>,
 
     #[serde(default)]
     pub key_prefix: String,
@@ -954,6 +959,9 @@ fn config_from_env() -> Result<EnvConfig> {
                 .transpose()?
                 .unwrap_or(DEFAULT_REDIS_CACHE_TTL);
 
+            let io_timeout_secs =
+                number_from_env_var("SCCACHE_REDIS_IO_TIMEOUT_SECS").transpose()?;
+
             let key_prefix = key_prefix_from_env_var("SCCACHE_REDIS_KEY_PREFIX");
 
             let rw_mode = cache_mode_from_env_var("SCCACHE_REDIS_RW_MODE")
@@ -967,6 +975,7 @@ fn config_from_env() -> Result<EnvConfig> {
                 password,
                 db,
                 ttl,
+                io_timeout_secs,
                 key_prefix,
                 rw_mode,
             })
@@ -1202,7 +1211,11 @@ fn config_from_env() -> Result<EnvConfig> {
 
     // ======= Local =======
     let disk_dir = env::var_os("SCCACHE_DIR").map(PathBuf::from);
-    let disk_sz = string_from_env_var("SCCACHE_CACHE_SIZE").and_then(|v| parse_size(&v));
+    let disk_sz = string_from_env_var("SCCACHE_CACHE_SIZE")
+        .map(|v| {
+            parse_size(&v).ok_or_else(|| anyhow!("SCCACHE_CACHE_SIZE value is invalid: {v:?}"))
+        })
+        .transpose()?;
 
     let mut preprocessor_mode_config = PreprocessorCacheModeConfig::activated();
     let preprocessor_mode_overridden = if let Some(value) = bool_from_env_var("SCCACHE_DIRECT")? {
@@ -1682,6 +1695,34 @@ fn test_parse_size() {
     assert_eq!(Some(10 * 1024 * 1024), parse_size("10M"));
     assert_eq!(Some(TEN_GIGS), parse_size("10G"));
     assert_eq!(Some(1024 * TEN_GIGS), parse_size("10T"));
+    assert_eq!(Some(u64::MAX), parse_size("18446744073709551615"));
+    assert_eq!(None, parse_size("18446744073709551615K"));
+    assert_eq!(None, parse_size("16777216T"));
+}
+
+#[test]
+#[serial(config_from_env)]
+fn test_env_cache_size() {
+    let config = temp_env::with_var("SCCACHE_CACHE_SIZE", Some("2G"), || {
+        config_from_env().unwrap()
+    });
+    assert_eq!(
+        config.cache.disk.expect("SCCACHE_CACHE_SIZE is set").size,
+        2 * 1024 * 1024 * 1024
+    );
+}
+
+#[test]
+#[serial(config_from_env)]
+fn test_env_cache_size_invalid() {
+    for value in ["20GB", "1.5G", "10 G", "G", "16777216T"] {
+        let error = temp_env::with_var("SCCACHE_CACHE_SIZE", Some(value), config_from_env)
+            .expect_err(value);
+        assert_eq!(
+            format!("SCCACHE_CACHE_SIZE value is invalid: {value:?}"),
+            error.to_string()
+        );
+    }
 }
 
 #[test]
@@ -1726,6 +1767,67 @@ fn test_skip_cache_check_from_env() {
             .to_string(),
         "SCCACHE_SKIP_CACHE_CHECK must be 'true', 'on', '1', 'false', 'off' or '0'."
     );
+}
+
+#[test]
+fn test_redis_io_timeout_from_file() {
+    for (setting, expected) in [
+        ("", None),
+        ("io_timeout_secs = 1", Some(1)),
+        ("io_timeout_secs = 37", Some(37)),
+    ] {
+        let config: FileConfig = toml::from_str(&format!(
+            "[cache.redis]\nendpoint = \"redis://localhost:6379\"\n{setting}"
+        ))
+        .unwrap();
+        assert_eq!(
+            config.cache.redis.unwrap().io_timeout_secs,
+            expected.and_then(NonZeroU64::new)
+        );
+    }
+}
+
+#[test]
+fn test_redis_io_timeout_from_file_invalid() {
+    for value in ["0", "-1", "\"invalid\"", "\"1\"", "1.5"] {
+        let result = toml::from_str::<FileConfig>(&format!(
+            "[cache.redis]\nendpoint = \"redis://localhost:6379\"\nio_timeout_secs = {value}"
+        ));
+        assert!(result.is_err(), "accepted io_timeout_secs = {value}");
+    }
+}
+
+#[test]
+#[serial(config_from_env)]
+fn test_redis_io_timeout_from_env() {
+    fn parse_with_timeout(value: Option<&str>) -> Result<EnvConfig> {
+        temp_env::with_vars(
+            [
+                ("SCCACHE_REDIS_ENDPOINT", Some("redis://localhost:6379")),
+                ("SCCACHE_REDIS_IO_TIMEOUT_SECS", value),
+            ],
+            config_from_env,
+        )
+    }
+
+    for (value, expected) in [
+        (None, None),
+        (Some(""), None),
+        (Some("1"), Some(1)),
+        (Some("37"), Some(37)),
+        (Some("18446744073709551615"), Some(u64::MAX)),
+    ] {
+        let result = parse_with_timeout(value);
+        assert_eq!(
+            result.unwrap().cache.redis.unwrap().io_timeout_secs,
+            expected.and_then(NonZeroU64::new)
+        );
+    }
+
+    for value in ["0", "invalid", "-1", "18446744073709551616"] {
+        let result = parse_with_timeout(Some(value));
+        assert!(result.is_err(), "accepted Redis IO timeout {value:?}");
+    }
 }
 
 #[test]
@@ -1779,6 +1881,7 @@ fn config_overrides() {
             redis: Some(RedisCacheConfig {
                 url: Some("myredisurl".to_owned()),
                 ttl: 25 * 3600,
+                io_timeout_secs: NonZeroU64::new(9),
                 key_prefix: String::new(),
                 ..Default::default()
             }),
@@ -2859,6 +2962,7 @@ key_prefix = "cosprefix"
                     password: Some("new_passwd".to_owned()),
                     db: 12,
                     ttl: 24 * 3600,
+                    io_timeout_secs: None,
                     key_prefix: "/my/redis/cache".into(),
                     rw_mode: CacheModeConfig::ReadWrite,
                 }),

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cache::{CacheMode, IpcStorage, Storage, storage_from_config};
+use crate::cache::{CacheMode, CacheStorage as _, IpcStorage, storage_from_config};
 use crate::client::{ServerConnection, connect_to_server, connect_with_retry};
 use crate::cmdline::{Command, StatsFormat};
 use crate::compiler::{ColorMode, is_rmeta_artifact_notification};
@@ -993,8 +993,10 @@ pub fn run_command(cmd: Command) -> Result<i32> {
         } => {
             trace!("Command::Compile {{ {:?}, {:?}, {:?} }}", exe, cmdline, cwd);
 
-            // With the opt-in, `-C incremental=` compiles are left uncached (CannotCache).
-            let allow_incremental = env::var("SCCACHE_ALLOW_INCREMENTAL").as_deref() == Ok("1");
+            // With the opt-in, `-C incremental=` compiles are left uncached (CannotCache),
+            // or cached with `cache`.
+            let allow_incremental =
+                env::var("SCCACHE_ALLOW_INCREMENTAL").is_ok_and(|v| v == "1" || v == "cache");
             let incr_env_strs = ["CARGO_BUILD_INCREMENTAL", "CARGO_INCREMENTAL"];
             incr_env_strs
                 .iter()
@@ -1003,7 +1005,8 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                         println!(
                             "sccache: incremental compilation is prohibited: Unset {} to \
                              continue, or set SCCACHE_ALLOW_INCREMENTAL=1 to keep caching \
-                             the non-incremental parts of the build.",
+                             the non-incremental parts of the build, or \
+                             SCCACHE_ALLOW_INCREMENTAL=cache to cache incremental crates too.",
                             incr_str
                         );
                         std::process::exit(1);

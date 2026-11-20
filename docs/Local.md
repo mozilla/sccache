@@ -2,7 +2,7 @@
 
 sccache defaults to using local disk storage. You can set the `SCCACHE_DIR` environment variable to change the disk cache location. By default it will use a sensible location for the current platform: `~/.cache/sccache` on Linux, `%LOCALAPPDATA%\Mozilla\sccache` on Windows, and `~/Library/Caches/Mozilla.sccache` on MacOS.
 
-The default cache size is 10 gigabytes. To change this, set `SCCACHE_CACHE_SIZE`, for example `SCCACHE_CACHE_SIZE="1G"`.
+The default cache size is 10 gigabytes. To change this, set `SCCACHE_CACHE_SIZE`, for example `SCCACHE_CACHE_SIZE="1G"`. The value is a number of bytes, optionally followed by a single `K`, `M`, `G` or `T` suffix (powers of 1024). sccache refuses to start with any other value, such as `20GB` or `1.5G`.
 
 The local storage only supports a single sccache server at a time. Multiple concurrent servers will race and cause spurious build failures.
 
@@ -23,7 +23,7 @@ Preprocessor cache mode will be disabled in any of the following cases:
 
 - Not compiling C or C++
 - The configuration option is false
-- Not using GCC or Clang
+- Not using GCC, Clang or MSVC
 - Not using local storage for the cache
 - Any of the compiler options `-MP`, `-Xpreprocessor`, `-Wp,` are present
 - The modification time of one of the header files is too new (avoids a race condition)
@@ -40,6 +40,10 @@ The preprocessor cache may silently produce stale results in any of the followin
 On Linux and macOS, the server remembers the digest of each file it hashes for this mode and reuses it while the file's size,
 mtime, ctime, device and inode are unchanged, so a cache hit does not re-read unchanged headers. Files changed less than two
 seconds before being hashed are not remembered, as their timestamps may not tell a quick rewrite apart.
+
+With MSVC, this mode preprocesses with `-E` instead of `-EP`, so that the line markers name the included files. The absolute
+paths in them become part of the hash, so builds in different directories generally do not share cache entries unless
+`SCCACHE_BASEDIRS` covers them. Turning the mode off restores `-EP`.
 
 Configuration options and their default values:
 
