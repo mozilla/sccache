@@ -996,11 +996,10 @@ where
 
     let mut lines = Vec::<(usize, PathBuf, Vec<String>)>::new();
 
-    let reader = if cfg!(target_os = "windows") {
-        std::io::BufReader::new(&nvcc_dryrun_output.stdout[..])
-    } else {
-        std::io::BufReader::new(&nvcc_dryrun_output.stderr[..])
-    };
+    #[cfg(unix)]
+    let reader = std::io::BufReader::new(&nvcc_dryrun_output.stderr[..]);
+    #[cfg(windows)]
+    let reader = std::io::BufReader::new(&nvcc_dryrun_output.stdout[..]);
 
     for pair in reader.lines().enumerate() {
         let (idx, line) = pair;
@@ -1151,12 +1150,9 @@ fn fold_env_vars_or_split_into_exe_and_args(
         .iter()
         .chain(inherited_env_vars)
         .find(|(k, _)| {
-            #[cfg(windows)]
-            {
+            if cfg!(windows) {
                 k.eq_ignore_ascii_case("PATH")
-            }
-            #[cfg(not(windows))]
-            {
+            } else {
                 k == "PATH"
             }
         })
@@ -1581,8 +1577,9 @@ mod test {
         }
     }
 
-    #[test]
-    fn test_select_nvcc_subcommands_path() {
+    #[test_case::test_case("PATH"; "uppercase")]
+    #[cfg_attr(windows, test_case::test_case("Path"; "mixed_case"))]
+    fn test_select_nvcc_subcommands_path(path_name: &str) {
         let inherited_dir = tempfile::tempdir().unwrap();
         let dryrun_dir = tempfile::tempdir().unwrap();
         for dir in [inherited_dir.path(), dryrun_dir.path()] {
@@ -1590,7 +1587,10 @@ mod test {
         }
         let executable_name = format!("host-compiler{}", std::env::consts::EXE_SUFFIX);
         let inherited_executable = inherited_dir.path().join(&executable_name);
-        let inherited_env = vec![("PATH".into(), inherited_dir.path().as_os_str().to_owned())];
+        let inherited_env = vec![(
+            path_name.into(),
+            inherited_dir.path().as_os_str().to_owned(),
+        )];
 
         for (dryrun, mut env_vars, expected_executable) in [
             (
