@@ -674,6 +674,10 @@ mod server {
         }
 
         pub fn start(self) -> Result<Infallible> {
+            self.start_with_ready(|| Ok(()))
+        }
+
+        pub fn start_with_ready(self, on_ready: impl FnOnce() -> Result<()>) -> Result<Infallible> {
             let Self {
                 public_addr,
                 handler,
@@ -849,6 +853,7 @@ mod server {
             // we would use, except that interface doesn't permit any sort of
             // error handling to be done.
             let server = server.pool_size(num_cpus() * 8);
+            on_ready().context("failed to report scheduler readiness")?;
             server.run();
 
             panic!("Rouille server terminated")
