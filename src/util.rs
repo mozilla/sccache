@@ -674,10 +674,12 @@ where
     W: Write,
     S: Serialize,
 {
-    let bytes = bincode::serialize(&data)?;
-    let mut len = [0; 4];
-    BigEndian::write_u32(&mut len, bytes.len() as u32);
-    writer.write_all(&len)?;
+    // One write: with TCP_NODELAY, writing the length on its own would send it
+    // as a separate packet whenever the body overflows the caller's BufWriter.
+    let mut bytes = vec![0; 4];
+    bincode::serialize_into(&mut bytes, &data)?;
+    let len = (bytes.len() - 4) as u32;
+    BigEndian::write_u32(&mut bytes[..4], len);
     writer.write_all(&bytes)?;
     writer.flush()?;
     Ok(())
@@ -1543,6 +1545,18 @@ fn double_path_separators(path: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Environment variable names are case-insensitive on Windows.
+pub fn env_var_name_matches(key: &OsStr, name: &str) -> bool {
+    #[cfg(windows)]
+    {
+        key.eq_ignore_ascii_case(name)
+    }
+    #[cfg(not(windows))]
+    {
+        key == name
+    }
+}
+
 /// Normalize path for case-insensitive comparison.
 /// On Windows: converts all backslashes to forward slashes;
 ///             lowercases characters for consistency.
@@ -1689,8 +1703,8 @@ pub fn resolve_compiler_avoiding_wrapper(
 #[cfg(test)]
 mod tests {
     use super::{
-        Digest, OsStrExt, TimeMacroFinder, exit_status_from_code, hash_all_externs,
-        resolve_compiler_avoiding_wrapper,
+        Digest, OsStrExt, TimeMacroFinder, exit_status_from_code, hash_all_archives,
+        hash_all_externs, resolve_compiler_avoiding_wrapper,
     };
     use crate::test::utils::single_threaded_runtime;
     use object::write::Object as WriteObject;
@@ -1706,6 +1720,17 @@ mod tests {
         let rustc = obj.add_section(Vec::new(), b".rustc".to_vec(), SectionKind::Data);
         obj.append_section_data(rustc, metadata, 1);
         obj.write().unwrap()
+    }
+
+    // Dist JWT secrets and PKCE values are stored or sent in this form, so the
+    // alphabet and lack of padding must not change.
+    #[test]
+    fn test_base64_url_safe_engine_output() {
+        use base64::Engine;
+        let engine = super::BASE64_URL_SAFE_ENGINE;
+        assert_eq!(engine.encode([0xfb, 0xff]), "-_8");
+        assert_eq!(engine.decode("-_8").unwrap(), [0xfb, 0xff]);
+        assert!(engine.decode("-_8=").is_err());
     }
 
     #[test]
@@ -1725,6 +1750,53 @@ mod tests {
         let runtime = single_threaded_runtime();
         let hashes = runtime
             .block_on(hash_all_externs(&files, runtime.handle()))
+            .unwrap();
+        assert_eq!(hashes[0], hashes[1]);
+        assert_ne!(hashes[0], hashes[2]);
+    }
+
+    fn coff_archive(members: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut archive = b"!<arch>\n".to_vec();
+        for (name, data) in members {
+            let mut header = [b' '; 60];
+            header[..name.len()].copy_from_slice(name.as_bytes());
+            let size = data.len().to_string();
+            header[48..48 + size.len()].copy_from_slice(size.as_bytes());
+            header[58..].copy_from_slice(b"`\n");
+            archive.extend_from_slice(&header);
+            archive.extend_from_slice(data);
+            if data.len() % 2 != 0 {
+                archive.push(b'\n');
+            }
+        }
+        archive
+    }
+
+    #[test]
+    fn test_hash_all_archives_skips_ec_symbol_table() {
+        // llvm-ar omits the `//` names table when every member name fits in
+        // the header; object < 0.40 then returned `/<ECSYMBOLS>/` as a member.
+        let dir = tempfile::tempdir().unwrap();
+        let write = |name: &str, ec_symbols: &[u8], code: &[u8]| {
+            let path = dir.path().join(name);
+            let archive = coff_archive(&[
+                ("/", &[0; 4]),
+                ("/", &[0; 4]),
+                ("/<ECSYMBOLS>/", ec_symbols),
+                ("foo.obj/", code),
+            ]);
+            std::fs::write(&path, archive).unwrap();
+            path
+        };
+        let files = [
+            write("a.lib", &[1, 0, 1, 0], b"code"),
+            write("b.lib", &[2, 0, 2, 0], b"code"),
+            write("c.lib", &[1, 0, 1, 0], b"changed"),
+        ];
+
+        let runtime = single_threaded_runtime();
+        let hashes = runtime
+            .block_on(hash_all_archives(&files, runtime.handle()))
             .unwrap();
         assert_eq!(hashes[0], hashes[1]);
         assert_ne!(hashes[0], hashes[2]);
@@ -2580,5 +2652,34 @@ mod tests {
             .await
             .unwrap();
         assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn test_write_length_prefixed_bincode_single_write() {
+        use super::write_length_prefixed_bincode;
+        use byteorder::{BigEndian, ByteOrder};
+        use std::io::Write;
+
+        #[derive(Default)]
+        struct Writes(Vec<Vec<u8>>);
+        impl Write for Writes {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.push(buf.to_vec());
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let data = vec![7u8; 20_000];
+        let mut writes = Writes::default();
+        write_length_prefixed_bincode(&mut writes, &data).unwrap();
+
+        assert_eq!(writes.0.len(), 1);
+        let frame = &writes.0[0];
+        let body = bincode::serialize(&data).unwrap();
+        assert_eq!(BigEndian::read_u32(&frame[..4]) as usize, body.len());
+        assert_eq!(&frame[4..], &body[..]);
     }
 }

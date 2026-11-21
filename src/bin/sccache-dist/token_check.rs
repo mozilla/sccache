@@ -113,10 +113,10 @@ impl ProxyTokenCheck {
         if let Some(ref auth_cache) = self.maybe_auth_cache {
             let mut auth_cache = auth_cache.lock().unwrap();
             let (ref mut auth_cache, cache_duration) = *auth_cache;
-            if let Some(cached_at) = auth_cache.get(token) {
-                if cached_at.elapsed() < cache_duration {
-                    return Ok(());
-                }
+            if let Some(cached_at) = auth_cache.get(token)
+                && cached_at.elapsed() < cache_duration
+            {
+                return Ok(());
             }
             auth_cache.remove(token);
         }

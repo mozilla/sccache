@@ -13,7 +13,7 @@
 use crate::cache::CacheMode;
 use crate::cache::GetPathResult;
 use crate::cache::cache_io::{Cache, CacheRead, CacheWrite};
-use crate::cache::storage::Storage;
+use crate::cache::storage::{CacheStorage, PreprocessorCacheStorage};
 use crate::client::ServerConnection;
 use crate::compiler::PreprocessorCacheEntry;
 use crate::config::PreprocessorCacheModeConfig;
@@ -69,7 +69,7 @@ impl IpcStorage {
 }
 
 #[async_trait]
-impl Storage for IpcStorage {
+impl CacheStorage for IpcStorage {
     async fn get(&self, key: &str) -> Result<Cache> {
         match self.get_path(key).await {
             GetPathResult::Found(path) => {
@@ -154,12 +154,15 @@ impl Storage for IpcStorage {
         Ok(self.handshake.max_size)
     }
 
-    fn preprocessor_cache_mode_config(&self) -> PreprocessorCacheModeConfig {
-        self.handshake.preprocessor_cache_mode_config
-    }
-
     fn basedirs(&self) -> &[Vec<u8>] {
         &self.handshake.basedirs
+    }
+}
+
+#[async_trait]
+impl PreprocessorCacheStorage for IpcStorage {
+    fn preprocessor_cache_mode_config(&self) -> PreprocessorCacheModeConfig {
+        self.handshake.preprocessor_cache_mode_config
     }
 
     async fn get_preprocessor_cache_entry(

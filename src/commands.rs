@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cache::{CacheMode, IpcStorage, Storage, storage_from_config};
+use crate::cache::{CacheMode, CacheStorage as _, IpcStorage, storage_from_config};
 use crate::client::{ServerConnection, connect_to_server, connect_with_retry};
 use crate::cmdline::{Command, StatsFormat};
 use crate::compiler::{ColorMode, is_rmeta_artifact_notification};
@@ -42,7 +42,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use strip_ansi_escapes::Writer;
 use tokio::io::AsyncReadExt;
-use tokio::runtime::{Builder, Runtime};
+use tokio::runtime::Runtime;
 use walkdir::WalkDir;
 use which::which_in;
 
@@ -993,8 +993,10 @@ pub fn run_command(cmd: Command) -> Result<i32> {
         } => {
             trace!("Command::Compile {{ {:?}, {:?}, {:?} }}", exe, cmdline, cwd);
 
-            // With the opt-in, `-C incremental=` compiles are left uncached (CannotCache).
-            let allow_incremental = env::var("SCCACHE_ALLOW_INCREMENTAL").as_deref() == Ok("1");
+            // With the opt-in, `-C incremental=` compiles are left uncached (CannotCache),
+            // or cached with `cache`.
+            let allow_incremental =
+                env::var("SCCACHE_ALLOW_INCREMENTAL").is_ok_and(|v| v == "1" || v == "cache");
             let incr_env_strs = ["CARGO_BUILD_INCREMENTAL", "CARGO_INCREMENTAL"];
             incr_env_strs
                 .iter()
@@ -1003,7 +1005,8 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                         println!(
                             "sccache: incremental compilation is prohibited: Unset {} to \
                              continue, or set SCCACHE_ALLOW_INCREMENTAL=1 to keep caching \
-                             the non-incremental parts of the build.",
+                             the non-incremental parts of the build, or \
+                             SCCACHE_ALLOW_INCREMENTAL=cache to cache incremental crates too.",
                             incr_str
                         );
                         std::process::exit(1);
@@ -1013,14 +1016,11 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 
             let jobserver = Client::from_env_fifo().unwrap_or_else(Client::new);
             let conn = connect_or_start_server(&get_addr(), startup_timeout)?;
+            // One compile needs no worker threads of its own: starting two in
+            // every invocation cost about 1ms per cache hit. The blocking
+            // thread pool still absorbs zstd/zip work.
+            let mut runtime = new_client_runtime()?;
             if config.client_side_mode {
-                // Under make -jN each CLI process gets only 2 worker threads;
-                // one for preprocessing/compilation and one for IPC.  The
-                // blocking thread pool absorbs zstd/zip work.
-                let mut runtime = Builder::new_multi_thread()
-                    .worker_threads(2)
-                    .enable_all()
-                    .build()?;
                 let res = do_compile_client_side::<ProcessCommandCreator>(
                     &jobserver,
                     &mut runtime,
@@ -1035,7 +1035,6 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                 );
                 return res.context("failed to execute compile");
             }
-            let mut runtime = new_client_runtime()?;
             let res = do_compile(
                 ProcessCommandCreator::new(&jobserver),
                 &mut runtime,

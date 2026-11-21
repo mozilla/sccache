@@ -468,12 +468,8 @@ impl DistSystem {
                 child
             }
             ForkResult::Child => {
-                unsafe {
-                    env::set_var("SCCACHE_LOG", "sccache=trace");
-                }
                 env_logger::try_init().unwrap();
-                server.start().unwrap();
-                unreachable!();
+                match server.start().unwrap() {}
             }
         };
 
@@ -498,7 +494,7 @@ impl DistSystem {
                 panic!("restart not yet implemented for pids")
             }
         }
-        self.wait_server_ready(handle)
+        self.wait_server_ready(handle);
     }
     pub fn count_toolchains_on_server(&mut self, handle: &ServerHandle) -> usize {
         match handle {
@@ -641,7 +637,7 @@ impl Drop for DistSystem {
                 nix::sys::wait::waitpid(pid, Some(WaitPidFlag::WNOHANG)).map(|ws| {
                     if ws != WaitStatus::StillAlive {
                         killagain = false;
-                        exits.push(ws)
+                        exits.push(ws);
                     }
                 })
             );
@@ -696,7 +692,7 @@ impl Drop for DistSystem {
             );
         }
         for exit in exits {
-            println!("EXIT: {:?}", exit)
+            println!("EXIT: {:?}", exit);
         }
 
         if did_err && !thread::panicking() {
@@ -740,7 +736,7 @@ fn wait_for_http(url: HTTPUrl, interval: Duration, max_wait: Duration) {
         },
         interval,
         max_wait,
-    )
+    );
 }
 
 fn wait_for<F: Fn() -> Result<(), String>>(f: F, interval: Duration, max_wait: Duration) {
