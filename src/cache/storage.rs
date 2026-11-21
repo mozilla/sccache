@@ -28,7 +28,7 @@ use crate::config::PreprocessorCacheModeConfig;
 use crate::errors::*;
 
 /// Result of [`Storage::get_path`].
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum GetPathResult {
     /// Cache hit: the entry lives at this filesystem path.
     Found(PathBuf),
@@ -135,8 +135,8 @@ pub trait CacheStorage: Send + Sync {
 
     /// Return the filesystem path of the cached entry for `key`.
     /// Default impl returns [`GetPathResult::Unsupported`].
-    async fn get_path(&self, _key: &str) -> GetPathResult {
-        GetPathResult::Unsupported
+    async fn get_path(&self, _key: &str) -> Result<GetPathResult> {
+        Ok(GetPathResult::Unsupported)
     }
 }
 
