@@ -509,26 +509,27 @@ fn test_rust_cargo_dep_info_from_other_checkout() -> Result<()> {
     Ok(())
 }
 
-/// Write a crate to `checkout` whose path dependency includes build script output,
-/// so the checkout's path reaches both crates' keys through the cwd,
-/// `CARGO_MANIFEST_DIR` and the dependency's `OUT_DIR` env-dep.
-fn write_out_dir_crate(checkout: &Path) -> Result<()> {
+/// Write a crate to `checkout` whose path dependency at `dep`, relative to it,
+/// includes build script output, so the checkout's path reaches both crates' keys
+/// through the cwd, `CARGO_MANIFEST_DIR` and the dependency's `OUT_DIR` env-dep.
+fn write_out_dir_crate(checkout: &Path, dep: &str) -> Result<()> {
     let package = |name: &str| {
         format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n")
     };
     fs::create_dir_all(checkout.join("src"))?;
-    fs::create_dir_all(checkout.join("dep/src"))?;
+    let dep_dir = checkout.join(dep);
+    fs::create_dir_all(dep_dir.join("src"))?;
     fs::write(
         checkout.join("Cargo.toml"),
-        package("out-dir-test") + "\n[dependencies]\ndep = { path = \"dep\" }\n",
+        package("out-dir-test") + &format!("\n[dependencies]\ndep = {{ path = \"{dep}\" }}\n"),
     )?;
     fs::write(
         checkout.join("src/lib.rs"),
         "pub fn answer() -> u32 { dep::ANSWER }\n",
     )?;
-    fs::write(checkout.join("dep/Cargo.toml"), package("dep"))?;
+    fs::write(dep_dir.join("Cargo.toml"), package("dep"))?;
     fs::write(
-        checkout.join("dep/build.rs"),
+        dep_dir.join("build.rs"),
         r#"fn main() {
     let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
     std::fs::write(out.join("answer.rs"), "pub const ANSWER: u32 = 42;").unwrap();
@@ -536,7 +537,7 @@ fn write_out_dir_crate(checkout: &Path) -> Result<()> {
 "#,
     )?;
     fs::write(
-        checkout.join("dep/src/lib.rs"),
+        dep_dir.join("src/lib.rs"),
         "include!(concat!(env!(\"OUT_DIR\"), \"/answer.rs\"));\n",
     )?;
     Ok(())
@@ -567,13 +568,13 @@ fn test_rust_cargo_basedirs_other_checkout() -> Result<()> {
         Some(vec![("SCCACHE_BASEDIRS".into(), basedirs)]),
     )?;
 
-    write_out_dir_crate(&a)?;
+    write_out_dir_crate(&a, "dep")?;
     cargo_build(&test_info, &a)?;
     Command::new(SCCACHE_BIN.as_os_str())
         .arg("--zero-stats")
         .assert()
         .try_success()?;
-    write_out_dir_crate(&b)?;
+    write_out_dir_crate(&b, "dep")?;
     let target_b = cargo_build(&test_info, &b)?;
 
     test_info
@@ -600,6 +601,76 @@ fn test_rust_cargo_basedirs_other_checkout() -> Result<()> {
         "dep-info does not name checkout b:\n{dep_info}"
     );
 
+    Ok(())
+}
+
+/// With `SCCACHE_BASEDIRS_REMAP_PATHS`, the outputs a hit restores in the second checkout
+/// do not name the first one.
+#[test]
+#[serial]
+fn test_rust_cargo_basedirs_remap_paths() -> Result<()> {
+    test_rust_cargo_basedirs_remap_paths_with("dep")
+}
+
+/// The same with the path dependency outside the checkouts. Cargo compiles it in its own
+/// directory, so only its `OUT_DIR` is under a basedir.
+#[test]
+#[serial]
+fn test_rust_cargo_basedirs_remap_paths_dep_outside() -> Result<()> {
+    test_rust_cargo_basedirs_remap_paths_with("../dep")
+}
+
+fn test_rust_cargo_basedirs_remap_paths_with(dep: &str) -> Result<()> {
+    let mut test_info = SccacheTest::new(None)?;
+    test_info
+        .env
+        .push(("SCCACHE_BASEDIRS_REMAP_PATHS", "1".into()));
+    let tempdir = real_tempdir(&test_info)?;
+    let [a, b] = ["a", "b"].map(|name| tempdir.join(name));
+    let basedirs = std::env::join_paths([&a, &b])?.into_string().unwrap();
+    restart_sccache(
+        &test_info,
+        Some(vec![("SCCACHE_BASEDIRS".into(), basedirs)]),
+    )?;
+    for checkout in [&a, &b] {
+        write_out_dir_crate(checkout, dep)?;
+        cargo_build(&test_info, checkout)?;
+    }
+
+    test_info
+        .show_stats()?
+        .try_stdout(
+            predicates::str::contains(
+                r#""cache_hits":{"counts":{"Rust":2},"adv_counts":{"rust":2}}"#,
+            )
+            .from_utf8(),
+        )?
+        .try_success()?;
+    let contains = |bytes: &[u8], s: &[u8]| bytes.windows(s.len()).any(|w| w == s);
+    let a = a.to_str().unwrap().as_bytes();
+    let outside = dep.starts_with("..");
+    let mut dep_outputs = 0;
+    for entry in walkdir::WalkDir::new(b.join("target")) {
+        let path = entry?.into_path();
+        if path
+            .extension()
+            .is_some_and(|e| e == "rlib" || e == "rmeta")
+        {
+            let bytes = fs::read(&path)?;
+            assert!(!contains(&bytes, a), "{} names checkout a", path.display());
+            let name = path.file_name().unwrap().to_string_lossy();
+            if outside && name.starts_with("libdep-") {
+                // No basedir holds the cwd that would map its `OUT_DIR`.
+                assert!(
+                    contains(&bytes, b"/sccache/basedir"),
+                    "{} does not name /sccache/basedir",
+                    path.display()
+                );
+                dep_outputs += 1;
+            }
+        }
+    }
+    assert_eq!(dep_outputs, if outside { 2 } else { 0 });
     Ok(())
 }
 
