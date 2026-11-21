@@ -361,6 +361,8 @@ In an argument only the places that are expected to spell a pathname are conside
 
 For Rust, base directories are also stripped from the working directory, from the `CARGO_*` environment variables such as `CARGO_MANIFEST_DIR`, and from the variables a crate reads with `env!` or `option_env!`, such as a build script's `OUT_DIR`. A hit then returns a crate compiled in another directory: its debug info and panic messages name that directory unless `--remap-path-prefix` maps it away, and so does any `env!("CARGO_MANIFEST_DIR")` the crate keeps.
 
+For how base directories interact with preprocessor cache mode, see [the local doc](docs/Local.md).
+
 This is similar to ccache's `CCACHE_BASEDIR` and helps when:
 * Building the same project from different directories
 * Sharing cache between CI jobs with different checkout paths

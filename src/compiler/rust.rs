@@ -355,16 +355,6 @@ pub struct ParsedArguments {
     crate_types: CrateTypes,
     /// If dependency info is being emitted, the name of the dep info file.
     dep_info: Option<PathBuf>,
-    /// If profile info is being emitted, the path of the profile.
-    ///
-    /// This could be filled while `-Cprofile-use` been enabled.
-    ///
-    /// We need to add the profile into our outputs to enable distributed compilation.
-    /// We don't need to track `profile-generate` since it's users work to make sure
-    /// the `profdata` been generated from profraw files.
-    ///
-    /// For more information, see https://doc.rust-lang.org/rustc/profile-guided-optimization.html
-    profile: Option<PathBuf>,
     /// If `-Z profile` has been enabled, we will use a GCC-compatible, gcov-based
     /// coverage implementation.
     ///
@@ -1252,15 +1242,14 @@ impl IntoArg for ArgCrateTypes {
 
 #[derive(Clone, Debug, PartialEq)]
 struct ArgLinkLibrary {
-    kind: String,
+    kind: Option<String>,
     name: String,
 }
 impl FromArg for ArgLinkLibrary {
     fn process(arg: OsString) -> ArgParseResult<Self> {
         let (kind, name) = match split_os_string_arg(arg, "=")? {
-            (kind, Some(name)) => (kind, name),
-            // If no kind is specified, the default is dylib.
-            (name, None) => ("dylib".to_owned(), name),
+            (kind, Some(name)) => (Some(kind), name),
+            (name, None) => (None, name),
         };
         Ok(ArgLinkLibrary { kind, name })
     }
@@ -1268,11 +1257,19 @@ impl FromArg for ArgLinkLibrary {
 impl IntoArg for ArgLinkLibrary {
     fn into_arg_os_string(self) -> OsString {
         let ArgLinkLibrary { kind, name } = self;
-        make_os_string!(kind, "=", name)
+        if let Some(kind) = kind {
+            make_os_string!(kind, "=", name)
+        } else {
+            make_os_string!(name)
+        }
     }
     fn into_arg_string(self, _transformer: PathTransformerFn<'_>) -> ArgToStringResult {
         let ArgLinkLibrary { kind, name } = self;
-        Ok(format!("{}={}", kind, name))
+        if let Some(kind) = kind {
+            Ok(format!("{}={}", kind, name))
+        } else {
+            Ok(name)
+        }
     }
 }
 
@@ -1698,7 +1695,6 @@ fn parse_arguments(
     let mut static_link_paths: Vec<PathBuf> = vec![];
     let mut color_mode = ColorMode::Auto;
     let mut has_json = false;
-    let mut profile = None;
     let mut gcno = false;
     let mut target_json = None;
 
@@ -1718,13 +1714,13 @@ fn parse_arguments(
             Some(LinkLibrary(ArgLinkLibrary { kind, name })) => {
                 // Link modifiers follow the kind (e.g. `static:+bundle`), and `-bundle` libraries
                 // aren't copied into the rlib, so they don't change the output.
-                let bundled_static = match kind.split_once(':') {
-                    Some((kind, modifiers)) => {
-                        kind == "static"
-                            && !modifiers.split(',').any(|modifier| modifier == "-bundle")
-                    }
-                    None => kind == "static",
-                };
+                // Libraries without a kind are never bundled.
+                let bundled_static = kind.as_deref().is_some_and(|kind| {
+                    matches!(
+                        kind.split_once(':').unwrap_or((kind, "")),
+                        ("static", modifiers) if !modifiers.split(',').any(|m| m == "-bundle")
+                    )
+                });
                 if bundled_static {
                     static_lib_names.push(name.to_owned());
                 }
@@ -1769,7 +1765,6 @@ fn parse_arguments(
                 match (opt.as_ref(), value) {
                     ("extra-filename", Some(value)) => extra_filename = Some(value.to_owned()),
                     ("extra-filename", None) => cannot_cache!("extra-filename"),
-                    ("profile-use", Some(v)) => profile = Some(v.clone()),
                     // Not cached by default: rustc reusing the incremental directory is
                     // likely faster than a cache hit. See #236.
                     ("incremental", Some(_)) if cache_incremental(env_vars) => {}
@@ -1883,9 +1878,6 @@ fn parse_arguments(
         None
     };
 
-    // Ignore profile is `link` is not in emit which means we are running `cargo check`.
-    let profile = if emit.contains("link") { profile } else { None };
-
     // Figure out the gcno filename, if producing gcno files with `-Zprofile`.
     let gcno = if gcno && emit.contains("link") {
         let mut gcno = crate_name.clone();
@@ -1933,7 +1925,6 @@ fn parse_arguments(
         staticlibs,
         crate_name,
         dep_info: dep_info.map(|s| s.into()),
-        profile: profile.map(|s| s.into()),
         gcno: gcno.map(|s| s.into()),
         emit,
         color_mode,
@@ -2380,16 +2371,6 @@ where
                 )
             })
             .collect::<HashMap<_, _>>();
-        if let Some(profile) = &self.parsed_args.profile {
-            let p = self.parsed_args.output_dir.join(profile);
-            outputs.insert(
-                profile.to_string_lossy().into_owned(),
-                ArtifactDescriptor {
-                    path: p,
-                    optional: true,
-                },
-            );
-        }
         if let Some(gcno) = &self.parsed_args.gcno {
             let p = self.parsed_args.output_dir.join(gcno);
             outputs.insert(
@@ -3797,6 +3778,35 @@ LLVM version: 15.0.2
         );
     }
 
+    /// `-l` reaches rustc as it was given. In particular a library without a kind must not
+    /// become `dylib`: rustc picks the kind per target (e.g. static with `crt-static`).
+    #[test_case("bar" ; "without kind")]
+    #[test_case("static=bar" ; "static")]
+    #[test_case("static:-bundle=bar" ; "static with modifiers")]
+    #[test_case("dylib=bar" ; "dylib")]
+    fn test_parse_arguments_link_library_is_passed_unchanged(lib: &str) {
+        let h = parses!(
+            "--crate-name",
+            "foo",
+            "--crate-type",
+            "lib",
+            "--emit",
+            "link",
+            "-l",
+            lib,
+            "foo.rs",
+            "--out-dir",
+            "out"
+        );
+        let arguments: Vec<OsString> = h
+            .arguments
+            .iter()
+            .flat_map(|arg| arg.iter_os_strings())
+            .collect();
+        let position = arguments.iter().position(|arg| arg == "-l").unwrap();
+        assert_eq!(arguments[position + 1], lib);
+    }
+
     #[test_case("static", true ; "without modifiers")]
     #[test_case("static:+bundle", true ; "with bundle")]
     #[test_case("static:+whole-archive", true ; "with whole-archive")]
@@ -4532,7 +4542,6 @@ hash 42fac6f0 stable_crate_id StableCrateId(12206970385906972588)
                 emit,
                 color_mode: ColorMode::Auto,
                 has_json: false,
-                profile: None,
                 gcno: None,
                 target_json: None,
             },
@@ -4645,7 +4654,6 @@ hash 42fac6f0 stable_crate_id StableCrateId(12206970385906972588)
                     emit: ["link".to_string()].into_iter().collect(),
                     color_mode: ColorMode::Auto,
                     has_json: false,
-                    profile: None,
                     gcno: None,
                     target_json: None,
                 },
@@ -4735,7 +4743,6 @@ hash 42fac6f0 stable_crate_id StableCrateId(12206970385906972588)
                 emit,
                 color_mode: ColorMode::Auto,
                 has_json: false,
-                profile: None,
                 gcno: None,
                 target_json: None,
             },
@@ -4780,6 +4787,72 @@ foo.rs:
                 rmeta = out_dir.join("libfoo-abc.rmeta").display(),
             )
         );
+    }
+
+    #[test]
+    fn test_generate_hash_key_profile_use() {
+        // The profile is an input: rustc lists it in its dep-info, which is how its
+        // contents reach the key. As an output it was rewritten on every cache hit, and
+        // the new mtime made cargo rebuild every crate that had read it.
+        let f = TestFixture::new();
+        f.touch("foo.rs").unwrap();
+        let key_and_outputs = |profile: &[u8]| {
+            create_file(f.tempdir.path(), "merged.profdata", |mut f| {
+                f.write_all(profile)
+            })
+            .unwrap();
+            let parsed_args = parses!(
+                "--emit",
+                "link",
+                "foo.rs",
+                "--out-dir",
+                "out",
+                "--crate-name",
+                "foo",
+                "--crate-type",
+                "lib",
+                "-C",
+                "profile-use=merged.profdata"
+            );
+            let mut hasher = Box::new(RustHasher {
+                executable: "rustc".into(),
+                host: "x86-64-unknown-unknown-unknown".to_owned(),
+                version: TEST_RUSTC_VERSION.to_string(),
+                sysroot: f.tempdir.path().join("sysroot"),
+                #[cfg(feature = "dist-client")]
+                target_libdir: f.tempdir.path().join("sysroot/lib/rustlib/fake-target/lib"),
+                compiler_shlibs_digests: vec![],
+                dist_archive: None,
+                #[cfg(feature = "dist-client")]
+                rlib_dep_reader: None,
+                parsed_args,
+            });
+            let creator = new_creator();
+            mock_dep_info(&creator, &["foo.rs", "merged.profdata"]);
+            mock_file_names(&creator, &["libfoo.rlib"]);
+            let runtime = single_threaded_runtime();
+            let pool = runtime.handle().clone();
+            let res = hasher
+                .generate_hash_key(
+                    &creator,
+                    f.tempdir.path().to_owned(),
+                    vec![],
+                    false,
+                    &pool,
+                    false,
+                    Arc::new(MockStorage::new(None, false)),
+                    CacheControl::Default,
+                )
+                .wait()
+                .unwrap();
+            let outputs = res.compilation.outputs().map(|k| k.key).collect::<Vec<_>>();
+            (res.key, outputs)
+        };
+
+        let (key, outputs) = key_and_outputs(b"one profile");
+        assert_eq!(outputs, ["libfoo.rlib"]);
+        assert_eq!(key, key_and_outputs(b"one profile").0);
+        assert_ne!(key, key_and_outputs(b"another profile").0);
     }
 
     fn hash_key<F>(
