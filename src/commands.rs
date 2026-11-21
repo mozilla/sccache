@@ -743,6 +743,7 @@ where
 {
     trace!("do_compile_client_side");
     let exe_path = which_in(exe, path, cwd)?;
+    crate::compiler::preprocessor_cache::record_computed_file_digests();
     let storage = IpcStorage::connect(conn)?;
     let cache_mode = runtime.block_on(storage.check())?;
     let conn_arc = storage.conn();
@@ -780,8 +781,9 @@ where
     )?;
     // Ship accumulated stats back to the daemon (best-effort; don't fail the build on error).
     let delta: ServerStats = runtime.block_on(service.take_stats());
+    let file_digests = crate::compiler::preprocessor_cache::take_computed_file_digests();
     if let Ok(mut conn) = conn_arc.lock() {
-        let _ = conn.request(Request::RecordStats(Box::new(delta)));
+        let _ = conn.request(Request::RecordStats(Box::new(delta), file_digests));
     }
     Ok(exit_code)
 }

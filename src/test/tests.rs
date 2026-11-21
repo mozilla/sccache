@@ -500,3 +500,67 @@ fn test_cli_rmeta_notification_delivery_after_daemon_disconnect() {
         "stderr written in total"
     );
 }
+
+#[test]
+#[cfg(unix)]
+fn test_server_file_digests_round_trip() {
+    use crate::compiler::PreprocessorCacheEntry;
+    use crate::protocol::{Request, Response};
+
+    let f = TestFixture::new();
+    let header = f.tempdir.path().join("shared.h");
+    std::fs::write(&header, b"int shared;\n").unwrap();
+    let digest = crate::compiler::preprocessor_cache::file_digest_for_test(&header);
+    let unknown = f.tempdir.path().join("unknown.h");
+    std::fs::write(&unknown, b"int unknown;\n").unwrap();
+
+    let (addr, sender, _storage, child) = run_server_thread(f.tempdir.path(), None);
+    let mut conn = connect_to_server(&addr).unwrap();
+    // What a client computed rides along with its stats...
+    assert!(matches!(
+        conn.request(Request::RecordStats(Box::default(), vec![digest]))
+            .unwrap(),
+        Response::RecordStats
+    ));
+
+    let mut entry = PreprocessorCacheEntry::new();
+    entry.add_result(
+        std::time::SystemTime::now(),
+        "result",
+        [
+            ("d1".to_owned(), header.clone()),
+            ("d2".to_owned(), unknown),
+        ],
+    );
+    let mut entry_bytes = vec![];
+    entry.serialize_to(&mut entry_bytes).unwrap();
+    let key = "0123456789abcdef0123456789abcdef".to_owned();
+    assert!(matches!(
+        conn.request(Request::StoragePutPreprocessorEntry {
+            key: key.clone(),
+            entry_bytes: entry_bytes.clone(),
+        })
+        .unwrap(),
+        Response::StoragePutPreprocessorEntry(Ok(()))
+    ));
+
+    // ...and comes back with the next entry that includes that file.
+    match conn
+        .request(Request::StorageGetPreprocessorEntry { key })
+        .unwrap()
+    {
+        Response::StorageGetPreprocessorEntry(Ok(Some(reply))) => {
+            assert_eq!(reply.entry_bytes, entry_bytes);
+            let paths: Vec<_> = reply
+                .file_digests
+                .into_iter()
+                .map(|(path, _)| path)
+                .collect();
+            assert_eq!(paths, vec![header]);
+        }
+        other => panic!("unexpected response to StorageGetPreprocessorEntry: {other:?}"),
+    }
+    drop(conn);
+    sender.send(ServerMessage::Shutdown).ok().unwrap();
+    child.join().unwrap();
+}
