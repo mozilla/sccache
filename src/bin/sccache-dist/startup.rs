@@ -1,6 +1,13 @@
+//! Scheduler startup handshake between the launcher and its daemon.
+//!
+//! Initialization runs after daemonization so Tokio workers and HTTP clients are not
+//! carried across a fork. The launcher waits for authentication and listener binding,
+//! then acknowledges readiness; the watchdog confirms the acknowledgment before the
+//! launcher returns success and kills the daemon if the launcher abandons startup.
+
 use anyhow::{Context, Result, anyhow, bail};
-use daemonix::Outcome;
-use sccache::util::{daemonize, daemonize_cleanup, daemonize_with_parent};
+use daemonix::{Daemonize, Outcome};
+use sccache::util::daemonize_cleanup;
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -15,14 +22,19 @@ const STARTUP_ACK: u8 = 1;
 #[derive(Serialize, Deserialize)]
 enum StartupStatus {
     Ready { pid: u32 },
+    // Outermost context first, root cause last. Messages preserve diagnostics across
+    // processes, but not concrete error types, downcasting, or backtraces.
     Error(Vec<String>),
 }
 
+/// Owns the daemon's one-shot status sender; foreground mode has no launcher to notify.
 pub struct StartupNotifier {
     stream: Option<UnixStream>,
 }
 
 impl StartupNotifier {
+    /// Uses a dedicated thread so abandonment is detected even if runtime startup or
+    /// authentication blocks. The cloned socket stays alive after `send` consumes its copy.
     fn watch_launcher(&self, timeout: Duration) -> Result<()> {
         let mut stream = self
             .stream
@@ -47,12 +59,16 @@ impl StartupNotifier {
         Ok(())
     }
 
+    /// Call only after authentication succeeds and the listener is bound, so launcher
+    /// success means requests can be served without a separate readiness poll.
     pub fn ready(&mut self) -> Result<()> {
         self.send(StartupStatus::Ready {
             pid: std::process::id(),
         })
     }
 
+    /// Consumes the sender to prevent a later failure from reporting a second status.
+    /// A newline frames the JSON without waiting for the watchdog's socket copy to close.
     fn send(&mut self, status: StartupStatus) -> Result<()> {
         if let Some(mut stream) = self.stream.take() {
             stream.set_write_timeout(Some(STARTUP_TIMEOUT))?;
@@ -69,14 +85,16 @@ impl StartupNotifier {
     }
 }
 
+/// Chooses foreground or daemon execution before initialization can create worker threads.
+/// Both modes retain the existing FD cleanup and crash setup; only background mode forks.
 pub fn run(initialize: impl FnOnce(&mut StartupNotifier) -> Result<Infallible>) -> Result<i32> {
     if std::env::var("SCCACHE_NO_DAEMON").as_deref() == Ok("1") {
-        daemonize(&[])?;
+        daemonize_cleanup(&[])?;
         return initialize(&mut StartupNotifier { stream: None }).map(|never| match never {});
     }
 
     let (launcher, daemon) = UnixStream::pair().context("failed to create startup channel")?;
-    match daemonize_with_parent() {
+    match Daemonize::new().execute() {
         Outcome::Parent(result) => {
             drop(daemon);
             result.context("failed to daemonize scheduler")?;
@@ -92,6 +110,8 @@ pub fn run(initialize: impl FnOnce(&mut StartupNotifier) -> Result<Infallible>) 
             let result = result
                 .context("failed to daemonize scheduler")
                 .and_then(|_| {
+                    // Cleanup closes inherited descriptors, but the startup socket must
+                    // survive so initialization failures can still reach the launcher.
                     daemonize_cleanup(&[fd])?;
                     notifier.watch_launcher(STARTUP_TIMEOUT)?;
                     initialize(&mut notifier)
@@ -106,10 +126,13 @@ pub fn run(initialize: impl FnOnce(&mut StartupNotifier) -> Result<Infallible>) 
     }
 }
 
+/// Bounds the launcher's wait and validates the complete readiness exchange, rather
+/// than treating a successful fork or a closed startup socket as successful startup.
 fn wait_for_startup(mut stream: UnixStream, timeout: Duration) -> Result<()> {
     stream.set_read_timeout(Some(timeout))?;
     stream.set_write_timeout(Some(timeout))?;
     let mut message = Vec::new();
+    // Read one extra byte to detect oversized messages without unbounded allocation.
     if let Err(error) =
         BufReader::new((&mut stream).take(MAX_RESPONSE_SIZE + 1)).read_until(b'\n', &mut message)
     {
@@ -135,6 +158,8 @@ fn wait_for_startup(mut stream: UnixStream, timeout: Duration) -> Result<()> {
             stream
                 .write_all(&[STARTUP_ACK])
                 .context("failed to acknowledge scheduler startup")?;
+            // Do not return until the watchdog has accepted the ACK; otherwise it
+            // could still terminate a daemon whose launcher already reported success.
             let mut confirmation = [0];
             stream
                 .read_exact(&mut confirmation)
@@ -145,6 +170,7 @@ fn wait_for_startup(mut stream: UnixStream, timeout: Duration) -> Result<()> {
             Ok(())
         }
         StartupStatus::Error(messages) => {
+            // Rebuild from the root cause outward to retain the original chain order.
             let mut messages = messages.into_iter().rev();
             let mut error = anyhow!(messages.next().context("empty scheduler startup error")?);
             for message in messages {
@@ -158,6 +184,52 @@ fn wait_for_startup(mut stream: UnixStream, timeout: Duration) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn foreground_startup_runs_cleanup() {
+        use std::os::fd::IntoRawFd;
+
+        const CHILD_ENV: &str = "SCCACHE_TEST_FOREGROUND_STARTUP";
+        if std::env::var_os(CHILD_ENV).is_some() {
+            // Transfer ownership because startup must close this FD before initialization.
+            let fd = tempfile::tempfile().unwrap().into_raw_fd();
+            assert_ne!(
+                unsafe { libc::signal(libc::SIGILL, libc::SIG_IGN) },
+                libc::SIG_ERR
+            );
+            let error = run(|notifier| {
+                notifier.ready()?;
+                assert_eq!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, -1);
+                assert_eq!(
+                    std::io::Error::last_os_error().raw_os_error(),
+                    Some(libc::EBADF)
+                );
+                let mut action = unsafe { std::mem::zeroed::<libc::sigaction>() };
+                assert_eq!(
+                    unsafe { libc::sigaction(libc::SIGILL, std::ptr::null(), &mut action) },
+                    0
+                );
+                assert_ne!(action.sa_sigaction, libc::SIG_IGN);
+                assert_ne!(action.sa_sigaction, libc::SIG_DFL);
+                Err(std::io::Error::from(std::io::ErrorKind::Interrupted).into())
+            })
+            .unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<std::io::Error>().unwrap().kind(),
+                std::io::ErrorKind::Interrupted
+            );
+            return;
+        }
+
+        // FD cleanup and signal changes must not affect the test runner itself.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "startup::tests::foreground_startup_runs_cleanup"])
+            .env(CHILD_ENV, "1")
+            .env("SCCACHE_NO_DAEMON", "1")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+    }
 
     #[test]
     fn ready_reports_success() {

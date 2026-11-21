@@ -1056,33 +1056,23 @@ fn close_inherited_fds(preserve: &[std::os::unix::io::RawFd]) {
     }
 }
 
-/// Pipe `cmd`'s stdio to `/dev/null`, unless a specific env var is set.
+/// Daemonize unless `SCCACHE_NO_DAEMON=1`; both modes run FD cleanup and crash setup.
 ///
 /// `preserve_fds` lists descriptors the caller opened before daemonizing and
 /// still needs afterwards; everything else inherited is closed.
 #[cfg(not(windows))]
 pub fn daemonize(preserve_fds: &[std::os::unix::io::RawFd]) -> Result<()> {
-    use daemonix::Outcome;
+    use daemonix::Daemonize;
     use std::env;
 
     match env::var("SCCACHE_NO_DAEMON") {
         Ok(ref val) if val == "1" => {}
-        _ => match daemonize_with_parent() {
-            Outcome::Parent(Ok(parent)) => std::process::exit(parent.first_child_exit_code),
-            Outcome::Parent(Err(error)) | Outcome::Child(Err(error)) => {
-                return Err(error).context("failed to daemonize");
-            }
-            Outcome::Child(Ok(_)) => {}
-        },
+        _ => {
+            Daemonize::new().start().context("failed to daemonize")?;
+        }
     }
 
     daemonize_cleanup(preserve_fds)
-}
-
-/// Retain the original process so callers can wait for daemon startup.
-#[cfg(not(windows))]
-pub fn daemonize_with_parent() -> daemonix::Outcome<()> {
-    daemonix::Daemonize::new().execute()
 }
 
 /// Run after the final fork, before creating worker threads or async runtimes.
@@ -1711,6 +1701,58 @@ mod tests {
         let rustc = obj.add_section(Vec::new(), b".rustc".to_vec(), SectionKind::Data);
         obj.append_section_data(rustc, metadata, 1);
         obj.write().unwrap()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_foreground_daemonize_runs_cleanup() {
+        use std::os::fd::{AsRawFd, IntoRawFd};
+
+        const CHILD_ENV: &str = "SCCACHE_TEST_FOREGROUND_DAEMONIZE";
+        if std::env::var_os(CHILD_ENV).is_some() {
+            // Transfer ownership because cleanup, not File::drop, must close this FD.
+            let closed_fd = tempfile::tempfile().unwrap().into_raw_fd();
+            let mut preserved = tempfile::tempfile().unwrap();
+            for signal in [libc::SIGSEGV, libc::SIGBUS, libc::SIGILL] {
+                assert_ne!(
+                    unsafe { libc::signal(signal, libc::SIG_IGN) },
+                    libc::SIG_ERR
+                );
+            }
+
+            super::daemonize(&[preserved.as_raw_fd()]).unwrap();
+
+            assert_eq!(unsafe { libc::fcntl(closed_fd, libc::F_GETFD) }, -1);
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::EBADF)
+            );
+            std::io::Write::write_all(&mut preserved, &[1]).unwrap();
+            assert_eq!(preserved.metadata().unwrap().len(), 1);
+            for signal in [libc::SIGSEGV, libc::SIGBUS, libc::SIGILL] {
+                let mut action = unsafe { std::mem::zeroed::<libc::sigaction>() };
+                assert_eq!(
+                    unsafe { libc::sigaction(signal, std::ptr::null(), &mut action) },
+                    0
+                );
+                assert_ne!(action.sa_sigaction, libc::SIG_IGN);
+                assert_ne!(action.sa_sigaction, libc::SIG_DFL);
+                assert_ne!(action.sa_flags & libc::SA_SIGINFO, 0);
+            }
+            return;
+        }
+
+        // FD cleanup and signal changes must not affect the test runner itself.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "util::tests::test_foreground_daemonize_runs_cleanup",
+            ])
+            .env(CHILD_ENV, "1")
+            .env("SCCACHE_NO_DAEMON", "1")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
     }
 
     #[test]
