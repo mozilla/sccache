@@ -629,8 +629,9 @@ where
         debug!("[{}]: Hash key: {}", out_pretty, key);
         // If `ForceRecache` is enabled, we won't check the cache.
         let start = Instant::now();
+        let skip_cache = compilation.skip_cache();
         let cache_status = async {
-            if cache_control == CacheControl::ForceNoCache {
+            if cache_control == CacheControl::ForceNoCache || skip_cache {
                 Ok(Cache::None)
             } else if cache_control == CacheControl::ForceRecache {
                 Ok(Cache::Recache)
@@ -1164,6 +1165,10 @@ where
 
     fn is_locally_preprocessed(&self) -> bool {
         true
+    }
+
+    fn skip_cache(&self) -> bool {
+        false
     }
 
     /// Adjust the stdout replayed from a cache hit for this compilation.
