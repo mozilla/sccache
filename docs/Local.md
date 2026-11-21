@@ -29,6 +29,7 @@ Preprocessor cache mode will be disabled in any of the following cases:
 - The modification time of one of the header files is too new (avoids a race condition)
 - Certain strings such as `__DATE__`, `__TIME__`, `__TIMESTAMP__` are present in the source code,
   indicating that the preprocessor result may change based on external factors
+- The source code uses `#embed` or `__has_embed`, since embedded files do not show up in the preprocessor output
 
 The preprocessor cache may silently produce stale results in any of the following cases:
 
