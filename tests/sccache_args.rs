@@ -59,6 +59,39 @@ fn test_gcp_arg_check() -> Result<()> {
     Ok(())
 }
 
+/// Running the sccache binary under a name that is not `sccache` and is not a
+/// real compiler on PATH must NOT make sccache wrap itself (which used to recurse
+/// forever via the `<compiler> -vV` detection probe). It should report that the
+/// compiler could not be found instead.
+#[cfg(unix)]
+#[test]
+fn test_masquerade_without_real_compiler_fails() -> Result<()> {
+    let tmp = tempfile::tempdir()?;
+    // A name that is not `sccache` and (almost certainly) not on PATH. Use a
+    // symlink rather than a copy: executing a freshly written file can fail
+    // with ETXTBSY when another test thread forks concurrently.
+    let masquerade = tmp.path().join("notacompiler");
+    std::os::unix::fs::symlink(SCCACHE_BIN.as_os_str(), &masquerade)?;
+
+    // Neither when invoked by path, nor when found first in PATH.
+    for path in [None, Some(tmp.path())] {
+        let mut cmd = Command::new(&masquerade);
+        cmd.args(["-c", "foo.c", "-o", "foo.o"]);
+        if let Some(dir) = path {
+            let mut paths = vec![dir.to_path_buf()];
+            paths.extend(std::env::split_paths(
+                &std::env::var_os("PATH").unwrap_or_default(),
+            ));
+            cmd.env("PATH", std::env::join_paths(paths)?);
+        }
+        cmd.assert()
+            .failure()
+            .stdout(predicate::str::contains("`notacompiler` not found in PATH"));
+    }
+
+    Ok(())
+}
+
 #[test]
 #[serial]
 #[cfg(feature = "s3")]
