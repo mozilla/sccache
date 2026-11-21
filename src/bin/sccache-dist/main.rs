@@ -807,7 +807,13 @@ impl Server {
 #[async_trait]
 impl ServerIncoming for Server {
     async fn handle_assign_job(&self, job_id: JobId, tc: Toolchain) -> Result<AssignJobResult> {
-        let need_toolchain = !self.cache.lock().unwrap().contains_toolchain(&tc);
+        let cache = Arc::clone(&self.cache);
+        let toolchain = tc.clone();
+        let need_toolchain = tokio::task::spawn_blocking(move || {
+            !cache.lock().unwrap().contains_toolchain(&toolchain)
+        })
+        .await
+        .context("toolchain cache lookup task failed")?;
         assert!(
             self.job_toolchains
                 .lock()

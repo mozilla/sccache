@@ -1,6 +1,6 @@
 use super::*;
 use sccache::dist::{BuildResult, ProcessOutput};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::sync::mpsc;
 
 const JOB_ID: JobId = JobId(1);
@@ -86,6 +86,84 @@ async fn run_job(
             inputs,
         )
         .await
+}
+
+enum ToolchainCacheState {
+    Missing,
+    Cached,
+}
+
+/// A current-thread runtime must release the contended cache from another task.
+/// The OS-thread timeout bounds failure even if assignment blocks the executor.
+async fn assert_contended_assignment(cache_state: ToolchainCacheState) {
+    let cache_dir = tempfile::tempdir().unwrap();
+    let builder = TestBuilder(Mutex::new(Some(|_: InputsReader| -> Result<BuildResult> {
+        panic!("assignment must not run a build")
+    })));
+    let server = Server::new(Box::new(builder), cache_dir.path(), 1024 * 1024).unwrap();
+    let bytes = b"toolchain";
+    let tc = Toolchain {
+        archive_id: sccache::util::Digest::reader_sync(&bytes[..]).unwrap(),
+    };
+    let (need_toolchain, state) = match cache_state {
+        ToolchainCacheState::Missing => (true, JobState::Pending),
+        ToolchainCacheState::Cached => {
+            server
+                .cache
+                .lock()
+                .unwrap()
+                .insert_with(&tc, |mut file| file.write_all(bytes))
+                .unwrap();
+            (false, JobState::Ready)
+        }
+    };
+    let (locked_tx, locked_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let cache = Arc::clone(&server.cache);
+    let holder = std::thread::spawn(move || {
+        let _cache = cache.lock().unwrap();
+        locked_tx.send(()).unwrap();
+        release_rx.recv_timeout(Duration::from_secs(5))
+    });
+    tokio::time::timeout(Duration::from_secs(5), locked_rx)
+        .await
+        .expect("cache holder did not start")
+        .unwrap();
+
+    let mut assignment = server.handle_assign_job(JOB_ID, tc.clone());
+    assert!(
+        futures::poll!(assignment.as_mut()).is_pending(),
+        "assignment blocked the executor until the cache holder timed out"
+    );
+    assert!(server.job_toolchains.lock().await.is_empty());
+    let release = tokio::spawn(async move {
+        release_tx.send(()).unwrap();
+    });
+    let result = tokio::time::timeout(Duration::from_secs(5), assignment)
+        .await
+        .expect("assignment did not finish after releasing the cache")
+        .unwrap();
+    release.await.unwrap();
+    holder
+        .join()
+        .unwrap()
+        .expect("executor did not release the cache while assignment was pending");
+
+    assert_eq!(result.need_toolchain, need_toolchain);
+    assert_eq!(result.state, state);
+    let job_toolchains = server.job_toolchains.lock().await;
+    assert_eq!(job_toolchains.len(), 1);
+    assert_eq!(job_toolchains.get(&JOB_ID), Some(&tc));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn missing_toolchain_assignment_keeps_runtime_responsive() {
+    assert_contended_assignment(ToolchainCacheState::Missing).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn cached_toolchain_assignment_keeps_runtime_responsive() {
+    assert_contended_assignment(ToolchainCacheState::Cached).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
