@@ -1957,6 +1957,27 @@ fn strip_basedirs_os<'a>(value: &'a OsStr, basedirs: &[Vec<u8>]) -> Cow<'a, OsSt
     }
 }
 
+/// The Cargo build directory holding `output_dir`, as a basedir: its nearest ancestor with
+/// `.rustc_info.json` or `CACHEDIR.TAG`, which Cargo writes at the top of a build directory (and
+/// of `<triple>/` under it). Either can be missing: `CACHEDIR.TAG` when the directory existed
+/// before Cargo ran, `.rustc_info.json` with `CARGO_CACHE_RUSTC_INFO=0`.
+///
+/// A shared `build.build-dir` with `{workspace-path-hash}` puts this directory outside every
+/// checkout, so no basedir covers it. Below it, paths are the same in every workspace. The
+/// directory layout below it changes between Cargo versions, so only the markers are used.
+fn cargo_build_root_basedir(output_dir: &Path) -> Option<Vec<u8>> {
+    let root = output_dir
+        .ancestors()
+        .find(|dir| dir.join(".rustc_info.json").is_file() || dir.join("CACHEDIR.TAG").is_file())?;
+    let mut b = root.to_str()?.as_bytes().to_vec();
+    b.push(b'/');
+    Some(if cfg!(windows) {
+        crate::util::normalize_win_path(&b)
+    } else {
+        b
+    })
+}
+
 /// Whether an env-dep is listed in `SCCACHE_BASEDIRS_VERBATIM_ENV_DEPS`. rustc lists the
 /// name as the crate wrote it, which on Windows can differ in case from the listed one.
 fn basedirs_verbatim_env_deps<'a>(
@@ -2222,8 +2243,17 @@ where
         //    since those are not listed in dep-info but affect cacheability.
         //    A crate that bakes a listed env-dep such as `env!("CARGO_MANIFEST_DIR")` into its
         //    outputs must not hit across checkouts. Stripped values start with a NUL, unlike these.
+        //    With basedirs configured, the compile's Cargo build root counts as one more for
+        //    env-deps: a build script's `OUT_DIR` lives there, outside any checkout.
         env_deps.sort();
         let verbatim = basedirs_verbatim_env_deps(&env_vars, basedirs);
+        let env_dep_basedirs: Cow<'_, [Vec<u8>]> = match basedirs {
+            [] => Cow::Borrowed(basedirs),
+            _ => match cargo_build_root_basedir(&self.parsed_args.output_dir) {
+                Some(root) => Cow::Owned(basedirs.iter().cloned().chain([root]).collect()),
+                None => Cow::Borrowed(basedirs),
+            },
+        };
         for (var, val) in env_deps.iter() {
             var.hash(&mut HashToDigest { digest: &mut m });
             let Some(val) = val else {
@@ -2236,7 +2266,8 @@ where
             if verbatim(var) {
                 val.hash(&mut HashToDigest { digest: &mut m });
             } else {
-                strip_basedirs_os(val, basedirs).hash(&mut HashToDigest { digest: &mut m });
+                strip_basedirs_os(val, &env_dep_basedirs)
+                    .hash(&mut HashToDigest { digest: &mut m });
             }
         }
         let mut env_vars: Vec<_> = env_vars
@@ -5064,6 +5095,44 @@ foo.rs:
         // `CARGO_INCREMENTAL=1` and the profile's default give different keys.
         let forced = key_with(Some("/inc/d"), "5", &[allow, ("CARGO_INCREMENTAL", "1")]);
         assert_ne!(forced, incremental);
+    }
+
+    /// Two workspaces whose Cargo build directories lie outside every basedir (one shared
+    /// `build-dir` per workspace hash) key a build script's `OUT_DIR` alike once any basedir
+    /// is configured, and stay apart without one.
+    #[test]
+    fn test_equal_hashes_out_dir_in_cargo_build_root() {
+        fn key(f: &TestFixture, build_root: &Path, basedirs: Vec<Vec<u8>>) -> String {
+            fs::create_dir_all(build_root.join("debug/build/foo-1/out")).unwrap();
+            fs::write(build_root.join(".rustc_info.json"), "{}").unwrap();
+            hash_key_with(
+                f,
+                &[
+                    OsString::from("--emit"),
+                    "link".into(),
+                    "foo.rs".into(),
+                    "--out-dir".into(),
+                    build_root.join("debug/deps").into(),
+                    "--crate-name".into(),
+                    "foo".into(),
+                    "--crate-type".into(),
+                    "lib".into(),
+                ],
+                &[],
+                &[(
+                    "OUT_DIR",
+                    Some(build_root.join("debug/build/foo-1/out").into()),
+                )],
+                nothing,
+                MockStorage::new(None, false).with_basedirs(basedirs),
+            )
+        }
+
+        let f = TestFixture::new();
+        let (a, b) = (f.tempdir.path().join("ws-a"), f.tempdir.path().join("ws-b"));
+        assert_ne!(key(&f, &a, vec![]), key(&f, &b, vec![]));
+        let any = vec![basedir(&f.tempdir.path().join("checkouts"))];
+        assert_eq!(key(&f, &a, any.clone()), key(&f, &b, any));
     }
 
     /// `option_env!("Y")` is `None` when `Y` is unset and `Some("")` when it is empty,
