@@ -121,15 +121,7 @@ fn create_jwt_server_token(
     jwt::encode(header, &ServerJwt { exp: 0, server_id }, &key).map_err(Into::into)
 }
 fn dangerous_insecure_extract_jwt_server_token(server_token: &str) -> Result<ServerId> {
-    let validation = {
-        let mut validation = jwt::Validation::default();
-        validation.validate_exp = false;
-        validation.validate_nbf = false;
-        validation.insecure_disable_signature_validation();
-        validation
-    };
-    let dummy_key = jwt::DecodingKey::from_secret(b"secret");
-    jwt::decode::<ServerJwt>(server_token, &dummy_key, &validation)
+    jwt::dangerous::insecure_decode::<ServerJwt>(server_token)
         .map(|res| res.claims.server_id)
         .map_err(Into::into)
 }
