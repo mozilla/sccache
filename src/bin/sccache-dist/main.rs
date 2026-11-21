@@ -51,7 +51,7 @@ fn main() {
     target_os = "freebsd"
 ))]
 fn main() {
-    init_logging();
+    sccache::logging::init();
 
     let incr_env_strs = ["CARGO_BUILD_INCREMENTAL", "CARGO_INCREMENTAL"];
     incr_env_strs
@@ -309,22 +309,6 @@ fn run(command: Command) -> Result<i32> {
             .context("Failed to create sccache HTTP server instance")?;
             http_server.start()?;
             unreachable!();
-        }
-    }
-}
-
-fn init_logging() {
-    if env::var(sccache::LOGGING_ENV).is_ok() {
-        let mut builder = env_logger::Builder::from_env(sccache::LOGGING_ENV);
-
-        // Enable millisecond precision timestamps if SCCACHE_LOG_MILLIS is set
-        if env::var("SCCACHE_LOG_MILLIS").is_ok() {
-            builder.format_timestamp_millis();
-        }
-
-        match builder.try_init() {
-            Ok(_) => (),
-            Err(e) => panic!("Failed to initialize logging: {:?}", e),
         }
     }
 }
