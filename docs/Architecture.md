@@ -158,16 +158,47 @@ backend exposes a local path; for backends that don't (S3, Redis, …) the CLI
 falls back to fetching the raw bytes with `StorageGetRaw`. Direct-mode entries
 are exchanged with `StorageGetPreprocessorEntry` / `StoragePutPreprocessorEntry`.
 Because each CLI process accumulates its own statistics, it flushes them to the
-daemon with `RecordStats` before exiting.
+daemon with `RecordStats` before exiting. That flush is retried on a fresh
+connection if the compile's connection turns out to be unusable, since otherwise
+an invocation's whole delta — the cache miss it counted included — would be lost
+without a trace.
+
+A cache entry crosses IPC in a single message on the write side, so
+`SCCACHE_MAX_FRAME_LENGTH` bounds the size of an entry that can be stored. It
+defaults to 1 GiB, above anything a compile produces in practice. The daemon
+reports its limit during `StorageHandshake` and the CLI declines to send a
+payload over it: a message that exceeds the limit cannot be resynchronised by
+the transport, so the daemon would have to drop the connection, failing every
+later RPC on it rather than just the one cache write. An entry that does not fit
+is therefore reported as a cache write error and left uncached.
 
 Client-side mode is enabled with the `SCCACHE_CLIENT_SIDE` environment variable
 (or the `client_side_mode` config key). It is expected to become the only
 supported configuration in the future, with server-side mode eventually
-removed. It is currently mutually exclusive with:
+removed. It is currently mutually exclusive with **distributed compilation** (a
+configured scheduler URL); if a scheduler is configured, the setting is ignored
+and sccache stays in server-side mode.
 
-- **logging** (`SCCACHE_LOG`): the client always logs to stderr, ignoring `SCCACHE_ERROR_LOG`
-  (concurrent CLI processes would race on a shared log file), and
-- **distributed compilation** (a configured scheduler URL).
+### Logging
 
-If either is in use, the setting is ignored and sccache stays in server-side
-mode.
+In client-side mode most of the logging happens in the CLI processes rather than
+in the daemon, so under `make -jN` there are N+1 processes logging to the same
+destination at once. Interleaving is unavoidable; instead, every line is made
+attributable and atomic (see `src/logging.rs`):
+
+- each line carries the pid of the emitting process, right after the level, and
+  each invocation logs its own argv at `debug` level, so a pid can be matched
+  back to what it was compiling;
+- each record is written with a single `write_all`, which is one `write` syscall
+  to stderr or to a file, or line by line when it is longer than a pipe writes
+  atomically, so concurrent writers never tear each other's lines; and
+- `SCCACHE_ERROR_LOG` is honored by every process, not just the daemon. The file
+  is opened with `O_APPEND`, so appends from concurrent processes are serialised
+  by the kernel. Only log output is redirected: a CLI process keeps its stderr
+  for the compiler's diagnostics, which have to reach the build. The daemon,
+  which has no such constraint, additionally redirects its stderr there so that
+  panics and backtraces are captured.
+
+To avoid a shared file altogether, `SCCACHE_ERROR_LOG` can name a per-process
+path (`%p` is replaced with the pid) or a directory, in which case each process
+writes `sccache.<pid>.log` inside it.
