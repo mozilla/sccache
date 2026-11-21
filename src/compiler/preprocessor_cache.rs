@@ -423,7 +423,31 @@ pub fn preprocessor_cache_entry_hash_key(
         return Ok(None);
     }
     m.update(digest.as_bytes());
-    Ok(Some(m.finish()))
+    let key = m.finish();
+    // A single record, so that it cannot interleave with other compiles'.
+    trace!(
+        target: "hash_key",
+        "preprocessor: {input_file:?}
+  compiler_digest = {compiler_digest:?}
+  plusplus = {plusplus}
+  format_version = {FORMAT_VERSION}
+  language = {language:?}
+  multiarch = {multiarch}
+  arguments = {:?}
+  extra_hashes = {extra_hashes:?}
+  assembler_digest = {assembler_digest:?}
+  env = {:?}
+  input_file (basedir-stripped, encoded) = {:?}
+  input_file content digest = {digest}
+  final key = {key}",
+        super::c::hashed_arguments(arguments, basedirs),
+        env_vars
+            .iter()
+            .filter(|(var, _)| CACHED_ENV_VARS.contains(var.as_os_str()))
+            .collect::<Vec<_>>(),
+        String::from_utf8_lossy(&buf_to_hash),
+    );
+    Ok(Some(key))
 }
 
 /// Digest of the contents of `path`, and the time macros found in it.

@@ -327,6 +327,8 @@ Alternatively, if you are compiling locally, you can run the server manually in 
 
     SCCACHE_LOG=debug SCCACHE_START_SERVER=1 SCCACHE_NO_DAEMON=1 sccache
 
+To find out why two compiles that should share a cache entry do not, log every element that goes into the cache key with `SCCACHE_LOG=hash_key=trace` (or add it to another filter, e.g. `SCCACHE_LOG=debug,hash_key=trace`). It uses its own log target, so `SCCACHE_LOG=debug` or `SCCACHE_LOG=sccache=trace` do not include it. Comparing the output of the two compiles shows which element differs. Beware that for Rust compiles it includes the values of the environment variables the crate reads, which can be secrets (e.g. through `option_env!`).
+
 ---
 
 Interaction with GNU `make` jobserver
