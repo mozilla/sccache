@@ -109,6 +109,7 @@ tokio = { version = "1", features = [
   "net",
   "process",
   "macros",
+  "sync",
 ] }
 tokio-serde = "0.9"
 tokio-util = { version = "0.7.18", features = ["codec", "io", "rt"] }
