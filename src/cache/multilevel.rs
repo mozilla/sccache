@@ -44,6 +44,7 @@ struct AtomicLevelStats {
     location: String,
     hits: AtomicU64,
     misses: AtomicU64,
+    read_failures: AtomicU64,
     writes: AtomicU64,
     write_failures: AtomicU64,
     backfills_from: AtomicU64,
@@ -59,6 +60,7 @@ impl AtomicLevelStats {
             location,
             hits: Default::default(),
             misses: Default::default(),
+            read_failures: Default::default(),
             writes: Default::default(),
             write_failures: Default::default(),
             backfills_from: Default::default(),
@@ -92,6 +94,7 @@ impl AtomicLevelStats {
             location: self.location.clone(),
             hits: self.hits.load(Ordering::Relaxed),
             misses: self.misses.load(Ordering::Relaxed),
+            read_failures: self.read_failures.load(Ordering::Relaxed),
             writes: self.writes.load(Ordering::Relaxed),
             write_failures: self.write_failures.load(Ordering::Relaxed),
             backfills_from: self.backfills_from.load(Ordering::Relaxed),
@@ -113,6 +116,9 @@ pub struct LevelStats {
     pub hits: u64,
     /// Number of cache misses (checked but not found) at this level
     pub misses: u64,
+    /// Number of failed reads at this level
+    #[serde(default)]
+    pub read_failures: u64,
     /// Number of successful writes to this level
     pub writes: u64,
     /// Number of failed writes to this level
@@ -155,6 +161,7 @@ impl std::ops::AddAssign for LevelStats {
         // name and location identify the level — keep lhs values
         self.hits += rhs.hits;
         self.misses += rhs.misses;
+        self.read_failures += rhs.read_failures;
         self.writes += rhs.writes;
         self.write_failures += rhs.write_failures;
         self.backfills_from += rhs.backfills_from;
@@ -178,7 +185,7 @@ impl std::ops::AddAssign for MultiLevelStats {
 }
 
 impl LevelStats {
-    /// Calculate hit rate as a percentage
+    /// Calculate hit rate among successful reads (hits and misses), excluding failures.
     pub fn hit_rate(&self) -> f64 {
         let total = self.hits + self.misses;
         if total > 0 {
@@ -209,7 +216,7 @@ impl LevelStats {
     /// Format stats for human-readable display
     /// Returns a vector of (label, value_with_suffix, suffix_length) tuples
     /// suffix_length is used for width calculations in formatting
-    /// Order: hits, misses, rate, writes, failures, backfills, write timing, read timing
+    /// Order: hits, misses, read failures, rate, writes, failures, backfills, write timing, read timing
     pub fn format_stats(&self) -> Vec<(String, String, usize)> {
         let mut stats = vec![];
 
@@ -218,6 +225,11 @@ impl LevelStats {
         stats.push((
             format!("  {} misses", self.name),
             self.misses.to_string(),
+            0,
+        ));
+        stats.push((
+            format!("  {} read failures", self.name),
+            self.read_failures.to_string(),
             0,
         ));
 
@@ -477,15 +489,6 @@ impl MultiLevelStorage {
             hit_duration_nanos,
             duration.as_nanos() as u64
         );
-        for miss_idx in 0..hit_level {
-            inc_stat!(self.atomic_stats.get(miss_idx), misses, 1);
-        }
-    }
-
-    fn record_all_read_misses(&self) {
-        for idx in 0..self.levels.len() {
-            inc_stat!(self.atomic_stats.get(idx), misses, 1);
-        }
     }
 
     fn backfill_raw_hit(&self, key: &str, raw_bytes: &Bytes, hit_level: usize) {
@@ -601,6 +604,7 @@ impl CacheStorage for MultiLevelStorage {
                     return Ok(Cache::Hit(entry));
                 }
                 Ok(Cache::Miss) => {
+                    inc_stat!(self.atomic_stats.get(idx), misses, 1);
                     trace!("Cache miss at level {}, trying next level", idx);
                     continue;
                 }
@@ -608,6 +612,7 @@ impl CacheStorage for MultiLevelStorage {
                     return Ok(other);
                 }
                 Err(e) => {
+                    inc_stat!(self.atomic_stats.get(idx), read_failures, 1);
                     warn!(
                         "Error checking cache level {}: {}, trying next level",
                         idx, e
@@ -617,8 +622,6 @@ impl CacheStorage for MultiLevelStorage {
             }
         }
         debug!("Cache miss at all levels");
-
-        self.record_all_read_misses();
 
         Ok(Cache::Miss)
     }
@@ -632,8 +635,11 @@ impl CacheStorage for MultiLevelStorage {
                     self.backfill_raw_hit(key, &bytes, idx);
                     return Ok(Some(bytes));
                 }
-                Ok(None) => {}
+                Ok(None) => {
+                    inc_stat!(self.atomic_stats.get(idx), misses, 1);
+                }
                 Err(error) => {
+                    inc_stat!(self.atomic_stats.get(idx), read_failures, 1);
                     warn!(
                         "Error checking cache level {}: {}, trying next level",
                         idx, error
@@ -642,7 +648,6 @@ impl CacheStorage for MultiLevelStorage {
             }
         }
 
-        self.record_all_read_misses();
         Ok(None)
     }
 
