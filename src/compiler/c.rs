@@ -161,6 +161,7 @@ struct CCompilation<I: CCompilerImpl> {
     parsed_args: ParsedArguments,
     is_locally_preprocessed: bool,
     preprocessor_stderr: Vec<u8>,
+    skip_cache: bool,
     #[cfg(feature = "dist-client")]
     preprocessed_input: Vec<u8>,
     executable: PathBuf,
@@ -194,6 +195,20 @@ pub enum CCompilerKind {
     TaskingVX,
 }
 
+pub struct PreprocessorOutput {
+    pub output: process::Output,
+    pub skip_cache: bool,
+}
+
+impl From<process::Output> for PreprocessorOutput {
+    fn from(output: process::Output) -> Self {
+        Self {
+            output,
+            skip_cache: false,
+        }
+    }
+}
+
 /// An interface to a specific C compiler.
 #[async_trait]
 pub trait CCompilerImpl: Clone + fmt::Debug + Send + Sync + 'static {
@@ -216,6 +231,38 @@ pub trait CCompilerImpl: Clone + fmt::Debug + Send + Sync + 'static {
         _preprocessor_stderr: &[u8],
     ) -> Vec<u8> {
         stdout
+    }
+    /// Whether a failed dependency scan's stdout contains diagnostics, not preprocessed source.
+    fn preprocessor_stdout_is_diagnostic(&self, _parsed_args: &ParsedArguments) -> bool {
+        false
+    }
+    #[allow(clippy::too_many_arguments)]
+    async fn preprocess_with_context<T>(
+        &self,
+        creator: &T,
+        executable: &Path,
+        parsed_args: &ParsedArguments,
+        cwd: &Path,
+        env_vars: &[(OsString, OsString)],
+        may_dist: bool,
+        rewrite_includes_only: bool,
+        preprocessor_cache_mode: bool,
+    ) -> Result<PreprocessorOutput>
+    where
+        T: CommandCreatorSync,
+    {
+        self.preprocess(
+            creator,
+            executable,
+            parsed_args,
+            cwd,
+            env_vars,
+            may_dist,
+            rewrite_includes_only,
+            preprocessor_cache_mode,
+        )
+        .await
+        .map(PreprocessorOutput::from)
     }
     /// Determine whether `arguments` are supported by this compiler.
     fn parse_arguments(
@@ -518,6 +565,7 @@ where
             None
         };
 
+        let mut skip_cache = false;
         let (preprocessor_output, preprocessor_stderr, include_files) = if needs_preprocessing {
             if let Some(preprocessor_key) = &preprocessor_key
                 && cache_control == CacheControl::Default
@@ -568,6 +616,7 @@ where
                                 parsed_args: self.parsed_args.clone(),
                                 is_locally_preprocessed: false,
                                 preprocessor_stderr: Vec::new(),
+                                skip_cache: false,
                                 #[cfg(feature = "dist-client")]
                                 preprocessed_input: PREPROCESSING_SKIPPED_COMPILE_POISON.to_vec(),
                                 executable: self.executable.clone(),
@@ -585,7 +634,7 @@ where
 
             let result = self
                 .compiler
-                .preprocess(
+                .preprocess_with_context(
                     creator,
                     &self.executable,
                     &self.parsed_args,
@@ -604,8 +653,11 @@ where
 
             let outputs = self.parsed_args.outputs.clone();
             let args_cwd = cwd.clone();
+            let preserve_stdout = self
+                .compiler
+                .preprocessor_stdout_is_diagnostic(&self.parsed_args);
 
-            let mut preprocessor_result = result.or_else(move |err| {
+            let preprocessor_result = result.or_else(move |err| {
                 // Errors remove all traces of potential output.
                 debug!("removing files {:?}", outputs);
 
@@ -624,22 +676,22 @@ where
                 }
 
                 match err.downcast::<ProcessError>() {
-                    Ok(ProcessError(output)) => {
+                    Ok(ProcessError(mut output)) => {
                         debug!(
                             "[{}]: preprocessor returned error status {:?}",
                             out_pretty,
                             output.status.code()
                         );
-                        // Drop the stdout since it's the preprocessor output,
-                        // just hand back stderr and the exit status.
-                        bail!(ProcessError(process::Output {
-                            stdout: vec!(),
-                            ..output
-                        }))
+                        if !preserve_stdout {
+                            output.stdout.clear();
+                        }
+                        bail!(ProcessError(output))
                     }
                     Err(err) => Err(err),
                 }
             })?;
+            skip_cache = preprocessor_result.skip_cache;
+            let mut preprocessor_result = preprocessor_result.output;
 
             // Remember include files needed in this preprocessing step
             let mut include_files = HashMap::new();
@@ -741,6 +793,7 @@ where
                 parsed_args: self.parsed_args.clone(),
                 is_locally_preprocessed: true,
                 preprocessor_stderr,
+                skip_cache,
                 #[cfg(feature = "dist-client")]
                 preprocessed_input: preprocessor_output,
                 executable: self.executable.clone(),
@@ -1344,6 +1397,10 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I>
         }
         self.compiler
             .cached_stdout(&self.parsed_args, stdout, &self.preprocessor_stderr)
+    }
+
+    fn skip_cache(&self) -> bool {
+        self.skip_cache
     }
 
     fn outputs<'a>(&'a self) -> Box<dyn Iterator<Item = FileObjectSource> + 'a> {

@@ -413,7 +413,11 @@ The following module-related flags are **not supported** and will bypass the cac
 
 With **clang-cl**, `-fmodule-file=[<name>=]<path>` and `-x c++-module` together with `-fmodule-output=<path>` are supported, but not through `-Xclang` or `-clang:`.
 
-**GCC** and **MSVC** C++20 modules are not yet supported. Compilations using `-fmodules-ts` (GCC) or `/interface`, `/ifcOutput`, etc. (MSVC) will bypass the cache.
+Native **MSVC** C++20 named modules and header units are supported with explicit
+IFC output filenames and without compiler PDBs. See [MSVC modules](docs/MSVCModules.md)
+for example commands and limitations.
+
+**GCC** C++20 modules are not yet supported. Compilations using `-fmodules-ts` bypass the cache.
 
 ### User Agent
 

@@ -13,13 +13,16 @@
 // limitations under the License.
 
 use crate::compiler::args::*;
+use crate::compiler::c::PreprocessorOutput;
 use crate::compiler::c::{ArtifactDescriptor, CCompilerImpl, CCompilerKind, ParsedArguments};
 use crate::compiler::{
     CCompileCommand, Cacheable, ColorMode, CompileCommand, CompilerArguments, Language,
     SingleCompileCommand, clang, gcc, write_temp_file,
 };
 use crate::mock_command::{CommandCreatorSync, RunCommand};
-use crate::util::{OsStrExt, encode_path, env_var_name_matches, run_input_output};
+use crate::util::{
+    Digest, OsStrExt, encode_path, env_var_name_matches, hash_all, run_input_output,
+};
 use crate::{counted_array, dist};
 use async_trait::async_trait;
 use fs::File;
@@ -106,6 +109,98 @@ impl CCompilerImpl for Msvc {
         .await
     }
 
+    async fn preprocess_with_context<T>(
+        &self,
+        creator: &T,
+        executable: &Path,
+        args: &ParsedArguments,
+        cwd: &Path,
+        env: &[(OsString, OsString)],
+        may_dist: bool,
+        rewrite_includes_only: bool,
+        preprocessor_cache_mode: bool,
+    ) -> Result<PreprocessorOutput>
+    where
+        T: CommandCreatorSync,
+    {
+        if !self.is_clang && is_native_module_compile(args) {
+            let scan = match scan_modules(creator, executable, args, cwd, env).await {
+                Ok(scan) => scan,
+                Err(error) if is_module_probe(args) => {
+                    debug!("MSVC dependency probe failed; compiling without caching: {error:#}");
+                    return Ok(skip_module_cache());
+                }
+                Err(error) => return Err(error),
+            };
+            if is_module_probe(args) {
+                let dependencies = match parse_module_dependencies(&scan.report) {
+                    Ok(dependencies) => dependencies,
+                    Err(error) => {
+                        debug!(
+                            "MSVC dependency probe unavailable; compiling without caching: {error:#}"
+                        );
+                        return Ok(skip_module_cache());
+                    }
+                };
+                if dependencies.data.provided_module.is_empty()
+                    && dependencies.data.imported_modules.is_empty()
+                    && dependencies.data.imported_header_units.is_empty()
+                {
+                    let mut ordinary = args.clone();
+                    ordinary.too_hard_for_preprocessor_cache_mode = None;
+                    return self
+                        .preprocess(
+                            creator,
+                            executable,
+                            &ordinary,
+                            cwd,
+                            env,
+                            may_dist,
+                            rewrite_includes_only,
+                            preprocessor_cache_mode,
+                        )
+                        .await
+                        .map(PreprocessorOutput::from);
+                }
+                if uses_compiler_pdb(args) || !dependencies.data.provided_module.is_empty() {
+                    debug!(
+                        "MSVC dependency probe found a module with unsupported outputs; compiling without caching"
+                    );
+                    return Ok(skip_module_cache());
+                }
+            }
+            if uses_compiler_pdb(args) {
+                return Ok(skip_module_cache());
+            }
+            let toolchain = match module_toolchain_hashes(executable).await {
+                Ok(toolchain) => toolchain,
+                Err(error) => {
+                    debug!(
+                        "Cannot fingerprint native MSVC compiler passes; compiling without caching: {error:#}"
+                    );
+                    return Ok(skip_module_cache());
+                }
+            };
+            return preprocess_scanned_modules(
+                creator, executable, args, cwd, env, scan, &toolchain,
+            )
+            .await
+            .map(PreprocessorOutput::from);
+        }
+        self.preprocess(
+            creator,
+            executable,
+            args,
+            cwd,
+            env,
+            may_dist,
+            rewrite_includes_only,
+            preprocessor_cache_mode,
+        )
+        .await
+        .map(PreprocessorOutput::from)
+    }
+
     fn cached_stdout(
         &self,
         parsed_args: &ParsedArguments,
@@ -119,6 +214,10 @@ impl CCompilerImpl for Msvc {
         // from a compile in another directory. Report the includes that this
         // compile's own preprocessor run found instead of the stored ones.
         replace_show_includes(&stdout, preprocessor_stderr, &self.includes_prefix)
+    }
+
+    fn preprocessor_stdout_is_diagnostic(&self, parsed_args: &ParsedArguments) -> bool {
+        !self.is_clang && is_native_module_compile(parsed_args)
     }
 
     fn generate_compile_commands<T>(
@@ -335,6 +434,9 @@ ArgData! {
     ClangModuleOutput(OsString),
     ClangLanguage(OsString),
     ClangProfileUse(PathBuf),
+    NativeModuleFlag,
+    NativeModuleArgument(OsString),
+    NativeModuleOutput(PathBuf),
 }
 
 use self::ArgData::*;
@@ -527,6 +629,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("experimental:module", TooHardFlag),
     msvc_flag!("experimental:module-", PassThrough), // Explicitly disabled modules.
     msvc_take_arg!("experimental:preprocessor", OsString, Concatenated, PassThroughWithSuffix),
+    msvc_flag!("exportHeader", NativeModuleFlag),
     msvc_take_arg!("external:I", PathBuf, CanBeSeparated, ExternalIncludePath),
     msvc_flag!("external:W0", PassThrough),
     msvc_flag!("external:W1", PassThrough),
@@ -557,18 +660,20 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("fsyntax-only", SuppressCompilation),
     msvc_take_arg!("guard:cf", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("guard:ehcont", OsString, Concatenated, PassThroughWithSuffix),
+    msvc_flag!("headerName:angle", NativeModuleFlag),
+    msvc_flag!("headerName:quote", NativeModuleFlag),
+    msvc_take_arg!("headerUnit", OsString, CanBeSeparated, NativeModuleArgument),
+    msvc_take_arg!("headerUnit:angle", OsString, CanBeSeparated, NativeModuleArgument),
+    msvc_take_arg!("headerUnit:quote", OsString, CanBeSeparated, NativeModuleArgument),
     msvc_flag!("homeparams", PassThrough),
     msvc_flag!("hotpatch", PassThrough),
-    // New: C++20 msvc modules flags.
-    // TODO: Add support for msvc modules
-    // See https://github.com/mozilla/sccache/issues/2629
-    msvc_take_arg!("ifcMap", PathBuf, Separated, TooHardPath),
-    msvc_flag!("ifcOnly", TooHardFlag),
-    msvc_take_arg!("ifcOutput", PathBuf, Separated, TooHardPath),
-    msvc_take_arg!("ifcSearchDir", PathBuf, Separated, TooHardPath),
+    msvc_take_arg!("ifcMap", PathBuf, CanBeSeparated, TooHardPath),
+    msvc_flag!("ifcOnly", NativeModuleFlag),
+    msvc_take_arg!("ifcOutput", PathBuf, CanBeSeparated, NativeModuleOutput),
+    msvc_take_arg!("ifcSearchDir", OsString, CanBeSeparated, NativeModuleArgument),
     msvc_take_arg!("imsvc", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
-    msvc_flag!("interface", TooHardFlag),
-    msvc_flag!("internalPartition", TooHardFlag),
+    msvc_flag!("interface", NativeModuleFlag),
+    msvc_flag!("internalPartition", NativeModuleFlag),
     msvc_flag!("jumptablerdata", PassThrough),
     msvc_flag!("kernel", PassThrough),
     msvc_flag!("kernel-", PassThrough),
@@ -578,17 +683,18 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("openmp-", PassThrough),
     msvc_take_arg!("openmp:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_flag!("options:strict", PassThrough),
+    msvc_take_arg!("pathmap:", OsString, Concatenated, TooHard),
     msvc_flag!("permissive", PassThrough),
     msvc_flag!("permissive-", PassThrough),
     msvc_flag!("presetPadding", PassThrough),
-    msvc_take_arg!("reference", OsString, Separated, TooHard),
+    msvc_take_arg!("reference", OsString, CanBeSeparated, NativeModuleArgument),
     msvc_flag!("sdl", PassThrough),
     msvc_flag!("sdl-", PassThrough),
     msvc_flag!("showIncludes", ShowIncludes),
     msvc_take_arg!("source-charset:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("sourceDependencies", PathBuf, CanBeSeparated, DepFile),
     msvc_take_arg!("std:", OsString, Concatenated, PassThroughWithSuffix),
-    msvc_take_arg!("stdIfcDir", PathBuf, Separated, TooHardPath),
+    msvc_take_arg!("stdIfcDir", OsString, CanBeSeparated, NativeModuleArgument),
     msvc_flag!("u", PassThrough),
     msvc_flag!("utf-8", PassThrough),
     msvc_flag!("validate-charset", PassThrough),
@@ -670,6 +776,7 @@ pub fn parse_arguments(
     let mut output_arg = None;
     let mut input_arg = None;
     let mut explicit_language = None;
+    let mut global_language = None;
     let mut double_dash_input = false;
     let mut common_args = vec![];
     let mut unhashed_args = vec![];
@@ -688,6 +795,10 @@ pub fn parse_arguments(
     let mut profile_generate = false;
     let mut module_output = None;
     let mut cxx_module = false;
+    let mut native_module = false;
+    let mut native_ifc_output = None;
+    let mut export_header = false;
+    let mut ifc_only = false;
     let mut multiple_input = false;
     let mut multiple_input_files = Vec::new();
 
@@ -700,6 +811,13 @@ pub fn parse_arguments(
     }
     for arg in it {
         let arg = try_or_cannot_cache!(arg, "argument parse");
+        if !is_clang {
+            match arg.flag_str() {
+                Some("/TC" | "-TC") => global_language = Some(Language::C),
+                Some("/TP" | "-TP") => global_language = Some(Language::Cxx),
+                _ => {}
+            }
+        }
         match arg.get_data() {
             Some(PassThrough) | Some(PassThroughWithPath(_)) | Some(PassThroughWithSuffix(_)) => {}
             Some(TooHardFlag) | Some(TooHard(_)) | Some(TooHardPath(_)) => {
@@ -764,6 +882,20 @@ pub fn parse_arguments(
             Some(ClangModuleFile(_)) | Some(ClangModuleOutput(_)) | Some(ClangLanguage(_)) => {
                 cannot_cache!(arg.flag_str().expect("Can't be Argument::Raw/UnknownFlag"))
             }
+            Some(NativeModuleFlag)
+            | Some(NativeModuleArgument(_))
+            | Some(NativeModuleOutput(_)) => {
+                if is_clang {
+                    cannot_cache!(arg.flag_str().expect("native module option"));
+                }
+                native_module = true;
+                let flag = arg.flag_str().expect("native module option");
+                export_header |= matches!(flag, "/exportHeader" | "-exportHeader");
+                ifc_only |= matches!(flag, "/ifcOnly" | "-ifcOnly");
+                if let Some(NativeModuleOutput(path)) = arg.get_data() {
+                    native_ifc_output = Some(path.clone());
+                }
+            }
             None => {
                 match arg {
                     Argument::Raw(ref val) if val == "--" => {
@@ -810,6 +942,11 @@ pub fn parse_arguments(
                 );
             }
             Some(ExternalIncludePath(_)) => common_args.extend(
+                arg.normalize(NormalizedDisposition::Separated)
+                    .iter_os_strings(),
+            ),
+            Some(NativeModuleFlag) => common_args.extend(arg.iter_os_strings()),
+            Some(NativeModuleArgument(_)) | Some(NativeModuleOutput(_)) => common_args.extend(
                 arg.normalize(NormalizedDisposition::Separated)
                     .iter_os_strings(),
             ),
@@ -948,22 +1085,114 @@ pub fn parse_arguments(
         cannot_cache!("-x c++-module with /Tc or /Tp");
     }
     let (input, language) = match input_arg {
+        Some(i) if export_header => (i, Language::Cxx),
         Some(i) if cxx_module => (i.clone(), Language::CxxModule),
-        Some(i) => match explicit_language.or_else(|| Language::from_file_name(Path::new(&i))) {
+        Some(i) => match explicit_language.or_else(|| {
+            let extension = Language::from_file_name(Path::new(&i));
+            if global_language == Some(Language::Cxx) && extension == Some(Language::CxxModule) {
+                extension
+            } else {
+                global_language.or(extension)
+            }
+        }) {
             Some(l) => (i.clone(), l),
             None => cannot_cache!("unknown source language"),
         },
         // We can't cache compilation without an input.
         None => cannot_cache!("no input file"),
     };
+    // Even an unadorned C++20 source can import an IFC found in the working directory.
+    native_module |= !is_clang && language == Language::CxxModule;
+    let module_probe = !is_clang
+        && !native_module
+        && language == Language::Cxx
+        && common_args
+            .iter()
+            .rev()
+            .find_map(|arg| {
+                arg.to_str()
+                    .and_then(|s| s.strip_prefix(['/', '-']))
+                    .and_then(|s| s.strip_prefix("std:"))
+            })
+            .is_some_and(|s| s.starts_with("c++") && !matches!(s, "c++14" | "c++17"));
+    if (native_module || module_probe)
+        && common_args.iter().any(|arg| {
+            arg.to_str()
+                .and_then(|arg| arg.strip_prefix(['/', '-']))
+                .is_some_and(|arg| arg.starts_with("B1") || arg.starts_with("B2"))
+        })
+    {
+        cannot_cache!("MSVC compiler pass override");
+    }
+    if native_module || module_probe {
+        if native_module && debug_info {
+            cannot_cache!("MSVC modules with compiler PDB");
+        }
+        if common_args.iter().any(|arg| {
+            arg.to_str()
+                .and_then(|s| s.strip_prefix(['/', '-']))
+                .is_some_and(|s| {
+                    s.starts_with("Yu")
+                        || s.starts_with("analyze") && s != "analyze-"
+                        || s.starts_with("translateInclude")
+                        || s.starts_with("sourceDependencies:")
+                })
+        }) {
+            cannot_cache!("unsupported MSVC module option");
+        }
+        let producer = export_header
+            || language == Language::CxxModule
+            || common_args.iter().any(|arg| {
+                matches!(
+                    arg.to_str(),
+                    Some("/interface" | "-interface" | "/internalPartition" | "-internalPartition")
+                )
+            });
+        if ifc_only && !producer {
+            cannot_cache!("MSVC /ifcOnly without module producer");
+        }
+        if producer && native_ifc_output.is_none() {
+            cannot_cache!("MSVC module requires explicit /ifcOutput filename");
+        }
+        if let Some(ref path) = native_ifc_output
+            && (!producer
+                || path.as_os_str().is_empty()
+                || path.as_os_str().to_string_lossy().ends_with(['\\', '/'])
+                || cwd.join(path).is_dir())
+        {
+            cannot_cache!("MSVC module requires explicit /ifcOutput filename");
+        }
+        if let Some(ref path) = depfile {
+            if path == Path::new("-") {
+                cannot_cache!("MSVC module dependencies to stdout");
+            }
+            dependency_args.push("/sourceDependencies".into());
+            dependency_args.push(path.clone().into_os_string());
+        }
+    }
+    let no_object = native_module && (ifc_only || (export_header && output_arg.is_none()));
+    if no_object && let Some(path) = &output_arg {
+        let mut flag = OsString::from("-Fo");
+        flag.push(path);
+        common_args.push(flag);
+    }
     let mut outputs = HashMap::new();
     match output_arg {
         // If output file name is not given, use default naming rule
         None => {
+            let input_path = Path::new(&input);
+            let path = if native_module || module_probe {
+                let Some(filename) = input_path.file_name() else {
+                    cannot_cache!("invalid input file");
+                };
+                Path::new(filename).with_extension("obj")
+            } else {
+                input_path.with_extension("obj")
+            };
             outputs.insert(
                 "obj",
                 ArtifactDescriptor {
-                    path: Path::new(&input).with_extension("obj"),
+                    path,
                     optional: false,
                 },
             );
@@ -1003,6 +1232,18 @@ pub fn parse_arguments(
                 );
             }
         }
+    }
+    if no_object {
+        outputs.remove("obj");
+    }
+    if let Some(path) = native_ifc_output {
+        outputs.insert(
+            "ifc",
+            ArtifactDescriptor {
+                path,
+                optional: false,
+            },
+        );
     }
     if let Some(path) = module_output {
         outputs.insert(
@@ -1057,23 +1298,22 @@ pub fn parse_arguments(
                 // artifact.
                 if p.as_os_str().to_string_lossy().ends_with(['\\', '/']) {
                     cannot_cache!("shared pdb");
-                }
-                // Append the default .pdb prefix if none was given, like how MSVC does.
-                let path = if p.extension().is_none() {
-                    let mut path = p;
-                    path.set_extension("pdb");
-                    path
                 } else {
-                    p
-                };
-
-                outputs.insert(
-                    "pdb",
-                    ArtifactDescriptor {
-                        path,
-                        optional: false,
-                    },
-                )
+                    let path = if p.extension().is_none() {
+                        let mut path = p;
+                        path.set_extension("pdb");
+                        path
+                    } else {
+                        p
+                    };
+                    outputs.insert(
+                        "pdb",
+                        ArtifactDescriptor {
+                            path,
+                            optional: false,
+                        },
+                    )
+                }
             }
             None => {
                 // -Zi and -ZI without -Fd defaults to vcxxx.pdb (where xxx depends on the
@@ -1105,8 +1345,288 @@ pub fn parse_arguments(
         // FIXME: implement color_mode for msvc.
         color_mode: ColorMode::Auto,
         suppress_rewrite_includes_only: false,
-        too_hard_for_preprocessor_cache_mode,
+        too_hard_for_preprocessor_cache_mode: if native_module {
+            Some(NATIVE_MODULE_SCAN.into())
+        } else if module_probe {
+            Some(NATIVE_MODULE_PROBE.into())
+        } else {
+            too_hard_for_preprocessor_cache_mode
+        },
     })
+}
+
+const NATIVE_MODULE_SCAN: &str = "MSVC module dependency scan";
+const NATIVE_MODULE_PROBE: &str = "MSVC implicit module dependency probe";
+
+fn is_native_module_compile(args: &ParsedArguments) -> bool {
+    args.too_hard_for_preprocessor_cache_mode.as_deref() == Some(OsStr::new(NATIVE_MODULE_SCAN))
+        || is_module_probe(args)
+}
+
+fn is_module_probe(args: &ParsedArguments) -> bool {
+    args.too_hard_for_preprocessor_cache_mode.as_deref() == Some(OsStr::new(NATIVE_MODULE_PROBE))
+}
+
+fn uses_compiler_pdb(args: &ParsedArguments) -> bool {
+    args.common_args
+        .iter()
+        .any(|arg| matches!(arg.to_str(), Some("/Zi" | "-Zi" | "/ZI" | "-ZI")))
+}
+
+fn skip_module_cache() -> PreprocessorOutput {
+    PreprocessorOutput {
+        skip_cache: true,
+        ..process::Output {
+            status: crate::mock_command::exit_status(0),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        }
+        .into()
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct ModuleDependencies {
+    version: String,
+    data: ModuleDependencyData,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct ModuleDependencyData {
+    source: PathBuf,
+    #[serde(default)]
+    provided_module: String,
+    includes: Vec<PathBuf>,
+    imported_modules: Vec<ModuleImport>,
+    imported_header_units: Vec<ModuleImport>,
+}
+
+#[derive(serde::Deserialize)]
+struct ModuleImport {
+    #[serde(rename = "BMI")]
+    bmi: PathBuf,
+}
+
+fn parse_module_dependencies(bytes: &[u8]) -> Result<ModuleDependencies> {
+    let deps: ModuleDependencies =
+        serde_json::from_slice(bytes).context("Invalid MSVC module dependency report")?;
+    if deps.version != "1.2" {
+        bail!(
+            "Unsupported MSVC module dependency version: {}",
+            deps.version
+        );
+    }
+    Ok(deps)
+}
+
+fn module_dependency_files(bytes: &[u8]) -> Result<Vec<PathBuf>> {
+    let deps = parse_module_dependencies(bytes)?;
+    let mut files = vec![deps.data.source];
+    files.extend(deps.data.includes);
+    files.extend(
+        deps.data
+            .imported_modules
+            .into_iter()
+            .chain(deps.data.imported_header_units)
+            .map(|import| import.bmi),
+    );
+    if files.iter().any(|file| !file.is_absolute()) {
+        bail!("MSVC module dependency report contains a non-absolute path");
+    }
+    files.sort();
+    files.dedup();
+    Ok(files)
+}
+
+fn write_module_dependencies(args: &ParsedArguments, cwd: &Path, report: &[u8]) -> Result<()> {
+    if let Some(path) = &args.depfile {
+        let mut path = cwd.join(path);
+        if path.is_dir() {
+            let mut filename = args
+                .input
+                .file_name()
+                .context("Missing input filename")?
+                .to_owned();
+            filename.push(".json");
+            path.push(filename);
+        }
+        fs::write(path, report)?;
+    }
+    Ok(())
+}
+
+struct ModuleScan {
+    _temp: tempfile::TempDir,
+    args: ParsedArguments,
+    report: Vec<u8>,
+    output: process::Output,
+}
+
+async fn scan_modules<T: CommandCreatorSync>(
+    creator: &T,
+    executable: &Path,
+    args: &ParsedArguments,
+    cwd: &Path,
+    env_vars: &[(OsString, OsString)],
+) -> Result<ModuleScan> {
+    let temp = tempfile::Builder::new()
+        .prefix("sccache-msvc-modules")
+        .tempdir()?;
+    let report_path = temp.path().join("deps.json");
+    let mut scan_args = args.clone();
+    scan_args.depfile = None;
+    scan_args.dependency_args.clear();
+    // /Zs can still create a compiler PDB, which is not an output of the scan.
+    scan_args.common_args.retain(|arg| {
+        !matches!(arg.to_str(), Some("/Zi" | "-Zi" | "/ZI" | "-ZI"))
+            && !arg.starts_with("-Fd")
+            && !arg.starts_with("/Fd")
+    });
+    // /Zs still writes IFCs. Never let a lookup overwrite the real producer's IFC.
+    let mut common = scan_args.common_args.iter_mut();
+    let mut has_fo = false;
+    while let Some(arg) = common.next() {
+        if matches!(arg.to_str(), Some("/ifcOutput" | "-ifcOutput")) {
+            *common.next().context("Missing /ifcOutput argument")? =
+                temp.path().join("scan.ifc").into_os_string();
+        } else if arg.starts_with("-Fo") || arg.starts_with("/Fo") {
+            has_fo = true;
+            let mut flag = OsString::from("-Fo");
+            flag.push(temp.path().join("scan.obj"));
+            *arg = flag;
+        }
+    }
+    let mut scan = creator.clone().new_command_sync(executable);
+    scan.args(&["-nologo", "-c", "-Zs"])
+        .args(&scan_args.preprocessor_args)
+        .args(&scan_args.common_args);
+    if !has_fo {
+        scan.arg(format!("-Fo{}", temp.path().join("scan.obj").display()));
+    }
+    scan.arg("/sourceDependencies")
+        .arg(&report_path)
+        .arg(msvc_input_arg(args, args.input.as_os_str()))
+        .env_clear()
+        .envs(without_cl_env_vars(env_vars))
+        .current_dir(cwd);
+    if args.msvc_show_includes {
+        scan.arg("-showIncludes");
+    }
+    let scan_result = run_input_output(scan, None).await;
+    if let Err(err) = scan_result {
+        match fs::read(&report_path) {
+            Ok(report) => write_module_dependencies(args, cwd, &report)?,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e).context("Failed to read MSVC module dependencies"),
+        }
+        return Err(err);
+    }
+    let report = fs::read(&report_path).context("MSVC did not produce module dependencies")?;
+    write_module_dependencies(args, cwd, &report)?;
+    Ok(ModuleScan {
+        _temp: temp,
+        args: scan_args,
+        report,
+        output: scan_result?,
+    })
+}
+
+async fn module_preprocessed<T: CommandCreatorSync>(
+    creator: &T,
+    executable: &Path,
+    args: &ParsedArguments,
+    cwd: &Path,
+    env: &[(OsString, OsString)],
+    preserve_lines: bool,
+) -> Result<process::Output> {
+    let mut cmd = creator.clone().new_command_sync(executable);
+    preprocess_cmd(
+        &mut cmd,
+        args,
+        cwd,
+        env,
+        preserve_lines,
+        false,
+        false,
+        false,
+    );
+    run_input_output(cmd, None)
+        .await
+        .map_err(|err| match err.downcast::<ProcessError>() {
+            Ok(ProcessError(mut output)) => {
+                output.stdout.clear();
+                ProcessError(output).into()
+            }
+            Err(err) => err,
+        })
+}
+
+async fn preprocess_modules<T: CommandCreatorSync>(
+    creator: &T,
+    executable: &Path,
+    args: &ParsedArguments,
+    cwd: &Path,
+    env_vars: &[(OsString, OsString)],
+) -> Result<process::Output> {
+    let scan = scan_modules(creator, executable, args, cwd, env_vars).await?;
+    let toolchain = module_toolchain_hashes(executable).await?;
+    preprocess_scanned_modules(creator, executable, args, cwd, env_vars, scan, &toolchain).await
+}
+
+async fn module_toolchain_hashes(executable: &Path) -> Result<Vec<String>> {
+    let bin = executable
+        .parent()
+        .context("MSVC executable has no directory")?;
+    let files = [bin.join("c1xx.dll"), bin.join("c2.dll")];
+    hash_all(&files, &tokio::runtime::Handle::current()).await
+}
+
+async fn preprocess_scanned_modules<T: CommandCreatorSync>(
+    creator: &T,
+    executable: &Path,
+    args: &ParsedArguments,
+    cwd: &Path,
+    env_vars: &[(OsString, OsString)],
+    scan: ModuleScan,
+    toolchain: &[String],
+) -> Result<process::Output> {
+    use std::hash::Hash;
+    let files = module_dependency_files(&scan.report)?;
+    let hashes = hash_all(&files, &tokio::runtime::Handle::current()).await?;
+    let mut digest = Digest::new();
+    let mut outputs: Vec<_> = args
+        .outputs
+        .iter()
+        .map(|(key, value)| (key, &value.path))
+        .collect();
+    outputs.sort();
+    // Native IFCs and their diagnostics are location-dependent, not portable BMIs.
+    (
+        "MSVC native modules v3",
+        toolchain,
+        cwd,
+        &args.input,
+        outputs,
+        &args.depfile,
+        &args.preprocessor_args,
+        &args.dependency_args,
+        args.msvc_show_includes,
+        &files,
+        &hashes,
+    )
+        .hash(&mut crate::util::HashToDigest {
+            digest: &mut digest,
+        });
+
+    let mut output =
+        module_preprocessed(creator, executable, &scan.args, cwd, env_vars, false).await?;
+    if args.msvc_show_includes {
+        output.stderr = scan.output.stdout;
+    }
+    output.stdout.extend_from_slice(digest.finish().as_bytes());
+    Ok(output)
 }
 
 #[cfg(windows)]
@@ -1235,6 +1755,9 @@ pub async fn preprocess<T>(
 where
     T: CommandCreatorSync,
 {
+    if !is_clang && is_native_module_compile(parsed_args) {
+        return preprocess_modules(creator, executable, parsed_args, cwd, env_vars).await;
+    }
     let mut cmd = creator.clone().new_command_sync(executable);
     preprocess_cmd(
         &mut cmd,
@@ -1336,10 +1859,10 @@ fn generate_compile_commands(
     let env_vars = without_cl_env_vars(env_vars);
 
     trace!("compile");
-    let out_file = match parsed_args.outputs.get("obj") {
-        Some(obj) => &obj.path,
-        None => bail!("Missing object file output"),
-    };
+    let out_file = parsed_args.outputs.get("obj").map(|obj| &obj.path);
+    if out_file.is_none() && !parsed_args.outputs.contains_key("ifc") {
+        bail!("Missing object file output");
+    }
 
     // See if this compilation will produce a PDB.
     let cacheable = parsed_args
@@ -1355,10 +1878,12 @@ fn generate_compile_commands(
             }
         });
 
-    let mut fo = OsString::from("-Fo");
-    fo.push(out_file);
-
-    let mut arguments: Vec<OsString> = vec![parsed_args.compilation_flag.clone(), fo];
+    let mut arguments: Vec<OsString> = vec![parsed_args.compilation_flag.clone()];
+    if let Some(out_file) = out_file {
+        let mut fo = OsString::from("-Fo");
+        fo.push(out_file);
+        arguments.push(fo);
+    }
     arguments.extend_from_slice(&parsed_args.preprocessor_args);
     arguments.extend_from_slice(&parsed_args.dependency_args);
     arguments.extend_from_slice(&parsed_args.unhashed_args);
@@ -1379,10 +1904,13 @@ fn generate_compile_commands(
     let dist_command = None;
     #[cfg(feature = "dist-client")]
     let dist_command = (|| {
+        if is_native_module_compile(parsed_args) {
+            return None;
+        }
         // http://releases.llvm.org/6.0.0/tools/clang/docs/UsersManual.html#clang-cl
         // TODO: Use /T... for language?
         let mut fo = String::from("-Fo");
-        fo.push_str(&path_transformer.as_dist(out_file)?);
+        fo.push_str(&path_transformer.as_dist(out_file?)?);
 
         let mut arguments: Vec<String> =
             vec![parsed_args.compilation_flag.clone().into_string().ok()?, fo];
@@ -3115,76 +3643,118 @@ mod test {
     }
 
     #[test]
-    fn test_parse_arguments_cxx20_modules_unsupported() {
-        // C++20 modules are not yet supported in MSVC mode
-
-        // /interface - indicates the input is a module interface
-        assert_eq!(
-            CompilerArguments::CannotCache("-interface", None),
-            parse_arguments(ovec!["-c", "foo.ixx", "-Fofoo.obj", "-interface"])
-        );
-
-        // /internalPartition - indicates the input is an internal partition
-        assert_eq!(
-            CompilerArguments::CannotCache("-internalPartition", None),
-            parse_arguments(ovec!["-c", "foo.ixx", "-Fofoo.obj", "-internalPartition"])
-        );
-
-        // /ifcOutput - specifies output path for IFC (module interface)
-        assert_eq!(
-            CompilerArguments::CannotCache("-ifcOutput", None),
-            parse_arguments(ovec![
-                "-c",
+    fn test_parse_arguments_native_modules() {
+        for flag in ["/interface", "/internalPartition"] {
+            let args = ovec![
+                "/c",
                 "foo.ixx",
-                "-Fofoo.obj",
-                "-ifcOutput",
+                "/std:c++20",
+                flag,
+                "/ifcOutput",
+                "foo.ifc",
+                "/Z7"
+            ];
+            let CompilerArguments::Ok(parsed) = parse_arguments(args.clone()) else {
+                panic!("Failed to parse {args:?}");
+            };
+            assert!(is_native_module_compile(&parsed));
+            assert_eq!(parsed.outputs["ifc"].path, Path::new("foo.ifc"));
+            assert_eq!(parsed.outputs["obj"].path, Path::new("foo.obj"));
+            let (command, dist, cacheable) = generate_compile_commands(
+                &mut dist::PathTransformer::new(),
+                Path::new("cl.exe"),
+                &parsed,
+                Path::new(""),
+                &[],
+            )
+            .unwrap();
+            assert!(dist.is_none());
+            assert_eq!(cacheable, Cacheable::Yes);
+            assert!(
+                command
+                    .arguments
+                    .windows(2)
+                    .any(|a| a == ovec!["/ifcOutput", "foo.ifc"])
+            );
+            assert!(command.arguments.contains(&flag.into()));
+        }
+        for options in [
+            ovec!["/reference", "m=m.ifc"],
+            ovec!["/headerUnit:quote", "header.h=header.ifc"],
+            ovec!["/headerUnit:angle", "vector=vector.ifc"],
+            ovec!["/headerUnit", "header.h=header.ifc"],
+            ovec!["/ifcSearchDir", "modules", "/stdIfcDir", "std"],
+            ovec![],
+        ] {
+            let mut args = ovec!["/c", "consumer.cpp", "/std:c++20"];
+            args.extend(options.clone());
+            let CompilerArguments::Ok(parsed) = parse_arguments(args) else {
+                panic!()
+            };
+            assert!(is_native_module_compile(&parsed));
+            assert!(parsed.common_args.ends_with(&options));
+        }
+    }
+
+    #[test]
+    fn test_native_module_ifc_only_and_header_outputs() {
+        for options in [
+            ovec!["/interface", "/ifcOnly", "foo.ixx"],
+            ovec!["/exportHeader", "/headerName:quote", "foo.h"],
+            ovec!["/exportHeader", "/headerName:angle", "vector"],
+        ] {
+            let mut args = ovec!["/c", "/std:c++20", "/ifcOutput", "foo.ifc"];
+            args.extend(options);
+            let CompilerArguments::Ok(parsed) = parse_arguments(args) else {
+                panic!()
+            };
+            assert!(parsed.outputs.contains_key("ifc"));
+            assert!(!parsed.outputs.contains_key("obj"));
+            let (cmd, _, _) = generate_compile_commands(
+                &mut dist::PathTransformer::new(),
+                Path::new("cl.exe"),
+                &parsed,
+                Path::new(""),
+                &[],
+            )
+            .unwrap();
+            assert!(!cmd.arguments.iter().any(|a| a.starts_with("-Fo")));
+        }
+    }
+
+    #[test]
+    fn test_native_modules_unsafe_options() {
+        for args in [
+            ovec!["/c", "foo.ixx", "/interface"],
+            ovec!["/c", "foo.ixx", "/ifcOutput", "out\\"],
+            ovec![
+                "/c",
+                "foo.cpp",
+                "/std:c++20",
+                "/Zi",
+                "/Fdfoo.pdb",
+                "/reference",
+                "foo=foo.ifc"
+            ],
+            ovec!["/c", "foo.cpp", "/std:c++20", "/Yuheader.h"],
+            ovec!["/c", "foo.cpp", "/std:c++20", "/translateInclude"],
+            ovec!["/c", "foo.cpp", "/std:c++20", "/sourceDependencies", "-"],
+        ] {
+            assert!(matches!(
+                parse_arguments(args),
+                CompilerArguments::CannotCache(..)
+            ));
+        }
+        assert!(matches!(
+            parse_arguments_clang(ovec![
+                "/c",
+                "foo.ixx",
+                "/interface",
+                "/ifcOutput",
                 "foo.ifc"
-            ])
-        );
-
-        // /ifcOnly - only produce IFC, no object file
-        assert_eq!(
-            CompilerArguments::CannotCache("-ifcOnly", None),
-            parse_arguments(ovec!["-c", "foo.ixx", "-ifcOnly"])
-        );
-
-        // /ifcSearchDir - directory to search for IFC files
-        assert_eq!(
-            CompilerArguments::CannotCache("-ifcSearchDir", None),
-            parse_arguments(ovec![
-                "-c",
-                "foo.cpp",
-                "-Fofoo.obj",
-                "-ifcSearchDir",
-                "/path/to/ifcs"
-            ])
-        );
-
-        // /reference - reference a named module IFC
-        assert_eq!(
-            CompilerArguments::CannotCache("-reference", None),
-            parse_arguments(ovec![
-                "-c",
-                "foo.cpp",
-                "-Fofoo.obj",
-                "-reference",
-                "mymodule=mymodule.ifc"
-            ])
-        );
-
-        // /stdIfcDir - directory for standard library IFCs
-        assert_eq!(
-            CompilerArguments::CannotCache("-stdIfcDir", None),
-            parse_arguments(ovec![
-                "-c",
-                "foo.cpp",
-                "-Fofoo.obj",
-                "-stdIfcDir",
-                "/path/to/std/ifcs"
-            ])
-        );
-
-        // /ifcMap - specifies a module map file
+            ]),
+            CompilerArguments::CannotCache(..)
+        ));
         assert_eq!(
             CompilerArguments::CannotCache("-ifcMap", None),
             parse_arguments(ovec![
@@ -3195,6 +3765,178 @@ mod test {
                 "module.map"
             ])
         );
+    }
+
+    #[test]
+    fn test_native_pathmap_is_not_cacheable() {
+        assert_eq!(
+            parse_arguments(ovec![
+                "/c",
+                "/std:c++20",
+                "/FC",
+                "/experimental:deterministic",
+                "/pathmap:Q:\\checkout with spaces=X:\\logical",
+                "/interface",
+                "leaf.ixx",
+                "/ifcOutput",
+                "leaf.ifc"
+            ]),
+            CompilerArguments::CannotCache("/pathmap:", None)
+        );
+    }
+
+    #[test]
+    fn test_c_standards_do_not_scan_modules() {
+        for standard in ["/std:c11", "/std:c17"] {
+            let CompilerArguments::Ok(args) = parse_arguments(ovec!["/c", standard, "source.c"])
+            else {
+                panic!("ordinary C standards must remain cacheable")
+            };
+            assert!(!super::is_native_module_compile(&args));
+        }
+    }
+
+    #[test]
+    fn test_implicit_module_probe_uses_effective_language_and_standard() {
+        for (flags, probe) in [
+            (ovec!["/TP", "/std:c++20", "source.c"], true),
+            (ovec!["/TP", "/std:c++20", "source.h"], true),
+            (ovec!["/TP", "/TC", "/std:c++20", "source.cpp"], false),
+            (ovec!["/std:c++20", "/std:c++17", "source.cpp"], false),
+            (ovec!["/std:c++17", "/std:c++20", "source.cpp"], true),
+        ] {
+            let mut args = ovec!["/c"];
+            args.extend(flags);
+            let CompilerArguments::Ok(args) = parse_arguments(args) else {
+                panic!("expected cacheable command")
+            };
+            assert_eq!(super::is_module_probe(&args), probe);
+            assert!(!args.msvc_explicit_language);
+        }
+    }
+
+    #[test]
+    fn test_attached_native_module_arguments() {
+        let CompilerArguments::Ok(args) = parse_arguments(ovec![
+            "/c",
+            "leaf.ixx",
+            "/interface",
+            "-ifcOutputleaf.ifc",
+            "-referencemod=mod.ifc",
+            "/headerUnit:quoteb.h=b.ifc",
+            "-ifcSearchDirifcs",
+            "/stdIfcDirstandard"
+        ]) else {
+            panic!("native flags allow attached arguments")
+        };
+        assert_eq!(args.outputs["ifc"].path, Path::new("leaf.ifc"));
+        assert_eq!(
+            args.common_args,
+            ovec![
+                "/interface",
+                "-ifcOutput",
+                "leaf.ifc",
+                "-reference",
+                "mod=mod.ifc",
+                "/headerUnit:quote",
+                "b.h=b.ifc",
+                "-ifcSearchDir",
+                "ifcs",
+                "/stdIfcDir",
+                "standard"
+            ]
+        );
+        assert_eq!(
+            parse_arguments(ovec!["/c", "source.cpp", "-ifcMapconfig.toml"]),
+            CompilerArguments::CannotCache("-ifcMap", None)
+        );
+    }
+
+    #[test]
+    fn test_native_module_scan_hashes_transitive_dependencies() {
+        let f = TestFixture::new();
+        let cwd = f.tempdir.path();
+        let bin = f.bins[0].parent().unwrap();
+        for dll in ["c1xx.dll", "c2.dll"] {
+            fs::write(bin.join(dll), dll).unwrap();
+        }
+        for name in ["foo.ixx", "middle.ifc", "leaf.ifc", "unit.ifc", "header.h"] {
+            fs::write(cwd.join(name), name).unwrap();
+        }
+        fs::write(cwd.join("foo.ifc"), "real IFC must survive lookup").unwrap();
+        let report = serde_json::to_vec(&serde_json::json!({
+            "Version": "1.2",
+            "Data": {
+                "Source": cwd.join("foo.ixx"),
+                "Includes": [cwd.join("header.h")],
+                "ImportedModules": [
+                    {"BMI": cwd.join("middle.ifc")},
+                    {"BMI": cwd.join("leaf.ifc")}
+                ],
+                "ImportedHeaderUnits": [{"BMI": cwd.join("unit.ifc")}]
+            }
+        }))
+        .unwrap();
+        let args = ovec![
+            "/c",
+            "foo.ixx",
+            "/interface",
+            "/ifcOutput",
+            "foo.ifc",
+            "/std:c++20",
+            "/sourceDependencies",
+            "foo.json"
+        ];
+        let CompilerArguments::Ok(parsed) = super::parse_arguments(&args, cwd, false) else {
+            panic!()
+        };
+        let runtime = single_threaded_runtime();
+        let key = || {
+            let creator = new_creator();
+            let report = report.clone();
+            creator.lock().unwrap().next_command_calls(move |args| {
+                assert!(args.contains(&"-Zs".into()));
+                let ifc = args.iter().position(|a| a == "/ifcOutput").unwrap() + 1;
+                assert_ne!(args[ifc], OsStr::new("foo.ifc"));
+                let deps = args
+                    .iter()
+                    .position(|a| a == "/sourceDependencies")
+                    .unwrap()
+                    + 1;
+                fs::write(Path::new(&args[deps]), &report)?;
+                Ok(MockChild::new(exit_status(0), "scan diagnostics", ""))
+            });
+            next_command(
+                &creator,
+                Ok(MockChild::new(exit_status(0), "preprocessed", "")),
+            );
+            runtime
+                .block_on(preprocess_modules(&creator, &f.bins[0], &parsed, cwd, &[]))
+                .map(|output| output.stdout)
+        };
+        let original = key().unwrap();
+        assert_eq!(original, key().unwrap());
+        for dll in ["c1xx.dll", "c2.dll"] {
+            fs::write(bin.join(dll), "changed compiler pass").unwrap();
+            assert_ne!(original, key().unwrap(), "{dll}");
+            fs::write(bin.join(dll), dll).unwrap();
+        }
+        for file in ["leaf.ifc", "unit.ifc", "header.h", "foo.ixx"] {
+            fs::write(cwd.join(file), "changed").unwrap();
+            assert_ne!(original, key().unwrap(), "{file}");
+            fs::write(cwd.join(file), file).unwrap();
+        }
+        assert_eq!(
+            fs::read(cwd.join("foo.ifc")).unwrap(),
+            b"real IFC must survive lookup"
+        );
+        assert_eq!(fs::read(cwd.join("foo.json")).unwrap(), report);
+        fs::remove_file(cwd.join("leaf.ifc")).unwrap();
+        assert!(key().is_err());
+        let mut unsupported: serde_json::Value = serde_json::from_slice(&report).unwrap();
+        unsupported["Version"] = "1.3".into();
+        assert!(module_dependency_files(&serde_json::to_vec(&unsupported).unwrap()).is_err());
+        assert!(module_dependency_files(br#"{"Version":"1.2","Data":{"Source":"relative","Includes":[],"ImportedModules":[],"ImportedHeaderUnits":[]}}"#).is_err());
     }
 
     #[test]
