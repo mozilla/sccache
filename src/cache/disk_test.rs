@@ -11,7 +11,7 @@
 // limitations under the License.
 
 #[cfg(test)]
-mod tests {
+mod test {
     use std::path::{Path, PathBuf};
 
     use crate::{

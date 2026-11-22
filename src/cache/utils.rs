@@ -81,6 +81,6 @@ mod test {
         assert_eq!(
             make_key_path("dinosaurbig"),
             PathBuf::from_str("d/i/dinosaurbig").unwrap()
-        )
+        );
     }
 }
