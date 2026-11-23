@@ -633,7 +633,7 @@ where
                         // Drop the stdout since it's the preprocessor output,
                         // just hand back stderr and the exit status.
                         bail!(ProcessError(process::Output {
-                            stdout: vec!(),
+                            stdout: vec![],
                             ..output
                         }))
                     }
