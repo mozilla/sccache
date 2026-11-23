@@ -147,6 +147,7 @@ fn failing_cc(dir: &Path) -> Result<Option<std::path::PathBuf>> {
 }
 
 /// The `(hits, misses)` of C/C++ compilations since the stats were zeroed.
+#[cfg(unix)]
 fn c_cache_stats() -> Result<(u64, u64)> {
     let output = Command::new(SCCACHE_BIN.as_os_str())
         .args(["--show-stats", "--stats-format=json"])

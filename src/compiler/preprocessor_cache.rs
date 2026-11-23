@@ -1362,6 +1362,29 @@ mod test {
         assert_ne!(key(&fat, true), key(&fat, false));
     }
 
+    #[test]
+    fn test_preprocessor_cache_entry_hash_key_dtlto_inputs() {
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let file = dir.path().join("test.c");
+        std::fs::write(&file, b"int main() { return 0; }").unwrap();
+        let key = |digest: Option<&str>| {
+            let env_vars: Vec<_> = digest
+                .map(|d| (crate::dtlto::INPUTS_DIGEST_VAR.into(), d.into()))
+                .into_iter()
+                .collect();
+            EntryKey {
+                env_vars: &env_vars,
+                ..Default::default()
+            }
+            .of(&file)
+        };
+
+        assert_ne!(key(None), key(Some("a")));
+        assert_ne!(key(Some("a")), key(Some("b")));
+    }
+
     #[cfg(unix)]
     fn is_digest_cached(path: &Path) -> bool {
         FILE_DIGESTS.lock().unwrap().contains_key(path)

@@ -1275,6 +1275,32 @@ mod test {
                 "a.native.o"
             ])
         );
+        assert_eq!(
+            CompilerArguments::CannotCache("-fthinlto-index with a non-IR input", None),
+            parse_arguments_(stringvec![
+                "-c",
+                "-x",
+                "c",
+                "a.o",
+                "-fthinlto-index=a.bc",
+                "-o",
+                "a.native.o"
+            ])
+        );
+    }
+
+    #[test]
+    fn test_parse_thinlto_index_ir_inputs() {
+        for input in ["a.o", "a.obj", "a.bc", "a.ll"] {
+            let a = parses!(
+                "-c",
+                input,
+                "-fthinlto-index=a.thinlto.bc",
+                "-o",
+                "a.native.o"
+            );
+            assert_eq!(Language::LlvmIr, a.language, "{input}");
+        }
     }
 
     #[test]
