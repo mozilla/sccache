@@ -163,8 +163,12 @@ jobs:
         name: Install clang and lld 21 for the ThinLTO (DTLTO) test
         run: |
           set -x
-          wget -qO llvm.sh https://apt.llvm.org/llvm.sh
-          sudo bash llvm.sh 21
+          for attempt in 1 2 3; do
+            wget -qO llvm.sh https://apt.llvm.org/llvm.sh \
+              && sudo bash llvm.sh 21 && break
+            [ "$attempt" = 3 ] && exit 1
+            sleep 10
+          done
           echo "DTLTO_CLANG_PATH=/usr/lib/llvm-21/bin" >> "$GITHUB_ENV"
 
       - if: ${{ matrix.cuda != '' && (runner.os == 'Linux' || runner.os == 'Windows') }}
