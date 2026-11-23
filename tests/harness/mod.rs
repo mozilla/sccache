@@ -1,3 +1,4 @@
+use crate::util::TestCommandExt;
 use fs_err as fs;
 use log::trace;
 #[cfg(any(feature = "dist-client", feature = "dist-server"))]
@@ -46,7 +47,7 @@ const TC_CACHE_SIZE: u64 = 1024 * 1024 * 1024; // 1 gig
 pub fn start_local_daemon(cfg_path: &Path, cached_cfg_path: &Path) {
     // Don't run this with run() because on Windows `wait_with_output`
     // will hang because the internal server process is not detached.
-    if !sccache_command()
+    if !Command::sccache()
         .arg("--start-server")
         // Uncomment following lines to debug locally.
         // .env("SCCACHE_LOG", "sccache=trace")
@@ -67,7 +68,7 @@ pub fn start_local_daemon(cfg_path: &Path, cached_cfg_path: &Path) {
 
 pub fn stop_local_daemon() -> bool {
     trace!("sccache --stop-server");
-    sccache_command()
+    Command::sccache()
         .arg("--stop-server")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -83,7 +84,7 @@ pub fn clear_cache_local_daemon(tmpdir: &Path) -> bool {
 }
 
 pub fn get_stats<F: 'static + Fn(ServerInfo)>(f: F) {
-    sccache_command()
+    Command::sccache()
         .args(["--show-stats", "--stats-format=json"])
         .assert()
         .success()
@@ -100,7 +101,7 @@ pub fn get_stats<F: 'static + Fn(ServerInfo)>(f: F) {
 pub fn zero_stats() {
     trace!("sccache --zero-stats");
     drop(
-        sccache_command()
+        Command::sccache()
             .arg("--zero-stats")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -127,24 +128,8 @@ pub fn init_cargo(path: &Path, cargo_name: &str) -> PathBuf {
     cargo_path
 }
 
-// Prune any environment variables that could adversely affect test execution.
-pub fn prune_command(mut cmd: Command) -> Command {
-    use sccache::util::OsStrExt;
-
-    for (var, _) in env::vars_os() {
-        if var.starts_with("SCCACHE_") {
-            cmd.env_remove(var);
-        }
-    }
-    cmd
-}
-
-pub fn sccache_command() -> Command {
-    prune_command(Command::new(env!("CARGO_BIN_EXE_sccache")))
-}
-
 pub fn cargo_command() -> Command {
-    prune_command(Command::new("cargo"))
+    Command::cargo()
 }
 
 #[cfg(feature = "dist-server")]

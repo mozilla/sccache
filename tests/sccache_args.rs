@@ -3,15 +3,17 @@
 //! Any copyright is dedicated to the Public Domain.
 //! http://creativecommons.org/publicdomain/zero/1.0/
 pub mod helpers;
+mod util;
 
 use anyhow::Result;
 use assert_cmd::prelude::*;
 use fs_err as fs;
-use helpers::{SCCACHE_BIN, stop_sccache};
+use helpers::stop_sccache;
 use predicates::prelude::*;
 use serial_test::serial;
 use std::path::Path;
 use std::process::Command;
+use util::TestCommandExt;
 
 #[macro_use]
 extern crate log;
@@ -23,9 +25,8 @@ fn test_gcp_arg_check() -> Result<()> {
     trace!("sccache with log");
     stop_sccache()?;
 
-    let mut cmd = Command::new(SCCACHE_BIN.as_os_str());
+    let mut cmd = Command::sccache();
     cmd.arg("--start-server")
-        .env("SCCACHE_LOG", "debug")
         .env("SCCACHE_GCS_KEY_PATH", "foo.json");
 
     cmd.assert().failure().stderr(predicate::str::contains(
@@ -34,9 +35,8 @@ fn test_gcp_arg_check() -> Result<()> {
 
     stop_sccache()?;
 
-    let mut cmd = Command::new(SCCACHE_BIN.as_os_str());
+    let mut cmd = Command::sccache();
     cmd.arg("--start-server")
-        .env("SCCACHE_LOG", "debug")
         .env("SCCACHE_GCS_OAUTH_URL", "http://127.0.0.1");
 
     cmd.assert().failure().stderr(predicate::str::contains(
@@ -44,9 +44,8 @@ fn test_gcp_arg_check() -> Result<()> {
     ));
 
     stop_sccache()?;
-    let mut cmd = Command::new(SCCACHE_BIN.as_os_str());
+    let mut cmd = Command::sccache();
     cmd.arg("--start-server")
-        .env("SCCACHE_LOG", "debug")
         .env("SCCACHE_GCS_BUCKET", "b")
         .env("SCCACHE_GCS_CREDENTIALS_URL", "not_valid_url//127.0.0.1")
         .env("SCCACHE_GCS_KEY_PATH", "foo.json");
@@ -65,9 +64,8 @@ fn test_gcp_arg_check() -> Result<()> {
 fn test_s3_invalid_args() -> Result<()> {
     stop_sccache()?;
 
-    let mut cmd = Command::new(SCCACHE_BIN.as_os_str());
+    let mut cmd = Command::sccache();
     cmd.arg("--start-server")
-        .env("SCCACHE_LOG", "debug")
         .env("SCCACHE_BUCKET", "test")
         .env("SCCACHE_REGION", "us-east-1")
         .env("AWS_ACCESS_KEY_ID", "invalid_ak")
@@ -91,11 +89,10 @@ fn write_empty_preprocessor_entry(cache_dir: &Path) -> Result<String> {
 }
 
 fn debug_preprocessor_cache_cmd(tempdir: &Path) -> Command {
-    let mut cmd = Command::new(SCCACHE_BIN.as_os_str());
+    let mut cmd = Command::sccache();
     // Keep any user config out, and on Linux point the default cache dir
     // somewhere empty.
     cmd.arg("--debug-preprocessor-cache")
-        .env_remove("SCCACHE_DIR")
         .env("SCCACHE_CONF", tempdir.join("missing-config"))
         .env("XDG_CACHE_HOME", tempdir.join("xdg-cache"));
     cmd
@@ -141,20 +138,20 @@ fn test_debug_preprocessor_cache_uses_config_disk_dir() -> Result<()> {
 
 #[test]
 fn test_clap_output_and_exit_codes() {
-    Command::new(SCCACHE_BIN.as_os_str())
+    Command::sccache()
         .arg("--version")
         .assert()
         .success()
         .stdout(predicate::str::contains(env!("CARGO_PKG_VERSION")))
         .stderr("");
 
-    Command::new(SCCACHE_BIN.as_os_str())
+    Command::sccache()
         .arg("--help")
         .assert()
         .success()
         .stdout(predicate::str::contains("Usage:"));
 
-    Command::new(SCCACHE_BIN.as_os_str())
+    Command::sccache()
         .arg("--no-such-option")
         .assert()
         .code(2)

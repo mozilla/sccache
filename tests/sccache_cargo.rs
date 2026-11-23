@@ -4,17 +4,19 @@
 //! http://creativecommons.org/publicdomain/zero/1.0/
 
 pub mod helpers;
+mod util;
 
 use anyhow::{Context, Result, bail};
-use helpers::{CARGO, CRATE_DIR, cargo_clean, stop_sccache};
+use helpers::{CRATE_DIR, cargo_clean, stop_sccache};
 
 use assert_cmd::prelude::*;
 use fs_err as fs;
-use helpers::{SCCACHE_BIN, SccacheTest};
+use helpers::SccacheTest;
 use predicates::prelude::*;
 use serial_test::serial;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use util::TestCommandExt;
 
 #[macro_use]
 extern crate log;
@@ -49,10 +51,8 @@ fn test_rust_cargo_build_readonly() -> Result<()> {
 fn test_run_log_no_perm() -> Result<()> {
     trace!("sccache with log");
     stop_sccache()?;
-    let mut cmd = Command::new(SCCACHE_BIN.as_os_str());
-    cmd.arg("gcc")
-        .env("SCCACHE_ERROR_LOG", "/no-perm.log") // Should not work
-        .env("SCCACHE_LOG", "debug");
+    let mut cmd = Command::sccache();
+    cmd.arg("gcc").env("SCCACHE_ERROR_LOG", "/no-perm.log"); // Should not work
 
     cmd.assert().failure().stderr(predicate::str::contains(
         "Cannot open/write log file '/no-perm.log'",
@@ -71,10 +71,8 @@ fn test_run_log() -> Result<()> {
         .tempdir()
         .context("Failed to create tempdir")?;
     let tmppath = tempdir.path().join("perm.log");
-    let mut cmd = Command::new(SCCACHE_BIN.as_os_str());
-    cmd.arg("--start-server")
-        .env("SCCACHE_ERROR_LOG", &tmppath) // Should not work
-        .env("SCCACHE_LOG", "debug");
+    let mut cmd = Command::sccache();
+    cmd.arg("--start-server").env("SCCACHE_ERROR_LOG", &tmppath); // Should not work
 
     cmd.assert().success();
     stop_sccache()?;
@@ -158,7 +156,7 @@ fn test_rust_cargo_cmd(cmd: &str, test_info: SccacheTest) -> Result<()> {
     cargo_clean(&test_info)?;
 
     // Now build the crate with cargo.
-    Command::new(CARGO.as_os_str())
+    Command::cargo()
         .args([cmd, "--color=never"])
         .envs(test_info.env.iter().cloned())
         .current_dir(CRATE_DIR.as_os_str())
@@ -167,7 +165,7 @@ fn test_rust_cargo_cmd(cmd: &str, test_info: SccacheTest) -> Result<()> {
         .try_success()?;
     // Clean it so we can build it again.
     cargo_clean(&test_info)?;
-    Command::new(CARGO.as_os_str())
+    Command::cargo()
         .args([cmd, "--color=always"])
         .envs(test_info.env.iter().cloned())
         .current_dir(CRATE_DIR.as_os_str())
@@ -198,7 +196,7 @@ fn restart_sccache(
 
     trace!("sccache --start-server");
 
-    let mut cmd = Command::new(SCCACHE_BIN.as_os_str());
+    let mut cmd = Command::sccache();
     cmd.arg("--start-server");
     cmd.env("SCCACHE_DIR", &cache_dir);
 
@@ -231,7 +229,7 @@ fn test_rust_cargo_cmd_readonly(cmd: &str, test_info: SccacheTest) -> Result<()>
     )?;
 
     // Now build the crate with cargo.
-    Command::new(CARGO.as_os_str())
+    Command::cargo()
         .args([cmd, "--color=never"])
         .envs(test_info.env.iter().cloned())
         .current_dir(CRATE_DIR.as_os_str())
@@ -258,7 +256,7 @@ fn test_rust_cargo_cmd_readonly(cmd: &str, test_info: SccacheTest) -> Result<()>
         &test_info,
         Some(vec![("SCCACHE_LOCAL_RW_MODE".into(), "READ_WRITE".into())]),
     )?;
-    Command::new(CARGO.as_os_str())
+    Command::cargo()
         .args([cmd, "--color=always"])
         .envs(test_info.env.iter().cloned())
         .current_dir(CRATE_DIR.as_os_str())
@@ -284,7 +282,7 @@ fn test_rust_cargo_cmd_readonly(cmd: &str, test_info: SccacheTest) -> Result<()>
         &test_info,
         Some(vec![("SCCACHE_LOCAL_RW_MODE".into(), "READ_ONLY".into())]),
     )?;
-    Command::new(CARGO.as_os_str())
+    Command::cargo()
         .args([cmd, "--color=always"])
         .envs(test_info.env.iter().cloned())
         .current_dir(CRATE_DIR.as_os_str())
@@ -312,7 +310,7 @@ fn test_rust_cargo_cmd_readonly(cmd: &str, test_info: SccacheTest) -> Result<()>
 fn test_rust_cargo_env_dep(test_info: SccacheTest) -> Result<()> {
     cargo_clean(&test_info)?;
     // Now build the crate with cargo.
-    Command::new(CARGO.as_os_str())
+    Command::cargo()
         .args(["run", "--color=never"])
         .envs(test_info.env.iter().cloned())
         .current_dir(CRATE_DIR.as_os_str())
@@ -323,7 +321,7 @@ fn test_rust_cargo_env_dep(test_info: SccacheTest) -> Result<()> {
     // Clean it so we can build it again.
     cargo_clean(&test_info)?;
 
-    Command::new(CARGO.as_os_str())
+    Command::cargo()
         .args(["run", "--color=always"])
         .envs(test_info.env.iter().cloned())
         .env("TEST_ENV_VAR", "OTHER_VALUE")
@@ -372,7 +370,7 @@ fn test_rust_cargo_cmd_readonly_preemtive_block() -> Result<()> {
 
     // Now build the crate with cargo.
     // Assert that our cache miss is due to the readonly storage wrapper, not due to the underlying disk cache.
-    Command::new(CARGO.as_os_str())
+    Command::cargo()
         .args(["build", "--color=never"])
         .envs(test_info.env.iter().cloned())
         .current_dir(CRATE_DIR.as_os_str())
@@ -428,7 +426,7 @@ fn build_checkout(test_info: &SccacheTest, name: &str) -> Result<PathBuf> {
 /// Returns the checkout's target directory.
 fn cargo_build(test_info: &SccacheTest, checkout: &Path) -> Result<PathBuf> {
     let target_dir = checkout.join("target");
-    Command::new(CARGO.as_os_str())
+    Command::cargo()
         // `--target-dir` rather than `CARGO_TARGET_DIR`,
         // since cargo forwards `CARGO_*` to rustc and sccache hashes them.
         .args(["build", "--color=never", "--target-dir"])
@@ -569,7 +567,7 @@ fn test_rust_cargo_basedirs_other_checkout() -> Result<()> {
 
     write_out_dir_crate(&a)?;
     cargo_build(&test_info, &a)?;
-    Command::new(SCCACHE_BIN.as_os_str())
+    Command::sccache()
         .arg("--zero-stats")
         .assert()
         .try_success()?;
@@ -613,7 +611,7 @@ fn test_rust_cargo_incremental_refused_by_default() -> Result<()> {
     // invocation, including the `rustc -vV` probe `cargo clean` makes.
     cargo_clean(&test_info)?;
 
-    Command::new(CARGO.as_os_str())
+    Command::cargo()
         .args(["build", "--color=never"])
         .envs(test_info.env.iter().cloned())
         .env("CARGO_INCREMENTAL", "1")
@@ -635,7 +633,7 @@ fn build_incremental_twice(test_info: &SccacheTest, allow: &str) -> Result<[bool
     let mut sessions = [false; 2];
     for session in &mut sessions {
         cargo_clean(test_info)?;
-        Command::new(CARGO.as_os_str())
+        Command::cargo()
             .args(["build", "--color=never"])
             .envs(test_info.env.iter().cloned())
             .env("CARGO_INCREMENTAL", "1")
@@ -771,7 +769,7 @@ fn test_rust_cargo_proc_macro_in_another_target_dir() -> Result<()> {
         .cloned()
         .collect::<Vec<_>>();
     for target_dir in ["t1", "target-two"] {
-        Command::new(CARGO.as_os_str())
+        Command::cargo()
             .args(["build", "--color=never", "--target-dir"])
             .arg(root.join(target_dir))
             .envs(env.iter().cloned())
