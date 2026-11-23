@@ -34,6 +34,11 @@ The preprocessor cache may silently produce stale results in any of the followin
 
 - When a source file was compiled and its results were cached, a header file would have been included if it existed, but it did
   not exist at the time. sccache does not know about such files, so it cannot invalidate the result if the header file later exists.
+  With `basedirs` this widens: a header that exists in one checkout and not in another, at a position the compiler searches first
+  (the including file's own directory, for a quoted include, or an earlier `-I`), makes the two checkouts resolve the same
+  `#include` to different files. sccache only remembers the files the preprocessor opened, never the directories it looked in and
+  found nothing, so it cannot tell the two apart and the second checkout can be handed the first one's object. Compiler search-path
+  precedence is not modelled.
 - A macro such as `__TIME__` (etc) is used in the source code and `ignore_time_macros` is enabled
 - There are other external factors influencing the preprocessing result that sccache does not know about
 
@@ -44,6 +49,11 @@ seconds before being hashed are not remembered, as their timestamps may not tell
 With MSVC, this mode preprocesses with `-E` instead of `-EP`, so that the line markers name the included files. The absolute
 paths in them become part of the hash, so builds in different directories generally do not share cache entries unless
 `SCCACHE_BASEDIRS` covers them. Turning the mode off restores `-EP`.
+
+When [`basedirs`](Configuration.md) is set, headers under a base directory are cached under the path suffix excluding
+the base, so that multiple checkouts that differ only by the base share a cache entry. A single translation unit uses
+at most one base directory: the one containing the input file, or the working directory. Headers under other basedirs
+are not shared.
 
 Configuration options and their default values:
 

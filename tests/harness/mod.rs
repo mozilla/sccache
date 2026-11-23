@@ -469,7 +469,8 @@ impl DistSystem {
             }
             ForkResult::Child => {
                 env_logger::try_init().unwrap();
-                match server.start().unwrap() {}
+                let Err(error) = server.start();
+                panic!("failed to start test server: {error:?}");
             }
         };
 
