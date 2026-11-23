@@ -49,7 +49,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use bytes::Bytes;
 
-use crate::cache::{Cache, CacheMode, CacheWrite, Storage};
+use crate::cache::{Cache, CacheMode, CacheStorage, CacheWrite, PreprocessorCacheStorage, Storage};
 use crate::compiler::PreprocessorCacheEntry;
 use crate::errors::*;
 
@@ -535,7 +535,7 @@ impl BackoffStorage {
 }
 
 #[async_trait]
-impl Storage for BackoffStorage {
+impl CacheStorage for BackoffStorage {
     async fn get(&self, key: &str) -> Result<Cache> {
         self.gated_get(key).await
     }
@@ -580,16 +580,22 @@ impl Storage for BackoffStorage {
         self.inner.multilevel_stats()
     }
 
-    fn preprocessor_cache_mode_config(&self) -> crate::config::PreprocessorCacheModeConfig {
-        self.inner.preprocessor_cache_mode_config()
-    }
-
     fn basedirs(&self) -> &[Vec<u8>] {
         self.inner.basedirs()
     }
 
-    async fn get_path(&self, key: &str) -> crate::cache::storage::GetPathResult {
+    async fn get_path(&self, key: &str) -> Result<crate::cache::storage::GetPathResult> {
         self.inner.get_path(key).await
+    }
+}
+
+/// The preprocessor-cache surface forwards untouched: preprocessor entries
+/// are a local-disk concern, never a stalled-backend read the gate exists
+/// for.
+#[async_trait]
+impl PreprocessorCacheStorage for BackoffStorage {
+    fn preprocessor_cache_mode_config(&self) -> crate::config::PreprocessorCacheModeConfig {
+        self.inner.preprocessor_cache_mode_config()
     }
 
     async fn get_preprocessor_cache_entry(
@@ -637,7 +643,7 @@ mod test {
     }
 
     #[async_trait]
-    impl Storage for SlowMissingLevel {
+    impl CacheStorage for SlowMissingLevel {
         async fn get(&self, _key: &str) -> Result<Cache> {
             self.reads.fetch_add(1, Ordering::SeqCst);
             tokio::time::sleep(self.delay).await;
@@ -661,6 +667,9 @@ mod test {
         }
     }
 
+    #[async_trait]
+    impl PreprocessorCacheStorage for SlowMissingLevel {}
+
     /// A level serving in-memory entries, counting reads.
     struct CountingLevel {
         data: Mutex<std::collections::HashMap<String, Vec<u8>>>,
@@ -681,7 +690,7 @@ mod test {
     }
 
     #[async_trait]
-    impl Storage for CountingLevel {
+    impl CacheStorage for CountingLevel {
         async fn get(&self, key: &str) -> Result<Cache> {
             self.reads.fetch_add(1, Ordering::SeqCst);
             let data = self.data.lock().unwrap();
@@ -715,6 +724,9 @@ mod test {
             Ok(None)
         }
     }
+
+    #[async_trait]
+    impl PreprocessorCacheStorage for CountingLevel {}
 
     fn miss_is(result: &Result<Cache>) -> bool {
         matches!(result, Ok(Cache::Miss))
@@ -1067,7 +1079,7 @@ mod test {
             assert!(matches!(storage.check().await, Ok(CacheMode::ReadWrite)));
             assert!(matches!(
                 storage.get_path("k").await,
-                crate::cache::storage::GetPathResult::Unsupported
+                Ok(crate::cache::storage::GetPathResult::Unsupported)
             ));
         });
         match inner.data.lock().unwrap().get("k") {
@@ -1143,7 +1155,7 @@ mod test {
     }
 
     #[async_trait]
-    impl Storage for SlowRawLevel {
+    impl CacheStorage for SlowRawLevel {
         async fn get(&self, _key: &str) -> Result<Cache> {
             Ok(Cache::Miss)
         }
@@ -1170,6 +1182,9 @@ mod test {
             Ok(None)
         }
     }
+
+    #[async_trait]
+    impl PreprocessorCacheStorage for SlowRawLevel {}
 
     #[test]
     fn raw_reads_carry_the_same_gate_contract_as_cache_reads() {
@@ -1225,14 +1240,6 @@ mod test {
         assert!(!storage2.gate().is_open(), "one answered raw read resets");
     }
 
-    /// A waker that does nothing: the cancelled-read test polls a future
-    /// once and drops it, so nothing ever needs waking.
-    struct NoopWake;
-
-    impl std::task::Wake for NoopWake {
-        fn wake(self: Arc<Self>) {}
-    }
-
     #[test]
     fn a_cancelled_read_records_a_timeout_and_can_trip_the_gate() {
         // The timer-race fix, pinned deterministically: a gated read that is
@@ -1250,8 +1257,10 @@ mod test {
             Duration::from_secs(60),
             TimeBudget::CallerOwned,
         );
-        let waker = std::task::Waker::from(Arc::new(NoopWake));
-        let mut cx = std::task::Context::from_waker(&waker);
+        // A waker that does nothing: the read is polled once and dropped,
+        // so nothing ever needs waking.
+        let waker = std::task::Waker::noop();
+        let mut cx = std::task::Context::from_waker(waker);
 
         runtime.block_on(async {
             for round in 0..3 {

@@ -1901,7 +1901,7 @@ impl ChainSlowLevel {
 }
 
 #[async_trait]
-impl Storage for ChainSlowLevel {
+impl CacheStorage for ChainSlowLevel {
     async fn get(&self, _key: &str) -> Result<Cache> {
         self.reads.fetch_add(1, Ordering::SeqCst);
         sleep(self.delay).await;
@@ -1924,6 +1924,9 @@ impl Storage for ChainSlowLevel {
         Ok(None)
     }
 }
+
+#[async_trait]
+impl PreprocessorCacheStorage for ChainSlowLevel {}
 
 #[test]
 fn the_read_deadline_splits_by_levels_left() {
@@ -2192,7 +2195,7 @@ impl ChainCountingLevel {
 }
 
 #[async_trait]
-impl Storage for ChainCountingLevel {
+impl CacheStorage for ChainCountingLevel {
     async fn get(&self, key: &str) -> Result<Cache> {
         self.reads.fetch_add(1, Ordering::SeqCst);
         let data = self.data.lock().unwrap();
@@ -2226,3 +2229,6 @@ impl Storage for ChainCountingLevel {
         Ok(None)
     }
 }
+
+#[async_trait]
+impl PreprocessorCacheStorage for ChainCountingLevel {}
