@@ -23,12 +23,11 @@ statistics show up as `LLVM IR`.
 * the content of the index file passed with `-fthinlto-index=`. The index
   records a hash of every module the job imports functions from, so a change in
   any of them is a cache miss even if the module itself didn't change;
-* with `sccache --dtlto`, also the content of the files lld lists as the job's
-  inputs: the modules it imports from, and files every job needs, such as a
-  sample profile. This doesn't rely on the hashes in the index, which are
-  missing for bitcode written without one. Each file is hashed once per link;
-* the content of profiles passed with `-fprofile-sample-use=`,
-  `-fauto-profile=` or `-fprofile-list=`;
+* with `sccache --dtlto`, also the content of every file lld lists as the
+  job's inputs: its module and index, the modules it imports from, and files
+  every job needs, such as a sample profile. This doesn't rely on the hashes in
+  the index, which are missing for bitcode written without one, nor on the
+  order lld lists the files in. Each file is hashed once per link;
 * the compiler and the other arguments, as for any compilation.
 
 The *path* of the index file is not part of the key: lld names the files after
@@ -69,6 +68,10 @@ lld runs `sccache --dtlto <jobs.json>`, which runs the jobs in parallel, as many
 at a time as there are CPUs or as `SCCACHE_DTLTO_JOBS` says. Once a job fails,
 no more jobs are started; the running ones finish, `sccache --dtlto` exits with
 the exit code of the first failure, and lld fails the link.
+
+`sccache --dtlto` doesn't take `make` jobserver tokens: the jobs of one link
+run under that link's single job slot, like lld's in-process ThinLTO threads.
+Lower `SCCACHE_DTLTO_JOBS` to leave room for the rest of the build.
 
 To keep another distributor, lld 22 and newer can put sccache in front of each
 backend command instead:
