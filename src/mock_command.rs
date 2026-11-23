@@ -183,14 +183,14 @@ impl CommandChild for Child {
             mut token,
         } = self;
         let ret = inner.wait().await;
-        token.exited(ret.as_ref().ok());
+        token.record_exit(ret.as_ref().ok());
         ret
     }
 
     async fn wait_with_output(self) -> io::Result<Output> {
         let Child { inner, mut token } = self;
         let ret = inner.wait_with_output().await;
-        token.exited(ret.as_ref().ok().map(|o| &o.status));
+        token.record_exit(ret.as_ref().ok().map(|o| &o.status));
         ret
     }
 }
@@ -306,6 +306,7 @@ impl RunCommand for AsyncCommand {
         // path, the child keeps it and opens it the way it would have without
         // sccache, so it stays within that build's (or a system-wide) limit
         // instead of getting our private pool.
+        let mut shared = false;
         if !(self.share_jobserver && names_fifo_jobserver(&inner)) {
             inner.env_remove("MAKEFLAGS");
             inner.env_remove("MFLAGS");
@@ -318,6 +319,7 @@ impl RunCommand for AsyncCommand {
             // not to share, and the callers that spawn `rustc` ask for it.
             if self.share_jobserver {
                 token.configure(&mut inner);
+                shared = true;
             }
         }
 
@@ -326,6 +328,9 @@ impl RunCommand for AsyncCommand {
             .kill_on_drop(true)
             .spawn()
             .with_context(|| format!("failed to spawn {:?}", inner))?;
+        if shared {
+            token.mark_shared();
+        }
 
         Ok(Child {
             inner: child,
@@ -856,6 +861,9 @@ mod test {
         ]));
     }
 
+    #[cfg(target_os = "linux")]
+    const LEAK_TOKEN_AND_SIGKILL: &str = r#"a=${CARGO_MAKEFLAGS##*--jobserver-auth=}; [ "$(head -c1 /proc/self/fd/${a%,*} | wc -c)" -eq 1 ] && kill -9 $$"#;
+
     #[test]
     #[cfg(target_os = "linux")]
     fn killed_child_does_not_leak_jobserver_tokens() {
@@ -865,10 +873,7 @@ mod test {
             let client = Client::new_num(2);
             let mut creator = <ProcessCommandCreator as CommandCreator>::new(&client);
             let mut cmd = creator.new_command("/bin/sh");
-            cmd.args(&[
-                "-c",
-                r#"a=${CARGO_MAKEFLAGS##*--jobserver-auth=}; [ "$(head -c1 /proc/self/fd/${a%,*} | wc -c)" -eq 1 ] && kill -9 $$"#,
-            ]);
+            cmd.args(&["-c", LEAK_TOKEN_AND_SIGKILL]);
             cmd.share_jobserver();
             let timeout = std::time::Duration::from_secs(10);
             let child = async { cmd.spawn().await.unwrap().wait().await.unwrap() };
@@ -896,10 +901,7 @@ mod test {
             hold.args(&["-c", "sleep 30"]);
             let hold = hold.spawn().await.unwrap();
             let mut victim = creator.new_command("/bin/sh");
-            victim.args(&[
-                "-c",
-                r#"a=${CARGO_MAKEFLAGS##*--jobserver-auth=}; [ "$(head -c1 /proc/self/fd/${a%,*} | wc -c)" -eq 1 ] && kill -9 $$"#,
-            ]);
+            victim.args(&["-c", LEAK_TOKEN_AND_SIGKILL]);
             victim.share_jobserver();
             let timeout = std::time::Duration::from_secs(10);
             let victim = async { victim.spawn().await.unwrap().wait().await.unwrap() };
@@ -909,12 +911,34 @@ mod test {
             let _held = (a.unwrap(), b.unwrap());
             let over =
                 tokio::time::timeout(std::time::Duration::from_millis(200), client.acquire());
-            assert!(over.await.is_err(), "a fresh pool ignored the running child");
+            assert!(
+                over.await.is_err(),
+                "a fresh pool ignored the running child"
+            );
             drop(hold);
             tokio::time::timeout(timeout, client.acquire())
                 .await
                 .unwrap()
                 .unwrap();
+        });
+    }
+
+    #[test]
+    fn failed_spawn_does_not_retire_jobserver_pool() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let client = Client::new_num(1);
+            let pool_replaced = client.watch_pool();
+            let mut creator = <ProcessCommandCreator as CommandCreator>::new(&client);
+            let tempdir = tempfile::tempdir().unwrap();
+            let mut cmd = creator.new_command(tempdir.path().join("no-such-binary"));
+            cmd.share_jobserver();
+            assert!(cmd.spawn().await.is_err());
+            assert!(
+                !pool_replaced(),
+                "a failed spawn should not retire the jobserver pool"
+            );
+            client.acquire().await.unwrap();
         });
     }
 }

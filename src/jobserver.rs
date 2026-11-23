@@ -55,7 +55,7 @@ pub struct Acquired {
     pool: Option<Arc<Pool>>,
     client: Client,
     shared: bool,
-    exited: bool,
+    exited_on_its_own: bool,
     _slot: Option<OwnedSemaphorePermit>,
 }
 
@@ -134,7 +134,7 @@ impl Client {
                 pool: None,
                 client: self.clone(),
                 shared: false,
-                exited: false,
+                exited_on_its_own: false,
                 _slot: None,
             });
         };
@@ -162,7 +162,7 @@ impl Client {
                         pool: Some(pool),
                         client: self.clone(),
                         shared: false,
-                        exited: false,
+                        exited_on_its_own: false,
                         _slot: Some(slot),
                     });
                 }
@@ -192,25 +192,36 @@ impl Client {
             });
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn watch_pool(&self) -> impl Fn() -> bool {
+        let rx = self.current.as_ref().expect("private pool").subscribe();
+        move || rx.has_changed().unwrap_or(false)
+    }
 }
 
 impl Acquired {
-    pub fn configure(&mut self, cmd: &mut Command) {
+    pub fn configure(&self, cmd: &mut Command) {
         if let Some(pool) = &self.pool {
-            self.shared = true;
             pool.inner.configure(cmd);
         } else if let Some(fifo) = &self.client.fifo {
             fifo.configure(cmd);
         }
     }
 
-    pub fn exited(&mut self, status: Option<&ExitStatus>) {
+    pub fn mark_shared(&mut self) {
+        if self.pool.is_some() {
+            self.shared = true;
+        }
+    }
+
+    pub fn record_exit(&mut self, status: Option<&ExitStatus>) {
         #[cfg(unix)]
         let on_its_own =
             status.is_some_and(|s| std::os::unix::process::ExitStatusExt::signal(s).is_none());
         #[cfg(not(unix))]
         let on_its_own = status.is_some();
-        self.exited = on_its_own;
+        self.exited_on_its_own = on_its_own;
     }
 }
 
@@ -218,7 +229,7 @@ impl Drop for Acquired {
     fn drop(&mut self) {
         // A killed compiler may have taken tokens directly from the pipe.
         if self.shared
-            && !self.exited
+            && !self.exited_on_its_own
             && let Some(pool) = &self.pool
         {
             self.client.retire(pool);
