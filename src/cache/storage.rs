@@ -217,6 +217,27 @@ pub(in crate::cache) fn decode_remote_cache_read(
     }
 }
 
+/// The client waits 10s by default for the server to start, and the check runs
+/// before the server is ready. A backend with a retry layer (GHA) can retry a
+/// rate-limited probe for much longer than that, so cap each probe and let the
+/// check fall back as it would for a rate limit.
+#[cfg(any_cache_remote)]
+const CHECK_PROBE_TIMEOUT: Duration = Duration::from_secs(4);
+
+#[cfg(any_cache_remote)]
+async fn bounded_probe<T>(
+    probe: impl std::future::Future<Output = opendal::Result<T>>,
+) -> opendal::Result<T> {
+    tokio::time::timeout(CHECK_PROBE_TIMEOUT, probe)
+        .await
+        .unwrap_or_else(|_| {
+            Err(opendal::Error::new(
+                opendal::ErrorKind::RateLimited,
+                format!("no answer within {CHECK_PROBE_TIMEOUT:?}"),
+            ))
+        })
+}
+
 /// Implement storage for operator.
 #[cfg(any_cache_remote)]
 #[async_trait]
@@ -250,7 +271,7 @@ impl CacheStorage for RemoteStorage {
         let path = ".sccache_check";
 
         // Read is required, return error directly if we can't read .
-        match self.operator.read(path).await {
+        match bounded_probe(self.operator.read(path)).await {
             Ok(_) => (),
             // Read not exist file with not found is ok.
             Err(err) if err.kind() == ErrorKind::NotFound => (),
@@ -276,7 +297,7 @@ impl CacheStorage for RemoteStorage {
             return Ok(mode);
         }
 
-        let can_write = match self.operator.write(path, "Hello, World!").await {
+        let can_write = match bounded_probe(self.operator.write(path, "Hello, World!")).await {
             Ok(_) => true,
             Err(err) if err.kind() == ErrorKind::AlreadyExists => true,
             // Tolerate all other write errors because we can do read at least.
@@ -409,6 +430,26 @@ mod test {
                 error.downcast_ref::<Error>().map(Error::kind),
                 Some(ErrorKind::Unexpected)
             );
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn bounded_probe_gives_up_on_a_stalled_backend() {
+            let start = tokio::time::Instant::now();
+            let result = bounded_probe(std::future::pending::<opendal::Result<()>>()).await;
+
+            assert_eq!(result.unwrap_err().kind(), ErrorKind::RateLimited);
+            assert_eq!(start.elapsed(), CHECK_PROBE_TIMEOUT);
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn bounded_probe_keeps_the_backend_answer() {
+            let result = bounded_probe(async {
+                tokio::time::sleep(CHECK_PROBE_TIMEOUT / 2).await;
+                Err::<(), _>(Error::new(ErrorKind::NotFound, "no check file yet"))
+            })
+            .await;
+
+            assert_eq!(result.unwrap_err().kind(), ErrorKind::NotFound);
         }
     }
 }
