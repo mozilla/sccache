@@ -217,16 +217,16 @@ pub struct DistClientContainer {
 #[cfg(feature = "dist-client")]
 pub struct DistClientConfig {
     // Reusable items tied to an SccacheServer instance
-    pub pool: tokio::runtime::Handle,
+    pub(crate) pool: tokio::runtime::Handle,
 
     // From the static dist configuration
     scheduler_url: Option<config::HTTPUrl>,
     auth: config::DistAuth,
-    pub cache_dir: PathBuf,
-    pub toolchain_cache_size: u64,
-    pub toolchains: Vec<config::DistToolchainConfig>,
-    pub rewrite_includes_only: bool,
-    pub force_remote_build: bool,
+    pub(crate) cache_dir: PathBuf,
+    pub(crate) toolchain_cache_size: u64,
+    pub(crate) toolchains: Vec<config::DistToolchainConfig>,
+    pub(crate) rewrite_includes_only: bool,
+    pub(crate) force_remote_build: bool,
 }
 
 #[cfg(feature = "dist-client")]
