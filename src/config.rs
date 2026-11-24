@@ -2289,6 +2289,21 @@ fn test_compile_basedirs() {
             == expected.as_slice(),
         cfg!(windows)
     );
+
+    #[cfg(unix)]
+    let invalid = {
+        use std::os::unix::ffi::OsStringExt;
+        OsString::from_vec(vec![0xff])
+    };
+    #[cfg(windows)]
+    let invalid = {
+        use std::os::windows::ffi::OsStringExt;
+        OsString::from_wide(&[0xd800])
+    };
+    assert_eq!(
+        compile_basedirs(&[("SCCACHE_BASEDIRS".into(), invalid)], &configured),
+        configured.as_slice()
+    );
 }
 
 #[test]
