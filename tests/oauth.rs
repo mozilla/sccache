@@ -53,6 +53,7 @@ fn config_with_dist_auth(
         dist: sccache::config::DistConfig {
             auth: auth_config,
             cache_dir: tmpdir.join("unused-cache"),
+            rewrite_includes_only: true,
             ..sccache::config::DistConfig::default()
         },
         server_startup_timeout_ms: None,
