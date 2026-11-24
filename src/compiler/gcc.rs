@@ -2603,7 +2603,7 @@ mod test {
     fn test_parse_arguments_empty_args() {
         assert_eq!(
             CompilerArguments::NotCompilation,
-            parse_arguments_(vec!(), false)
+            parse_arguments_(vec![], false)
         );
     }
 

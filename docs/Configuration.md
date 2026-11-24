@@ -30,6 +30,9 @@ server_startup_timeout_ms = 10000
 # For Rust, also applies to the working directory, the CARGO_*
 # variables and the variables read with env!, such as OUT_DIR.
 #
+# For how basedirs interact with preprocessor cache mode, see
+# docs/Local.md.
+#
 # Example:
 #   basedir = ["/home/user/project"] results in the path prefix rewrite:
 #   "/home/user/project/src/main.c" -> "src/main.c"

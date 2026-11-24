@@ -476,8 +476,8 @@ impl DistSystem {
             }
             ForkResult::Child => {
                 env_logger::try_init().unwrap();
-                #[allow(unreachable_code)]
-                match server.start().expect("Server start itself never fails") {}
+                let Err(error) = server.start();
+                panic!("failed to start test server: {error:?}");
             }
         };
 
