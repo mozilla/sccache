@@ -2391,7 +2391,7 @@ fn test_multiarch_depfile_matches_compiler(preprocessor_cache_mode: bool) {
     stop_local_daemon();
 }
 
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(unix)]
 fn find_gcc_or_clang() -> Option<Compiler> {
     let compiler = find_compilers()
         .into_iter()
@@ -2402,7 +2402,7 @@ fn find_gcc_or_clang() -> Option<Compiler> {
     compiler
 }
 
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(unix)]
 fn restart_local_daemon_with(dir: &Path, cfg: &sccache::config::FileConfig) {
     write_json_cfg(dir, "sccache-cfg.json", cfg);
     stop_local_daemon();
@@ -2660,6 +2660,89 @@ fn test_basedirs_preprocessor_cache_checks_header_in_other_basedir() {
         assert_eq!(1, info.stats.cache_hits.all());
         assert_eq!(2, info.stats.cache_misses.all());
     });
+
+    stop_local_daemon();
+}
+
+/// `SCCACHE_BASEDIRS` set for each compile rather than for the server: each
+/// checkout names only its own root and the second one still hits.
+#[test_case(true ; "with preprocessor cache")]
+#[test_case(false ; "without preprocessor cache")]
+#[serial]
+#[cfg(unix)]
+fn test_basedirs_from_compile_env(preprocessor_cache_mode: bool) {
+    let _ = env_logger::try_init();
+    let tempdir = tempfile::Builder::new()
+        .prefix("sccache_system_test")
+        .tempdir()
+        .unwrap();
+    // The compiler sees the real path, not the macOS /var symlink.
+    let root = fs::canonicalize(tempdir.path()).unwrap();
+
+    let Some(compiler) = find_gcc_or_clang() else {
+        return;
+    };
+
+    let trees: Vec<PathBuf> = ["treea", "treeb", "treec"]
+        .iter()
+        .map(|name| root.join(name))
+        .collect();
+    let backdated =
+        filetime::FileTime::from_system_time(SystemTime::now() - Duration::from_secs(10));
+    for tree in &trees {
+        fs::create_dir_all(tree.join("inc")).unwrap();
+        let header = tree.join("inc").join("cfg.h");
+        fs::write(&header, "#define VALUE 42\n").unwrap();
+        let source = tree.join("main.c");
+        fs::write(
+            &source,
+            "#include \"cfg.h\"\nint value(void) { return VALUE; }\n",
+        )
+        .unwrap();
+        // Preprocessor cache mode refuses to record files modified during the
+        // compilation, and would not store an entry at all otherwise.
+        for file in [&header, &source] {
+            filetime::set_file_times(file, backdated, backdated).unwrap();
+        }
+    }
+
+    let sccache_cfg = sccache_client_cfg(&root, preprocessor_cache_mode);
+    restart_local_daemon_with(&root, &sccache_cfg);
+    zero_stats();
+
+    let compile = |tree: &Path, basedirs: Option<&Path>, hits: u64, misses: u64| {
+        let mut cmd = sccache_command();
+        cmd.args(compile_cmdline(
+            compiler.name,
+            &compiler.exe,
+            tree.join("main.c").to_str().unwrap(),
+            "main.o",
+            vec![
+                OsString::from(format!("-I{}", tree.join("inc").display())),
+                // Without the preprocessor cache only arguments like this one
+                // carry the tree into the key.
+                OsString::from(format!(
+                    "-fdebug-prefix-map={}=.",
+                    tree.join("inc").display()
+                )),
+            ],
+        ))
+        .current_dir(tree)
+        .envs(compiler.env_vars.clone());
+        if let Some(basedirs) = basedirs {
+            cmd.env("SCCACHE_BASEDIRS", basedirs);
+        }
+        cmd.assert().success();
+        get_stats(move |info| {
+            assert_eq!(hits, info.stats.cache_hits.all());
+            assert_eq!(misses, info.stats.cache_misses.all());
+        });
+    };
+
+    compile(&trees[0], Some(&trees[0]), 0, 1);
+    compile(&trees[1], Some(&trees[1]), 1, 1);
+    // Without it, the absolute paths keep the third tree apart.
+    compile(&trees[2], None, 1, 2);
 
     stop_local_daemon();
 }

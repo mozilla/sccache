@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::cache::CacheMode;
+use crate::util::env_var_name_matches;
 #[cfg(target_os = "windows")]
 use crate::util::normalize_win_path;
 use directories::ProjectDirs;
@@ -26,7 +27,9 @@ use serde::{
 };
 #[cfg(test)]
 use serial_test::serial;
+use std::borrow::Cow;
 use std::env;
+use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
@@ -1276,20 +1279,7 @@ fn config_from_env() -> Result<EnvConfig> {
         multilevel,
     };
 
-    // ======= Base directory =======
-    // Support multiple paths separated by ';' on Windows and ':' on other platforms
-    // to match PATH behavior.
-    #[cfg(target_os = "windows")]
-    let split_symbol = ';';
-    #[cfg(not(target_os = "windows"))]
-    let split_symbol = ':';
-    let basedirs = env::var_os("SCCACHE_BASEDIRS").map(|s| {
-        s.to_string_lossy()
-            .split(split_symbol)
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_owned())
-            .collect()
-    });
+    let basedirs = env::var_os("SCCACHE_BASEDIRS").map(|s| split_basedirs(&s.to_string_lossy()));
 
     let dist_cache_dir = env::var_os("SCCACHE_DIST_CLIENT_CACHE_DIR").map(PathBuf::from);
     let client_side_mode = bool_from_env_var("SCCACHE_CLIENT_SIDE")?;
@@ -1300,6 +1290,78 @@ fn config_from_env() -> Result<EnvConfig> {
         dist_cache_dir,
         client_side_mode,
     })
+}
+
+/// Split a `SCCACHE_BASEDIRS` value on `;` on Windows and `:` elsewhere, like `PATH`.
+fn split_basedirs(value: &str) -> Vec<String> {
+    #[cfg(target_os = "windows")]
+    let split_symbol = ';';
+    #[cfg(not(target_os = "windows"))]
+    let split_symbol = ':';
+    value
+        .split(split_symbol)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_owned())
+        .collect()
+}
+
+/// Normalize basedirs into the form `strip_basedirs` matches against: absolute,
+/// without `.` and `..`, with a trailing `/`, and on Windows with forward slashes
+/// and lowercase.
+fn normalize_basedirs(raw: Vec<String>) -> Result<Vec<Vec<u8>>> {
+    let mut basedirs = Vec::with_capacity(raw.len());
+    for d in raw {
+        let p = Utf8TypedPathBuf::from(d);
+        if !p.is_absolute() {
+            bail!("Basedir path must be absolute: {:?}", p);
+        }
+        let mut bytes = p.normalize().to_string().into_bytes();
+        // Only match complete path components.
+        bytes.push(b'/');
+        #[cfg(target_os = "windows")]
+        let bytes = normalize_win_path(&bytes);
+        if !basedirs.contains(&bytes) {
+            basedirs.push(bytes);
+        }
+    }
+    Ok(basedirs)
+}
+
+fn basedirs_display(basedirs: &[Vec<u8>]) -> Vec<Cow<'_, str>> {
+    basedirs
+        .iter()
+        .map(|b| String::from_utf8_lossy(b))
+        .collect()
+}
+
+/// The basedirs for one compile: `SCCACHE_BASEDIRS` from its environment when set,
+/// else the configured ones. An invalid value is ignored.
+pub fn compile_basedirs<'a>(
+    env_vars: &[(OsString, OsString)],
+    configured: &'a [Vec<u8>],
+) -> Cow<'a, [Vec<u8>]> {
+    const VAR: &str = "SCCACHE_BASEDIRS";
+    let Some((_, value)) = env_vars.iter().find(|(k, _)| env_var_name_matches(k, VAR)) else {
+        return Cow::Borrowed(configured);
+    };
+    let Some(value) = value.to_str() else {
+        warn!("Ignoring {VAR}: not valid UTF-8: {value:?}");
+        return Cow::Borrowed(configured);
+    };
+    match normalize_basedirs(split_basedirs(value)) {
+        Ok(basedirs) if basedirs == configured => Cow::Borrowed(configured),
+        Ok(basedirs) => {
+            debug!(
+                "Using basedirs from the compile environment: {:?}",
+                basedirs_display(&basedirs)
+            );
+            Cow::Owned(basedirs)
+        }
+        Err(e) => {
+            warn!("Ignoring {VAR}={value:?}: {e}");
+            Cow::Borrowed(configured)
+        }
+    }
 }
 
 // The directories crate changed the location of `config_dir` on macos in version 3,
@@ -1388,47 +1450,12 @@ impl Config {
             file_basedirs
         };
 
-        // Validate that all basedirs are absolute paths
-        // basedirs_raw is Vec<PathBuf>
-        let mut basedirs = Vec::with_capacity(basedirs_raw.len());
-        for d in basedirs_raw {
-            let p = Utf8TypedPathBuf::from(d);
-            if !p.is_absolute() {
-                bail!("Basedir path must be absolute: {:?}", p);
-            }
-            // Normalize basedir:
-            // remove double separators, cur_dirs, parent_dirs, trailing slashes
-            let p_norm = p.normalize();
-            let mut bytes = p_norm.to_string().into_bytes();
-
-            // Always add a trailing `/` to basedirs to ensure we only match complete path
-            // components
-            bytes.push(b'/');
-
-            // normalize windows paths: use slashes and lowercase
-            let normalized = {
-                #[cfg(target_os = "windows")]
-                {
-                    normalize_win_path(&bytes)
-                }
-
-                #[cfg(not(target_os = "windows"))]
-                {
-                    bytes
-                }
-            };
-            // push only if not already present
-            if !basedirs.contains(&normalized) {
-                basedirs.push(normalized);
-            }
-        }
-
+        let basedirs = normalize_basedirs(basedirs_raw)?;
         if !basedirs.is_empty() && log::log_enabled!(log::Level::Debug) {
-            let basedirs_str: Vec<String> = basedirs
-                .iter()
-                .map(|b| String::from_utf8_lossy(b).into_owned())
-                .collect();
-            debug!("Using basedirs for path normalization: {:?}", basedirs_str);
+            debug!(
+                "Using basedirs for path normalization: {:?}",
+                basedirs_display(&basedirs)
+            );
         }
 
         let client_side_mode = env_client_side_mode.unwrap_or(file_client_side_mode)
@@ -2223,6 +2250,45 @@ fn test_cache_mode_from_env_var() {
 
         assert_eq!(cache_mode, info.expected_cache_mode);
     }
+}
+
+#[test]
+fn test_compile_basedirs() {
+    #[cfg(not(target_os = "windows"))]
+    let (value, expected, relative) = (
+        "/env/a:/env/./b/:/env/a",
+        vec![b"/env/a/".to_vec(), b"/env/b/".to_vec()],
+        "/env/a:relative",
+    );
+    #[cfg(target_os = "windows")]
+    let (value, expected, relative) = (
+        "C:\\Env\\A;c:/env/./b/;c:/env/a",
+        vec![b"c:/env/a/".to_vec(), b"c:/env/b/".to_vec()],
+        "c:/env/a;relative",
+    );
+    let configured = normalize_basedirs(split_basedirs(if cfg!(windows) {
+        "c:/conf"
+    } else {
+        "/conf"
+    }))
+    .unwrap();
+    let env = |k: &str, v: &str| vec![(OsString::from(k), OsString::from(v))];
+
+    assert_eq!(compile_basedirs(&[], &configured), configured.as_slice());
+    assert_eq!(
+        compile_basedirs(&env("SCCACHE_BASEDIRS", value), &configured),
+        expected.as_slice()
+    );
+    assert!(compile_basedirs(&env("SCCACHE_BASEDIRS", ""), &configured).is_empty());
+    assert_eq!(
+        compile_basedirs(&env("SCCACHE_BASEDIRS", relative), &configured),
+        configured.as_slice()
+    );
+    assert_eq!(
+        compile_basedirs(&env("sccache_basedirs", value), &configured).as_ref()
+            == expected.as_slice(),
+        cfg!(windows)
+    );
 }
 
 #[test]

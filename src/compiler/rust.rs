@@ -21,6 +21,7 @@ use crate::compiler::{
 };
 #[cfg(feature = "dist-client")]
 use crate::compiler::{DistPackagers, NoopOutputsRewriter};
+use crate::config::compile_basedirs;
 #[cfg(feature = "dist-client")]
 use crate::dist::pkg;
 #[cfg(feature = "dist-client")]
@@ -1994,7 +1995,7 @@ where
         _cache_control: CacheControl,
     ) -> Result<HashResult<T>> {
         trace!("[{}]: generate_hash_key", self.parsed_args.crate_name);
-        let basedirs = storage.basedirs();
+        let basedirs = &*compile_basedirs(&env_vars, storage.basedirs());
         // Keep the incremental directory out of the key, and out of the dep-info and
         // file-names runs so they don't touch it.
         let incremental = self.parsed_args.arguments.iter().any(is_incremental_arg);
@@ -5015,6 +5016,56 @@ foo.rs:
         // A basedir nothing lives under leaves the key as it was.
         let elsewhere = basedir(&std::env::temp_dir().join("sccache-elsewhere"));
         assert_eq!(key(&a, "x", vec![]), key(&a, "x", vec![elsewhere]));
+    }
+
+    /// `SCCACHE_BASEDIRS` in the compile environment replaces the configured basedirs.
+    #[test]
+    fn test_hash_basedirs_from_compile_env() {
+        fn key(f: &TestFixture, env_basedirs: Option<&OsStr>, configured: Vec<Vec<u8>>) -> String {
+            let root = f.tempdir.path();
+            let mut env_vars: Vec<(OsString, OsString)> =
+                vec![("CARGO_MANIFEST_DIR".into(), root.into())];
+            env_vars.extend(env_basedirs.map(|v| ("SCCACHE_BASEDIRS".into(), v.into())));
+            hash_key_with(
+                f,
+                &[
+                    "--emit",
+                    "link",
+                    "foo.rs",
+                    "--out-dir",
+                    "out",
+                    "--crate-name",
+                    "foo",
+                    "--crate-type",
+                    "lib",
+                ],
+                &env_vars,
+                &[],
+                nothing,
+                MockStorage::new(None, false).with_basedirs(configured),
+            )
+        }
+
+        let a = TestFixture::new();
+        let b = TestFixture::new();
+        let a_root = a.tempdir.path().as_os_str();
+        let b_root = b.tempdir.path().as_os_str();
+        let both = vec![basedir(a.tempdir.path()), basedir(b.tempdir.path())];
+        // Each checkout names only its own root and still shares the key.
+        assert_eq!(key(&a, Some(a_root), vec![]), key(&b, Some(b_root), vec![]));
+        assert_eq!(key(&a, Some(a_root), vec![]), key(&a, None, both.clone()));
+        // An empty value turns the configured basedirs off.
+        assert_ne!(
+            key(&a, Some(OsStr::new("")), both.clone()),
+            key(&b, Some(OsStr::new("")), both.clone())
+        );
+        assert_eq!(
+            key(&a, Some(OsStr::new("")), both.clone()),
+            key(&a, None, vec![])
+        );
+        // A relative path is ignored in favor of the configured basedirs.
+        let relative = Some(OsStr::new("relative"));
+        assert_eq!(key(&a, relative, both.clone()), key(&b, relative, both));
     }
 
     #[test]
