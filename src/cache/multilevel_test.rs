@@ -20,7 +20,6 @@ use crate::config::Config;
 use crate::config::PreprocessorCacheModeConfig;
 use bytes::Bytes;
 use std::collections::HashMap;
-use std::env;
 use std::fs;
 use std::io::Cursor;
 use std::sync::Arc;
@@ -219,7 +218,7 @@ impl InMemoryStorage {
 }
 
 #[async_trait]
-impl Storage for InMemoryStorage {
+impl CacheStorage for InMemoryStorage {
     async fn get(&self, key: &str) -> Result<Cache> {
         self.access_log.lock().await.push(format!("get:{}", key));
 
@@ -291,6 +290,9 @@ impl Storage for InMemoryStorage {
         Ok(Duration::ZERO)
     }
 }
+
+#[async_trait]
+impl PreprocessorCacheStorage for InMemoryStorage {}
 
 #[test]
 fn test_multilevel_raw_hit_reads_backend_once() {
@@ -583,24 +585,22 @@ fn test_config_validation_invalid_level_name() {
         .unwrap();
 
     // Set invalid level name
-    unsafe {
-        env::set_var("SCCACHE_MULTILEVEL_CHAIN", "disk,invalid_backend,s3");
-        env::set_var("SCCACHE_DIR", "/tmp/test-cache");
-    }
-
-    let config = Config::load().unwrap();
-    let result = MultiLevelStorage::from_config(&config, runtime.handle());
+    let result = temp_env::with_vars(
+        [
+            ("SCCACHE_MULTILEVEL_CHAIN", Some("disk,invalid_backend,s3")),
+            ("SCCACHE_DIR", Some("/tmp/test-cache")),
+        ],
+        || {
+            let config = Config::load().unwrap();
+            MultiLevelStorage::from_config(&config, runtime.handle())
+        },
+    );
 
     let err = result
         .err()
         .expect("invalid level must be rejected")
         .to_string();
     assert_eq!(err, "Unknown cache level: 'invalid_backend'");
-
-    unsafe {
-        env::remove_var("SCCACHE_MULTILEVEL_CHAIN");
-        env::remove_var("SCCACHE_DIR");
-    }
 }
 
 #[test]
@@ -662,15 +662,18 @@ fn test_config_level_not_configured() {
         .unwrap();
 
     // Set level without configuration
-    unsafe {
-        env::set_var("SCCACHE_MULTILEVEL_CHAIN", "redis");
-        // Don't set SCCACHE_REDIS_ENDPOINT
-        env::remove_var("SCCACHE_REDIS");
-        env::remove_var("SCCACHE_REDIS_ENDPOINT");
-    }
-
-    let config = Config::load().unwrap();
-    let result = MultiLevelStorage::from_config(&config, runtime.handle());
+    let result = temp_env::with_vars(
+        [
+            ("SCCACHE_MULTILEVEL_CHAIN", Some("redis")),
+            // Don't set SCCACHE_REDIS_ENDPOINT
+            ("SCCACHE_REDIS", None),
+            ("SCCACHE_REDIS_ENDPOINT", None),
+        ],
+        || {
+            let config = Config::load().unwrap();
+            MultiLevelStorage::from_config(&config, runtime.handle())
+        },
+    );
 
     let err = result
         .err()
@@ -683,10 +686,6 @@ fn test_config_level_not_configured() {
     );
     #[cfg(not(feature = "redis"))]
     assert_eq!(err, "Cache level 'redis' requires the 'redis' feature");
-
-    unsafe {
-        env::remove_var("SCCACHE_MULTILEVEL_CHAIN");
-    }
 }
 
 #[test]
@@ -1067,7 +1066,7 @@ fn test_mixed_readonly_chain_is_readwrite_in_check() {
 struct CheckFailingStorage;
 
 #[async_trait]
-impl Storage for CheckFailingStorage {
+impl CacheStorage for CheckFailingStorage {
     async fn get(&self, _key: &str) -> Result<Cache> {
         Err(anyhow!("intentional check failure"))
     }
@@ -1096,6 +1095,9 @@ impl Storage for CheckFailingStorage {
         Ok(None)
     }
 }
+
+#[async_trait]
+impl PreprocessorCacheStorage for CheckFailingStorage {}
 
 #[test]
 fn test_unavailable_l1_does_not_block_healthy_l0() {
@@ -1341,7 +1343,7 @@ fn test_read_stops_at_first_hit_not_parallel() {
 struct FailingStorage;
 
 #[async_trait]
-impl Storage for FailingStorage {
+impl CacheStorage for FailingStorage {
     async fn get(&self, _key: &str) -> Result<Cache> {
         Ok(Cache::Miss)
     }
@@ -1369,7 +1371,10 @@ impl Storage for FailingStorage {
     async fn max_size(&self) -> Result<Option<u64>> {
         Ok(None)
     }
+}
 
+#[async_trait]
+impl PreprocessorCacheStorage for FailingStorage {
     fn preprocessor_cache_mode_config(&self) -> PreprocessorCacheModeConfig {
         PreprocessorCacheModeConfig::default()
     }
@@ -1617,7 +1622,7 @@ impl NoRawStorage {
 }
 
 #[async_trait]
-impl Storage for NoRawStorage {
+impl CacheStorage for NoRawStorage {
     async fn get(&self, key: &str) -> Result<Cache> {
         self.inner.get(key).await
     }
@@ -1636,6 +1641,9 @@ impl Storage for NoRawStorage {
     // get_raw and put_raw are NOT overridden — they inherit the default
     // no-op implementations from the Storage trait.
 }
+
+#[async_trait]
+impl PreprocessorCacheStorage for NoRawStorage {}
 
 #[test]
 fn test_multilevel_get_raw_finds_first_hit() {

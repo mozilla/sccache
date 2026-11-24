@@ -13,7 +13,9 @@
 // limitations under the License.
 
 use crate::cache::{FileObjectSource, Storage};
-use crate::compiler::preprocessor_cache::preprocessor_cache_entry_hash_key;
+use crate::compiler::preprocessor_cache::{
+    compilation_tree_root, preprocessor_cache_entry_hash_key,
+};
 use crate::compiler::{
     Cacheable, ColorMode, Compilation, CompileCommand, Compiler, CompilerArguments, CompilerHasher,
     CompilerKind, HashResult, Language,
@@ -158,6 +160,7 @@ impl ParsedArguments {
 struct CCompilation<I: CCompilerImpl> {
     parsed_args: ParsedArguments,
     is_locally_preprocessed: bool,
+    preprocessor_stderr: Vec<u8>,
     #[cfg(feature = "dist-client")]
     preprocessed_input: Vec<u8>,
     executable: PathBuf,
@@ -204,6 +207,15 @@ pub trait CCompilerImpl: Clone + fmt::Debug + Send + Sync + 'static {
     /// runs one at all.
     fn assembler_digest(&self) -> Option<String> {
         None
+    }
+    /// Adjust the stdout replayed from a cache hit.
+    fn cached_stdout(
+        &self,
+        _parsed_args: &ParsedArguments,
+        stdout: Vec<u8>,
+        _preprocessor_stderr: &[u8],
+    ) -> Vec<u8> {
+        stdout
     }
     /// Determine whether `arguments` are supported by this compiler.
     fn parse_arguments(
@@ -496,19 +508,31 @@ where
             None
         };
 
-        let (preprocessor_output, include_files) = if needs_preprocessing {
+        // The checkout this compilation belongs to. Basedirs make every checkout
+        // listed share one preprocessor cache entry, so the include files it
+        // records have to be checked against this tree's copies and not against
+        // the ones that happened to write the entry.
+        let tree_root = if preprocessor_key.is_some() {
+            compilation_tree_root(&absolute_input_path, &cwd, storage.basedirs())?
+        } else {
+            None
+        };
+
+        let (preprocessor_output, preprocessor_stderr, include_files) = if needs_preprocessing {
             if let Some(preprocessor_key) = &preprocessor_key
                 && cache_control == CacheControl::Default
                 && let Some(mut seekable) = storage
                     .get_preprocessor_cache_entry(preprocessor_key)
                     .await?
+                && let Some(mut preprocessor_cache_entry) =
+                    read_preprocessor_cache_entry(&mut seekable, preprocessor_key)
             {
-                let mut buf = vec![];
-                seekable.read_to_end(&mut buf)?;
-                let mut preprocessor_cache_entry = PreprocessorCacheEntry::read(&buf)?;
                 let mut updated = false;
-                let hit = preprocessor_cache_entry
-                    .lookup_result_digest(preprocessor_cache_mode_config, &mut updated);
+                let hit = preprocessor_cache_entry.lookup_result_digest(
+                    preprocessor_cache_mode_config,
+                    tree_root.as_deref(),
+                    &mut updated,
+                );
 
                 let mut update_failed = false;
                 if updated {
@@ -543,6 +567,7 @@ where
                             compilation: Box::new(CCompilation {
                                 parsed_args: self.parsed_args.clone(),
                                 is_locally_preprocessed: false,
+                                preprocessor_stderr: Vec::new(),
                                 #[cfg(feature = "dist-client")]
                                 preprocessed_input: PREPROCESSING_SKIPPED_COMPILE_POISON.to_vec(),
                                 executable: self.executable.clone(),
@@ -608,7 +633,7 @@ where
                         // Drop the stdout since it's the preprocessor output,
                         // just hand back stderr and the exit status.
                         bail!(ProcessError(process::Output {
-                            stdout: vec!(),
+                            stdout: vec![],
                             ..output
                         }))
                     }
@@ -640,11 +665,16 @@ where
                 preprocessor_result.stdout.len()
             );
 
-            (preprocessor_result.stdout, include_files)
+            (
+                preprocessor_result.stdout,
+                preprocessor_result.stderr,
+                include_files,
+            )
         } else {
             // No preprocessing is supported - input is already preprocessed
             (
                 std::fs::read(absolute_input_path.as_path())?,
+                Vec::new(),
                 HashMap::new(),
             )
         };
@@ -681,7 +711,13 @@ where
                 .map(|(path, digest)| (digest, path))
                 .collect();
             files.sort_unstable_by(|a, b| a.1.cmp(&b.1));
-            preprocessor_cache_entry.add_result(start_of_compilation, &key, files);
+            preprocessor_cache_entry.add_result(
+                start_of_compilation,
+                &key,
+                files,
+                storage.basedirs(),
+                tree_root.as_deref(),
+            );
 
             if let Err(e) = storage
                 .put_preprocessor_cache_entry(&preprocessor_key, preprocessor_cache_entry)
@@ -704,6 +740,7 @@ where
             compilation: Box::new(CCompilation {
                 parsed_args: self.parsed_args.clone(),
                 is_locally_preprocessed: true,
+                preprocessor_stderr,
                 #[cfg(feature = "dist-client")]
                 preprocessed_input: preprocessor_output,
                 executable: self.executable.clone(),
@@ -737,6 +774,26 @@ const HASH_31_COMMAND_LINE_NEWLINE: &[u8] = b"# 31 \"<command-line>\"\n";
 const HASH_32_COMMAND_LINE_2_NEWLINE: &[u8] = b"# 32 \"<command-line>\" 2\n";
 const INCBIN_DIRECTIVE: &[u8] = b".incbin";
 const COMPRESSED_CLANG_OFFLOAD_BUNDLE_MAGIC: &[u8] = b"CCOB";
+
+/// An entry that cannot be read, such as one truncated by a crash, is a miss
+/// rather than a failed compilation: the miss path overwrites it.
+fn read_preprocessor_cache_entry(
+    mut entry: impl io::Read,
+    key: &str,
+) -> Option<PreprocessorCacheEntry> {
+    let mut buf = vec![];
+    let result = entry
+        .read_to_end(&mut buf)
+        .map_err(Into::into)
+        .and_then(|_| PreprocessorCacheEntry::read(&buf));
+    match result {
+        Ok(entry) => Some(entry),
+        Err(e) => {
+            debug!("Ignoring unreadable preprocessor cache entry {key}: {e}");
+            None
+        }
+    }
+}
 
 /// Remember the include files in the preprocessor output if it can be cached.
 /// Returns `false` if preprocessor cache mode should be disabled.
@@ -1279,6 +1336,14 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I>
 
     fn is_locally_preprocessed(&self) -> bool {
         self.is_locally_preprocessed
+    }
+
+    fn cached_stdout(&self, stdout: Vec<u8>) -> Vec<u8> {
+        if !self.is_locally_preprocessed {
+            return stdout;
+        }
+        self.compiler
+            .cached_stdout(&self.parsed_args, stdout, &self.preprocessor_stderr)
     }
 
     fn outputs<'a>(&'a self) -> Box<dyn Iterator<Item = FileObjectSource> + 'a> {
@@ -2146,6 +2211,66 @@ int value;
             include_files.get(&header).map(String::as_str),
             Some("a93900c371d997927c5bc568ea538bed59ae5c960021dcfe7b0b369da5267528")
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_process_preprocessed_file_msvc_line_markers() {
+        // As cl.exe -E writes a header included with quotes, and clang-cl -E one in the
+        // working directory.
+        let absolute = PathBuf::from(r"D:\t\src\foo.h");
+        let relative = PathBuf::from("bar.h");
+        let meta = PreprocessorFileMetadata {
+            is_dir: false,
+            is_file: true,
+            modified: Some(Timestamp::new(12341234, 0)),
+            ctime_or_creation: None,
+        };
+        let fs_impl = TestFs {
+            metadata_results: Mutex::new(
+                [(absolute.clone(), meta.clone()), (relative.clone(), meta)]
+                    .into_iter()
+                    .collect(),
+            ),
+            open_results: Mutex::new(
+                [
+                    (
+                        absolute.clone(),
+                        Box::new(&b"int foo;"[..]) as Box<dyn std::io::Read>,
+                    ),
+                    (
+                        relative.clone(),
+                        Box::new(&b"int bar;"[..]) as Box<dyn std::io::Read>,
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            ),
+        };
+        let mut bytes = br#"#line 1 "src\\main.c"
+#line 1 "D:\\t\\src\\foo.h"
+int foo;
+# 1 ".\\bar.h"
+int bar;
+"#
+        .to_vec();
+        let mut include_files = HashMap::new();
+
+        let success = process_preprocessed_file(
+            Path::new(r"src\main.c"),
+            Path::new(""),
+            &mut bytes,
+            &mut include_files,
+            PreprocessorCacheModeConfig::activated(),
+            std::time::SystemTime::now(),
+            fs_impl,
+        )
+        .unwrap();
+
+        assert!(success);
+        assert_eq!(include_files.len(), 2);
+        assert!(include_files.contains_key(&absolute));
+        assert!(include_files.contains_key(&relative));
     }
 
     /// A filesystem interface that only panics to test that we don't access it.

@@ -140,3 +140,26 @@ fn test_debug_preprocessor_cache_uses_config_disk_dir() -> Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn test_clap_output_and_exit_codes() {
+    Command::new(SCCACHE_BIN.as_os_str())
+        .arg("--version")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(env!("CARGO_PKG_VERSION")))
+        .stderr("");
+
+    Command::new(SCCACHE_BIN.as_os_str())
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Usage:"));
+
+    Command::new(SCCACHE_BIN.as_os_str())
+        .arg("--no-such-option")
+        .assert()
+        .code(2)
+        .stdout("")
+        .stderr(predicate::str::contains("--no-such-option"));
+}

@@ -461,6 +461,76 @@ fn test_msvc_responsefile(compiler: Compiler, tempdir: &Path) {
     fs::remove_file(&out_file).unwrap();
 }
 
+fn test_msvc_show_includes_cache_hit(
+    compiler: Compiler,
+    tempdir: &Path,
+    preprocessor_cache_mode: bool,
+) {
+    let Compiler {
+        name,
+        exe,
+        env_vars,
+    } = compiler;
+    zero_stats();
+
+    let dirs = [
+        tempdir.join("show_includes_a"),
+        tempdir.join("show_includes_b"),
+    ];
+    for dir in &dirs {
+        fs::create_dir_all(dir.join("inc")).unwrap();
+        write_source(dir, "inc/header.h", "#pragma once\nint f(void);\n");
+        write_source(
+            dir,
+            "src.c",
+            "#include \"header.h\"\nint g(void) { return f(); }\n",
+        );
+    }
+
+    let header = |dir: &Path| {
+        dir.join("inc")
+            .join("header.h")
+            .display()
+            .to_string()
+            .to_lowercase()
+    };
+
+    for (i, dir) in dirs.iter().enumerate() {
+        let inc_dir = dir.join("inc");
+        let args = compile_cmdline(
+            name,
+            &exe,
+            "src.c",
+            "src.obj",
+            vec_from!(
+                OsString,
+                "/showIncludes",
+                format!("/I{}", inc_dir.display())
+            ),
+        );
+        let output = sccache_command()
+            .args(&args)
+            .current_dir(dir)
+            .envs(env_vars.clone())
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout).to_lowercase();
+        assert!(stdout.contains(&header(dir)), "{stdout}");
+        if i == 1 {
+            assert!(!stdout.contains(&header(&dirs[0])), "{stdout}");
+        }
+    }
+
+    get_stats(move |info| {
+        // The preprocessor cache has cl.exe keep the line markers, and the
+        // header's one names its directory.
+        let hits = if preprocessor_cache_mode { 0 } else { 1 };
+        assert_eq!(hits, info.stats.cache_hits.all());
+        assert_eq!(2 - hits, info.stats.cache_misses.all());
+    });
+}
+
 fn test_gcc_mp_werror(compiler: Compiler, tempdir: &Path) {
     let Compiler {
         name,
@@ -747,6 +817,7 @@ fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path, preprocessor_ca
     if compiler.name == "cl.exe" {
         test_msvc_deps(compiler.clone(), tempdir);
         test_msvc_responsefile(compiler.clone(), tempdir);
+        test_msvc_show_includes_cache_hit(compiler.clone(), tempdir, preprocessor_cache_mode);
     }
     if compiler.name == "gcc" {
         test_gcc_mp_werror(compiler.clone(), tempdir);
@@ -2317,6 +2388,279 @@ fn test_multiarch_depfile_matches_compiler(preprocessor_cache_mode: bool) {
             assert_eq!(fs::read_to_string(&depfile).unwrap(), expected);
         }
     }
+    stop_local_daemon();
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn find_gcc_or_clang() -> Option<Compiler> {
+    let compiler = find_compilers()
+        .into_iter()
+        .find(|c| c.name == "gcc" || c.name == "clang");
+    if compiler.is_none() {
+        warn!("No gcc or clang found, skipping test");
+    }
+    compiler
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn restart_local_daemon_with(dir: &Path, cfg: &sccache::config::FileConfig) {
+    write_json_cfg(dir, "sccache-cfg.json", cfg);
+    stop_local_daemon();
+    start_local_daemon(
+        &dir.join("sccache-cfg.json"),
+        &dir.join("sccache-cached-cfg"),
+    );
+}
+
+/// A preprocessor cache entry sccache cannot read, whether truncated or in a
+/// format it does not know, must not fail the compilation.
+#[test]
+#[serial]
+#[cfg(all(unix, not(target_os = "macos")))]
+fn test_unreadable_preprocessor_cache_entry_is_a_miss() {
+    let _ = env_logger::try_init();
+    let tempdir = tempfile::Builder::new()
+        .prefix("sccache_system_test")
+        .tempdir()
+        .unwrap();
+
+    let Some(compiler) = find_gcc_or_clang() else {
+        return;
+    };
+
+    copy_to_tempdir(&[INPUT], tempdir.path());
+    // Preprocessor cache mode does not store an entry for a file modified
+    // during the compilation.
+    let backdated =
+        filetime::FileTime::from_system_time(SystemTime::now() - Duration::from_secs(10));
+    filetime::set_file_times(tempdir.path().join(INPUT), backdated, backdated).unwrap();
+
+    let sccache_cfg = sccache_client_cfg(tempdir.path(), true);
+    restart_local_daemon_with(tempdir.path(), &sccache_cfg);
+
+    let compile = |expected_hits: u64| {
+        zero_stats();
+        fs::remove_file(tempdir.path().join(OUTPUT)).ok();
+        sccache_command()
+            .args(compile_cmdline(
+                compiler.name,
+                &compiler.exe,
+                INPUT,
+                OUTPUT,
+                Vec::new(),
+            ))
+            .current_dir(tempdir.path())
+            .envs(compiler.env_vars.clone())
+            .assert()
+            .success();
+        get_stats(move |info| {
+            assert_eq!(expected_hits, info.stats.cache_hits.all());
+            assert_eq!(1 - expected_hits, info.stats.cache_misses.all());
+        });
+    };
+
+    compile(0);
+
+    let entries: Vec<_> =
+        walkdir::WalkDir::new(sccache_cfg.cache.disk.unwrap().dir.join("preprocessor"))
+            .into_iter()
+            .map(|entry| entry.unwrap())
+            .filter(|entry| entry.file_type().is_file())
+            .collect();
+    assert!(
+        !entries.is_empty(),
+        "no preprocessor cache entry was stored"
+    );
+    for entry in entries {
+        fs::write(entry.path(), [0xff]).unwrap();
+    }
+
+    // The object is still cached; only the preprocessor cache is unusable.
+    compile(1);
+    stop_local_daemon();
+}
+
+/// Basedirs make every checkout listed share one preprocessor cache entry, so
+/// the include files the entry records have to be checked in the tree being
+/// compiled. Two checkouts whose headers disagree cannot have the same object.
+/// See issue #2863.
+#[test]
+#[serial]
+#[cfg(all(unix, not(target_os = "macos")))]
+fn test_basedirs_preprocessor_cache_checks_own_tree() {
+    let _ = env_logger::try_init();
+    let tempdir = tempfile::Builder::new()
+        .prefix("sccache_system_test")
+        .tempdir()
+        .unwrap();
+
+    let Some(compiler) = find_gcc_or_clang() else {
+        return;
+    };
+
+    // The two trees differ only in a header: offsetof(struct S, b) is 4 in the
+    // first and 8 in the second, which the object file spells out.
+    let trees: Vec<PathBuf> = ["treea", "treeb"]
+        .iter()
+        .map(|name| tempdir.path().join(name))
+        .collect();
+    let backdated =
+        filetime::FileTime::from_system_time(SystemTime::now() - Duration::from_secs(10));
+    for (tree, fields) in trees
+        .iter()
+        .zip(["int a; int b;", "int a; int pad; int b;"])
+    {
+        fs::create_dir_all(tree.join("inc")).unwrap();
+        let header = tree.join("inc").join("cfg.h");
+        fs::write(&header, format!("struct S {{ {fields} }};\n")).unwrap();
+        let source = tree.join("main.c");
+        fs::write(
+            &source,
+            "#include \"cfg.h\"\n\
+             int offset_of_b(void) { return (int)__builtin_offsetof(struct S, b); }\n",
+        )
+        .unwrap();
+        // Preprocessor cache mode refuses to record files modified during the
+        // compilation, and would not store an entry at all otherwise.
+        for file in [&header, &source] {
+            filetime::set_file_times(file, backdated, backdated).unwrap();
+        }
+    }
+
+    let mut sccache_cfg = sccache_client_cfg(tempdir.path(), true);
+    sccache_cfg.basedirs = trees
+        .iter()
+        .map(|tree| tree.to_str().unwrap().to_string())
+        .collect();
+    restart_local_daemon_with(tempdir.path(), &sccache_cfg);
+    zero_stats();
+
+    let compile = |tree: &Path| {
+        sccache_command()
+            .args(compile_cmdline(
+                compiler.name,
+                &compiler.exe,
+                "main.c",
+                "main.o",
+                vec![OsString::from(format!("-I{}", tree.join("inc").display()))],
+            ))
+            .current_dir(tree)
+            .envs(compiler.env_vars.clone())
+            .assert()
+            .success();
+        fs::read(tree.join("main.o")).unwrap()
+    };
+
+    let object_a = compile(&trees[0]);
+    let object_b = compile(&trees[1]);
+    assert!(
+        object_a != object_b,
+        "treeb was handed treea's object file despite a different cfg.h"
+    );
+    get_stats(|info| {
+        assert_eq!(0, info.stats.cache_hits.all());
+        assert_eq!(2, info.stats.cache_misses.all());
+    });
+
+    // And the cache still works: treea's object is in it.
+    fs::remove_file(trees[0].join("main.o")).unwrap();
+    assert!(
+        object_a == compile(&trees[0]),
+        "treea's object came back changed"
+    );
+    get_stats(|info| {
+        assert_eq!(1, info.stats.cache_hits.all());
+        assert_eq!(2, info.stats.cache_misses.all());
+    });
+
+    stop_local_daemon();
+}
+
+/// A header read from a basedir other than the source's, here an out-of-source
+/// build tree, must be checked where the compiler found it, even when the
+/// source's basedir holds a file of the same name at the same relative path.
+#[test]
+#[serial]
+#[cfg(all(unix, not(target_os = "macos")))]
+fn test_basedirs_preprocessor_cache_checks_header_in_other_basedir() {
+    let _ = env_logger::try_init();
+    let tempdir = tempfile::Builder::new()
+        .prefix("sccache_system_test")
+        .tempdir()
+        .unwrap();
+
+    let Some(compiler) = find_gcc_or_clang() else {
+        return;
+    };
+
+    let src = tempdir.path().join("src");
+    let build = tempdir.path().join("build");
+    let header = build.join("gen").join("config.h");
+    let decoy = src.join("gen").join("config.h");
+    let source = src.join("main.c");
+    for dir in [&src, &build] {
+        fs::create_dir_all(dir.join("gen")).unwrap();
+    }
+    let backdated =
+        filetime::FileTime::from_system_time(SystemTime::now() - Duration::from_secs(10));
+    // Preprocessor cache mode refuses to record files modified during the
+    // compilation, and would not store an entry at all otherwise.
+    let write_backdated = |path: &Path, contents: &str| {
+        fs::write(path, contents).unwrap();
+        filetime::set_file_times(path, backdated, backdated).unwrap();
+    };
+    write_backdated(
+        &source,
+        "#include <gen/config.h>\nint value(void) { return CONFIG_VALUE; }\n",
+    );
+    write_backdated(&header, "#define CONFIG_VALUE 111\n");
+    // Never opened: angle brackets skip the source's own directory.
+    write_backdated(&decoy, "#define CONFIG_VALUE 111\n");
+
+    let mut sccache_cfg = sccache_client_cfg(tempdir.path(), true);
+    sccache_cfg.basedirs = [&src, &build]
+        .iter()
+        .map(|dir| dir.to_str().unwrap().to_string())
+        .collect();
+    restart_local_daemon_with(tempdir.path(), &sccache_cfg);
+    zero_stats();
+
+    let object = src.join("main.o");
+    let compile = || {
+        sccache_command()
+            .args(compile_cmdline(
+                compiler.name,
+                &compiler.exe,
+                source.to_str().unwrap(),
+                object.to_str().unwrap(),
+                vec![OsString::from(format!("-I{}", build.display()))],
+            ))
+            .current_dir(&src)
+            .envs(compiler.env_vars.clone())
+            .assert()
+            .success();
+        fs::read(&object).unwrap()
+    };
+
+    let first = compile();
+    write_backdated(&header, "#define CONFIG_VALUE 222\n");
+    let second = compile();
+    assert!(
+        first != second,
+        "the object for the old build/gen/config.h was returned after it changed"
+    );
+    get_stats(|info| {
+        assert_eq!(0, info.stats.cache_hits.all());
+        assert_eq!(2, info.stats.cache_misses.all());
+    });
+
+    fs::remove_file(&object).unwrap();
+    assert!(second == compile(), "the object came back changed");
+    get_stats(|info| {
+        assert_eq!(1, info.stats.cache_hits.all());
+        assert_eq!(2, info.stats.cache_misses.all());
+    });
+
     stop_local_daemon();
 }
 

@@ -666,7 +666,7 @@ where
                 );
                 let output = process::Output {
                     status: exit_status(0),
-                    stdout: entry.get_stdout(),
+                    stdout: compilation.cached_stdout(entry.get_stdout()),
                     stderr: entry.get_stderr(),
                 };
 
@@ -1164,6 +1164,11 @@ where
 
     fn is_locally_preprocessed(&self) -> bool {
         true
+    }
+
+    /// Adjust the stdout replayed from a cache hit for this compilation.
+    fn cached_stdout(&self, stdout: Vec<u8>) -> Vec<u8> {
+        stdout
     }
 
     /// Returns an iterator over the results of this compilation.

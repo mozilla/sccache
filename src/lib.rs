@@ -86,8 +86,12 @@ pub fn main() {
     let command = match cmdline::try_parse() {
         Ok(cmd) => cmd,
         Err(e) => match e.downcast::<clap::error::Error>() {
-            // If the error is from clap then let them handle formatting and exiting
-            Ok(clap_err) => clap_err.exit(),
+            // Not `clap_err.exit()`: `--version` must also go through `exit`, the
+            // PGO training reads the profile it writes to find sccache's.
+            Ok(clap_err) => {
+                let _ = clap_err.print();
+                exit(clap_err.exit_code())
+            }
             Err(some_other_err) => {
                 println!("sccache: {some_other_err}");
                 for source in some_other_err.chain().skip(1) {

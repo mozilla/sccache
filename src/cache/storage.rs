@@ -30,7 +30,7 @@ use crate::config::PreprocessorCacheModeConfig;
 use crate::errors::*;
 
 /// Result of [`Storage::get_path`].
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum GetPathResult {
     /// Cache hit: the entry lives at this filesystem path.
     Found(PathBuf),
@@ -42,7 +42,7 @@ pub enum GetPathResult {
 
 /// An interface to cache storage.
 #[async_trait]
-pub trait Storage: Send + Sync {
+pub trait CacheStorage: Send + Sync {
     /// Get a cache entry by `key`.
     ///
     /// If an error occurs, this method should return a `Cache::Error`.
@@ -130,19 +130,27 @@ pub trait Storage: Send + Sync {
         None
     }
 
-    /// Return the config for preprocessor cache mode if applicable
-    fn preprocessor_cache_mode_config(&self) -> PreprocessorCacheModeConfig {
-        // Enable by default, only in local mode
-        PreprocessorCacheModeConfig::default()
-    }
     /// Return the base directories for path normalization if configured
     fn basedirs(&self) -> &[Vec<u8>] {
         &[]
     }
+
     /// Return the filesystem path of the cached entry for `key`.
     /// Default impl returns [`GetPathResult::Unsupported`].
-    async fn get_path(&self, _key: &str) -> GetPathResult {
-        GetPathResult::Unsupported
+    async fn get_path(&self, _key: &str) -> Result<GetPathResult> {
+        Ok(GetPathResult::Unsupported)
+    }
+}
+
+/// An interface for preprocessor cache storage
+/// Preprocessor cache will include the source code into the hash.
+/// Not all storage supports preprocessor cache, since this requires the underlying file system supports random read/write.
+#[async_trait]
+pub trait PreprocessorCacheStorage: Send + Sync {
+    /// Return the config for preprocessor cache mode if applicable
+    fn preprocessor_cache_mode_config(&self) -> PreprocessorCacheModeConfig {
+        // Enable by default, only in local mode
+        PreprocessorCacheModeConfig::default()
     }
 
     /// Return the preprocessor cache entry for a given preprocessor key,
@@ -165,6 +173,10 @@ pub trait Storage: Send + Sync {
         Ok(())
     }
 }
+
+pub trait Storage: CacheStorage + PreprocessorCacheStorage {}
+
+impl<T: CacheStorage + PreprocessorCacheStorage> Storage for T {}
 
 /// Wrapper for opendal::Operator that adds basedirs support
 #[cfg(any_cache_remote)]
@@ -210,7 +222,7 @@ pub(in crate::cache) fn decode_remote_cache_read(
 /// Implement storage for operator.
 #[cfg(any_cache_remote)]
 #[async_trait]
-impl Storage for RemoteStorage {
+impl CacheStorage for RemoteStorage {
     async fn get(&self, key: &str) -> Result<Cache> {
         Ok(self.get_with_raw(key).await?.0)
     }
@@ -363,6 +375,10 @@ impl Storage for RemoteStorage {
         Ok(start.elapsed())
     }
 }
+
+#[cfg(any_cache_remote)]
+#[async_trait]
+impl PreprocessorCacheStorage for RemoteStorage {}
 
 #[cfg(test)]
 mod test {

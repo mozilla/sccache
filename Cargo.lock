@@ -2328,6 +2328,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "opendal-layer-timeout"
+version = "0.58.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a704141924500f3803c05ed871b53305d2a2f11cb5ef20160c3ee688a1857f66"
+dependencies = [
+ "opendal-core",
+ "tokio",
+]
+
+[[package]]
 name = "opendal-service-azblob"
 version = "0.58.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3506,14 +3516,14 @@ dependencies = [
 
 [[package]]
 name = "sccache"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "anyhow",
  "ar",
  "assert_cmd",
  "async-trait",
  "backon",
- "base64 0.21.7",
+ "base64 0.23.1",
  "bincode",
  "blake3",
  "byteorder",
@@ -3552,6 +3562,7 @@ dependencies = [
  "opendal-http-transport-reqwest",
  "opendal-layer-logging",
  "opendal-layer-retry",
+ "opendal-layer-timeout",
  "openssl",
  "predicates",
  "rand 0.8.8",
@@ -3564,6 +3575,7 @@ dependencies = [
  "serial_test",
  "sha2 0.10.9",
  "shlex",
+ "socket2 0.6.5",
  "strip-ansi-escapes",
  "syslog",
  "tar",

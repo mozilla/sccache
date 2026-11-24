@@ -361,6 +361,8 @@ In an argument only the places that are expected to spell a pathname are conside
 
 For Rust, base directories are also stripped from the working directory, from the `CARGO_*` environment variables such as `CARGO_MANIFEST_DIR`, and from the variables a crate reads with `env!` or `option_env!`, such as a build script's `OUT_DIR`. A hit then returns a crate compiled in another directory: its debug info and panic messages name that directory unless `--remap-path-prefix` maps it away, and so does any `env!("CARGO_MANIFEST_DIR")` the crate keeps.
 
+For how base directories interact with preprocessor cache mode, see [the local doc](docs/Local.md).
+
 This is similar to ccache's `CCACHE_BASEDIR` and helps when:
 * Building the same project from different directories
 * Sharing cache between CI jobs with different checkout paths
@@ -391,7 +393,7 @@ Known Caveats
 ### Rust
 
 * Crates that invoke the system linker cannot be cached. This includes `bin`, `dylib`, `cdylib`, and `proc-macro` crates. You may be able to improve compilation time of large `bin` crates by converting them to a `lib` crate with a thin `bin` wrapper.
-* Incrementally compiled crates cannot be cached. By default, in the debug profile Cargo will use incremental compilation for workspace members and path dependencies. [You can disable incremental compilation.](https://doc.rust-lang.org/cargo/reference/profiles.html#incremental) sccache exits with an error if `CARGO_INCREMENTAL=1` is set; `SCCACHE_ALLOW_INCREMENTAL=1` lets the build proceed, leaving only those crates uncached.
+* Incrementally compiled crates are not cached by default. In the debug profile Cargo uses incremental compilation for workspace members and path dependencies. [You can disable incremental compilation.](https://doc.rust-lang.org/cargo/reference/profiles.html#incremental) sccache exits with an error if `CARGO_INCREMENTAL=1` is set; `SCCACHE_ALLOW_INCREMENTAL=1` lets the build proceed, leaving only those crates uncached, and `SCCACHE_ALLOW_INCREMENTAL=cache` caches them too.
 
 [More details on Rust caveats](/docs/Rust.md)
 

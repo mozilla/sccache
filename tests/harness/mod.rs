@@ -478,8 +478,8 @@ impl DistSystem {
         )
         .unwrap();
         let handle = tokio::spawn(async move {
-            server.start().await.unwrap();
-            unreachable!();
+            let Err(error) = server.start().await;
+            panic!("failed to start test server: {error:?}");
         });
         self.server_handles.push(handle.abort_handle());
 

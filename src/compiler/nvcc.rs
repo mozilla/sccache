@@ -1149,7 +1149,13 @@ fn fold_env_vars_or_split_into_exe_and_args(
     let env_path = env_vars
         .iter()
         .chain(inherited_env_vars)
-        .find(|(k, _)| k == "PATH")
+        .find(|(k, _)| {
+            if cfg!(windows) {
+                k.eq_ignore_ascii_case("PATH")
+            } else {
+                k == "PATH"
+            }
+        })
         .map(|(_, p)| p);
 
     let exe = which_in(exe, env_path, cwd)?;
@@ -1571,8 +1577,9 @@ mod test {
         }
     }
 
-    #[test]
-    fn test_select_nvcc_subcommands_path() {
+    #[test_case::test_case("PATH"; "uppercase")]
+    #[cfg_attr(windows, test_case::test_case("Path"; "mixed_case"))]
+    fn test_select_nvcc_subcommands_path(path_name: &str) {
         let inherited_dir = tempfile::tempdir().unwrap();
         let dryrun_dir = tempfile::tempdir().unwrap();
         for dir in [inherited_dir.path(), dryrun_dir.path()] {
@@ -1580,7 +1587,10 @@ mod test {
         }
         let executable_name = format!("host-compiler{}", std::env::consts::EXE_SUFFIX);
         let inherited_executable = inherited_dir.path().join(&executable_name);
-        let inherited_env = vec![("PATH".into(), inherited_dir.path().as_os_str().to_owned())];
+        let inherited_env = vec![(
+            path_name.into(),
+            inherited_dir.path().as_os_str().to_owned(),
+        )];
 
         for (dryrun, mut env_vars, expected_executable) in [
             (
