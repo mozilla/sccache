@@ -83,7 +83,6 @@ opendal = { version = "0.58.1", optional = true, default-features = false }
 opendal-http-transport-reqwest = { version = "0.58.1", optional = true }
 opendal-layer-logging = { version = "0.58.1", optional = true }
 opendal-layer-timeout = { version = "0.58.1", optional = true }
-openssl = { version = "0.10.75", optional = true }
 rand = "0.8.4"
 regex = "1.10.3"
 reqsign-google = { version = "3.2", optional = true }
@@ -131,6 +130,8 @@ nix = { version = "0.30.0", optional = true, features = [
   "signal",
   "process",
 ] }
+rcgen = { version = "0.14", optional = true }
+rsa = { version = "0.9.2", optional = true }
 syslog = { version = "7", optional = true }
 thiserror = { version = "1.0.63", optional = true }
 version-compare = { version = "0.1.1", optional = true }
@@ -143,7 +144,7 @@ cfg_aliases = "0.2.2"
 assert_cmd = "2.0.13"
 cc = "1.9"
 chrono = "0.4.42"
-divan = { package = "codspeed-divan-compat", version = "4" }
+divan = { package = "codspeed-divan-compat", version = "4.7" }
 filetime = "0.2"
 object = { version = "0.40", features = ["write"] }
 predicates = "=3.1.0"
@@ -156,6 +157,7 @@ thirtyfour = { version = "0.38.1", default-features = false, features = [
   "rustls",
 ] }
 tokio = { version = "1", features = ["test-util"] }
+x509-parser = { version = "0.18", features = ["verify"] }
 
 [target.'cfg(unix)'.dependencies]
 daemonix = "0.1"
@@ -242,10 +244,8 @@ webdav = [
   "opendal-http-transport-reqwest",
   "reqwest",
 ]
-# Enable features that will build a vendored version of openssl and
-# statically linked with it, instead of linking against the system-wide openssl
-# dynamically or statically.
-vendored-openssl = ["openssl?/vendored", "reqwest?/native-tls-vendored"]
+# Dummy feature for backwards compatibility.
+vendored-openssl = []
 # Enable features that require unstable features of Nightly Rust.
 unstable = []
 # Enables distributed support in the sccache client
@@ -264,12 +264,15 @@ dist-server = [
   "flate2",
   "libmount",
   "nix",
-  "openssl",
+  "rsa",
   "reqwest",
   "syslog",
+  "hyper",
   "version-compare",
   "warp",
   "thiserror",
+  "rcgen",
+  "sha2",
 ]
 # Enables dist tests with external requirements
 dist-tests = ["dist-client", "dist-server"]
