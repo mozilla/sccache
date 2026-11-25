@@ -4,7 +4,7 @@ use sccache::util::{daemonize, daemonize_cleanup, daemonize_with_parent};
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
@@ -69,18 +69,6 @@ impl StartupNotifier {
     }
 }
 
-fn above_stdio(stream: UnixStream) -> std::io::Result<UnixStream> {
-    if stream.as_raw_fd() > libc::STDERR_FILENO {
-        return Ok(stream);
-    }
-    // Daemonization redirects standard streams, so startup sockets must not occupy them.
-    let fd = unsafe { libc::fcntl(stream.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
-    if fd == -1 {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(unsafe { UnixStream::from_raw_fd(fd) })
-}
-
 pub fn run(initialize: impl FnOnce(&mut StartupNotifier) -> Result<Infallible>) -> Result<i32> {
     if std::env::var("SCCACHE_NO_DAEMON").as_deref() == Ok("1") {
         daemonize(&[])?;
@@ -88,8 +76,11 @@ pub fn run(initialize: impl FnOnce(&mut StartupNotifier) -> Result<Infallible>) 
     }
 
     let (launcher, daemon) = UnixStream::pair().context("failed to create startup channel")?;
-    let launcher = above_stdio(launcher).context("failed to preserve launcher startup channel")?;
-    let daemon = above_stdio(daemon).context("failed to preserve daemon startup channel")?;
+    // Daemonization redirects stdin, stdout, and stderr, replacing anything on those descriptors.
+    assert!(
+        launcher.as_raw_fd() > libc::STDERR_FILENO && daemon.as_raw_fd() > libc::STDERR_FILENO,
+        "startup sockets must not occupy standard file descriptors"
+    );
     match daemonize_with_parent() {
         Outcome::Parent(result) => {
             drop(daemon);
