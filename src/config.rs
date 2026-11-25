@@ -2284,11 +2284,12 @@ fn test_compile_basedirs() {
         compile_basedirs(&env("SCCACHE_BASEDIRS", relative), &configured),
         configured.as_slice()
     );
-    assert_eq!(
-        compile_basedirs(&env("sccache_basedirs", value), &configured).as_ref()
-            == expected.as_slice(),
-        cfg!(windows)
-    );
+
+    let lowercase = compile_basedirs(&env("sccache_basedirs", value), &configured);
+    #[cfg(windows)]
+    assert_eq!(lowercase, expected.as_slice());
+    #[cfg(not(windows))]
+    assert_eq!(lowercase, configured.as_slice());
 
     #[cfg(unix)]
     let invalid = {

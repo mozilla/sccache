@@ -1995,7 +1995,7 @@ where
         _cache_control: CacheControl,
     ) -> Result<HashResult<T>> {
         trace!("[{}]: generate_hash_key", self.parsed_args.crate_name);
-        let basedirs = &*compile_basedirs(&env_vars, storage.basedirs());
+        let basedirs = compile_basedirs(&env_vars, storage.basedirs());
         // Keep the incremental directory out of the key, and out of the dep-info and
         // file-names runs so they don't touch it.
         let incremental = self.parsed_args.arguments.iter().any(is_incremental_arg);
@@ -2197,7 +2197,7 @@ where
                 .chain(sortables)
                 .flat_map(|(arg, val)| iter::once(arg).chain(val.as_ref()))
                 .fold(OsString::new(), |mut a, b| {
-                    a.push(strip_basedirs_os(b, basedirs));
+                    a.push(strip_basedirs_os(b, &basedirs));
                     a
                 })
         };
@@ -2224,7 +2224,7 @@ where
         //    A crate that bakes a listed env-dep such as `env!("CARGO_MANIFEST_DIR")` into its
         //    outputs must not hit across checkouts. Stripped values start with a NUL, unlike these.
         env_deps.sort();
-        let verbatim = basedirs_verbatim_env_deps(&env_vars, basedirs);
+        let verbatim = basedirs_verbatim_env_deps(&env_vars, &basedirs);
         for (var, val) in env_deps.iter() {
             var.hash(&mut HashToDigest { digest: &mut m });
             let Some(val) = val else {
@@ -2237,7 +2237,7 @@ where
             if verbatim(var) {
                 val.hash(&mut HashToDigest { digest: &mut m });
             } else {
-                strip_basedirs_os(val, basedirs).hash(&mut HashToDigest { digest: &mut m });
+                strip_basedirs_os(val, &basedirs).hash(&mut HashToDigest { digest: &mut m });
             }
         }
         let mut env_vars: Vec<_> = env_vars
@@ -2272,10 +2272,10 @@ where
 
             var.hash(&mut HashToDigest { digest: &mut m });
             m.update(b"=");
-            strip_basedirs_os(val, basedirs).hash(&mut HashToDigest { digest: &mut m });
+            strip_basedirs_os(val, &basedirs).hash(&mut HashToDigest { digest: &mut m });
         }
         // 9. The cwd of the compile. This will wind up in the rlib.
-        Path::new(&strip_basedirs_os(cwd.as_os_str(), basedirs))
+        Path::new(&strip_basedirs_os(cwd.as_os_str(), &basedirs))
             .hash(&mut HashToDigest { digest: &mut m });
         // 10. The version of the compiler.
         self.version.hash(&mut HashToDigest { digest: &mut m });
