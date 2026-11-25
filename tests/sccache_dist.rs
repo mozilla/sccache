@@ -56,7 +56,7 @@ async fn jwks_server(
 }
 
 #[tokio::test]
-async fn scheduler_jwt_startup_after_daemonization() {
+async fn scheduler_foreground_reports_startup_errors() {
     for (status, expected_error, expected_cause) in [
         (
             StatusCode::OK,
