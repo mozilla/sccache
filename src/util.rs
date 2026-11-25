@@ -27,6 +27,8 @@ use std::env::consts::DLL_EXTENSION;
 use std::ffi::{OsStr, OsString};
 use std::hash::Hasher;
 use std::io::prelude::*;
+#[cfg(not(windows))]
+use std::os::fd::RawFd;
 use std::path::{Path, PathBuf};
 use std::process::{self, Stdio};
 use std::str;
@@ -1015,46 +1017,77 @@ impl Hasher for HashToDigest<'_> {
     }
 }
 
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+fn close_fd_ranges(
+    preserve: &[RawFd],
+    mut close_range: impl FnMut(u32, u32) -> Result<()>,
+) -> Result<()> {
+    let mut preserve_fds = Vec::from_iter(
+        preserve
+            .iter()
+            .copied()
+            .filter(|fd| *fd > libc::STDERR_FILENO)
+            .map(|fd| fd as u32),
+    );
+    preserve_fds.sort_unstable();
+    preserve_fds.dedup();
+    // construct gapless fd integer ranges
+    let mut first = libc::STDERR_FILENO as u32 + 1;
+    for preserve_fd in preserve_fds {
+        if first < preserve_fd {
+            close_range(first, preserve_fd - 1)?;
+        }
+        first = preserve_fd + 1;
+    }
+    close_range(first, u32::MAX)
+}
+
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+fn close_fd_range(first: u32, last: u32) -> Result<()> {
+    use std::io;
+
+    // SAFETY: both bounds are integers; cleanup runs before worker threads start,
+    // and the ranges exclude standard streams and caller-owned preserved fds.
+    let result = unsafe {
+        #[cfg(target_os = "linux")]
+        {
+            // libc exposes the Linux wrapper only on GNU, not musl.
+            libc::syscall(libc::SYS_close_range, first, last, 0u32)
+        }
+        #[cfg(target_os = "freebsd")]
+        {
+            libc::close_range(first, last, 0)
+        }
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error()).context("failed to close file descriptor range")
+    }
+}
+
 /// Close every file descriptor we inherited from whoever spawned us, keeping
 /// stdin/out/err and anything in `preserve`.
 #[cfg(not(windows))]
-fn close_inherited_fds(preserve: &[std::os::unix::io::RawFd]) {
-    use std::os::unix::io::RawFd;
-
-    let keep = |fd: RawFd| fd <= libc::STDERR_FILENO || preserve.contains(&fd);
-
-    // macOS/BSD: /dev/fd; Linux: /proc/self/fd
-    let listing = std::fs::read_dir("/dev/fd").or_else(|_| std::fs::read_dir("/proc/self/fd"));
-    let victims: Option<Vec<RawFd>> = listing.ok().map(|entries| {
-        entries
-            .flatten()
-            .filter_map(|e| e.file_name().to_str()?.parse::<RawFd>().ok())
-            .filter(|fd| !keep(*fd))
-            .collect()
-    });
-
-    match victims {
-        Some(fds) => {
-            for fd in fds {
-                unsafe { libc::close(fd) };
-            }
+fn close_inherited_fds(preserve: &[RawFd]) -> Result<()> {
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    {
+        // FreeBSD must not fall back to /dev/fd: devfs only lists fds 0, 1, and 2.
+        close_fd_ranges(preserve, close_fd_range)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+    {
+        // Solaris/Illumos, Android, Fuchsia, ..
+        let victims = Vec::<RawFd>::from_iter(
+            std::fs::read_dir("/dev/fd")?
+                .flatten()
+                .filter_map(|entry| entry.file_name().to_str()?.parse::<RawFd>().ok())
+                .filter(|fd| *fd > libc::STDERR_FILENO && !preserve.contains(fd)),
+        );
+        for fd in victims {
+            unsafe { libc::close(fd) };
         }
-        // No fd directory to enumerate, so fall back to sweeping the whole
-        // range. Bounded by the soft limit rather than the hard one to keep
-        // this from turning into a million syscalls.
-        None => {
-            let max = unsafe { libc::sysconf(libc::_SC_OPEN_MAX) };
-            let max = if max < 0 {
-                4096
-            } else {
-                max.min(65536) as RawFd
-            };
-            for fd in (libc::STDERR_FILENO + 1)..max {
-                if !keep(fd) {
-                    unsafe { libc::close(fd) };
-                }
-            }
-        }
+        Ok(())
     }
 }
 
@@ -1093,7 +1126,7 @@ pub fn daemonize_cleanup(preserve_fds: &[std::os::unix::io::RawFd]) -> Result<()
     use std::env;
     use std::mem;
 
-    close_inherited_fds(preserve_fds);
+    close_inherited_fds(preserve_fds).context("failed to close inherited file descriptors")?;
 
     static mut PREV_SIGSEGV: *mut libc::sigaction = std::ptr::null_mut();
     static mut PREV_SIGBUS: *mut libc::sigaction = std::ptr::null_mut();
@@ -1777,6 +1810,58 @@ mod tests {
         let rustc = obj.add_section(Vec::new(), b".rustc".to_vec(), SectionKind::Data);
         obj.append_section_data(rustc, metadata, 1);
         obj.write().unwrap()
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    #[test]
+    fn test_close_fd_ranges_preserves_descriptors() {
+        for (preserve, expected) in [
+            (vec![], vec![(3, u32::MAX)]),
+            (vec![-1, 0, 1, 2], vec![(3, u32::MAX)]),
+            (vec![3], vec![(4, u32::MAX)]),
+            (vec![5, 3, 4, 3], vec![(6, u32::MAX)]),
+            (vec![8, 4, 8, 5, 0, 2], vec![(3, 3), (6, 7), (9, u32::MAX)]),
+            (vec![65537], vec![(3, 65536), (65538, u32::MAX)]),
+            (
+                vec![i32::MAX],
+                vec![(3, i32::MAX as u32 - 1), (i32::MAX as u32 + 1, u32::MAX)],
+            ),
+        ] {
+            let mut ranges = Vec::new();
+            super::close_fd_ranges(&preserve, |first, last| {
+                ranges.push((first, last));
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(ranges, expected, "preserve: {preserve:?}");
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    #[test]
+    fn test_close_fd_ranges_propagates_errors() {
+        use std::io;
+
+        let mut ranges = Vec::new();
+        let error = super::close_fd_ranges(&[5], |first, last| {
+            ranges.push((first, last));
+            Err(io::Error::from(io::ErrorKind::PermissionDenied).into())
+        })
+        .unwrap_err();
+        assert_eq!(ranges, [(3, 4)]);
+        assert_eq!(
+            error.downcast_ref::<io::Error>().unwrap().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    #[test]
+    fn test_close_fd_range_reports_syscall_error() {
+        // Reversed bounds cannot close any descriptors in the test process.
+        let error = super::close_fd_range(4, 3).unwrap_err();
+        assert_eq!(error.to_string(), "failed to close file descriptor range");
+        assert!(error.downcast_ref::<std::io::Error>().is_some());
     }
 
     // Dist JWT secrets and PKCE values are stored or sent in this form, so the
