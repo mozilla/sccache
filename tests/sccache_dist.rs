@@ -73,33 +73,13 @@ async fn scheduler_foreground_reports_startup_errors() {
 
         // Force startup to exit at binding, after authentication and runtime initialization.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let tempdir = tempfile::tempdir().unwrap();
-        let config_path = tempdir.path().join("scheduler.json");
-        let config = json!({
-            "public_addr": listener.local_addr().unwrap(),
-            "client_auth": {
-                "type": "jwt_validate",
-                "audience": "test",
-                "issuer": "test",
-                "jwks_url": format!("http://{jwks_address}/jwks"),
-            },
-            "server_auth": { "type": "token", "token": "test" },
-        });
-        std::fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
-
-        let output = tokio::time::timeout(
-            Duration::from_secs(10),
-            Command::new(env!("CARGO_BIN_EXE_sccache-dist"))
-                .arg("scheduler")
-                .arg("--config")
-                .arg(&config_path)
-                .env("SCCACHE_NO_DAEMON", "1")
-                .kill_on_drop(true)
-                .output(),
-        )
-        .await
-        .expect("scheduler startup must finish")
-        .unwrap();
+        let (_tempdir, mut command) =
+            scheduler_command(listener.local_addr().unwrap(), jwks_address);
+        command.env("SCCACHE_NO_DAEMON", "1");
+        let output = tokio::time::timeout(Duration::from_secs(10), command.output())
+            .await
+            .expect("scheduler startup must finish")
+            .unwrap();
         output
             .assert()
             .failure()
