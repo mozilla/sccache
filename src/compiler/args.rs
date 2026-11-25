@@ -476,7 +476,7 @@ impl<T: ArgumentValue> ArgInfo<T> {
             | &ArgInfo::TakeArg(s, _, ArgDisposition::CanBeConcatenated(Some(d)))
                 if arg.len() > s.len() && arg.starts_with(s) =>
             {
-                arg.as_bytes()[s.len()].cmp(&d)
+                d.cmp(&arg.as_bytes()[s.len()])
             }
             _ => self.flag_str().cmp(arg),
         }
@@ -765,7 +765,7 @@ mod tests {
         assert_eq!(info.cmp("bar"), Ordering::Less);
         assert_eq!(info.cmp("-bar"), Ordering::Greater);
         assert_eq!(info.cmp("-qux"), Ordering::Less);
-        assert_eq!(info.cmp("-foobar"), Ordering::Greater);
+        assert_eq!(info.cmp("-foobar"), Ordering::Less);
         assert_eq!(info.cmp("-foo="), Ordering::Equal);
         assert_eq!(info.cmp("-foo=bar"), Ordering::Equal);
 
@@ -774,7 +774,7 @@ mod tests {
         assert_eq!(info.cmp("bar"), Ordering::Less);
         assert_eq!(info.cmp("-bar"), Ordering::Greater);
         assert_eq!(info.cmp("-qux"), Ordering::Less);
-        assert_eq!(info.cmp("-foobar"), Ordering::Greater);
+        assert_eq!(info.cmp("-foobar"), Ordering::Less);
         assert_eq!(info.cmp("-foo="), Ordering::Equal);
         assert_eq!(info.cmp("-foo=bar"), Ordering::Equal);
 
@@ -792,7 +792,7 @@ mod tests {
         assert_eq!(info.cmp("bar"), Ordering::Less);
         assert_eq!(info.cmp("-bar"), Ordering::Greater);
         assert_eq!(info.cmp("-qux"), Ordering::Less);
-        assert_eq!(info.cmp("-foobar"), Ordering::Greater);
+        assert_eq!(info.cmp("-foobar"), Ordering::Less);
         assert_eq!(info.cmp("-foo="), Ordering::Equal);
         assert_eq!(info.cmp("-foo=bar"), Ordering::Equal);
     }
@@ -922,6 +922,18 @@ mod tests {
                 Some(item)
             );
         }
+    }
+
+    #[test]
+    fn test_search_flag_extending_delimited_flag() {
+        static ARGS: [ArgInfo<ArgData>; 3] = [
+            flag!("-bar", FooFlag),
+            take_arg!("-foo", OsString, Concatenated(b'='), Foo),
+            take_arg!("-foobar", OsString, CanBeSeparated(b'='), Foo),
+        ];
+        assert_eq!((&ARGS[..]).search("-foo=x"), Some(&ARGS[1]));
+        assert_eq!((&ARGS[..]).search("-foobar=x"), Some(&ARGS[2]));
+        assert_eq!((&ARGS[..]).search("-foobar"), Some(&ARGS[2]));
     }
 
     #[test]
