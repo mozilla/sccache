@@ -1,5 +1,10 @@
 #[cfg(not(target_os = "macos"))]
+mod util;
+
+#[cfg(not(target_os = "macos"))]
 use std::{net::TcpListener, process::Command};
+#[cfg(not(target_os = "macos"))]
+use util::TestCommandExt;
 
 #[cfg(not(target_os = "macos"))]
 use serial_test::serial;
@@ -12,14 +17,12 @@ use serial_test::serial;
 fn test_server_port_in_use() {
     // Bind an arbitrary free port.
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let sccache = env!("CARGO_BIN_EXE_sccache");
-    let output = Command::new(sccache)
+    let output = Command::sccache()
         .arg("--start-server")
         .env(
             "SCCACHE_SERVER_PORT",
             listener.local_addr().unwrap().port().to_string(),
         )
-        .env_remove("SCCACHE_SERVER_UDS")
         .output()
         .unwrap();
     assert!(!output.status.success());

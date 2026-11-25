@@ -1,6 +1,8 @@
 #![deny(rust_2018_idioms)]
 #![cfg(feature = "dist-client")]
 
+mod util;
+
 use fs_err as fs;
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
@@ -8,6 +10,7 @@ use std::path::Path;
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 use thirtyfour::prelude::*;
+use util::TestCommandExt;
 
 const LOCAL_AUTH_BASE_URL: &str = "http://localhost:12731/";
 
@@ -62,10 +65,6 @@ fn config_with_dist_auth(
         basedirs: vec![],
         client_side_mode: false,
     }
-}
-
-fn sccache_command() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_sccache"))
 }
 
 fn retry<F: FnMut() -> Option<T>, T>(interval: Duration, until: Duration, mut f: F) -> Option<T> {
@@ -249,7 +248,7 @@ async fn test_auth_with_config(dist_auth: sccache::config::DistAuth) {
     ];
 
     println!("Starting sccache --dist-auth");
-    let mut sccache_process = sccache_command()
+    let mut sccache_process = Command::sccache()
         .arg("--dist-auth")
         .envs(envs)
         .stdin(Stdio::null())

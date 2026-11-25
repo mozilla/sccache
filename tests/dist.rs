@@ -6,8 +6,8 @@ extern crate sccache;
 extern crate serde_json;
 
 use crate::harness::{
-    cargo_command, clear_cache_local_daemon, get_stats, init_cargo, sccache_command,
-    start_local_daemon, stop_local_daemon, write_json_cfg, write_source,
+    cargo_command, clear_cache_local_daemon, get_stats, init_cargo, start_local_daemon,
+    stop_local_daemon, write_json_cfg, write_source,
 };
 use assert_cmd::prelude::*;
 use async_trait::async_trait;
@@ -19,16 +19,17 @@ use sccache::dist::{
 use serial_test::serial;
 use std::ffi::OsStr;
 use std::path::Path;
-use std::process::Output;
+use std::process::{Command, Output};
+use util::TestCommandExt;
 
 use sccache::errors::*;
 
 mod harness;
+mod util;
 
 async fn basic_compile(tmpdir: &Path, sccache_cfg_path: &Path, sccache_cached_cfg_path: &Path) {
     let envs: Vec<(_, &OsStr)> = vec![
         ("RUST_BACKTRACE", "1".as_ref()),
-        ("SCCACHE_LOG", "debug".as_ref()),
         ("SCCACHE_CONF", sccache_cfg_path.as_ref()),
         ("SCCACHE_CACHED_CONF", sccache_cached_cfg_path.as_ref()),
     ];
@@ -39,7 +40,7 @@ async fn basic_compile(tmpdir: &Path, sccache_cfg_path: &Path, sccache_cached_cf
         source_file,
         "#if !defined(SCCACHE_TEST_DEFINE)\n#error SCCACHE_TEST_DEFINE is not defined\n#endif\nint x() { return 5; }",
     );
-    tokio::process::Command::from(sccache_command())
+    tokio::process::Command::from(Command::sccache())
         .args([
             std::env::var("CC")
                 .unwrap_or_else(|_| "gcc".to_string())
@@ -183,7 +184,7 @@ async fn test_dist_failed_compile() {
         "fail.c",
         "int x() { return sccache_dist_test_undeclared; }",
     );
-    let output = tokio::process::Command::from(sccache_command())
+    let output = tokio::process::Command::from(Command::sccache())
         .args([
             std::env::var("CC")
                 .unwrap_or_else(|_| "gcc".to_string())
