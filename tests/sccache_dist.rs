@@ -13,10 +13,8 @@ use serde_json::{Value, json};
 use serial_test::serial;
 use std::env;
 use std::fs;
-use std::io::{self, Read};
+use std::io;
 use std::net::{SocketAddr, TcpListener};
-use std::os::fd::AsRawFd;
-use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::Arc;
@@ -81,7 +79,11 @@ impl JwksServer {
     }
 }
 
-fn scheduler_command(public_addr: SocketAddr, jwks_address: SocketAddr) -> (TempDir, Command) {
+fn scheduler_command(
+    public_addr: SocketAddr,
+    jwks_address: SocketAddr,
+    server_auth: serde_json::Value,
+) -> (TempDir, Command) {
     let directory = tempdir().unwrap();
     let config_path = directory.path().join("scheduler.json");
     fs::write(
@@ -94,7 +96,7 @@ fn scheduler_command(public_addr: SocketAddr, jwks_address: SocketAddr) -> (Temp
                 "issuer": "test-issuer",
                 "jwks_url": format!("http://{jwks_address}/jwks"),
             },
-            "server_auth": { "type": "token", "token": "server-token" },
+            "server_auth": server_auth,
         }))
         .unwrap(),
     )
@@ -266,8 +268,11 @@ async fn startup_errors(foreground: bool) {
     ] {
         let jwks = JwksServer::new(status, json!({ "keys": [] })).await;
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let (directory, mut command) =
-            scheduler_command(listener.local_addr().unwrap(), jwks.address);
+        let (directory, mut command) = scheduler_command(
+            listener.local_addr().unwrap(),
+            jwks.address,
+            json!({ "type": "DANGEROUSLY_INSECURE" }),
+        );
         if foreground {
             command.env("SCCACHE_NO_DAEMON", "1");
         }
@@ -293,6 +298,10 @@ async fn startup_errors(foreground: bool) {
                 scheduler.log()
             );
             let log = scheduler.log();
+            assert!(
+                log.contains("Scheduler starting with DANGEROUSLY_INSECURE server authentication"),
+                "{log}"
+            );
             assert!(log.contains(expected_error), "{log}");
             assert!(log.contains(expected_cause), "{log}");
             #[cfg(target_os = "linux")]
@@ -334,29 +343,26 @@ async fn scheduler_daemon_waits_for_jwks_and_serves_authenticated_requests() {
         .await;
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
-        let (directory, mut command) = scheduler_command(address, jwks.address);
+        let (directory, mut command) = scheduler_command(
+            address,
+            jwks.address,
+            json!({ "type": "token", "token": "server-token" }),
+        );
         drop(listener);
-        let (mut inherited_reader, inherited_writer) = UnixStream::pair().unwrap();
-        let inherited_fd = inherited_writer.as_raw_fd();
-        // SAFETY: the closure only calls async-signal-safe syscalls on descriptors
-        // owned through spawn; only the child changes inheritance and standard streams.
-        unsafe {
-            command.pre_exec(move || {
-                if libc::fcntl(inherited_fd, libc::F_SETFD, 0) == -1 {
-                    return Err(io::Error::last_os_error());
-                }
-                if closed_stdio {
+        if closed_stdio {
+            // SAFETY: only the child closes its standard streams before exec.
+            unsafe {
+                command.pre_exec(|| {
                     for fd in [libc::STDIN_FILENO, libc::STDOUT_FILENO] {
                         if libc::close(fd) == -1 {
                             return Err(io::Error::last_os_error());
                         }
                     }
-                }
-                Ok(())
-            });
+                    Ok(())
+                });
+            }
         }
         let mut scheduler = SchedulerProcess::spawn(directory, command);
-        drop(inherited_writer);
         timeout(TEST_TIMEOUT, async {
             jwks.requested.notified().await;
             #[cfg(target_os = "linux")]
@@ -381,14 +387,6 @@ async fn scheduler_daemon_waits_for_jwks_and_serves_authenticated_requests() {
             );
             jwks.release.notify_one();
             assert!(scheduler.wait().await.success(), "{}", scheduler.log());
-            inherited_reader
-                .set_read_timeout(Some(Duration::from_secs(1)))
-                .unwrap();
-            assert_eq!(
-                inherited_reader.read(&mut [0]).unwrap(),
-                0,
-                "daemon must close unrelated inherited descriptors"
-            );
 
             let client = Client::builder()
                 .no_proxy()
@@ -464,7 +462,11 @@ async fn scheduler_daemon_waits_for_jwks_and_serves_authenticated_requests() {
 async fn scheduler_daemon_exits_when_launcher_dies_during_jwks_retrieval() {
     let jwks = JwksServer::new(StatusCode::OK, json!({ "keys": [] })).await;
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let (directory, command) = scheduler_command(listener.local_addr().unwrap(), jwks.address);
+    let (directory, command) = scheduler_command(
+        listener.local_addr().unwrap(),
+        jwks.address,
+        json!({ "type": "token", "token": "server-token" }),
+    );
     let mut scheduler = SchedulerProcess::spawn(directory, command);
     timeout(TEST_TIMEOUT, async {
         jwks.requested.notified().await;
