@@ -5,7 +5,7 @@
 //! then acknowledges readiness; the watchdog confirms the acknowledgment before the
 //! launcher returns success and kills the daemon if the launcher abandons startup.
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use daemonix::{Daemonize, Outcome};
 use sccache::util::daemonize_cleanup;
 use serde::{Deserialize, Serialize};
@@ -94,6 +94,14 @@ pub fn run(initialize: impl FnOnce(&mut StartupNotifier) -> Result<Infallible>) 
     }
 
     let (launcher, daemon) = UnixStream::pair().context("failed to create startup channel")?;
+    // If code closes stdin/stdout/stderr after Rust initializes them, socketpair
+    // can reuse fd 0, 1, or 2. During daemonization, dup2 redirects those slots
+    // to /dev/null, closing the socket endpoint and breaking the handshake.
+    // Reject this state before forking so the invoking process reports an error.
+    ensure!(
+        launcher.as_raw_fd() > libc::STDERR_FILENO && daemon.as_raw_fd() > libc::STDERR_FILENO,
+        "startup sockets must not occupy standard file descriptors"
+    );
     match Daemonize::new().execute() {
         Outcome::Parent(result) => {
             drop(daemon);
@@ -184,6 +192,56 @@ fn wait_for_startup(mut stream: UnixStream, timeout: Duration) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env;
+    use std::process::{Command, Output, Stdio};
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Instant;
+    use tokio::runtime::Runtime;
+
+    fn run_test_subprocess(command: &mut Command) -> Output {
+        let mut child = command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while child.try_wait().unwrap().is_none() {
+            if Instant::now() >= deadline {
+                child.kill().unwrap();
+                let output = child.wait_with_output().unwrap();
+                panic!("test subprocess timed out: {output:?}");
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        child.wait_with_output().unwrap()
+    }
+
+    #[test]
+    fn startup_rejects_sockets_on_standard_descriptors() {
+        const CHILD_ENV: &str = "SCCACHE_TEST_CLOSED_STDIN";
+        if env::var_os(CHILD_ENV).is_some() {
+            // SAFETY: only this isolated test subprocess closes fd 0, after Rust
+            // startup has initialized it; nothing subsequently uses it as stdin.
+            assert_eq!(unsafe { libc::close(libc::STDIN_FILENO) }, 0);
+            let error = run(|_| panic!("initialization must not be reached")).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "startup sockets must not occupy standard file descriptors"
+            );
+            return;
+        }
+        let output = run_test_subprocess(
+            Command::new(env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "startup::tests::startup_rejects_sockets_on_standard_descriptors",
+                ])
+                .env(CHILD_ENV, "1")
+                .env("SCCACHE_NO_DAEMON", "0"),
+        );
+        assert!(output.status.success(), "{output:?}");
+    }
 
     #[test]
     fn foreground_startup_runs_cleanup() {
@@ -255,27 +313,69 @@ mod tests {
 
     #[test]
     fn readiness_requires_watchdog_confirmation() {
-        let (launcher, mut daemon) = UnixStream::pair().unwrap();
-        daemon
-            .set_read_timeout(Some(Duration::from_secs(1)))
-            .unwrap();
-        let peer = std::thread::spawn(move || {
-            let mut message = serde_json::to_vec(&StartupStatus::Ready {
-                pid: std::process::id(),
-            })
-            .unwrap();
-            message.push(b'\n');
-            daemon.write_all(&message).unwrap();
-            let mut ack = [0];
-            daemon.read_exact(&mut ack).unwrap();
-            assert_eq!(ack, [STARTUP_ACK]);
-        });
-        let error = wait_for_startup(launcher, Duration::from_secs(1)).unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "scheduler exited before confirming startup"
-        );
-        peer.join().unwrap();
+        for (confirmation, expected) in [
+            (None, "scheduler exited before confirming startup"),
+            (Some(0), "invalid scheduler startup confirmation"),
+        ] {
+            let (launcher, mut daemon) = UnixStream::pair().unwrap();
+            daemon
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .unwrap();
+            let peer = thread::spawn(move || {
+                let mut message = serde_json::to_vec(&StartupStatus::Ready {
+                    pid: std::process::id(),
+                })
+                .unwrap();
+                message.push(b'\n');
+                daemon.write_all(&message).unwrap();
+                let mut ack = [0];
+                daemon.read_exact(&mut ack).unwrap();
+                assert_eq!(ack, [STARTUP_ACK]);
+                if let Some(confirmation) = confirmation {
+                    daemon.write_all(&[confirmation]).unwrap();
+                }
+            });
+            let error = wait_for_startup(launcher, Duration::from_secs(1)).unwrap_err();
+            assert_eq!(error.to_string(), expected, "{confirmation:?}");
+            peer.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn invalid_startup_responses_are_rejected() {
+        let mut oversized = br#"{"Error":["failure"]}"#.to_vec();
+        oversized.resize(MAX_RESPONSE_SIZE as usize + 1, b' ');
+        for (case, message, expected) in [
+            (
+                "malformed JSON",
+                b"not json\n".to_vec(),
+                "invalid scheduler startup response",
+            ),
+            (
+                "truncated JSON at EOF",
+                br#"{"Ready":{"pid":1}"#.to_vec(),
+                "invalid scheduler startup response",
+            ),
+            (
+                "oversized valid JSON",
+                oversized,
+                "scheduler startup response exceeds size limit",
+            ),
+            (
+                "empty error chain",
+                b"{\"Error\":[]}\n".to_vec(),
+                "empty scheduler startup error",
+            ),
+        ] {
+            let (launcher, mut daemon) = UnixStream::pair().unwrap();
+            daemon
+                .set_write_timeout(Some(Duration::from_secs(1)))
+                .unwrap();
+            let peer = thread::spawn(move || daemon.write_all(&message).unwrap());
+            let error = wait_for_startup(launcher, Duration::from_secs(1)).unwrap_err();
+            assert_eq!(error.to_string(), expected, "{case}");
+            peer.join().unwrap();
+        }
     }
 
     #[test]
@@ -322,26 +422,33 @@ mod tests {
         if let Ok(mode) = std::env::var(CHILD_ENV) {
             let mode: WatchdogMode = serde_json::from_str(&mode).unwrap();
             let (launcher, daemon) = UnixStream::pair().unwrap();
-            StartupNotifier {
+            let notifier = StartupNotifier {
                 stream: Some(daemon),
+            };
+            if matches!(mode, WatchdogMode::Acknowledge) {
+                launcher
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                (&launcher).write_all(&[STARTUP_ACK]).unwrap();
+                notifier.watch_launcher(Duration::from_millis(20)).unwrap();
+                let mut confirmation = [0];
+                (&launcher).read_exact(&mut confirmation).unwrap();
+                assert_eq!(confirmation, [STARTUP_ACK]);
+                drop(launcher);
+                std::thread::sleep(Duration::from_millis(100));
+                return;
             }
-            .watch_launcher(Duration::from_millis(20))
-            .unwrap();
-            match mode {
-                WatchdogMode::Acknowledge => {
-                    (&launcher).write_all(&[STARTUP_ACK]).unwrap();
-                    let mut confirmation = [0];
-                    (&launcher).read_exact(&mut confirmation).unwrap();
-                    assert_eq!(confirmation, [STARTUP_ACK]);
-                    drop(launcher);
-                    std::thread::sleep(Duration::from_millis(100));
-                    return;
-                }
-                WatchdogMode::Disconnect => drop(launcher),
-                WatchdogMode::Timeout => (),
+            let runtime = Runtime::new().unwrap();
+            let (started_tx, started_rx) = mpsc::channel();
+            runtime.spawn_blocking(move || {
+                started_tx.send(()).unwrap();
+                thread::sleep(Duration::from_secs(2));
+            });
+            started_rx.recv().unwrap();
+            notifier.watch_launcher(Duration::from_millis(20)).unwrap();
+            if matches!(mode, WatchdogMode::Disconnect) {
+                drop(launcher);
             }
-            let runtime = tokio::runtime::Runtime::new().unwrap();
-            runtime.spawn_blocking(|| std::thread::sleep(Duration::from_secs(2)));
             drop(runtime);
             panic!("startup watchdog did not terminate the daemon");
         }
@@ -350,14 +457,14 @@ mod tests {
             WatchdogMode::Timeout,
             WatchdogMode::Acknowledge,
         ] {
-            let output = std::process::Command::new(std::env::current_exe().unwrap())
-                .args([
-                    "--exact",
-                    "startup::tests::watchdog_stops_abandoned_startup",
-                ])
-                .env(CHILD_ENV, serde_json::to_string(&mode).unwrap())
-                .output()
-                .unwrap();
+            let output = run_test_subprocess(
+                Command::new(env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "startup::tests::watchdog_stops_abandoned_startup",
+                    ])
+                    .env(CHILD_ENV, serde_json::to_string(&mode).unwrap()),
+            );
             let expected = match mode {
                 WatchdogMode::Acknowledge => 0,
                 WatchdogMode::Disconnect | WatchdogMode::Timeout => 2,
