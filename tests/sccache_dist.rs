@@ -1,11 +1,4 @@
-#![cfg(all(
-    feature = "dist-server",
-    any(
-        all(target_os = "linux", target_arch = "x86_64"),
-        all(target_os = "linux", target_arch = "aarch64"),
-        target_os = "freebsd",
-    ),
-))]
+#![cfg(feature = "dist-server")]
 
 use assert_cmd::assert::OutputAssertExt;
 use nix::sys::signal::{Signal, kill};
