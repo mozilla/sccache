@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use daemonix::Outcome;
 use sccache::util::{daemonize, daemonize_cleanup, daemonize_with_parent};
 use serde::{Deserialize, Serialize};
@@ -76,8 +76,11 @@ pub fn run(initialize: impl FnOnce(&mut StartupNotifier) -> Result<Infallible>) 
     }
 
     let (launcher, daemon) = UnixStream::pair().context("failed to create startup channel")?;
-    // Daemonization redirects stdin, stdout, and stderr, replacing anything on those descriptors.
-    assert!(
+    // If code closes stdin/stdout/stderr after Rust initializes them, socketpair
+    // can reuse fd 0, 1, or 2. During daemonization, dup2 redirects those slots
+    // to /dev/null, closing the socket endpoint and breaking the handshake.
+    // Reject this state before forking so the invoking process reports an error.
+    ensure!(
         launcher.as_raw_fd() > libc::STDERR_FILENO && daemon.as_raw_fd() > libc::STDERR_FILENO,
         "startup sockets must not occupy standard file descriptors"
     );
@@ -164,11 +167,55 @@ fn wait_for_startup(mut stream: UnixStream, timeout: Duration) -> Result<()> {
 mod tests {
     use super::*;
     use std::env;
-    use std::process::{Command, Stdio};
+    use std::process::{Command, Output, Stdio};
     use std::sync::mpsc;
     use std::thread;
     use std::time::Instant;
     use tokio::runtime::Runtime;
+
+    fn run_test_subprocess(command: &mut Command) -> Output {
+        let mut child = command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while child.try_wait().unwrap().is_none() {
+            if Instant::now() >= deadline {
+                child.kill().unwrap();
+                let output = child.wait_with_output().unwrap();
+                panic!("test subprocess timed out: {output:?}");
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        child.wait_with_output().unwrap()
+    }
+
+    #[test]
+    fn startup_rejects_sockets_on_standard_descriptors() {
+        const CHILD_ENV: &str = "SCCACHE_TEST_CLOSED_STDIN";
+        if env::var_os(CHILD_ENV).is_some() {
+            // SAFETY: only this isolated test subprocess closes fd 0, after Rust
+            // startup has initialized it; nothing subsequently uses it as stdin.
+            assert_eq!(unsafe { libc::close(libc::STDIN_FILENO) }, 0);
+            let error = run(|_| panic!("initialization must not be reached")).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "startup sockets must not occupy standard file descriptors"
+            );
+            return;
+        }
+        let output = run_test_subprocess(
+            Command::new(env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "startup::tests::startup_rejects_sockets_on_standard_descriptors",
+                ])
+                .env(CHILD_ENV, "1")
+                .env("SCCACHE_NO_DAEMON", "0"),
+        );
+        assert!(output.status.success(), "{output:?}");
+    }
 
     #[test]
     fn ready_reports_success() {
@@ -324,26 +371,14 @@ mod tests {
             panic!("startup watchdog did not terminate the daemon");
         }
         for mode in ["disconnect", "timeout", "ack"] {
-            let mut child = Command::new(env::current_exe().unwrap())
-                .args([
-                    "--exact",
-                    "startup::tests::watchdog_stops_abandoned_startup",
-                ])
-                .env(CHILD_ENV, mode)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-                .unwrap();
-            let deadline = Instant::now() + Duration::from_secs(5);
-            while child.try_wait().unwrap().is_none() {
-                if Instant::now() >= deadline {
-                    child.kill().unwrap();
-                    let output = child.wait_with_output().unwrap();
-                    panic!("watchdog test child timed out ({mode}): {output:?}");
-                }
-                thread::sleep(Duration::from_millis(10));
-            }
-            let output = child.wait_with_output().unwrap();
+            let output = run_test_subprocess(
+                Command::new(env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "startup::tests::watchdog_stops_abandoned_startup",
+                    ])
+                    .env(CHILD_ENV, mode),
+            );
             let expected = if mode == "ack" { 0 } else { 2 };
             assert_eq!(output.status.code(), Some(expected), "{output:?}");
         }
