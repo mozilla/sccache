@@ -29,7 +29,9 @@ use crate::mock_command::{CommandCreatorSync, RunCommand};
 use crate::util::{
     Digest, fmt_duration_as_secs, hash_all, hash_all_archives, hash_all_externs, run_input_output,
 };
-use crate::util::{HashToDigest, OsStrExt, env_var_name_matches, strip_basedirs_from_arg};
+use crate::util::{
+    HashToDigest, OsStrExt, basedir_bytes, env_var_name_matches, strip_basedirs_from_arg,
+};
 use crate::{counted_array, dist};
 use async_trait::async_trait;
 use filetime::FileTime;
@@ -61,6 +63,7 @@ use std::process;
 use std::sync::Mutex;
 use std::sync::{Arc, LazyLock};
 use std::time;
+use typed_path::Utf8TypedPathBuf;
 
 use crate::errors::*;
 
@@ -1976,6 +1979,26 @@ fn basedirs_verbatim_env_deps<'a>(
     move |var| names.iter().any(|name| env_var_name_matches(var, name))
 }
 
+/// Cargo's build directories for the profile of a compile, `<target-dir>[/<triple>]/<profile>`,
+/// as basedirs. They hold the `deps` directories the compile writes to and links from, and the
+/// `OUT_DIR` of each build script, so a crate that `include!`s generated code is keyed the same
+/// in every target directory. The generated files are hashed with the other sources.
+fn cargo_profile_dirs(output_dir: &Path, crate_link_paths: &[PathBuf], cwd: &Path) -> Vec<Vec<u8>> {
+    iter::once(cwd.join(output_dir))
+        .chain(crate_link_paths.iter().cloned())
+        .filter_map(|dir| {
+            let dir = Utf8TypedPathBuf::from(dir.to_str()?).normalize();
+            if dir.file_name() != Some("deps") {
+                return None;
+            }
+            let profile = dir.parent()?;
+            // A basedir at the root would strip every absolute path.
+            profile.parent()?;
+            Some(basedir_bytes(&profile.to_path_buf()))
+        })
+        .collect()
+}
+
 #[allow(clippy::suspicious_else_formatting)] // False positive
 #[async_trait]
 impl<T> CompilerHasher<T> for RustHasher
@@ -1994,7 +2017,17 @@ where
         _cache_control: CacheControl,
     ) -> Result<HashResult<T>> {
         trace!("[{}]: generate_hash_key", self.parsed_args.crate_name);
-        let basedirs = storage.basedirs();
+        let mut basedirs = storage.basedirs().to_vec();
+        for dir in cargo_profile_dirs(
+            &self.parsed_args.output_dir,
+            &self.parsed_args.crate_link_paths,
+            &cwd,
+        ) {
+            if !basedirs.contains(&dir) {
+                basedirs.push(dir);
+            }
+        }
+        let basedirs = &basedirs[..];
         // Keep the incremental directory out of the key, and out of the dep-info and
         // file-names runs so they don't touch it.
         let incremental = self.parsed_args.arguments.iter().any(is_incremental_arg);
@@ -2209,8 +2242,17 @@ where
         // 5. The digest of all files listed on the commandline (self.externs).
         // 6. The digest of all static libraries listed on the commandline (self.staticlibs).
         // 7. The digest of the content of the target json file specified via `--target` (if any).
+        // The sources go in the order of their paths with the basedirs stripped, which unlike
+        // the paths themselves doesn't depend on where a generated file's target directory is.
+        let mut source_hashes: Vec<_> = source_files
+            .iter()
+            .map(|f| PathBuf::from(strip_basedirs_os(f.as_os_str(), basedirs).into_owned()))
+            .zip(source_hashes)
+            .collect();
+        source_hashes.sort();
         for h in source_hashes
             .into_iter()
+            .map(|(_, h)| h)
             .chain(extern_hashes)
             .chain(staticlib_hashes)
             .chain(target_json_hash)
@@ -4902,6 +4944,23 @@ foo.rs:
         A: AsRef<OsStr>,
         F: Fn(&Path) -> Result<()>,
     {
+        hash_result_with_sources(f, args, env_vars, &["foo.rs"], env_deps, pre_func, storage)
+    }
+
+    /// Like [`hash_result_with`], with `sources` in the dep-info.
+    fn hash_result_with_sources<A, F>(
+        f: &TestFixture,
+        args: &[A],
+        env_vars: &[(OsString, OsString)],
+        sources: &[&str],
+        env_deps: &[(&str, Option<OsString>)],
+        pre_func: F,
+        storage: MockStorage,
+    ) -> HashResult<Arc<Mutex<MockCommandCreator>>>
+    where
+        A: AsRef<OsStr>,
+        F: Fn(&Path) -> Result<()>,
+    {
         let oargs = args
             .iter()
             .map(|a| a.as_ref().to_owned())
@@ -4940,7 +4999,7 @@ foo.rs:
         let runtime = single_threaded_runtime();
         let pool = runtime.handle().clone();
 
-        mock_dep_info_with_env(&creator, &["foo.rs"], env_deps);
+        mock_dep_info_with_env(&creator, sources, env_deps);
         mock_file_names(&creator, &["foo.rlib"]);
         hasher
             .generate_hash_key(
@@ -5015,6 +5074,107 @@ foo.rs:
         // A basedir nothing lives under leaves the key as it was.
         let elsewhere = basedir(&std::env::temp_dir().join("sccache-elsewhere"));
         assert_eq!(key(&a, "x", vec![]), key(&a, "x", vec![elsewhere]));
+    }
+
+    #[test]
+    fn test_cargo_profile_dirs() {
+        let f = TestFixture::new();
+        let root = f.tempdir.path();
+        let debug = root.join("t").join("debug");
+        let deps = debug.join("deps");
+        let host = basedir(&debug);
+        let cross = root
+            .join("t")
+            .join("x86_64-unknown-linux-gnu")
+            .join("debug");
+        assert_eq!(
+            cargo_profile_dirs(&cross.join("deps"), &[deps], root),
+            vec![basedir(&cross), host.clone()]
+        );
+        // A relative --out-dir is under the cwd.
+        let relative = Path::new("t").join("debug").join("deps");
+        assert_eq!(cargo_profile_dirs(&relative, &[], root), vec![host.clone()]);
+        let dotted = root.join("x").join("..").join(&relative);
+        assert_eq!(cargo_profile_dirs(&dotted, &[], root), vec![host]);
+        // Only directories laid out like cargo's count.
+        let out = debug.join("out");
+        assert!(cargo_profile_dirs(&out, std::slice::from_ref(&debug), root).is_empty());
+        #[cfg(unix)]
+        assert!(cargo_profile_dirs(Path::new("/deps"), &[], root).is_empty());
+    }
+
+    /// The same crate built into two target directories, which its `OUT_DIR` and the
+    /// generated file it `include!`s are under, is keyed alike without any basedirs.
+    #[test]
+    fn test_equal_hashes_cargo_target_dirs() {
+        fn key(
+            f: &TestFixture,
+            profile: &Path,
+            out_dir: &Path,
+            generated: &'static str,
+            env_vars: &[(OsString, OsString)],
+        ) -> String {
+            let deps = profile.join("deps");
+            let source = out_dir.join("generated.rs");
+            let out = out_dir.to_owned();
+            hash_result_with_sources(
+                f,
+                &[
+                    OsString::from("--emit"),
+                    "link".into(),
+                    "foo.rs".into(),
+                    "--out-dir".into(),
+                    deps.clone().into(),
+                    "--crate-name".into(),
+                    "foo".into(),
+                    "--crate-type".into(),
+                    "lib".into(),
+                    "-L".into(),
+                    format!("dependency={}", deps.display()).into(),
+                ],
+                env_vars,
+                &["foo.rs", source.to_str().unwrap()],
+                &[("OUT_DIR", Some(out_dir.into()))],
+                move |_| {
+                    create_file(&out, "generated.rs", |mut f| {
+                        f.write_all(generated.as_bytes())
+                    })?;
+                    Ok(())
+                },
+                MockStorage::new(None, false),
+            )
+            .key
+        }
+
+        let f = TestFixture::new();
+        let root = f.tempdir.path();
+        // The generated file sorts before foo.rs in one target directory and after it in
+        // the other, and one target directory is for a `--target`.
+        let a = root.join("a").join("debug");
+        let z = root
+            .join("z")
+            .join("x86_64-unknown-linux-gnu")
+            .join("debug");
+        let out = |profile: &Path| profile.join("build").join("foo-1").join("out");
+        let [out_a, out_z] = [out(&a), out(&z)];
+        assert_eq!(key(&f, &a, &out_a, "x", &[]), key(&f, &z, &out_z, "x", &[]));
+        // The generated code still counts...
+        assert_ne!(key(&f, &a, &out_a, "x", &[]), key(&f, &z, &out_z, "y", &[]));
+        // ...as does an `OUT_DIR` outside the target directory...
+        let elsewhere = root.join("elsewhere");
+        assert_ne!(
+            key(&f, &a, &out_a, "x", &[]),
+            key(&f, &z, &elsewhere, "x", &[])
+        );
+        // ...and one listed in SCCACHE_BASEDIRS_VERBATIM_ENV_DEPS.
+        let verbatim = [(
+            "SCCACHE_BASEDIRS_VERBATIM_ENV_DEPS".into(),
+            "OUT_DIR".into(),
+        )];
+        assert_ne!(
+            key(&f, &a, &out_a, "x", &verbatim),
+            key(&f, &z, &out_z, "x", &verbatim)
+        );
     }
 
     #[test]

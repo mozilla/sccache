@@ -428,16 +428,22 @@ fn build_checkout(test_info: &SccacheTest, name: &str) -> Result<PathBuf> {
 /// Returns the checkout's target directory.
 fn cargo_build(test_info: &SccacheTest, checkout: &Path) -> Result<PathBuf> {
     let target_dir = checkout.join("target");
+    cargo_build_into(test_info, checkout, &target_dir)?;
+    Ok(target_dir)
+}
+
+/// Build the crate in `checkout` into `target_dir`.
+fn cargo_build_into(test_info: &SccacheTest, checkout: &Path, target_dir: &Path) -> Result<()> {
     Command::new(CARGO.as_os_str())
         // `--target-dir` rather than `CARGO_TARGET_DIR`,
         // since cargo forwards `CARGO_*` to rustc and sccache hashes them.
         .args(["build", "--color=never", "--target-dir"])
-        .arg(&target_dir)
+        .arg(target_dir)
         .envs(test_info.env.iter().cloned())
         .current_dir(checkout)
         .assert()
         .try_success()?;
-    Ok(target_dir)
+    Ok(())
 }
 
 /// Read the dep-info file cargo keeps for the crate `name` under `target_dir`.
@@ -598,6 +604,54 @@ fn test_rust_cargo_basedirs_other_checkout() -> Result<()> {
     assert!(
         dep_info.contains(b.to_str().unwrap()),
         "dep-info does not name checkout b:\n{dep_info}"
+    );
+
+    Ok(())
+}
+
+/// A crate and its path dependency, which `include!`s build script output, built from one
+/// checkout into two target directories without any basedirs, hit in the second one, whose
+/// dep-info names its own `OUT_DIR`.
+#[test]
+#[serial]
+fn test_rust_cargo_out_dir_other_target_dir() -> Result<()> {
+    let test_info = SccacheTest::new(None)?;
+    let tempdir = real_tempdir(&test_info)?;
+    let checkout = tempdir.join("m");
+    write_out_dir_crate(&checkout)?;
+    // On either side of the checkout, so the generated file sorts before the dependency's
+    // own source in one and after it in the other.
+    let [a, z] = ["a", "z"].map(|name| tempdir.join(name));
+
+    cargo_build_into(&test_info, &checkout, &a)?;
+    Command::new(SCCACHE_BIN.as_os_str())
+        .arg("--zero-stats")
+        .assert()
+        .try_success()?;
+    cargo_build_into(&test_info, &checkout, &z)?;
+
+    test_info
+        .show_stats()?
+        .try_stdout(
+            predicates::str::contains(
+                r#""cache_hits":{"counts":{"Rust":2},"adv_counts":{"rust":2}}"#,
+            )
+            .from_utf8(),
+        )?
+        .try_stdout(
+            predicates::str::contains(r#""cache_misses":{"counts":{},"adv_counts":{}}"#)
+                .from_utf8(),
+        )?
+        .try_success()?;
+
+    let dep_info = read_dep_info(&z, "dep")?;
+    assert!(
+        !dep_info.contains(a.to_str().unwrap()),
+        "dep-info names target directory a:\n{dep_info}"
+    );
+    assert!(
+        dep_info.contains(z.to_str().unwrap()),
+        "dep-info does not name target directory z:\n{dep_info}"
     );
 
     Ok(())

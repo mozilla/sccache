@@ -32,6 +32,7 @@ use std::process::{self, Stdio};
 use std::str;
 use std::time::Duration;
 use std::time::{self, SystemTime};
+use typed_path::Utf8TypedPathBuf;
 
 use crate::errors::*;
 
@@ -1518,6 +1519,19 @@ pub fn strip_basedirs_from_arg<'a>(arg: &'a [u8], basedirs: &[Vec<u8>]) -> Cow<'
             Cow::Owned(out)
         }
         None => Cow::Borrowed(arg),
+    }
+}
+
+/// The absolute directory `dir` as [`strip_basedirs_from_arg`] expects a basedir:
+/// normalized, with a trailing `/` so that only whole path components match, and on
+/// Windows lowercased with forward slashes.
+pub fn basedir_bytes(dir: &Utf8TypedPathBuf) -> Vec<u8> {
+    let mut bytes = dir.normalize().to_string().into_bytes();
+    bytes.push(b'/');
+    if cfg!(target_os = "windows") {
+        normalize_win_path(&bytes)
+    } else {
+        bytes
     }
 }
 
