@@ -20,8 +20,8 @@
 #[macro_use]
 extern crate log;
 use crate::harness::{
-    get_stats, sccache_client_cfg, sccache_command, start_local_daemon, stop_local_daemon,
-    write_json_cfg, write_source, zero_stats,
+    get_stats, sccache_client_cfg, start_local_daemon, stop_local_daemon, write_json_cfg,
+    write_source, zero_stats,
 };
 use assert_cmd::prelude::*;
 use fs::File;
@@ -43,9 +43,11 @@ use std::process::{Command, Output, Stdio};
 use std::str;
 use std::time::{Duration, SystemTime};
 use test_case::test_case;
+use util::TestCommandExt;
 use which::{which, which_in};
 
 mod harness;
+mod util;
 
 #[derive(Clone)]
 struct Compiler {
@@ -232,7 +234,7 @@ fn test_basic_compile(compiler: Compiler, tempdir: &Path) {
 
     let out_file = tempdir.join(OUTPUT);
     trace!("compile");
-    sccache_command()
+    Command::sccache()
         .args(compile_cmdline(name, &exe, INPUT, OUTPUT, Vec::new()))
         .current_dir(tempdir)
         .envs(env_vars.clone())
@@ -251,7 +253,7 @@ fn test_basic_compile(compiler: Compiler, tempdir: &Path) {
     });
     trace!("compile");
     fs::remove_file(&out_file).unwrap();
-    sccache_command()
+    Command::sccache()
         .args(compile_cmdline(name, &exe, INPUT, OUTPUT, Vec::new()))
         .current_dir(tempdir)
         .envs(env_vars)
@@ -284,7 +286,7 @@ fn test_basic_compile_into_null(compiler: Compiler, tempdir: &Path) {
     copy_to_tempdir(&[INPUT, INPUT_ERR], tempdir);
 
     trace!("compile");
-    sccache_command()
+    Command::sccache()
         .args(compile_cmdline(name, &exe, INPUT, NULL_PATH, Vec::new()))
         .current_dir(tempdir)
         .envs(env_vars.clone())
@@ -301,7 +303,7 @@ fn test_basic_compile_into_null(compiler: Compiler, tempdir: &Path) {
         assert!(info.stats.cache_misses.get_adv(&adv_key).is_none());
     });
     trace!("compile");
-    sccache_command()
+    Command::sccache()
         .args(compile_cmdline(name, &exe, INPUT, NULL_PATH, Vec::new()))
         .current_dir(tempdir)
         .envs(env_vars)
@@ -334,7 +336,7 @@ fn test_basic_compile_into_dev_stdout(compiler: Compiler, tempdir: &Path) {
     copy_to_tempdir(&[INPUT, INPUT_ERR], tempdir);
 
     trace!("compile");
-    sccache_command()
+    Command::sccache()
         .args(compile_cmdline(name, &exe, INPUT, DEV_STDOUT, Vec::new()))
         .current_dir(tempdir)
         .envs(env_vars.clone())
@@ -351,7 +353,7 @@ fn test_basic_compile_into_dev_stdout(compiler: Compiler, tempdir: &Path) {
         assert!(info.stats.cache_misses.get_adv(&adv_key).is_none());
     });
     trace!("compile");
-    sccache_command()
+    Command::sccache()
         .args(compile_cmdline(name, &exe, INPUT, DEV_STDOUT, Vec::new()))
         .current_dir(tempdir)
         .envs(env_vars)
@@ -386,7 +388,7 @@ fn test_noncacheable_stats(compiler: Compiler, tempdir: &Path) {
     copy_to_tempdir(&[INPUT], tempdir);
 
     trace!("compile");
-    sccache_command()
+    Command::sccache()
         .arg(&exe)
         .arg("-E")
         .arg(INPUT)
@@ -413,7 +415,7 @@ fn test_msvc_deps(compiler: Compiler, tempdir: &Path) {
     trace!("compile with /sourceDependencies");
     let mut args = compile_cmdline(name, exe, INPUT, OUTPUT, Vec::new());
     args.push("/sourceDependenciestest.o.json".into());
-    sccache_command()
+    Command::sccache()
         .args(&args)
         .current_dir(tempdir)
         .envs(env_vars)
@@ -450,7 +452,7 @@ fn test_msvc_responsefile(compiler: Compiler, tempdir: &Path) {
     }
 
     let args = vec_from!(OsString, exe, &format!("@{cmd_file_name}"));
-    sccache_command()
+    Command::sccache()
         .args(&args)
         .current_dir(tempdir)
         .envs(env_vars)
@@ -508,7 +510,7 @@ fn test_msvc_show_includes_cache_hit(
                 format!("/I{}", inc_dir.display())
             ),
         );
-        let output = sccache_command()
+        let output = Command::sccache()
             .args(&args)
             .current_dir(dir)
             .envs(env_vars.clone())
@@ -543,7 +545,7 @@ fn test_gcc_mp_werror(compiler: Compiler, tempdir: &Path) {
         OsString, "-MD", "-MP", "-MF", "foo.pp", "-Werror"
     ));
     // This should fail, but the error should be from the #error!
-    sccache_command()
+    Command::sccache()
         .args(&args)
         .current_dir(tempdir)
         .envs(env_vars)
@@ -581,7 +583,7 @@ int main(int argc, char** argv) {
     let mut args = compile_cmdline(name, exe, SRC, OUTPUT, Vec::new());
     args.extend(vec_from!(OsString, "-fprofile-generate"));
     trace!("compile source.c (1)");
-    sccache_command()
+    Command::sccache()
         .args(&args)
         .current_dir(tempdir)
         .envs(env_vars.clone())
@@ -594,7 +596,7 @@ int main(int argc, char** argv) {
     });
     // Compile the same source again to ensure we can get a cache hit.
     trace!("compile source.c (2)");
-    sccache_command()
+    Command::sccache()
         .args(&args)
         .current_dir(tempdir)
         .envs(env_vars.clone())
@@ -624,7 +626,7 @@ int main(int argc, char** argv) {
 ",
     );
     trace!("compile source.c (3)");
-    sccache_command()
+    Command::sccache()
         .args(&args)
         .current_dir(tempdir)
         .envs(env_vars)
@@ -660,7 +662,7 @@ fn test_split_dwarf_object_generate_output_dir_changes(compiler: Compiler, tempd
     args.extend(vec_from!(OsString, "-g"));
     args.extend(vec_from!(OsString, "-gsplit-dwarf"));
     trace!("compile source.c (1)");
-    sccache_command()
+    Command::sccache()
         .args(&args)
         .current_dir(tempdir)
         .envs(env_vars.clone())
@@ -673,7 +675,7 @@ fn test_split_dwarf_object_generate_output_dir_changes(compiler: Compiler, tempd
     });
     // Compile the same source again to ensure we can get a cache hit.
     trace!("compile source.c (2)");
-    sccache_command()
+    Command::sccache()
         .args(&args)
         .current_dir(tempdir)
         .envs(env_vars.clone())
@@ -691,7 +693,7 @@ fn test_split_dwarf_object_generate_output_dir_changes(compiler: Compiler, tempd
     args2.extend(vec_from!(OsString, "-g"));
     args2.extend(vec_from!(OsString, "-gsplit-dwarf"));
     trace!("compile source.c (2)");
-    sccache_command()
+    Command::sccache()
         .args(&args2)
         .current_dir(tempdir)
         .envs(env_vars.clone())
@@ -716,7 +718,7 @@ fn test_gcc_clang_no_warnings_from_macro_expansion(compiler: Compiler, tempdir: 
     copy_to_tempdir(&[INPUT_MACRO_EXPANSION], tempdir);
 
     trace!("compile");
-    sccache_command()
+    Command::sccache()
         .args(
             [
                 &compile_cmdline(name, exe, INPUT_MACRO_EXPANSION, OUTPUT, Vec::new())[..],
@@ -742,7 +744,7 @@ fn test_compile_with_define(compiler: Compiler, tempdir: &Path) {
     copy_to_tempdir(&[INPUT_WITH_DEFINE], tempdir);
 
     trace!("compile");
-    sccache_command()
+    Command::sccache()
         .args(
             [
                 &compile_cmdline(name, exe, INPUT_WITH_DEFINE, OUTPUT, Vec::new())[..],
@@ -768,7 +770,7 @@ fn test_gcc_clang_depfile(compiler: Compiler, tempdir: &Path) {
     fs::copy(tempdir.join(INPUT), tempdir.join("same-content.c")).unwrap();
 
     trace!("compile");
-    sccache_command()
+    Command::sccache()
         .args(compile_cmdline(
             name,
             exe.clone(),
@@ -781,7 +783,7 @@ fn test_gcc_clang_depfile(compiler: Compiler, tempdir: &Path) {
         .envs(env_vars.clone())
         .assert()
         .success();
-    sccache_command()
+    Command::sccache()
         .args(compile_cmdline(
             name,
             exe,
@@ -885,7 +887,7 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
 
     let out_file = tempdir.join(OUTPUT);
     trace!("compile A");
-    sccache_command()
+    Command::sccache()
         .args(compile_cuda_cmdline(
             name,
             exe,
@@ -930,7 +932,7 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
     });
 
     trace!("compile A");
-    sccache_command()
+    Command::sccache()
         .args(compile_cuda_cmdline(
             name,
             exe,
@@ -985,7 +987,7 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
     // By compiling another input source we verify that the pre-processor
     // phase is correctly running and outputting text
     trace!("compile B");
-    sccache_command()
+    Command::sccache()
         .args(compile_cuda_cmdline(
             name,
             exe,
@@ -1039,7 +1041,7 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
 
     trace!("compile ptx");
     let out_file = tempdir.join("test.ptx");
-    sccache_command()
+    Command::sccache()
         .args(compile_cuda_cmdline(
             name,
             exe,
@@ -1092,7 +1094,7 @@ fn test_nvcc_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
 
     trace!("compile cubin");
     let out_file = tempdir.join("test.cubin");
-    sccache_command()
+    Command::sccache()
         .args(compile_cuda_cmdline(
             name,
             exe,
@@ -1165,7 +1167,7 @@ int main(int argc, char** argv) {
 ";
     write_source(tempdir, test_2299_src_name, test_2299_cu_src_1);
     trace!("compile test_2299.cu (1)");
-    sccache_command()
+    Command::sccache()
         .args(compile_cuda_cmdline(
             name,
             exe,
@@ -1227,7 +1229,7 @@ int main(int argc, char** argv) {
 
     write_source(tempdir, test_2299_src_name, test_2299_cu_src_2);
     trace!("compile test_2299.cu (2)");
-    sccache_command()
+    Command::sccache()
         .args(compile_cuda_cmdline(
             name,
             exe,
@@ -1290,7 +1292,7 @@ int main(int argc, char** argv) {
     // Recompile the original version again to ensure only cache hits
     write_source(tempdir, test_2299_src_name, test_2299_cu_src_1);
     trace!("compile test_2299.cu (3)");
-    sccache_command()
+    Command::sccache()
         .args(compile_cuda_cmdline(
             name,
             exe,
@@ -1365,7 +1367,7 @@ fn test_nvcc_proper_lang_stat_tracking(compiler: Compiler, tempdir: &Path) {
 
     let out_file = tempdir.join(OUTPUT);
     trace!("compile CUDA A");
-    sccache_command()
+    Command::sccache()
         .args(compile_cmdline(
             name,
             &exe,
@@ -1379,7 +1381,7 @@ fn test_nvcc_proper_lang_stat_tracking(compiler: Compiler, tempdir: &Path) {
         .success();
     fs::remove_file(&out_file).unwrap();
     trace!("compile CUDA A");
-    sccache_command()
+    Command::sccache()
         .args(compile_cmdline(
             name,
             &exe,
@@ -1393,7 +1395,7 @@ fn test_nvcc_proper_lang_stat_tracking(compiler: Compiler, tempdir: &Path) {
         .success();
     fs::remove_file(&out_file).unwrap();
     trace!("compile C++ A");
-    sccache_command()
+    Command::sccache()
         .args(compile_cmdline(name, &exe, INPUT, OUTPUT, Vec::new()))
         .current_dir(tempdir)
         .envs(env_vars.clone())
@@ -1401,7 +1403,7 @@ fn test_nvcc_proper_lang_stat_tracking(compiler: Compiler, tempdir: &Path) {
         .success();
     fs::remove_file(&out_file).unwrap();
     trace!("compile C++ A");
-    sccache_command()
+    Command::sccache()
         .args(compile_cmdline(name, &exe, INPUT, OUTPUT, Vec::new()))
         .current_dir(tempdir)
         .envs(env_vars)
@@ -1446,7 +1448,7 @@ fn test_clang_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
 
     let out_file = tempdir.join(OUTPUT);
     trace!("compile A");
-    sccache_command()
+    Command::sccache()
         .args(compile_cuda_cmdline(
             name,
             exe,
@@ -1472,7 +1474,7 @@ fn test_clang_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
     });
     trace!("compile A");
     fs::remove_file(&out_file).unwrap();
-    sccache_command()
+    Command::sccache()
         .args(compile_cuda_cmdline(
             name,
             exe,
@@ -1501,7 +1503,7 @@ fn test_clang_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
     // By compiling another input source we verify that the pre-processor
     // phase is correctly running and outputting text
     trace!("compile B");
-    sccache_command()
+    Command::sccache()
         .args(compile_cuda_cmdline(
             name,
             exe,
@@ -1543,7 +1545,7 @@ fn test_clang_proper_lang_stat_tracking(compiler: Compiler, tempdir: &Path) {
 
     let out_file = tempdir.join(OUTPUT);
     trace!("compile CUDA A");
-    sccache_command()
+    Command::sccache()
         .args(compile_cuda_cmdline(
             name,
             &exe,
@@ -1558,7 +1560,7 @@ fn test_clang_proper_lang_stat_tracking(compiler: Compiler, tempdir: &Path) {
         .success();
     fs::remove_file(&out_file).unwrap();
     trace!("compile CUDA A");
-    sccache_command()
+    Command::sccache()
         .args(compile_cuda_cmdline(
             name,
             &exe,
@@ -1573,7 +1575,7 @@ fn test_clang_proper_lang_stat_tracking(compiler: Compiler, tempdir: &Path) {
         .success();
     fs::remove_file(&out_file).unwrap();
     trace!("compile C++ A");
-    sccache_command()
+    Command::sccache()
         .args(compile_cmdline(name, &exe, INPUT, OUTPUT, Vec::new()))
         .current_dir(tempdir)
         .envs(env_vars.clone())
@@ -1581,7 +1583,7 @@ fn test_clang_proper_lang_stat_tracking(compiler: Compiler, tempdir: &Path) {
         .success();
     fs::remove_file(&out_file).unwrap();
     trace!("compile C++ A");
-    sccache_command()
+    Command::sccache()
         .args(compile_cmdline(name, &exe, INPUT, OUTPUT, Vec::new()))
         .current_dir(tempdir)
         .envs(env_vars)
@@ -1621,7 +1623,7 @@ fn test_hip_compiles(compiler: &Compiler, tempdir: &Path) {
 
     let out_file = tempdir.join(OUTPUT);
     trace!("compile A");
-    sccache_command()
+    Command::sccache()
         .args(compile_hip_cmdline(
             name,
             exe,
@@ -1647,7 +1649,7 @@ fn test_hip_compiles(compiler: &Compiler, tempdir: &Path) {
     });
     trace!("compile A");
     fs::remove_file(&out_file).unwrap();
-    sccache_command()
+    Command::sccache()
         .args(compile_hip_cmdline(
             name,
             exe,
@@ -1676,7 +1678,7 @@ fn test_hip_compiles(compiler: &Compiler, tempdir: &Path) {
     // By compiling another input source we verify that the pre-processor
     // phase is correctly running and outputting text
     trace!("compile B");
-    sccache_command()
+    Command::sccache()
         .args(compile_hip_cmdline(
             name,
             exe,
@@ -1718,7 +1720,7 @@ fn test_hip_compiles_multi_targets(compiler: &Compiler, tempdir: &Path) {
 
     let out_file = tempdir.join(OUTPUT);
     trace!("compile A with gfx900 and gfx1030");
-    sccache_command()
+    Command::sccache()
         .args(compile_hip_cmdline(
             name,
             exe,
@@ -1745,7 +1747,7 @@ fn test_hip_compiles_multi_targets(compiler: &Compiler, tempdir: &Path) {
 
     trace!("compile A with with gfx900 and gfx1030 again");
     fs::remove_file(&out_file).unwrap();
-    sccache_command()
+    Command::sccache()
         .args(compile_hip_cmdline(
             name,
             exe,
@@ -1775,7 +1777,7 @@ fn test_hip_compiles_multi_targets(compiler: &Compiler, tempdir: &Path) {
     // By compiling another input source we verify that the pre-processor
     // phase is correctly running and outputting text
     trace!("compile B with gfx900 and gfx1030");
-    sccache_command()
+    Command::sccache()
         .args(compile_hip_cmdline(
             name,
             exe,
@@ -1822,7 +1824,7 @@ fn test_clang_multicall(compiler: Compiler, tempdir: &Path) {
     copy_to_tempdir(&[INPUT_CLANG_MULTICALL], tempdir);
 
     println!("compile clang_multicall");
-    sccache_command()
+    Command::sccache()
         .args(compile_cmdline(
             name,
             exe,
@@ -1854,7 +1856,7 @@ fn test_clang_cache_whitespace_normalization(
     zero_stats();
 
     debug!("compile whitespace");
-    sccache_command()
+    Command::sccache()
         .args(compile_cmdline(
             name,
             &exe,
@@ -1881,7 +1883,7 @@ fn test_clang_cache_whitespace_normalization(
         tempdir.join(INPUT_WITH_WHITESPACE),
     )
     .unwrap();
-    sccache_command()
+    Command::sccache()
         .args(compile_cmdline(
             name,
             &exe,
@@ -2071,7 +2073,7 @@ fn test_sccache_command(preprocessor_cache_mode: bool) {
             .filter_map(Result::ok)
             .any(|e| e.file_type().is_file() && e.file_name() != CACHEDIR_TAG_FILE_NAME);
         if has_entries {
-            sccache_command()
+            Command::sccache()
                 .arg("--debug-preprocessor-cache")
                 .env("SCCACHE_CONF", tempdir.path().join("sccache-cfg.json"))
                 .assert()
@@ -2158,7 +2160,7 @@ fn test_assembler_affects_cache(preprocessor_cache_mode: bool) {
         start_local_daemon(&tempdir.path().join("sccache-cfg.json"), &cached_cfg);
         zero_stats();
         fs::remove_file(tempdir.path().join(OUTPUT)).ok();
-        sccache_command()
+        Command::sccache()
             .args(compile_cmdline(
                 compiler.name,
                 &compiler.exe,
@@ -2196,10 +2198,10 @@ fn start_multiarch_server(tempdir: &Path, preprocessor_cache_mode: bool) -> Opti
     stop_local_daemon();
     let sccache_cfg = sccache_client_cfg(tempdir, preprocessor_cache_mode);
     write_json_cfg(tempdir, "sccache-cfg.json", &sccache_cfg);
-    // `sccache_command` strips SCCACHE_* variables, so opt the server into
+    // `Command::sccache` strips inherited SCCACHE_* variables, so opt the server into
     // multi-arch caching explicitly.
     assert!(
-        sccache_command()
+        Command::sccache()
             .arg("--start-server")
             .env("SCCACHE_CONF", tempdir.join("sccache-cfg.json"))
             .env("SCCACHE_CACHED_CONF", tempdir.join("sccache-cached-cfg"))
@@ -2229,7 +2231,7 @@ fn compile_multiarch(
     expected_misses: u64,
 ) {
     fs::remove_file(tempdir.join(OUTPUT)).ok();
-    sccache_command()
+    Command::sccache()
         .args(args)
         .current_dir(tempdir)
         .envs(compiler.env_vars.clone())
@@ -2441,7 +2443,7 @@ fn test_unreadable_preprocessor_cache_entry_is_a_miss() {
     let compile = |expected_hits: u64| {
         zero_stats();
         fs::remove_file(tempdir.path().join(OUTPUT)).ok();
-        sccache_command()
+        Command::sccache()
             .args(compile_cmdline(
                 compiler.name,
                 &compiler.exe,
@@ -2536,7 +2538,7 @@ fn test_basedirs_preprocessor_cache_checks_own_tree() {
     zero_stats();
 
     let compile = |tree: &Path| {
-        sccache_command()
+        Command::sccache()
             .args(compile_cmdline(
                 compiler.name,
                 &compiler.exe,
@@ -2627,7 +2629,7 @@ fn test_basedirs_preprocessor_cache_checks_header_in_other_basedir() {
 
     let object = src.join("main.o");
     let compile = || {
-        sccache_command()
+        Command::sccache()
             .args(compile_cmdline(
                 compiler.name,
                 &compiler.exe,
@@ -2775,7 +2777,7 @@ fn test_symlinked_exe() {
             .stdout
     };
 
-    let mut sc_cmd = sccache_command();
+    let mut sc_cmd = Command::sccache();
     let sccache_path = sc_cmd.get_program().to_os_string();
     let sc_ver_stdout = get_version(&mut sc_cmd);
 
@@ -2792,8 +2794,11 @@ fn test_symlinked_exe() {
         let sccache_compiler_alias = tempdir.path().join(exe_filename);
         unix_fs::symlink(&sccache_path, &sccache_compiler_alias).unwrap();
 
-        let compiler_alias_ver_stdout =
-            get_version(Command::new(&sccache_compiler_alias).envs(compiler.env_vars));
+        let compiler_alias_ver_stdout = get_version(
+            Command::new(&sccache_compiler_alias)
+                .clear_sccache_env_vars()
+                .envs(compiler.env_vars),
+        );
         assert_eq!(compiler_ver_stdout, compiler_alias_ver_stdout);
 
         fs::remove_file(&sccache_compiler_alias).unwrap();
