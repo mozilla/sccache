@@ -249,6 +249,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     flag!("-fno-profile-instr-generate", TooHardFlag),
     flag!("-fno-profile-instr-use", TooHardFlag),
     take_arg!("-fobjc-dispatch-method", OsString, Concatenated(b'='), PassThrough),
+    flag!("-fopenmp", PassThroughFlag),
     take_arg!("-foptimization-record-file", OsString, Concatenated(b'='), TooHard),
     take_arg!("-foptimization-record-passes", OsString, Concatenated(b'='), PassThrough),
     take_arg!("-fpass-plugin", PathBuf, Concatenated(b'='), ExtraHashFile),
@@ -1014,6 +1015,18 @@ mod test {
             ovec!["-fexperimental-assignment-tracking=disabled"],
             b.common_args
         );
+    }
+
+    #[test]
+    fn test_parse_xclang_fopenmp() {
+        // Apple clang's driver rejects -fopenmp, so CMake's FindOpenMP passes it to the
+        // frontend as `-Xclang -fopenmp`. It changes the generated code, so it must stay in
+        // the hashed common args.
+        let a = parses!("-c", "foo.c", "-o", "foo.o", "-Xclang", "-fopenmp");
+        assert_eq!(ovec!["-Xclang", "-fopenmp"], a.common_args);
+
+        let b = parses!("-c", "foo.c", "-o", "foo.o", "-fopenmp");
+        assert_eq!(ovec!["-fopenmp"], b.common_args);
     }
 
     #[test]

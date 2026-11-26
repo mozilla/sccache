@@ -3,7 +3,7 @@
 edition = "2024"
 name = "sccache"
 rust-version = "1.91.0"
-version = "0.20.0"
+version = "0.20.1"
 
 categories = ["command-line-utilities", "development-tools::build-utils"]
 description = "Sccache is a ccache-like tool. It is used as a compiler wrapper and avoids compilation when possible. Sccache has the capability to utilize caching in remote storage environments, including various cloud storage options, or alternatively, in local storage."
@@ -82,7 +82,6 @@ object = "0.40"
 opendal = { version = "0.58.1", optional = true, default-features = false }
 opendal-http-transport-reqwest = { version = "0.58.1", optional = true }
 opendal-layer-logging = { version = "0.58.1", optional = true }
-opendal-layer-retry = { version = "0.58.1", optional = true }
 opendal-layer-timeout = { version = "0.58.1", optional = true }
 openssl = { version = "0.10.75", optional = true }
 rand = "0.8.4"
@@ -215,7 +214,6 @@ gcs = [
 gha = [
   "opendal/services-ghac",
   "opendal-layer-logging",
-  "opendal-layer-retry",
   "opendal-http-transport-reqwest",
   "reqwest",
 ]
