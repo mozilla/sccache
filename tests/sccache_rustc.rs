@@ -1,7 +1,10 @@
 #![cfg(unix)]
 
+mod util;
+
 use assert_cmd::Command;
 use tempfile::tempdir;
+use util::TestCommandExt;
 
 use std::{
     env::{consts::DLL_SUFFIX, var_os},
@@ -13,14 +16,14 @@ use std::{
         prelude::{OsStrExt, PermissionsExt},
     },
     path::{Path, PathBuf},
+    process::{Command as StdCommand, Output},
 };
 
 struct StopServer(u16);
 impl Drop for StopServer {
     fn drop(&mut self) {
-        let _ = Command::from_std(std::process::Command::new(env!("CARGO_BIN_EXE_sccache")))
+        let _ = Command::from_std(StdCommand::sccache())
             .env("SCCACHE_SERVER_PORT", self.0.to_string())
-            .env_remove("SCCACHE_SERVER_UDS")
             .arg("--stop-server")
             .ok();
     }
@@ -201,18 +204,21 @@ fi
     set_permissions(&rustc, perm).unwrap();
 }
 
-fn run_sccache(root: &Path, path: &Path, port: u16, client_side: bool) -> std::process::Output {
+fn run_sccache(root: &Path, path: &Path, port: u16, client_side: bool) -> Output {
     let mut paths: OsString = path.into();
     paths.push(":");
     paths.push(var_os("PATH").unwrap());
 
-    Command::cargo_bin("sccache")
-        .unwrap()
+    let mut command = StdCommand::sccache();
+    if client_side {
+        // Logging disables client-side mode, even when explicitly requested.
+        command.env_remove("SCCACHE_LOG");
+    }
+    Command::from_std(command)
         .current_dir(root)
         .env("PATH", paths)
         .env("SCCACHE_DIR", root.join("sccache"))
         .env("SCCACHE_SERVER_PORT", port.to_string())
-        .env_remove("SCCACHE_SERVER_UDS")
         .envs(client_side.then_some(("SCCACHE_CLIENT_SIDE", "1")))
         .arg("rustc")
         .arg("RUST_FILE.rs")

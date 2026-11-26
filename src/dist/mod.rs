@@ -18,6 +18,7 @@ use rand::{RngCore, rngs::OsRng};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::ffi::OsString;
 use std::fmt;
+#[cfg(any_dist)]
 use std::io::{self, Read};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -620,16 +621,25 @@ pub struct BuildResult {
 // bound on the instance (e.g. scheduler) we pass to the actual communication (e.g.
 // http implementation) they need to be public, which has knock-on effects for private
 // structs
-
-pub struct ToolchainReader<'a>(Box<dyn Read + 'a>);
+#[cfg(feature = "dist-server")]
+pub struct ToolchainReader<'a>(Box<dyn Read + Send + 'a>);
+#[cfg(feature = "dist-server")]
 impl Read for ToolchainReader<'_> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.0.read(buf)
     }
 }
 
-pub struct InputsReader<'a>(Box<dyn Read + Send + 'a>);
-impl Read for InputsReader<'_> {
+#[cfg(feature = "dist-server")]
+pub struct InputsReader(Box<dyn Read + Send>);
+#[cfg(feature = "dist-server")]
+impl InputsReader {
+    pub fn new(reader: impl Read + Send + 'static) -> Self {
+        Self(Box::new(reader))
+    }
+}
+#[cfg(feature = "dist-server")]
+impl Read for InputsReader {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.0.read(buf)
     }
@@ -639,9 +649,10 @@ impl Read for InputsReader<'_> {
 type ExtResult<T, E> = ::std::result::Result<T, E>;
 
 #[cfg(feature = "dist-server")]
-pub trait SchedulerOutgoing {
+#[async_trait]
+pub trait SchedulerOutgoing: Send + Sync {
     // To Server
-    fn do_assign_job(
+    async fn do_assign_job(
         &self,
         server_id: ServerId,
         job_id: JobId,
@@ -651,22 +662,28 @@ pub trait SchedulerOutgoing {
 }
 
 #[cfg(feature = "dist-server")]
-pub trait ServerOutgoing {
+#[async_trait]
+pub trait ServerOutgoing: Send + Sync {
     // To Scheduler
-    fn do_update_job_state(&self, job_id: JobId, state: JobState) -> Result<UpdateJobStateResult>;
+    async fn do_update_job_state(
+        &self,
+        job_id: JobId,
+        state: JobState,
+    ) -> Result<UpdateJobStateResult>;
 }
 
 // Trait to handle the creation and verification of job authorization tokens
 #[cfg(feature = "dist-server")]
-pub trait JobAuthorizer: Send {
+pub trait JobAuthorizer: Send + Sync {
     fn generate_token(&self, job_id: JobId) -> Result<String>;
     fn verify_token(&self, job_id: JobId, token: &str) -> Result<()>;
 }
 
 #[cfg(feature = "dist-server")]
+#[async_trait]
 pub trait SchedulerIncoming: Send + Sync {
     // From Client
-    fn handle_alloc_job(
+    async fn handle_alloc_job(
         &self,
         requester: &dyn SchedulerOutgoing,
         tc: Toolchain,
@@ -691,24 +708,29 @@ pub trait SchedulerIncoming: Send + Sync {
 }
 
 #[cfg(feature = "dist-server")]
+#[async_trait]
 pub trait ServerIncoming: Send + Sync {
     // From Scheduler
-    fn handle_assign_job(&self, job_id: JobId, tc: Toolchain) -> ExtResult<AssignJobResult, Error>;
+    async fn handle_assign_job(
+        &self,
+        job_id: JobId,
+        tc: Toolchain,
+    ) -> ExtResult<AssignJobResult, Error>;
     // From Client
-    fn handle_submit_toolchain(
+    async fn handle_submit_toolchain(
         &self,
         requester: &dyn ServerOutgoing,
         job_id: JobId,
         tc_rdr: ToolchainReader<'_>,
     ) -> ExtResult<SubmitToolchainResult, Error>;
     // From Client
-    fn handle_run_job(
+    async fn handle_run_job(
         &self,
         requester: &dyn ServerOutgoing,
         job_id: JobId,
         command: CompileCommand,
         outputs: Vec<String>,
-        inputs_rdr: InputsReader<'_>,
+        inputs_rdr: InputsReader,
     ) -> ExtResult<RunJobResult, Error>;
 }
 
@@ -720,7 +742,7 @@ pub trait BuilderIncoming: Send + Sync {
         toolchain: Toolchain,
         command: CompileCommand,
         outputs: Vec<String>,
-        inputs_rdr: InputsReader<'_>,
+        inputs_rdr: InputsReader,
         cache: &Mutex<TcCache>,
     ) -> ExtResult<BuildResult, Error>;
 }

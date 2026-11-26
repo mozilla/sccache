@@ -1,5 +1,6 @@
 #![allow(clippy::result_large_err)]
 
+use crate::util::TestCommandExt;
 use anyhow::{Context, Result};
 use assert_cmd::assert::OutputAssertExt;
 use chrono::Local;
@@ -14,7 +15,6 @@ use std::sync::LazyLock;
 
 pub static CRATE_DIR: LazyLock<PathBuf> =
     LazyLock::new(|| Path::new(file!()).parent().unwrap().join("../test-crate"));
-pub static CARGO: LazyLock<OsString> = LazyLock::new(|| std::env::var_os("CARGO").unwrap());
 pub static SCCACHE_BIN: LazyLock<&Path> =
     LazyLock::new(|| Path::new(env!("CARGO_BIN_EXE_sccache")));
 
@@ -64,7 +64,7 @@ impl SccacheTest<'_> {
 
         trace!("sccache --start-server");
 
-        Command::new(SCCACHE_BIN.as_os_str())
+        Command::sccache()
             .arg("--start-server")
             .env("SCCACHE_DIR", &cache_dir)
             .assert()
@@ -94,7 +94,7 @@ impl SccacheTest<'_> {
     pub fn show_stats(&self) -> assert_cmd::assert::AssertResult {
         trace!("sccache --show-stats");
 
-        Command::new(SCCACHE_BIN.as_os_str())
+        Command::sccache()
             .args(["--show-stats", "--stats-format=json"])
             .assert()
             .try_success()
@@ -109,7 +109,7 @@ impl SccacheTest<'_> {
 
         trace!("sccache {cmd}");
 
-        Command::new(SCCACHE_BIN.as_os_str())
+        Command::sccache()
             .args([cmd, "--stats-format=text"])
             .assert()
             .try_success()
@@ -125,7 +125,7 @@ impl Drop for SccacheTest<'_> {
 pub fn stop_sccache() -> Result<()> {
     trace!("sccache --stop-server");
 
-    Command::new(SCCACHE_BIN.as_os_str())
+    Command::sccache()
         .arg("--stop-server")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -135,7 +135,7 @@ pub fn stop_sccache() -> Result<()> {
 }
 
 pub fn cargo_clean(test_info: &SccacheTest) -> Result<()> {
-    Command::new(CARGO.as_os_str())
+    Command::cargo()
         .args(["clean"])
         .envs(test_info.env.iter().cloned())
         .current_dir(CRATE_DIR.as_os_str())

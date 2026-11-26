@@ -1,7 +1,9 @@
 use anyhow::{Context, Result, bail};
+use async_trait::async_trait;
 use base64::Engine;
+use rsa::pkcs1;
 use sccache::dist::http::{ClientAuthCheck, ClientVisibleMsg};
-use sccache::util::{BASE64_URL_SAFE_ENGINE, new_reqwest_blocking_client};
+use sccache::util::{BASE64_URL_SAFE_ENGINE, new_reqwest_client};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::result::Result as StdResult;
@@ -29,21 +31,23 @@ impl Jwk {
             bail!("Cannot handle non-RSA JWK")
         }
 
-        // JWK is big-endian, openssl bignum from_slice is big-endian
+        // JWK and PKCS#1 integers are both big-endian.
         let n = BASE64_URL_SAFE_ENGINE
             .decode(&self.n)
             .context("Failed to base64 decode n")?;
         let e = BASE64_URL_SAFE_ENGINE
             .decode(&self.e)
             .context("Failed to base64 decode e")?;
-        let n_bn = openssl::bn::BigNum::from_slice(&n)
-            .context("Failed to create openssl bignum from n")?;
-        let e_bn = openssl::bn::BigNum::from_slice(&e)
-            .context("Failed to create openssl bignum from e")?;
-        let pubkey = openssl::rsa::Rsa::from_public_components(n_bn, e_bn)
-            .context("Failed to create pubkey from n and e")?;
-        let der: Vec<u8> = pubkey
-            .public_key_to_der_pkcs1()
+
+        let n_bn = pkcs1::UintRef::new(&n).context("Failed to create pkcs1 bignum from n")?;
+        let e_bn = pkcs1::UintRef::new(&e).context("Failed to create pkcs1 bignum from e")?;
+
+        let pubkey = pkcs1::RsaPublicKey {
+            modulus: n_bn,
+            public_exponent: e_bn,
+        };
+
+        let der: Vec<u8> = pkcs1::der::Encode::to_der(&pubkey)
             .context("Failed to convert public key to der pkcs1")?;
         Ok(der)
     }
@@ -54,8 +58,9 @@ pub struct EqCheck {
     s: String,
 }
 
+#[async_trait]
 impl ClientAuthCheck for EqCheck {
-    fn check(&self, token: &str) -> StdResult<(), ClientVisibleMsg> {
+    async fn check(&self, token: &str) -> StdResult<(), ClientVisibleMsg> {
         if self.s == token {
             Ok(())
         } else {
@@ -76,14 +81,15 @@ impl EqCheck {
 // Don't check a token is valid (it may not even be a JWT) just forward it to
 // an API and check for success
 pub struct ProxyTokenCheck {
-    client: reqwest::blocking::Client,
+    client: reqwest::Client,
     maybe_auth_cache: Option<Mutex<(HashMap<String, Instant>, Duration)>>,
     url: String,
 }
 
+#[async_trait]
 impl ClientAuthCheck for ProxyTokenCheck {
-    fn check(&self, token: &str) -> StdResult<(), ClientVisibleMsg> {
-        match self.check_token_with_forwarding(token) {
+    async fn check(&self, token: &str) -> StdResult<(), ClientVisibleMsg> {
+        match self.check_token_with_forwarding(token).await {
             Ok(()) => Ok(()),
             Err(e) => {
                 warn!("Proxying token validation failed: {}", e);
@@ -100,14 +106,14 @@ impl ProxyTokenCheck {
         let maybe_auth_cache: Option<Mutex<(HashMap<String, Instant>, Duration)>> =
             cache_secs.map(|secs| Mutex::new((HashMap::new(), Duration::from_secs(secs))));
         Ok(Self {
-            client: new_reqwest_blocking_client()
+            client: new_reqwest_client()
                 .context("failed to build proxy-token validation HTTP client")?,
             maybe_auth_cache,
             url,
         })
     }
 
-    fn check_token_with_forwarding(&self, token: &str) -> Result<()> {
+    async fn check_token_with_forwarding(&self, token: &str) -> Result<()> {
         trace!("Validating token by forwarding to {}", self.url);
         // If the token is cached and not cache has not expired, return it
         if let Some(ref auth_cache) = self.maybe_auth_cache {
@@ -126,6 +132,7 @@ impl ProxyTokenCheck {
             .get(&self.url)
             .bearer_auth(token)
             .send()
+            .await
             .context("Failed to make request to proxying url")?;
         if !res.status().is_success() {
             bail!("Token forwarded to {} returned {}", self.url, res.status());
@@ -147,8 +154,9 @@ pub struct ValidJWTCheck {
     kid_to_pkcs1: HashMap<String, Vec<u8>>,
 }
 
+#[async_trait]
 impl ClientAuthCheck for ValidJWTCheck {
-    fn check(&self, token: &str) -> StdResult<(), ClientVisibleMsg> {
+    async fn check(&self, token: &str) -> StdResult<(), ClientVisibleMsg> {
         match self.check_jwt_validity(token) {
             Ok(()) => Ok(()),
             Err(e) => {
@@ -162,17 +170,17 @@ impl ClientAuthCheck for ValidJWTCheck {
 }
 
 impl ValidJWTCheck {
-    pub fn new(audience: String, issuer: String, jwks_url: &str) -> Result<Self> {
-        let client =
-            new_reqwest_blocking_client().context("failed to build JWK retrieval HTTP client")?;
+    pub async fn new(audience: String, issuer: String, jwks_url: &str) -> Result<Self> {
+        let client = new_reqwest_client().context("failed to build JWK retrieval HTTP client")?;
         let res = client
             .get(jwks_url)
             .send()
+            .await
             .context("Failed to make request to JWKs url")?;
         if !res.status().is_success() {
             bail!("Could not retrieve JWKs, HTTP error: {}", res.status())
         }
-        let jwks: Jwks = res.json().context("Failed to parse JWKs json")?;
+        let jwks: Jwks = res.json().await.context("Failed to parse JWKs json")?;
         let kid_to_pkcs1 = jwks
             .keys
             .into_iter()
@@ -205,5 +213,152 @@ impl ValidJWTCheck {
         let _tokendata = jwt::decode::<Claims>(token, &pkcs1, &validation)
             .context("Unable to validate and decode jwt")?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+    use tokio::time::timeout;
+
+    #[tokio::test]
+    async fn proxy_token_timeout_does_not_cache_token() {
+        // A listening socket with no responder stalls after the TCP connection succeeds.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        let mut checker = ProxyTokenCheck::new(url, Some(60)).unwrap();
+        checker.client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_millis(50))
+            .build()
+            .unwrap();
+
+        let error = timeout(
+            Duration::from_secs(5),
+            checker.check_token_with_forwarding("test-token"),
+        )
+        .await
+        .expect("proxy validation must respect its HTTP client timeout")
+        .unwrap_err();
+        assert_eq!(error.to_string(), "Failed to make request to proxying url");
+        assert!(error.downcast_ref::<reqwest::Error>().unwrap().is_timeout());
+        assert!(
+            checker
+                .maybe_auth_cache
+                .as_ref()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .0
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn jwks_retrieval_handles_local_responses() {
+        for (status, body, expected_error) in [
+            ("200 OK", r#"{"keys":[]}"#, None),
+            (
+                "503 Service Unavailable",
+                r#"{"keys":[]}"#,
+                Some("Could not retrieve JWKs, HTTP error: 503 Service Unavailable"),
+            ),
+            ("200 OK", "not JSON", Some("Failed to parse JWKs json")),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}/jwks", listener.local_addr().unwrap());
+            let serve = async {
+                let (mut connection, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                    let mut buf = [0; 1024];
+                    let read = connection.read(&mut buf).await.unwrap();
+                    assert_ne!(
+                        read, 0,
+                        "client disconnected before sending request headers"
+                    );
+                    request.extend_from_slice(&buf[..read]);
+                }
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                connection.write_all(response.as_bytes()).await.unwrap();
+            };
+            let (result, ()) = timeout(Duration::from_secs(5), async {
+                tokio::join!(
+                    ValidJWTCheck::new("audience".to_owned(), "issuer".to_owned(), &url),
+                    serve,
+                )
+            })
+            .await
+            .expect("local JWK retrieval must finish");
+
+            if let Some(expected_error) = expected_error {
+                assert_eq!(
+                    result
+                        .err()
+                        .expect("expected JWK retrieval failure")
+                        .to_string(),
+                    expected_error
+                );
+            } else {
+                let checker = result.unwrap();
+                assert_eq!(checker.audience, "audience");
+                assert_eq!(checker.issuer, "issuer");
+                assert!(checker.kid_to_pkcs1.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn jwk_to_der_pkcs1_encodes_unsigned_big_endian_integers() {
+        let jwk = Jwk {
+            kid: "test".into(),
+            kty: "RSA".into(),
+            n: BASE64_URL_SAFE_ENGINE.encode([0x80, 0x01]),
+            e: BASE64_URL_SAFE_ENGINE.encode([0x01, 0x00, 0x01]),
+        };
+        // The high bit of the modulus requires a leading zero in DER INTEGER.
+        assert_eq!(
+            jwk.to_der_pkcs1().unwrap(),
+            [
+                0x30, 0x0a, 0x02, 0x03, 0x00, 0x80, 0x01, 0x02, 0x03, 0x01, 0x00, 0x01
+            ]
+        );
+    }
+
+    #[test]
+    fn jwk_to_der_pkcs1_rejects_non_rsa_and_invalid_base64() {
+        let mut jwk = Jwk {
+            kid: "test".into(),
+            kty: "EC".into(),
+            n: BASE64_URL_SAFE_ENGINE.encode([0x80, 0x01]),
+            e: BASE64_URL_SAFE_ENGINE.encode([0x01, 0x00, 0x01]),
+        };
+        assert!(
+            jwk.to_der_pkcs1()
+                .unwrap_err()
+                .to_string()
+                .contains("non-RSA")
+        );
+        jwk.kty = "RSA".into();
+        jwk.n = "!".into();
+        assert!(
+            jwk.to_der_pkcs1()
+                .unwrap_err()
+                .to_string()
+                .contains("decode n")
+        );
+        jwk.n = BASE64_URL_SAFE_ENGINE.encode([0x80, 0x01]);
+        jwk.e = "!".into();
+        assert!(
+            jwk.to_der_pkcs1()
+                .unwrap_err()
+                .to_string()
+                .contains("decode e")
+        );
     }
 }
