@@ -349,7 +349,8 @@ impl PreprocessorCacheEntry {
                     debug!("Found __TIME__ in {}", path.display());
                     return false;
                 }
-                if time_macro_adjusted_digest(new_digest, &finder, path).as_ref()
+                let mtime = timestamp_mtime(&finder, path);
+                if time_macro_adjusted_digest(new_digest, &finder, path, mtime).as_ref()
                     != Some(&include.digest)
                 {
                     return false;
@@ -381,11 +382,13 @@ static CACHED_ENV_VARS: LazyLock<HashSet<&'static OsStr>> = LazyLock::new(|| {
 
 /// The digest to store and compare for the file at `path`: `content_digest`, with
 /// the current date hashed in if the file uses `__DATE__` and its mtime if it uses
-/// `__TIMESTAMP__`. `None` if that mtime can't be read.
+/// `__TIMESTAMP__`. `mtime` is the file's, as the caller read it; `None` if the
+/// file uses `__TIMESTAMP__` and there is none.
 pub fn time_macro_adjusted_digest(
     content_digest: String,
     finder: &TimeMacroFinder,
     path: &Path,
+    mtime: Option<Timestamp>,
 ) -> Option<String> {
     if !finder.found_date() && !finder.found_timestamp() {
         return Some(content_digest);
@@ -407,17 +410,29 @@ pub fn time_macro_adjusted_digest(
     if finder.found_timestamp() {
         debug!("found __TIMESTAMP__ in {}", path.display());
         m.delimiter(b"timestamp");
-        let Ok(mtime) = std::fs::metadata(path).and_then(|meta| meta.modified()) else {
+        let Some(mtime) =
+            mtime.and_then(|mtime| chrono::DateTime::from_timestamp(mtime.seconds(), 0))
+        else {
             debug!(
                 "Couldn't get mtime of {} which contains __TIMESTAMP__",
                 path.display()
             );
             return None;
         };
-        let mtime: chrono::DateTime<chrono::Local> = mtime.into();
+        let mtime = mtime.with_timezone(&chrono::Local);
         m.update(&mtime.naive_local().and_utc().timestamp().to_le_bytes());
     }
     Some(m.finish())
+}
+
+/// The mtime of the file at `path` if it uses `__TIMESTAMP__`, following symlinks
+/// as the compiler does.
+fn timestamp_mtime(finder: &TimeMacroFinder, path: &Path) -> Option<Timestamp> {
+    if !finder.found_timestamp() {
+        return None;
+    }
+    let mtime = std::fs::metadata(path).and_then(|meta| meta.modified());
+    mtime.ok().map(Into::into)
 }
 
 /// Compute the hash key of compiler preprocessing `input` with `args`.
@@ -490,7 +505,8 @@ pub fn preprocessor_cache_entry_hash_key(
     let digest = if config.ignore_time_macros {
         digest
     } else {
-        match time_macro_adjusted_digest(digest, &finder, input_file) {
+        let mtime = timestamp_mtime(&finder, input_file);
+        match time_macro_adjusted_digest(digest, &finder, input_file, mtime) {
             Some(digest) => digest,
             None => return Ok(None),
         }
@@ -1232,7 +1248,13 @@ mod test {
         let (content_digest, finder) = Digest::reader_sync_time_macros(contents).unwrap();
         IncludeEntry {
             path: path.to_owned().into_os_string(),
-            digest: time_macro_adjusted_digest(content_digest, &finder, path).unwrap(),
+            digest: time_macro_adjusted_digest(
+                content_digest,
+                &finder,
+                path,
+                timestamp_mtime(&finder, path),
+            )
+            .unwrap(),
             file_size: contents.len() as u64,
             mtime: None,
             ctime: None,

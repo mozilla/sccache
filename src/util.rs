@@ -977,6 +977,10 @@ impl Timestamp {
             nanoseconds,
         }
     }
+
+    pub fn seconds(&self) -> i64 {
+        self.seconds
+    }
 }
 
 /// Adds a fallback for trying Unix's `ctime` semantics on Windows systems.
