@@ -1015,15 +1015,34 @@ impl Hasher for HashToDigest<'_> {
     }
 }
 
+#[cfg(target_os = "freebsd")]
+fn close_inherited_fds(preserve: &[std::os::unix::io::RawFd]) {
+    // FreeBSD's default devfs /dev/fd only lists stdin/out/err, not all open FDs.
+    let last_preserved = preserve
+        .iter()
+        .copied()
+        .max()
+        .unwrap_or(libc::STDERR_FILENO)
+        .max(libc::STDERR_FILENO);
+    for fd in (libc::STDERR_FILENO + 1)..=last_preserved {
+        if !preserve.contains(&fd) {
+            unsafe { libc::close(fd) };
+        }
+    }
+    if let Some(first) = last_preserved.checked_add(1) {
+        unsafe { libc::closefrom(first) };
+    }
+}
+
 /// Close every file descriptor we inherited from whoever spawned us, keeping
 /// stdin/out/err and anything in `preserve`.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "freebsd")))]
 fn close_inherited_fds(preserve: &[std::os::unix::io::RawFd]) {
     use std::os::unix::io::RawFd;
 
     let keep = |fd: RawFd| fd <= libc::STDERR_FILENO || preserve.contains(&fd);
 
-    // macOS/BSD: /dev/fd; Linux: /proc/self/fd
+    // macOS/other BSDs: /dev/fd; Linux: /proc/self/fd
     let listing = std::fs::read_dir("/dev/fd").or_else(|_| std::fs::read_dir("/proc/self/fd"));
     let victims: Option<Vec<RawFd>> = listing.ok().map(|entries| {
         entries
@@ -1765,7 +1784,11 @@ mod tests {
         if std::env::var_os(CHILD_ENV).is_some() {
             // Transfer ownership because cleanup, not File::drop, must close this FD.
             let closed_fd = tempfile::tempfile().unwrap().into_raw_fd();
-            let mut preserved = tempfile::tempfile().unwrap();
+            let preserved = tempfile::tempfile().unwrap();
+            let closed_between = tempfile::tempfile().unwrap().into_raw_fd();
+            let preserved_second = tempfile::tempfile().unwrap();
+            let closed_after = tempfile::tempfile().unwrap().into_raw_fd();
+            let stdio = [libc::STDIN_FILENO, libc::STDOUT_FILENO, libc::STDERR_FILENO];
             for signal in [libc::SIGSEGV, libc::SIGBUS, libc::SIGILL] {
                 assert_ne!(
                     unsafe { libc::signal(signal, libc::SIG_IGN) },
@@ -1773,15 +1796,32 @@ mod tests {
                 );
             }
 
-            super::daemonize(&[preserved.as_raw_fd()]).unwrap();
+            super::daemonize(&[
+                preserved_second.as_raw_fd(),
+                preserved.as_raw_fd(),
+                preserved_second.as_raw_fd(),
+                libc::STDIN_FILENO,
+                libc::STDOUT_FILENO,
+                libc::STDERR_FILENO,
+            ])
+            .unwrap();
 
-            assert_eq!(unsafe { libc::fcntl(closed_fd, libc::F_GETFD) }, -1);
-            assert_eq!(
-                std::io::Error::last_os_error().raw_os_error(),
-                Some(libc::EBADF)
-            );
-            std::io::Write::write_all(&mut preserved, &[1]).unwrap();
-            assert_eq!(preserved.metadata().unwrap().len(), 1);
+            let assert_closed = |fd| {
+                assert_eq!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, -1, "fd {fd}");
+                assert_eq!(
+                    std::io::Error::last_os_error().raw_os_error(),
+                    Some(libc::EBADF)
+                );
+            };
+            for fd in [closed_fd, closed_between, closed_after] {
+                assert_closed(fd);
+            }
+            // The second cleanup below must close these, not File::drop.
+            let preserved_fds = [preserved, preserved_second].map(|mut file| {
+                std::io::Write::write_all(&mut file, &[1]).unwrap();
+                assert_eq!(file.metadata().unwrap().len(), 1);
+                file.into_raw_fd()
+            });
             for signal in [libc::SIGSEGV, libc::SIGBUS, libc::SIGILL] {
                 let mut action = unsafe { std::mem::zeroed::<libc::sigaction>() };
                 assert_eq!(
@@ -1791,6 +1831,13 @@ mod tests {
                 assert_ne!(action.sa_sigaction, libc::SIG_IGN);
                 assert_ne!(action.sa_sigaction, libc::SIG_DFL);
                 assert_ne!(action.sa_flags & libc::SA_SIGINFO, 0);
+            }
+            super::close_inherited_fds(&[]);
+            for fd in preserved_fds {
+                assert_closed(fd);
+            }
+            for fd in stdio {
+                assert_ne!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, -1, "fd {fd}");
             }
             return;
         }

@@ -4853,6 +4853,7 @@ foo.rs:
             );
             let mut hasher = Box::new(RustHasher {
                 executable: "rustc".into(),
+                #[cfg(feature = "dist-client")]
                 host: "x86-64-unknown-unknown-unknown".to_owned(),
                 version: TEST_RUSTC_VERSION.to_string(),
                 sysroot: f.tempdir.path().join("sysroot"),
