@@ -1215,7 +1215,8 @@ fn remember_include_file(
         return Ok(false);
     }
 
-    let Some(file_digest) = time_macro_adjusted_digest(file_digest, &finder, &path) else {
+    let Some(file_digest) = time_macro_adjusted_digest(file_digest, &finder, &path, meta.modified)
+    else {
         return Ok(false);
     };
 
@@ -2114,6 +2115,7 @@ mod test {
     fn test_timestamp_header_whose_mtime_cannot_be_read_is_not_remembered() {
         let dir = tempfile::tempdir().unwrap();
         let header = dir.path().join("timestamp.h");
+        std::fs::write(&header, b"static const char *t = __TIMESTAMP__;\n").unwrap();
         let meta = PreprocessorFileMetadata {
             is_dir: false,
             is_file: true,
