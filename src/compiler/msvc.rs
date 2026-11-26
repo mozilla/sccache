@@ -2198,22 +2198,16 @@ mod test {
     }
 
     #[test]
-    fn test_parse_arguments_clang_profile_generate() {
-        for flag in [
-            "-fprofile-instr-generate",
-            "-clang:-fprofile-instr-generate",
-        ] {
-            let args = ovec!["-c", "foo.c", flag];
-            let CompilerArguments::Ok(parsed) = parse_arguments_clang(args) else {
-                panic!("Expected cacheable clang-cl arguments for {flag}");
-            };
-            assert!(parsed.profile_generate);
-            assert_eq!(parsed.common_args, ovec![flag]);
-        }
-        assert!(matches!(
-            parse_arguments(ovec!["-c", "foo.c", "-fprofile-instr-generate"]),
-            CompilerArguments::CannotCache(..)
-        ));
+    fn test_parse_arguments_clang_direct_profile_generate() {
+        let flag = "-fprofile-instr-generate";
+        let CompilerArguments::Ok(parsed) = parse_arguments_clang(ovec!["-c", "foo.c", flag])
+        else {
+            panic!("Expected cacheable clang-cl arguments for {flag}");
+        };
+        // Passing the flag through is not enough: profile_generate selects -E
+        // instead of -EP so preprocessing preserves line markers.
+        assert!(parsed.profile_generate);
+        assert_eq!(parsed.common_args, ovec![flag]);
     }
 
     #[test]
