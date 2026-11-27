@@ -257,6 +257,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     flag!("-fprebuilt-implicit-modules", TooHardFlag),
     take_arg!("-fprebuilt-module-path", OsString, Concatenated, TooHard),
     flag!("-fprofile-instr-generate", ProfileGenerate),
+    take_arg!("-fprofile-instr-generate=", OsString, Concatenated, ProfileGenerateWithPath),
     // Note: the PathBuf argument is optional
     take_arg!("-fprofile-instr-use", PathBuf, Concatenated(b'='), ClangProfileUse),
     take_arg!("-fprofile-remapping-file", PathBuf, Concatenated(b'='), ExtraHashFile),
@@ -1244,6 +1245,15 @@ mod test {
             ovec![std::env::current_dir().unwrap().join("foo.profdata")],
             a.extra_hash_files
         );
+    }
+
+    #[test]
+    fn test_parse_arguments_profile_instr_generate_with_path() {
+        let flag = "-fprofile-instr-generate=foo.profraw";
+        let a = parses!("-c", "foo.c", flag);
+
+        assert!(a.profile_generate);
+        assert_eq!(ovec![flag], a.common_args);
     }
 
     #[test]

@@ -334,6 +334,8 @@ ArgData! {
     ClangModuleFile(OsString),
     ClangModuleOutput(OsString),
     ClangLanguage(OsString),
+    ClangProfileGenerate,
+    ClangProfileGenerateWithPath(OsString),
     ClangProfileUse(PathBuf),
 }
 
@@ -547,6 +549,8 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("forceInterlockedFunctions-", PassThrough),
     msvc_take_arg!("fp:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("fpcvt:", OsString, Concatenated, PassThroughWithSuffix),
+    msvc_flag!("fprofile-instr-generate", ClangProfileGenerate),
+    msvc_take_arg!("fprofile-instr-generate=", OsString, Concatenated, ClangProfileGenerateWithPath),
     msvc_take_arg!("fprofile-instr-use", PathBuf, Concatenated(b'='), ClangProfileUse),
     msvc_take_arg!("fprofile-use", PathBuf, Concatenated(b'='), ClangProfileUse),
     msvc_flag!("fsanitize-address-asan-compat-lib", PassThrough),
@@ -755,13 +759,18 @@ pub fn parse_arguments(
             }
             Some(ClangModuleOutput(p)) if !p.is_empty() => module_output = Some(PathBuf::from(p)),
             Some(ClangLanguage(lang)) if is_clang && lang == "c++-module" => cxx_module = true,
+            Some(ClangProfileGenerate | ClangProfileGenerateWithPath(_)) if is_clang => {
+                profile_generate = true;
+            }
             Some(ClangProfileUse(path)) if is_clang => {
                 extra_hash_files.push(clang::resolve_profile_use_path(path, cwd));
             }
-            Some(ClangProfileUse(_)) => {
-                cannot_cache!(arg.flag_str().expect("Profile-use flag expected"))
-            }
-            Some(ClangModuleFile(_)) | Some(ClangModuleOutput(_)) | Some(ClangLanguage(_)) => {
+            Some(ClangProfileGenerate)
+            | Some(ClangProfileGenerateWithPath(_))
+            | Some(ClangProfileUse(_))
+            | Some(ClangModuleFile(_))
+            | Some(ClangModuleOutput(_))
+            | Some(ClangLanguage(_)) => {
                 cannot_cache!(arg.flag_str().expect("Can't be Argument::Raw/UnknownFlag"))
             }
             None => {
@@ -791,6 +800,8 @@ pub fn parse_arguments(
                         .iter_os_strings(),
                 ),
             Some(ProgramDatabase(_))
+            | Some(ClangProfileGenerate)
+            | Some(ClangProfileGenerateWithPath(_))
             | Some(ClangProfileUse(_))
             | Some(ClangModuleFile(_))
             | Some(ClangModuleOutput(_))
@@ -894,7 +905,7 @@ pub fn parse_arguments(
                 | Some(SerializeDiagnostics(_)) => &mut common_args,
                 Some(UnhashedFlag) | Some(Unhashed(_)) => &mut unhashed_args,
 
-                Some(ProfileGenerate) => {
+                Some(ProfileGenerate | ProfileGenerateWithPath(_)) => {
                     profile_generate = true;
                     &mut common_args
                 }
@@ -2187,6 +2198,24 @@ mod test {
             assert!(preprocessor_args.is_empty());
             assert!(common_args.is_empty());
             assert!(!msvc_show_includes);
+        }
+    }
+
+    #[test]
+    fn test_parse_arguments_clang_profile_generate() {
+        for flag in [
+            "-fprofile-instr-generate",
+            "-fprofile-instr-generate=training.profraw",
+            "-clang:-fprofile-instr-generate=training.profraw",
+        ] {
+            let CompilerArguments::Ok(parsed) = parse_arguments_clang(ovec!["-c", "foo.c", flag])
+            else {
+                panic!("Expected cacheable clang-cl arguments for {flag}");
+            };
+            // Passing the flag through is not enough: profile_generate selects -E
+            // instead of -EP so preprocessing preserves line markers.
+            assert!(parsed.profile_generate, "{flag}");
+            assert_eq!(parsed.common_args, ovec![flag]);
         }
     }
 
