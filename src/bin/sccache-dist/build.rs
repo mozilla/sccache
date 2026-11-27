@@ -55,6 +55,11 @@ impl CommandExt for Command {
             .take()
             .expect("Requested piped stdin but not present");
         pipe(&mut stdin).context("Failed to pipe input to process")?;
+        // `process.stdin` was moved out by the `.take()` above, so
+        // `wait_with_output()` has no stdin left to close. Without this the write
+        // end stays open for the rest of the function and a child that reads to
+        // EOF never returns.
+        drop(stdin);
         let output = process
             .wait_with_output()
             .context("Failed to wait for process to return")?;
