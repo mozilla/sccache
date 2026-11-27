@@ -311,14 +311,14 @@ async fn preprocess<T>(
 where
     T: CommandCreatorSync,
 {
-    let mut preprocess = creator.clone().new_command_sync(executable);
+    let mut preprocess = creator
+        .clone()
+        .new_command_with_env(executable, env_vars.iter().cloned());
     preprocess
         .arg("-E")
         .arg(&parsed_args.input)
         .args(&parsed_args.preprocessor_args)
         .args(&parsed_args.common_args)
-        .env_clear()
-        .envs(env_vars.to_vec())
         .current_dir(cwd);
 
     if log_enabled!(Trace) {
@@ -339,7 +339,9 @@ where
     // you can specify a target name which overrules the default target name.
 
     if let Some(ref depfile) = parsed_args.depfile {
-        let mut generate_depfile = creator.clone().new_command_sync(executable);
+        let mut generate_depfile = creator
+            .clone()
+            .new_command_with_env(executable, env_vars.iter().cloned());
         generate_depfile
             .arg("-Em")
             .arg("-o")
@@ -347,8 +349,6 @@ where
             .arg(&parsed_args.input)
             .args(&parsed_args.preprocessor_args)
             .args(&parsed_args.common_args)
-            .env_clear()
-            .envs(env_vars.to_vec())
             .current_dir(cwd);
 
         if log_enabled!(Trace) {

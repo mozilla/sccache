@@ -1164,7 +1164,6 @@ fn preprocess_cmd<T>(
     cmd: &mut T,
     parsed_args: &ParsedArguments,
     cwd: &Path,
-    env_vars: &[(OsString, OsString)],
     may_dist: bool,
     rewrite_includes_only: bool,
     preprocessor_cache_mode: bool,
@@ -1189,8 +1188,6 @@ fn preprocess_cmd<T>(
         .args(&parsed_args.preprocessor_args)
         .args(&parsed_args.dependency_args)
         .args(&parsed_args.common_args)
-        .env_clear()
-        .envs(without_cl_env_vars(env_vars))
         .current_dir(cwd);
 
     if is_clang {
@@ -1235,12 +1232,13 @@ pub async fn preprocess<T>(
 where
     T: CommandCreatorSync,
 {
-    let mut cmd = creator.clone().new_command_sync(executable);
+    let mut cmd = creator
+        .clone()
+        .new_command_with_env(executable, without_cl_env_vars(env_vars));
     preprocess_cmd(
         &mut cmd,
         parsed_args,
         cwd,
-        env_vars,
         may_dist,
         rewrite_includes_only,
         preprocessor_cache_mode,
@@ -3598,15 +3596,11 @@ mod test {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
-        let mut cmd = MockCommand {
-            child: None,
-            args: vec![],
-        };
+        let mut cmd = MockCommand::default();
         preprocess_cmd(
             &mut cmd,
             &parsed_args,
             Path::new(""),
-            &[],
             true,
             true,
             false,
@@ -3623,15 +3617,11 @@ mod test {
             o => panic!("Got unexpected parse result: {:?}", o),
         };
         let preprocess_flag = |preprocessor_cache_mode| {
-            let mut cmd = MockCommand {
-                child: None,
-                args: vec![],
-            };
+            let mut cmd = MockCommand::default();
             preprocess_cmd(
                 &mut cmd,
                 &parsed_args,
                 Path::new(""),
-                &[],
                 false,
                 false,
                 preprocessor_cache_mode,
@@ -3736,15 +3726,11 @@ mod test {
                 CompilerArguments::Ok(args) => args,
                 o => panic!("Got unexpected parse result: {:?}", o),
             };
-            let mut cmd = MockCommand {
-                child: None,
-                args: vec![],
-            };
+            let mut cmd = MockCommand::default();
             preprocess_cmd(
                 &mut cmd,
                 &parsed_args,
                 Path::new(""),
-                &[],
                 false,
                 false,
                 false,
