@@ -13,8 +13,7 @@
 // limitations under the License.
 
 use crate::cache::CacheMode;
-#[cfg(target_os = "windows")]
-use crate::util::normalize_win_path;
+use crate::util::basedir_bytes;
 use directories::ProjectDirs;
 use fs::File;
 use fs_err as fs;
@@ -1396,27 +1395,7 @@ impl Config {
             if !p.is_absolute() {
                 bail!("Basedir path must be absolute: {:?}", p);
             }
-            // Normalize basedir:
-            // remove double separators, cur_dirs, parent_dirs, trailing slashes
-            let p_norm = p.normalize();
-            let mut bytes = p_norm.to_string().into_bytes();
-
-            // Always add a trailing `/` to basedirs to ensure we only match complete path
-            // components
-            bytes.push(b'/');
-
-            // normalize windows paths: use slashes and lowercase
-            let normalized = {
-                #[cfg(target_os = "windows")]
-                {
-                    normalize_win_path(&bytes)
-                }
-
-                #[cfg(not(target_os = "windows"))]
-                {
-                    bytes
-                }
-            };
+            let normalized = basedir_bytes(&p);
             // push only if not already present
             if !basedirs.contains(&normalized) {
                 basedirs.push(normalized);
