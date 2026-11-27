@@ -160,6 +160,7 @@ ArgData! { pub
     Language(OsString),
     SplitDwarf,
     ProfileGenerate,
+    ProfileGenerateWithPath(OsString),
     ClangProfileUse(PathBuf),
     TestCoverage,
     Coverage,
@@ -384,7 +385,7 @@ where
                 compilation_flag =
                     OsString::from(arg.flag_str().expect("Compilation flag expected"));
             }
-            Some(ProfileGenerate) => profile_generate = true,
+            Some(ProfileGenerate | ProfileGenerateWithPath(_)) => profile_generate = true,
             Some(ClangProfileUse(path)) => {
                 extra_hash_files.push(clang::resolve_profile_use_path(path, cwd));
             }
@@ -501,6 +502,7 @@ where
             | Some(PedanticFlag)
             | Some(Standard(_))
             | Some(ProfileGenerate)
+            | Some(ProfileGenerateWithPath(_))
             | Some(ClangProfileUse(_))
             | Some(TestCoverage)
             | Some(Coverage)
@@ -572,6 +574,7 @@ where
             | Some(PedanticFlag)
             | Some(Standard(_))
             | Some(ProfileGenerate)
+            | Some(ProfileGenerateWithPath(_))
             | Some(ClangProfileUse(_))
             | Some(TestCoverage)
             | Some(Coverage)

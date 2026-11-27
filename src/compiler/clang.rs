@@ -257,6 +257,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     flag!("-fprebuilt-implicit-modules", TooHardFlag),
     take_arg!("-fprebuilt-module-path", OsString, Concatenated, TooHard),
     flag!("-fprofile-instr-generate", ProfileGenerate),
+    take_arg!("-fprofile-instr-generate=", OsString, Concatenated, ProfileGenerateWithPath),
     // Note: the PathBuf argument is optional
     take_arg!("-fprofile-instr-use", PathBuf, Concatenated(b'='), ClangProfileUse),
     take_arg!("-fprofile-remapping-file", PathBuf, Concatenated(b'='), ExtraHashFile),
