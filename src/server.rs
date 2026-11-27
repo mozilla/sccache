@@ -1028,6 +1028,17 @@ where
                     debug!("handle_client: storage_get_raw key={}", key);
                     let response = match me.storage.get_raw(&key).await {
                         Ok(result) => Response::StorageGetRaw(result.map(|bytes| bytes.to_vec())),
+                        Err(e)
+                            if e.is::<crate::cache::backend_backoff::LevelSkipped>()
+                                || e.is::<crate::cache::backend_backoff::LevelTimedOut>() =>
+                        {
+                            // Expected while a level is in backoff or out of
+                            // budget: reported to the client as an absent
+                            // entry, never as a backend read error — a skip
+                            // is not a failure the client should count.
+                            debug!("storage_get_raw skipped/timed out: {e:#}");
+                            Response::StorageGetRaw(None)
+                        }
                         Err(error) => storage_read_error(&key, error),
                     };
                     Ok(Message::WithoutBody(response))
