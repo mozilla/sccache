@@ -12,7 +12,7 @@
 
 use fs_err as fs;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::errors::*;
 
@@ -48,8 +48,24 @@ pub(in crate::cache) fn set_file_mode(_path: &Path, _mode: u32) -> Result<()> {
     Ok(())
 }
 
+/// Make a path to the cache entry with key `key`.
+/// e.g. `abcdefg` -> `a/b/cdefg/`
+/// NOTE: This is different from `normalize_key`, which returns a String rather than a PathBuf.
+pub(in crate::cache) fn make_key_path(key: &str) -> PathBuf {
+    Path::new(&key[0..1]).join(&key[1..2]).join(key)
+}
+
+/// The path of the preprocessor cache entry for `key`: `normalize_key`'s layout, joined with
+/// the platform separator, because a cache loaded from disk indexes entries by their relative
+/// path as the platform spells it.
+pub(in crate::cache) fn preprocessor_key_path(key: &str) -> PathBuf {
+    normalize_key(key).split('/').collect()
+}
+
 #[cfg(test)]
 mod test {
+    use std::str::FromStr as _;
+
     use super::*;
 
     #[test]
@@ -57,6 +73,14 @@ mod test {
         assert_eq!(
             normalize_key("0123456789abcdef0123456789abcdef"),
             "0/1/2/0123456789abcdef0123456789abcdef"
+        );
+    }
+
+    #[test]
+    fn test_make_key_path() {
+        assert_eq!(
+            make_key_path("dinosaurbig"),
+            PathBuf::from_str("d/i/dinosaurbig").unwrap()
         );
     }
 }
