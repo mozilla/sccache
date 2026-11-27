@@ -68,6 +68,8 @@ pub enum Command {
     DistAuth,
     /// Package a toolchain for distributed compilation (executable, out)
     PackageToolchain(PathBuf, PathBuf),
+    /// Run the ThinLTO backend jobs lld describes in a DTLTO JSON file.
+    Dtlto(PathBuf),
     /// Run a compiler command.
     Compile {
         /// The binary to execute.
@@ -155,6 +157,13 @@ fn get_clap_command() -> clap::Command {
                 .value_parser(clap::value_parser!(PathBuf))
                 .num_args(2)
                 .value_names(["EXE", "OUT"]),
+            flag_infer_long("dtlto")
+                .help(
+                    "run the ThinLTO backend jobs from lld's DTLTO job file through sccache; \
+                     use as `-fthinlto-distributor=/path/to/sccache -Xthinlto-distributor=--dtlto`",
+                )
+                .value_parser(clap::value_parser!(PathBuf))
+                .value_name("JOBS"),
             flag_infer_long("stats-format")
                 .help("set output format of statistics")
                 .value_name("FMT")
@@ -177,6 +186,7 @@ fn get_clap_command() -> clap::Command {
                     "stop-server",
                     "zero-stats",
                     "package-toolchain",
+                    "dtlto",
                     "CMD",
                 ])
                 .required(true),
@@ -285,6 +295,8 @@ pub fn try_parse() -> Result<Command> {
                     (Some(exe), Some(out)) => Ok(Command::PackageToolchain(exe, out)),
                     _ => unreachable!("clap should enforce two values"),
                 }
+            } else if let Some(jobs) = matches.get_one::<PathBuf>("dtlto") {
+                Ok(Command::Dtlto(jobs.clone()))
             } else if matches.contains_id("CMD") {
                 let mut env_vars = env::vars_os().collect::<Vec<_>>();
 

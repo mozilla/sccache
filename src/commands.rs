@@ -985,6 +985,10 @@ pub fn run_command(cmd: Command) -> Result<i32> {
         Command::PackageToolchain(_executable, _out) => bail!(
             "Toolchain packaging not compiled in, please rebuild with the dist-client feature"
         ),
+        Command::Dtlto(jobs) => {
+            trace!("Command::Dtlto({})", jobs.display());
+            return crate::dtlto::run(&jobs);
+        }
         Command::Compile {
             exe,
             cmdline,

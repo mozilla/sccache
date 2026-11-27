@@ -247,7 +247,7 @@ pub enum CompilerKind {
 // Used for tests
 // Need to be consistent with `Language`
 #[allow(dead_code)]
-const EXPECTED_LANGUAGE_COUNT: usize = 21;
+const EXPECTED_LANGUAGE_COUNT: usize = 22;
 
 const DEFAULT_CACHE_READ_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -300,6 +300,7 @@ pub enum Language {
     Rust,
     Hip,
     CxxModule,
+    LlvmIr,
 }
 
 impl Language {
@@ -357,6 +358,7 @@ impl Language {
             Language::Rust => "rust",
             Language::Hip => "hip",
             Language::CxxModule => "c++-module",
+            Language::LlvmIr => "llvm-ir",
         }
     }
 
@@ -369,6 +371,7 @@ impl Language {
                 | Language::ObjectiveCPreprocessed
                 | Language::ObjectiveCxxPreprocessed
                 | Language::Rust
+                | Language::LlvmIr
         )
     }
 
@@ -419,6 +422,7 @@ impl Language {
             Language::Hip => Some("hip"),
             Language::GenericHeader => None, // Let the compiler decide
             Language::CxxModule => Some("c++-module"),
+            Language::LlvmIr => Some("ir"),
         }
     }
 
@@ -459,6 +463,7 @@ impl CompilerKind {
             Language::Cubin => "CUBIN",
             Language::Rust => "Rust",
             Language::Hip => "HIP",
+            Language::LlvmIr => "LLVM IR",
         }
         .to_string()
     }
@@ -2158,6 +2163,7 @@ mod test {
             Language::Cubin,
             Language::Rust,
             Language::Hip,
+            Language::LlvmIr,
         ];
 
         assert_eq!(

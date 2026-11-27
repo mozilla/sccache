@@ -80,6 +80,180 @@ fn test_s3_invalid_args() -> Result<()> {
     Ok(())
 }
 
+/// `sccache --dtlto` with the given job file, kept away from any user config
+/// and cache.
+fn dtlto_cmd(tempdir: &Path, jobs: &str) -> Result<Command> {
+    let jobs_file = tempdir.join("jobs.json");
+    fs::write(&jobs_file, jobs)?;
+    let mut cmd = Command::new(SCCACHE_BIN.as_os_str());
+    cmd.arg("--dtlto")
+        .arg(jobs_file)
+        .env("SCCACHE_CONF", tempdir.join("missing-config"))
+        .env("SCCACHE_DIR", tempdir.join("cache"))
+        .current_dir(tempdir);
+    Ok(cmd)
+}
+
+#[test]
+#[serial]
+fn test_dtlto_bad_jobs() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    dtlto_cmd(tempdir.path(), "not json")?
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("failed to read DTLTO jobs"));
+    Command::new(SCCACHE_BIN.as_os_str())
+        .arg("--dtlto")
+        .arg(tempdir.path().join("missing.json"))
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("failed to read DTLTO jobs"));
+    dtlto_cmd(tempdir.path(), r#"{"common": {"args": []}, "jobs": []}"#)?
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no compiler in DTLTO jobs"));
+    dtlto_cmd(
+        tempdir.path(),
+        r#"{"common": {"args": ["cc"]}, "jobs": []}"#,
+    )?
+    .env("SCCACHE_DTLTO_JOBS", "0")
+    .assert()
+    .failure()
+    .stderr(predicate::str::contains("SCCACHE_DTLTO_JOBS=0"));
+    Ok(())
+}
+
+/// A `cc` that sccache accepts, since it detects and preprocesses through the
+/// real one, but that exits with 7 when it compiles `fail.c`.
+#[cfg(unix)]
+fn failing_cc(dir: &Path) -> Result<Option<std::path::PathBuf>> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let Ok(cc) = which::which("cc") else {
+        warn!("No cc found, skipping test");
+        return Ok(None);
+    };
+    let wrapper = dir.join("bin").join("cc");
+    fs::create_dir_all(dir.join("bin"))?;
+    fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\ncase \" $* \" in *\" -E \"*) ;; *\" fail.c \"*) exit 7 ;; esac\nexec '{}' \"$@\"\n",
+            cc.display()
+        ),
+    )?;
+    fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755))?;
+    Ok(Some(wrapper))
+}
+
+/// The `(hits, misses)` of C/C++ compilations since the stats were zeroed.
+#[cfg(unix)]
+fn c_cache_stats() -> Result<(u64, u64)> {
+    let output = Command::new(SCCACHE_BIN.as_os_str())
+        .args(["--show-stats", "--stats-format=json"])
+        .output()?;
+    let stats: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    let count = |what: &str| {
+        stats["stats"][what]["counts"]["C/C++"]
+            .as_u64()
+            .unwrap_or(0)
+    };
+    Ok((count("cache_hits"), count("cache_misses")))
+}
+
+/// A failing job fails the command with its exit code, and no job after it
+/// starts.
+#[test]
+#[serial]
+#[cfg(unix)]
+fn test_dtlto_failing_job_stops_the_queue() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let dir = tempdir.path();
+    let Some(cc) = failing_cc(dir)? else {
+        return Ok(());
+    };
+    fs::write(dir.join("good.c"), "int good;\n")?;
+    fs::write(dir.join("fail.c"), "int fail;\n")?;
+    let jobs = |first: &str| {
+        serde_json::json!({
+            "common": {"args": [cc, "-c"]},
+            "jobs": [
+                {"args": [first, "-o", "first.o"]},
+                {"args": ["good.c", "-o", "second.o"]},
+                {"args": ["good.c", "-o", "third.o"]},
+            ],
+        })
+        .to_string()
+    };
+    let later_jobs_ran = || dir.join("second.o").exists() || dir.join("third.o").exists();
+
+    stop_sccache()?;
+    dtlto_cmd(dir, &jobs("good.c"))?
+        .env("SCCACHE_DTLTO_JOBS", "1")
+        .assert()
+        .success();
+    assert!(dir.join("second.o").exists() && dir.join("third.o").exists());
+    fs::remove_file(dir.join("second.o"))?;
+    fs::remove_file(dir.join("third.o"))?;
+
+    dtlto_cmd(dir, &jobs("fail.c"))?
+        .env("SCCACHE_DTLTO_JOBS", "1")
+        .assert()
+        .code(7);
+    assert!(!later_jobs_ran());
+    stop_sccache()?;
+    Ok(())
+}
+
+/// The files a job lists in `inputs` after its module and index (the modules
+/// it imports from), and the common inputs, are part of the cache key.
+#[test]
+#[serial]
+#[cfg(unix)]
+fn test_dtlto_inputs_are_hashed() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let dir = tempdir.path();
+    let Some(cc) = failing_cc(dir)? else {
+        return Ok(());
+    };
+    fs::write(dir.join("good.c"), "int good;\n")?;
+    fs::write(dir.join("imported"), "1")?;
+    fs::write(dir.join("profile"), "1")?;
+    let jobs = serde_json::json!({
+        "common": {"args": [cc, "-c"], "inputs": ["profile"]},
+        "jobs": [{
+            "args": ["good.c", "-o", "good.o"],
+            "inputs": ["good.c", "good.c", "imported"],
+        }],
+    })
+    .to_string();
+    let run = |expected: (u64, u64)| -> Result<()> {
+        Command::new(SCCACHE_BIN.as_os_str())
+            .arg("--zero-stats")
+            .assert()
+            .success();
+        dtlto_cmd(dir, &jobs)?.assert().success();
+        assert_eq!(expected, c_cache_stats()?);
+        Ok(())
+    };
+
+    stop_sccache()?;
+    dtlto_cmd(dir, &jobs)?.assert().success();
+    run((1, 0))?;
+    fs::write(dir.join("imported"), "2")?;
+    run((0, 1))?;
+    fs::write(dir.join("profile"), "2")?;
+    run((0, 1))?;
+    run((1, 0))?;
+    fs::remove_file(dir.join("imported"))?;
+    dtlto_cmd(dir, &jobs)?
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("failed to hash the inputs"));
+    stop_sccache()?;
+    Ok(())
+}
+
 /// An empty entry file reads as a valid, empty entry.
 fn write_empty_preprocessor_entry(cache_dir: &Path) -> Result<String> {
     let entries_dir = cache_dir.join("preprocessor");

@@ -268,6 +268,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("-fsanitize-system-ignorelist", PathBuf, Concatenated(b'='), ExtraHashFile),
     take_arg!("-fsave-optimization-record", OsString, Concatenated(b'='), TooHard),
     take_arg!("-fthin-link-bitcode", OsString, Concatenated(b'='), TooHard),
+    take_arg!("-fthinlto-index", PathBuf, Concatenated(b'='), ThinLtoIndex),
     // The trace is a side file that doesn't affect the object; a cache hit just produces no trace.
     take_arg!("-ftime-trace", OsString, Concatenated(b'='), PassThrough),
     flag!("-fuse-ctor-homing", PassThroughFlag),
@@ -1215,6 +1216,118 @@ mod test {
         assert_eq!(
             ovec![std::env::current_dir().unwrap().join("list.txt")],
             a.extra_hash_files
+        );
+    }
+
+    #[test]
+    fn test_parse_thinlto_backend() {
+        // The command lld's DTLTO distributor runs for one backend job.
+        let a = parses!(
+            "-c",
+            "-O2",
+            "a.o",
+            "-fthinlto-index=a.1.10.native.o.thinlto.bc",
+            "-o",
+            "a.1.10.native.o"
+        );
+        assert_eq!(Language::LlvmIr, a.language);
+        assert_eq!(Some("a.o"), a.input.to_str());
+        assert_eq!(ovec!["-O2"], a.common_args);
+        assert_eq!(
+            ovec!["-fthinlto-index=a.1.10.native.o.thinlto.bc"],
+            a.unhashed_args
+        );
+        assert_eq!(
+            ovec![
+                std::env::current_dir()
+                    .unwrap()
+                    .join("a.1.10.native.o.thinlto.bc")
+            ],
+            a.extra_hash_files
+        );
+        assert!(!a.language.needs_c_preprocessing());
+    }
+
+    #[test]
+    fn test_parse_x_ir() {
+        let a = parses!(
+            "-c",
+            "-x",
+            "ir",
+            "a.o",
+            "-fthinlto-index=a.bc",
+            "-o",
+            "a.native.o"
+        );
+        assert_eq!(Language::LlvmIr, a.language);
+        let a = parses!("-c", "-x", "ir", "a.bc", "-o", "a.o");
+        assert_eq!(Language::LlvmIr, a.language);
+        assert!(a.extra_hash_files.is_empty());
+    }
+
+    #[test]
+    fn test_parse_thinlto_index_non_ir() {
+        assert_eq!(
+            CompilerArguments::CannotCache("-fthinlto-index with a non-IR input", None),
+            parse_arguments_(stringvec![
+                "-c",
+                "foo.c",
+                "-fthinlto-index=foo.bc",
+                "-o",
+                "foo.o"
+            ])
+        );
+        assert_eq!(
+            CompilerArguments::CannotCache("-fthinlto-index", None),
+            parse_arguments_(stringvec![
+                "-c",
+                "a.o",
+                "-Xclang",
+                "-fthinlto-index=a.bc",
+                "-o",
+                "a.native.o"
+            ])
+        );
+        assert_eq!(
+            CompilerArguments::CannotCache("-fthinlto-index with a non-IR input", None),
+            parse_arguments_(stringvec![
+                "-c",
+                "-x",
+                "c",
+                "a.o",
+                "-fthinlto-index=a.bc",
+                "-o",
+                "a.native.o"
+            ])
+        );
+    }
+
+    #[test]
+    fn test_parse_thinlto_index_ir_inputs() {
+        for input in ["a.o", "a.obj", "a.bc", "a.ll"] {
+            let a = parses!(
+                "-c",
+                input,
+                "-fthinlto-index=a.thinlto.bc",
+                "-o",
+                "a.native.o"
+            );
+            assert_eq!(Language::LlvmIr, a.language, "{input}");
+        }
+    }
+
+    #[test]
+    fn test_parse_x_ir_is_clang_only() {
+        let args = ["-c", "-x", "ir", "a.bc", "-o", "a.o"].map(OsString::from);
+        assert_eq!(
+            CompilerArguments::CannotCache("-x", None),
+            gcc::parse_arguments(
+                &args,
+                ".".as_ref(),
+                &gcc::ARGS[..],
+                false,
+                CCompilerKind::Gcc
+            )
         );
     }
 

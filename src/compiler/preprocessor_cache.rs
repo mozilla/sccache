@@ -427,6 +427,7 @@ static CACHED_ENV_VARS: LazyLock<HashSet<&'static OsStr>> = LazyLock::new(|| {
         // One can set it to different values for different invocations
         // to prevent cache reuse between them.
         "SCCACHE_C_CUSTOM_CACHE_BUSTER",
+        crate::dtlto::INPUTS_DIGEST_VAR,
         "CPATH",
         "C_INCLUDE_PATH",
         "CPLUS_INCLUDE_PATH",
@@ -1247,6 +1248,37 @@ mod test {
         ));
     }
 
+    /// The parameters of [`preprocessor_cache_entry_hash_key`] that tests vary;
+    /// the rest are fixed to a plain C compile.
+    #[derive(Default)]
+    struct EntryKey<'a> {
+        arguments: &'a [&'a str],
+        env_vars: &'a [(OsString, OsString)],
+        multiarch: bool,
+        basedirs: &'a [Vec<u8>],
+    }
+
+    impl EntryKey<'_> {
+        fn of(&self, input: &Path) -> String {
+            let arguments: Vec<_> = self.arguments.iter().map(OsString::from).collect();
+            preprocessor_cache_entry_hash_key(
+                "test_digest",
+                Language::C,
+                &arguments,
+                &[],
+                None,
+                self.env_vars,
+                input,
+                false,
+                self.multiarch,
+                PreprocessorCacheModeConfig::activated(),
+                self.basedirs,
+            )
+            .unwrap()
+            .expect("no time macros in the input")
+        }
+    }
+
     #[test]
     fn test_preprocessor_cache_entry_hash_key_basedirs() {
         #[cfg(target_os = "windows")]
@@ -1276,119 +1308,32 @@ mod test {
         fs::write(&file1_path, content).unwrap();
         fs::write(&file2_path, content).unwrap();
 
-        let config = PreprocessorCacheModeConfig::activated();
+        let key = |input: &Path, basedirs: &[Vec<u8>]| {
+            EntryKey {
+                basedirs,
+                ..Default::default()
+            }
+            .of(input)
+        };
 
         // Test 1: With basedirs, hashes should be the same
-        let hash1_with_basedirs = preprocessor_cache_entry_hash_key(
-            "test_digest",
-            Language::C,
-            &[],
-            &[],
-            None,
-            &[],
-            &file1_path,
-            false,
-            false,
-            config,
-            &dirs,
-        )
-        .unwrap()
-        .unwrap();
-
-        let hash2_with_basedirs = preprocessor_cache_entry_hash_key(
-            "test_digest",
-            Language::C,
-            &[],
-            &[],
-            None,
-            &[],
-            &file2_path,
-            false,
-            false,
-            config,
-            &dirs,
-        )
-        .unwrap()
-        .unwrap();
-
         assert_eq!(
-            hash1_with_basedirs, hash2_with_basedirs,
+            key(&file1_path, &dirs),
+            key(&file2_path, &dirs),
             "Hashes should be equal when using basedirs with identical files in different directories"
         );
 
         // Test 2: With basedir1 for first, and basedir2 for second, hashes should be the same
-        let hash1_with_basedirs = preprocessor_cache_entry_hash_key(
-            "test_digest",
-            Language::C,
-            &[],
-            &[],
-            None,
-            &[],
-            &file1_path,
-            false,
-            false,
-            config,
-            &dirs[..1],
-        )
-        .unwrap()
-        .unwrap();
-
-        let hash2_with_basedirs = preprocessor_cache_entry_hash_key(
-            "test_digest",
-            Language::C,
-            &[],
-            &[],
-            None,
-            &[],
-            &file2_path,
-            false,
-            false,
-            config,
-            &dirs[1..],
-        )
-        .unwrap()
-        .unwrap();
-
         assert_eq!(
-            hash1_with_basedirs, hash2_with_basedirs,
+            key(&file1_path, &dirs[..1]),
+            key(&file2_path, &dirs[1..]),
             "Hashes should be equal when using basedirs with identical files in different directories"
         );
 
         // Test 3: Without basedirs, hashes should be different
-        let hash1_no_basedirs = preprocessor_cache_entry_hash_key(
-            "test_digest",
-            Language::C,
-            &[],
-            &[],
-            None,
-            &[],
-            &file1_path,
-            false,
-            false,
-            config,
-            &[],
-        )
-        .unwrap()
-        .unwrap();
-
-        let hash2_no_basedirs = preprocessor_cache_entry_hash_key(
-            "test_digest",
-            Language::C,
-            &[],
-            &[],
-            None,
-            &[],
-            &file2_path,
-            false,
-            false,
-            config,
-            &[],
-        )
-        .unwrap()
-        .unwrap();
-
         assert_ne!(
-            hash1_no_basedirs, hash2_no_basedirs,
+            key(&file1_path, &[]),
+            key(&file2_path, &[]),
             "Hashes should be different without basedirs for files in different directories"
         );
     }
@@ -1404,26 +1349,40 @@ mod test {
         #[cfg(target_os = "windows")]
         let basedir = crate::util::normalize_win_path(&basedir);
         let key = |arguments: &[&str], multiarch: bool| {
-            let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
-            preprocessor_cache_entry_hash_key(
-                "test_digest",
-                Language::C,
-                &arguments,
-                &[],
-                None,
-                &[],
-                &file,
-                false,
+            EntryKey {
+                arguments,
                 multiarch,
-                PreprocessorCacheModeConfig::activated(),
-                std::slice::from_ref(&basedir),
-            )
-            .unwrap()
-            .unwrap()
+                basedirs: std::slice::from_ref(&basedir),
+                ..Default::default()
+            }
+            .of(&file)
         };
 
         let fat = ["-arch", "x86_64", "-arch", "arm64"];
         assert_ne!(key(&fat, true), key(&fat, false));
+    }
+
+    #[test]
+    fn test_preprocessor_cache_entry_hash_key_dtlto_inputs() {
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let file = dir.path().join("test.c");
+        std::fs::write(&file, b"int main() { return 0; }").unwrap();
+        let key = |digest: Option<&str>| {
+            let env_vars: Vec<_> = digest
+                .map(|d| (crate::dtlto::INPUTS_DIGEST_VAR.into(), d.into()))
+                .into_iter()
+                .collect();
+            EntryKey {
+                env_vars: &env_vars,
+                ..Default::default()
+            }
+            .of(&file)
+        };
+
+        assert_ne!(key(None), key(Some("a")));
+        assert_ne!(key(Some("a")), key(Some("b")));
     }
 
     #[cfg(unix)]
