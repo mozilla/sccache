@@ -202,6 +202,7 @@ Note that some env variables may need sccache server restart to take effect.
 * `SCCACHE_BASEDIRS_VERBATIM_ENV_DEPS` comma-separated names of variables that a Rust crate reads with `env!` or `option_env!` whose values are hashed without stripping `SCCACHE_BASEDIRS`, e.g. `CARGO_MANIFEST_DIR,CARGO_MANIFEST_PATH`. Read from the environment of each compile; empty or not valid UTF-8 means none. Names are case-insensitive on Windows. See [Rust caveats](Rust.md)
 * `SCCACHE_CACHED_CONF`
 * `SCCACHE_DIST_CLIENT_CACHE_DIR` distributed toolchain cache directory; overrides `[dist].cache_dir` from the configuration file.
+* `SCCACHE_DIST_REQUEST_TIMEOUT_SECS` how long, in seconds, a distributed-compilation request (scheduler allocation, toolchain or object transfer) may take before it is aborted. Defaults to `1200`. Raise it when toolchain transfers are slow. A value of `0` or a non-numeric value is ignored.
 * `SCCACHE_IDLE_TIMEOUT` how long the local daemon process waits for more client requests before exiting, in seconds. Set to `0` to run sccache permanently
 * `SCCACHE_STARTUP_NOTIFY` specify a path to a socket which will be used for server completion notification
 * `SCCACHE_MAX_FRAME_LENGTH` how much data can be transferred between client and server
