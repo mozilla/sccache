@@ -91,10 +91,24 @@ async fn read_server_startup_status<R: AsyncReadExt + Unpin>(
     Ok(bincode::deserialize(&data)?)
 }
 
+/// Why a server is being started, which decides what of the starting
+/// process's environment it keeps.
+#[derive(Clone, Copy)]
+enum StartedBy {
+    /// `sccache --start-server`: the environment is the user's configuration.
+    User,
+    /// A compile found no server: the environment is whatever that compile ran
+    /// with, yet the server will outlive it and serve every later client.
+    Compile,
+}
+
 /// Re-execute the current executable as a background server, and wait
 /// for it to start up.
 #[cfg(not(windows))]
-fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup> {
+fn run_server_process(
+    startup_timeout: Option<Duration>,
+    started_by: StartedBy,
+) -> Result<ServerStartup> {
     trace!("run_server_process");
     let tempdir = tempfile::Builder::new().prefix("sccache").tempdir()?;
     let socket_path = tempdir.path().join("sock");
@@ -110,7 +124,8 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
         tokio::net::UnixListener::bind(&socket_path)?
     };
 
-    let _child = process::Command::new(&exe_path)
+    let mut command = process::Command::new(&exe_path);
+    command
         .current_dir(workdir)
         .env("SCCACHE_START_SERVER", "1")
         .env("SCCACHE_STARTUP_NOTIFY", &socket_path)
@@ -118,8 +133,16 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
         // The daemon is always a storage proxy; it never runs in client-side
         // mode itself.  Strip the variable so an inherited value cannot
         // accidentally influence daemon behaviour in the future.
-        .env_remove("SCCACHE_CLIENT_SIDE")
-        .spawn()?;
+        .env_remove("SCCACHE_CLIENT_SIDE");
+    // The server creates its temp dirs under TMPDIR and outlives the compile
+    // that started it. If that TMPDIR is a per-job dir that gets deleted,
+    // every later compile fails with "Failed to create temp dir". So an
+    // auto-started server uses the system default; `--start-server` keeps
+    // the user's TMPDIR.
+    if let StartedBy::Compile = started_by {
+        command.env_remove("TMPDIR");
+    }
+    let _child = command.spawn()?;
 
     let startup = async move {
         let (socket, _) = listener.accept().await?;
@@ -184,7 +207,10 @@ fn redirect_error_log(f: File) -> Result<()> {
 
 /// Re-execute the current executable as a background server.
 #[cfg(windows)]
-fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup> {
+fn run_server_process(
+    startup_timeout: Option<Duration>,
+    _started_by: StartedBy,
+) -> Result<ServerStartup> {
     use futures::StreamExt;
     use std::mem;
     use std::os::windows::ffi::OsStrExt;
@@ -327,7 +353,7 @@ fn connect_or_start_server(
         {
             // If the connection was refused we probably need to start
             // the server.
-            match run_server_process(startup_timeout)? {
+            match run_server_process(startup_timeout, StartedBy::Compile)? {
                 ServerStartup::Ok { addr: actual_addr } => {
                     if addr.to_string() != actual_addr {
                         // bail as the next connect_with_retry will fail
@@ -872,8 +898,8 @@ pub fn run_command(cmd: Command) -> Result<i32> {
         Command::StartServer => {
             trace!("Command::StartServer");
             println!("sccache: Starting the server...");
-            let startup =
-                run_server_process(startup_timeout).context("failed to start server process")?;
+            let startup = run_server_process(startup_timeout, StartedBy::User)
+                .context("failed to start server process")?;
             match startup {
                 ServerStartup::Ok { addr } => {
                     println!("sccache: Listening on address {addr}");

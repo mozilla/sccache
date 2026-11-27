@@ -44,6 +44,47 @@ fn test_rust_cargo_build_readonly() -> Result<()> {
     test_rust_cargo_cmd_readonly("build", SccacheTest::new(None)?)
 }
 
+/// A server started on demand outlives the compile that started it, so it
+/// must keep working after that compile's TMPDIR is deleted.
+#[test]
+#[serial]
+#[cfg(unix)]
+fn test_rust_cargo_build_after_starting_compile_tmpdir_deleted() -> Result<()> {
+    let test_info = SccacheTest::new(None)?;
+    // A port of its own, so the first build below starts this server instead of
+    // reaching the one `SccacheTest` started (or one still shutting down).
+    let port = "4227";
+    let cache_dir = test_info.tempdir.path().join("cache");
+    // Short, under /tmp: the starting client puts its startup socket in its
+    // TMPDIR, and a nested path exceeds the Unix socket path limit on macOS.
+    let job_tmp = tempfile::Builder::new().prefix("job").tempdir_in("/tmp")?;
+    let build = |tmpdir: &Path| -> Result<()> {
+        cargo_clean(&test_info)?;
+        Command::new(CARGO.as_os_str())
+            .arg("build")
+            .envs(test_info.env.iter().cloned())
+            .env("SCCACHE_DIR", &cache_dir)
+            .env("SCCACHE_SERVER_PORT", port)
+            .env("TMPDIR", tmpdir)
+            .current_dir(CRATE_DIR.as_os_str())
+            .assert()
+            .try_success()?;
+        Ok(())
+    };
+    // The first build finds no server and starts one. Errors are held until
+    // that server is stopped, so a failure here can't leave it running.
+    let result = build(job_tmp.path()).and_then(|()| {
+        fs::remove_dir_all(job_tmp.path())?;
+        build(test_info.tempdir.path())
+    });
+    Command::new(SCCACHE_BIN.as_os_str())
+        .arg("--stop-server")
+        .env("SCCACHE_SERVER_PORT", port)
+        .status()?;
+    stop_sccache()?;
+    result
+}
+
 #[test]
 #[serial]
 #[cfg(unix)]
