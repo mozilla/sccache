@@ -107,6 +107,7 @@ pub fn dist_test_sccache_client_cfg(
     sccache_cfg
 }
 
+#[serial_test::serial]
 #[test]
 #[cfg_attr(not(feature = "dist-tests"), ignore)]
 fn test_dist_basic() {
@@ -142,6 +143,7 @@ fn test_dist_basic() {
 
 // A compile error on the build server reached the client as "Compiler killed by signal 1" with exit
 // code 254 instead of the compiler's exit code.
+#[serial_test::serial]
 #[test]
 #[cfg_attr(not(feature = "dist-tests"), ignore)]
 fn test_dist_failed_compile() {
@@ -208,6 +210,7 @@ fn test_dist_failed_compile() {
     });
 }
 
+#[serial_test::serial]
 #[test]
 #[cfg_attr(not(feature = "dist-tests"), ignore)]
 fn test_dist_restartedserver() {
@@ -244,6 +247,7 @@ fn test_dist_restartedserver() {
     });
 }
 
+#[serial_test::serial]
 #[test]
 #[cfg_attr(not(feature = "dist-tests"), ignore)]
 fn test_dist_nobuilder() {
@@ -309,6 +313,7 @@ impl ServerIncoming for FailingServer {
     }
 }
 
+#[serial_test::serial]
 #[test]
 #[cfg_attr(not(feature = "dist-tests"), ignore)]
 fn test_dist_failingserver() {
