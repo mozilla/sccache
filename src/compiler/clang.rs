@@ -1248,6 +1248,15 @@ mod test {
     }
 
     #[test]
+    fn test_parse_arguments_profile_instr_generate_with_path() {
+        let flag = "-fprofile-instr-generate=foo.profraw";
+        let a = parses!("-c", "foo.c", flag);
+
+        assert!(a.profile_generate);
+        assert_eq!(ovec![flag], a.common_args);
+    }
+
+    #[test]
     fn test_parse_arguments_profile_use() {
         let a = parses!("-c", "foo.c", "-o", "foo.o", "-fprofile-use=xyz.profdata");
 
