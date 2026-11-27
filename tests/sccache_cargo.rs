@@ -13,6 +13,7 @@ use fs_err as fs;
 use helpers::{SCCACHE_BIN, SccacheTest};
 use predicates::prelude::*;
 use serial_test::serial;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -427,6 +428,14 @@ fn build_checkout(test_info: &SccacheTest, name: &str) -> Result<PathBuf> {
 ///
 /// Returns the checkout's target directory.
 fn cargo_build(test_info: &SccacheTest, checkout: &Path) -> Result<PathBuf> {
+    cargo_build_with_env(test_info, checkout, &[])
+}
+
+fn cargo_build_with_env(
+    test_info: &SccacheTest,
+    checkout: &Path,
+    env: &[(&str, &OsStr)],
+) -> Result<PathBuf> {
     let target_dir = checkout.join("target");
     Command::new(CARGO.as_os_str())
         // `--target-dir` rather than `CARGO_TARGET_DIR`,
@@ -434,6 +443,7 @@ fn cargo_build(test_info: &SccacheTest, checkout: &Path) -> Result<PathBuf> {
         .args(["build", "--color=never", "--target-dir"])
         .arg(&target_dir)
         .envs(test_info.env.iter().cloned())
+        .envs(env.iter().copied())
         .current_dir(checkout)
         .assert()
         .try_success()?;
@@ -599,6 +609,42 @@ fn test_rust_cargo_basedirs_other_checkout() -> Result<()> {
         dep_info.contains(b.to_str().unwrap()),
         "dep-info does not name checkout b:\n{dep_info}"
     );
+
+    Ok(())
+}
+
+/// `SCCACHE_BASEDIRS` set for each build rather than for the server: each checkout
+/// names only its own root and the second one still hits.
+#[test]
+#[serial]
+fn test_rust_cargo_basedirs_from_compile_env() -> Result<()> {
+    let test_info = SccacheTest::new(None)?;
+    let tempdir = real_tempdir(&test_info)?;
+    let [a, b] = ["a", "b"].map(|name| tempdir.join(name));
+    restart_sccache(&test_info, None)?;
+
+    write_out_dir_crate(&a)?;
+    cargo_build_with_env(&test_info, &a, &[("SCCACHE_BASEDIRS", a.as_os_str())])?;
+    Command::new(SCCACHE_BIN.as_os_str())
+        .arg("--zero-stats")
+        .assert()
+        .try_success()?;
+    write_out_dir_crate(&b)?;
+    cargo_build_with_env(&test_info, &b, &[("SCCACHE_BASEDIRS", b.as_os_str())])?;
+
+    test_info
+        .show_stats()?
+        .try_stdout(
+            predicates::str::contains(
+                r#""cache_hits":{"counts":{"Rust":2},"adv_counts":{"rust":2}}"#,
+            )
+            .from_utf8(),
+        )?
+        .try_stdout(
+            predicates::str::contains(r#""cache_misses":{"counts":{},"adv_counts":{}}"#)
+                .from_utf8(),
+        )?
+        .try_success()?;
 
     Ok(())
 }

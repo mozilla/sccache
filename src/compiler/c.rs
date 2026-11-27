@@ -22,7 +22,7 @@ use crate::compiler::{
 };
 #[cfg(feature = "dist-client")]
 use crate::compiler::{DistPackagers, NoopOutputsRewriter};
-use crate::config::PreprocessorCacheModeConfig;
+use crate::config::{PreprocessorCacheModeConfig, compile_basedirs};
 use crate::dist;
 #[cfg(feature = "dist-client")]
 use crate::dist::pkg;
@@ -442,6 +442,7 @@ where
         // Try to look for a cached preprocessing step for this compilation
         // request.
         let preprocessor_cache_mode_config = storage.preprocessor_cache_mode_config();
+        let basedirs = compile_basedirs(&env_vars, storage.basedirs());
         let too_hard_for_preprocessor_cache_mode = self
             .parsed_args
             .too_hard_for_preprocessor_cache_mode
@@ -502,7 +503,7 @@ where
                 self.compiler.plusplus(),
                 self.parsed_args.is_multiarch(),
                 preprocessor_cache_mode_config,
-                storage.basedirs(),
+                &basedirs,
             )?
         } else {
             None
@@ -513,7 +514,7 @@ where
         // records have to be checked against this tree's copies and not against
         // the ones that happened to write the entry.
         let tree_root = if preprocessor_key.is_some() {
-            compilation_tree_root(&absolute_input_path, &cwd, storage.basedirs())?
+            compilation_tree_root(&absolute_input_path, &cwd, &basedirs)?
         } else {
             None
         };
@@ -693,7 +694,7 @@ where
         .with_extra_hashes(&extra_hashes)
         .with_env_vars(&env_vars)
         .with_plusplus(self.compiler.plusplus())
-        .with_basedirs(storage.basedirs())
+        .with_basedirs(&basedirs)
         .with_assembler_digest(assembler_digest.as_deref())
         .with_input_file_name(hashed_input_file_name(
             self.parsed_args.language,
@@ -715,7 +716,7 @@ where
                 start_of_compilation,
                 &key,
                 files,
-                storage.basedirs(),
+                &basedirs,
                 tree_root.as_deref(),
             );
 
