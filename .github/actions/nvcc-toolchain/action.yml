@@ -10,7 +10,7 @@ runs:
     - if: runner.os == 'Linux'
       shell: bash
       env:
-        INPUTS_NAME: ${{ inputs.cuda-version }}
+        INPUTS_CUDA_VERSION: ${{ inputs.cuda-version }}
       run: .github/actions/nvcc-toolchain/install-cuda.sh ${INPUTS_CUDA_VERSION}
 
     - if: runner.os == 'Windows'
