@@ -1107,6 +1107,7 @@ mod client {
         pool: tokio::runtime::Handle,
         tc_cache: Arc<cache::ClientToolchains>,
         rewrite_includes_only: bool,
+        fallback: bool,
     }
 
     impl Client {
@@ -1140,7 +1141,14 @@ mod client {
                 pool: pool.clone(),
                 tc_cache: Arc::new(client_toolchains),
                 rewrite_includes_only,
+                fallback: true,
             })
+        }
+
+        /// Sets whether a failed or incomplete remote compile is recompiled locally.
+        pub fn with_fallback(mut self, fallback: bool) -> Self {
+            self.fallback = fallback;
+            self
         }
 
         fn update_certs(
@@ -1329,6 +1337,9 @@ mod client {
 
         fn rewrite_includes_only(&self) -> bool {
             self.rewrite_includes_only
+        }
+        fn fallback_enabled(&self) -> bool {
+            self.fallback
         }
         fn get_custom_toolchain(&self, exe: &Path) -> Option<PathBuf> {
             match self.tc_cache.get_custom_toolchain(exe) {

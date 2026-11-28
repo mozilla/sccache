@@ -156,7 +156,9 @@ fn test_dist_failed_compile() {
     system.add_scheduler();
     system.add_server();
 
-    let sccache_cfg = dist_test_sccache_client_cfg(tmpdir, system.scheduler_url());
+    let mut sccache_cfg = dist_test_sccache_client_cfg(tmpdir, system.scheduler_url());
+    // This test asserts the remote failure reaches the client, i.e. release behaviour.
+    sccache_cfg.dist.fallback = false;
     let sccache_cfg_path = tmpdir.join("sccache-cfg.json");
     write_json_cfg(tmpdir, "sccache-cfg.json", &sccache_cfg);
     let sccache_cached_cfg_path = tmpdir.join("sccache-cached-cfg");
