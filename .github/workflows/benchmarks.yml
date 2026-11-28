@@ -26,13 +26,13 @@ jobs:
           - simulation
           - memory
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable # zizmor: ignore[unpinned-uses]
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Install cargo-codspeed
         shell: bash
@@ -43,7 +43,7 @@ jobs:
         run: cargo codspeed build
 
       - name: Run benchmarks
-        uses: CodSpeedHQ/action@v5
+        uses: CodSpeedHQ/action@b1f28b5eccf7cb5bfe6a2a89cb3053eb67f1150c # v5.8.0
         env:
           CODSPEED_LOG: debug
         with:

@@ -9,6 +9,8 @@ runs:
   steps:
     - name: pack failure artifacts
       shell: bash
+      env:
+        INPUTS_NAME: ${{ inputs.name }}
       run: |
         echo "Current running processes"
         ps uax
@@ -23,8 +25,8 @@ runs:
             --exclude='docs' \
             --exclude='bins' \
             --exclude='.git' \
-            -zcf target/failure-${{ inputs.name }}.tar.gz .
-    - uses: actions/upload-artifact@v4
+            -zcf target/failure-${INPUTS_NAME}.tar.gz .
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
       with:
         name: ${{ inputs.name }}
         path: target/failure-${{ inputs.name }}.tar.gz
