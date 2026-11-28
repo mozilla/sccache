@@ -38,7 +38,6 @@ use fs_err as fs;
 use futures::channel::mpsc;
 use futures::future::FutureExt;
 use futures::{Sink, SinkExt, Stream, StreamExt, TryFutureExt, future};
-use number_prefix::NumberPrefix;
 use serde::{Deserialize, Serialize};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -71,6 +70,7 @@ use tokio::{
 use tokio_serde::Framed;
 use tokio_util::codec::{LengthDelimitedCodec, length_delimited};
 use tower_service::Service;
+use unit_prefix::NumberPrefix;
 
 use crate::errors::*;
 
@@ -93,6 +93,72 @@ pub enum ServerStartup {
     TimedOut,
     /// Server encountered an error.
     Err { reason: String },
+}
+
+#[cfg(unix)]
+fn bind_unix_listener(path: &std::path::Path) -> io::Result<tokio::net::UnixListener> {
+    use std::fs::OpenOptions;
+    use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+    use std::os::unix::net::UnixStream;
+
+    let mut lock_path = path.as_os_str().to_os_string();
+    lock_path.push(".lock");
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .mode(0o600)
+        // Never follow a symlink planted at the lock path, so that the chmod
+        // below cannot be tricked into applying to the link's target.
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(lock_path)?;
+    let mut permissions = lock.metadata()?.permissions();
+    permissions.set_mode(0o600);
+    lock.set_permissions(permissions)?;
+
+    // Keep the lock inode so that it also serializes startup after a crash.
+    lock.lock()?;
+
+    // The lock file was just opened and chmod'ed by us, so its owner is the
+    // user allowed to clean up a stale socket below.
+    let lock_uid = lock.metadata()?.uid();
+
+    match UnixStream::connect(path) {
+        Ok(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::AddrInUse,
+                "unix socket is already in use",
+            ));
+        }
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound
+            ) =>
+        {
+            match std::fs::symlink_metadata(path) {
+                Ok(metadata) if metadata.file_type().is_socket() && metadata.uid() == lock_uid => {
+                    match std::fs::remove_file(path) {
+                        Ok(()) => {}
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                        Err(error) => return Err(error),
+                    }
+                }
+                Ok(_) => {
+                    return Err(io::Error::other(format!(
+                        "unix socket path {} is not a stale socket",
+                        path.display()
+                    )));
+                }
+                Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+                Err(_) => {}
+            }
+        }
+        Err(error) => return Err(error),
+    }
+
+    tokio::net::UnixListener::bind(path)
 }
 
 /// Get the time the server should idle for before shutting down, in seconds.
@@ -493,8 +559,8 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
         _ => raw_storage,
     };
 
-    let res: io::Result<(crate::net::SocketAddr, Box<dyn FnOnce(_) -> io::Result<()>>)> = (|| {
-        match addr {
+    let res: io::Result<(crate::net::SocketAddr, Box<dyn FnOnce(_) -> io::Result<()>>)> =
+        (|| match addr {
             crate::net::SocketAddr::Net(addr) => {
                 trace!("binding TCP {addr}");
                 let l = runtime.block_on(tokio::net::TcpListener::bind(addr))?;
@@ -514,11 +580,9 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
             #[cfg(unix)]
             crate::net::SocketAddr::Unix(path) => {
                 trace!("binding unix socket {}", path.display());
-                // Unix socket will report addr in use on any unlink file.
-                let _ = std::fs::remove_file(path);
                 let l = {
                     let _guard = runtime.enter();
-                    tokio::net::UnixListener::bind(path)?
+                    bind_unix_listener(path)?
                 };
                 let srv = SccacheServer::<_>::with_listener(
                     l,
@@ -557,8 +621,7 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
                     Box::new(move |f| srv.run(f)) as Box<dyn FnOnce(_) -> _>,
                 ))
             }
-        }
-    })();
+        })();
     match res {
         Ok((addr, run)) => {
             info!("server started, listening on {addr}");
@@ -865,6 +928,12 @@ where
 type SccacheRequest = Message<Request, Body<()>>;
 type SccacheResponse = Message<Response, Pin<Box<dyn Stream<Item = Result<Response>> + Send>>>;
 
+fn storage_read_error(key: &str, error: Error) -> Response {
+    let message = format!("{error:#}");
+    warn!("Cache lookup failed for key {key}: {message}");
+    Response::StorageReadError(message)
+}
+
 /// Messages sent from all services to the main event loop indicating activity.
 ///
 /// Whenever a request is receive a `Request` message is sent which will reset
@@ -949,20 +1018,19 @@ where
                 }
                 Request::StorageGetPath { key } => {
                     debug!("handle_client: storage_get_path key={}", key);
-                    Ok(Message::WithoutBody(Response::StorageGetPath(
-                        me.storage.get_path(&key).await,
-                    )))
+                    let response = match me.storage.get_path(&key).await {
+                        Ok(result) => Response::StorageGetPath(result),
+                        Err(error) => storage_read_error(&key, error),
+                    };
+                    Ok(Message::WithoutBody(response))
                 }
                 Request::StorageGetRaw { key } => {
                     debug!("handle_client: storage_get_raw key={}", key);
-                    let resp = match me.storage.get_raw(&key).await {
-                        Ok(opt) => Response::StorageGetRaw(opt.map(|b| b.to_vec())),
-                        Err(e) => {
-                            warn!("storage_get_raw error: {e:#}");
-                            Response::StorageGetRaw(None)
-                        }
+                    let response = match me.storage.get_raw(&key).await {
+                        Ok(result) => Response::StorageGetRaw(result.map(|bytes| bytes.to_vec())),
+                        Err(error) => storage_read_error(&key, error),
                     };
-                    Ok(Message::WithoutBody(resp))
+                    Ok(Message::WithoutBody(response))
                 }
                 Request::StoragePutRaw { key, data } => {
                     debug!("handle_client: storage_put_raw key={}", key);
@@ -1618,6 +1686,7 @@ where
                                     stats.cache_timeouts += 1;
                                 }
                                 MissType::CacheReadError => {
+                                    stats.cache_read_errors += 1;
                                     stats.cache_errors.increment(&kind, &lang);
                                 }
                             }
@@ -2565,6 +2634,7 @@ fn fatal_error_message(err: &anyhow::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cache::CacheStorage;
     use crate::mock_command::{MockChild, MockCommandCreator, exit_status};
     use crate::test::utils::{TestFixture, next_command, next_command_calls};
 
@@ -2588,6 +2658,103 @@ mod tests {
         fn write(&mut self, text: &str) {
             self.buffer.push_str(&format!("{}\n", text));
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_socket_binding_preserves_live_listener() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tempdir = tempfile::tempdir().unwrap();
+        let path = tempdir.path().join("server.sock");
+        let lock_path = tempdir.path().join("server.sock.lock");
+        let runtime = Runtime::new().unwrap();
+        let _guard = runtime.enter();
+        let _live = tokio::net::UnixListener::bind(&path).unwrap();
+
+        let error = match bind_unix_listener(&path) {
+            Ok(_) => panic!("a live Unix listener must not be replaced"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), io::ErrorKind::AddrInUse);
+        assert!(std::os::unix::net::UnixStream::connect(&path).is_ok());
+        assert_eq!(
+            std::fs::metadata(lock_path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    // A socket that was bound but never listened refuses connections like one
+    // left behind by a dead server. Dropping a real listener isn't enough on
+    // macOS: there is no SOCK_CLOEXEC, so a process spawned concurrently by
+    // another test can inherit the fd and keep the socket accepting.
+    #[cfg(unix)]
+    #[test]
+    fn unix_socket_binding_replaces_stale_socket() {
+        use socket2::{Domain, SockAddr, Socket, Type};
+
+        let tempdir = tempfile::tempdir().unwrap();
+        let path = tempdir.path().join("server.sock");
+        let runtime = Runtime::new().unwrap();
+        let _guard = runtime.enter();
+
+        let stale = Socket::new(Domain::UNIX, Type::STREAM, None).unwrap();
+        stale.bind(&SockAddr::unix(&path).unwrap()).unwrap();
+        drop(stale);
+
+        let replacement = bind_unix_listener(&path).unwrap();
+        assert!(std::os::unix::net::UnixStream::connect(&path).is_ok());
+        drop(replacement);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_socket_binding_keeps_regular_file() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let path = tempdir.path().join("server.sock");
+        std::fs::write(&path, b"not a socket").unwrap();
+
+        assert!(
+            bind_unix_listener(&path).is_err(),
+            "a regular file at the socket path must not be replaced"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"not a socket");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_socket_binding_serializes_concurrent_startup() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let tempdir = tempfile::tempdir().unwrap();
+        let path = Arc::new(tempdir.path().join("server.sock"));
+
+        let spawn = |p: Arc<std::path::PathBuf>| {
+            thread::spawn(move || {
+                let runtime = Runtime::new().unwrap();
+                let _guard = runtime.enter();
+                bind_unix_listener(&p)
+            })
+        };
+        let first = spawn(Arc::clone(&path));
+        let second = spawn(Arc::clone(&path));
+
+        let first = first.join().unwrap();
+        let second = second.join().unwrap();
+
+        let listeners = [&first, &second].iter().filter(|r| r.is_ok()).count();
+        assert_eq!(
+            listeners, 1,
+            "exactly one call may end up with the listener"
+        );
+        let error = first
+            .as_ref()
+            .err()
+            .or_else(|| second.as_ref().err())
+            .unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::AddrInUse);
+        assert!(std::os::unix::net::UnixStream::connect(&*path).is_ok());
     }
 
     #[test]
@@ -2891,6 +3058,207 @@ mod tests {
             other => panic!("body must end with CompileFinished, got {other:?}"),
         };
         (body, finished)
+    }
+
+    fn connect_ipc_storage(
+        runtime: &Runtime,
+        storage: Arc<dyn Storage>,
+    ) -> (
+        crate::cache::IpcStorage,
+        tokio::task::JoinHandle<Result<()>>,
+    ) {
+        let listener = runtime
+            .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
+            .unwrap();
+        let addr = crate::net::SocketAddr::Net(listener.local_addr().unwrap());
+        let service = MockService::mock_with_storage(storage, runtime.handle().clone());
+        let server = runtime.spawn(async move {
+            let (socket, _) = listener.accept().await?;
+            service.bind(socket).await
+        });
+        let connection = crate::client::connect_to_server(&addr).unwrap();
+        let storage = crate::cache::ipc_storage::IpcStorage::connect(connection).unwrap();
+        (storage, server)
+    }
+
+    #[test_case::test_case(Err(anyhow!("backend read failed")), true; "backend_error")]
+    #[test_case::test_case(Ok(Some(bytes::Bytes::from_static(b"not a zip"))), true; "invalid_archive")]
+    #[test_case::test_case(Ok(None), false; "normal_miss")]
+    fn ipc_lookup_outcomes_reach_service_stats(
+        lookup: Result<Option<bytes::Bytes>>,
+        read_error: bool,
+    ) {
+        use crate::test::mock_storage::MockStorage;
+
+        let (_f, runtime, mut service, compile) = rustc_miss_fixture();
+        let backend = Arc::new(MockStorage::new(None, false));
+        backend.next_get_raw(lookup);
+        let (storage, server) = connect_ipc_storage(&runtime, backend);
+        service.storage = Arc::new(storage);
+
+        let (response, finished, _) = runtime
+            .block_on(service.compile_direct(compile, &mut Vec::new()))
+            .unwrap();
+        assert!(matches!(response, CompileResponse::CompileStarted));
+        assert_eq!(finished.unwrap().retcode, Some(0));
+        assert_eq!(service.creator.lock().unwrap().children.len(), 0);
+        let stats = runtime.block_on(service.take_stats());
+        assert_eq!(stats.cache_read_errors, u64::from(read_error));
+        assert_eq!(stats.cache_errors.all(), u64::from(read_error));
+        assert_eq!(stats.cache_misses.all(), 1);
+        assert_eq!(stats.compilations, 1);
+        assert_eq!(stats.requests_executed, 1);
+        assert_eq!(stats.cache_timeouts, 0);
+        assert_eq!(stats.cache_hits.all(), 0);
+        assert_eq!(stats.compile_fails, 0);
+
+        drop(service);
+        runtime.block_on(server).unwrap().unwrap();
+    }
+
+    #[test]
+    fn ipc_invalid_raw_archive_error_identifies_key() {
+        let runtime = Runtime::new().unwrap();
+        let backend = Arc::new(crate::test::mock_storage::MockStorage::new(None, false));
+        backend.next_get_raw(Ok(Some(bytes::Bytes::from_static(b"not a zip"))));
+        let (storage, server) = connect_ipc_storage(&runtime, backend);
+
+        let key = "0123456789abcdef";
+        let error = runtime.block_on(storage.get(key)).err().unwrap();
+        assert!(error.to_string().contains(key), "{error:#}");
+        assert!(error.downcast_ref::<zip::result::ZipError>().is_some());
+
+        drop(storage);
+        runtime.block_on(server).unwrap().unwrap();
+    }
+
+    #[test]
+    fn ipc_disk_lookup_preserves_hits_misses_and_archive_errors() {
+        use crate::cache::{Cache, CacheWrite, GetPathResult};
+
+        let (_f, runtime, service, _compile) = rustc_miss_fixture();
+        let (storage, server) = connect_ipc_storage(&runtime, service.storage.clone());
+        let key = "0123456789abcdef";
+        assert!(matches!(
+            runtime.block_on(storage.get(key)).unwrap(),
+            Cache::Miss
+        ));
+
+        let mut entry = CacheWrite::new();
+        entry.put_stdout(b"cached output").unwrap();
+        runtime.block_on(service.storage.put(key, entry)).unwrap();
+        match runtime.block_on(storage.get(key)).unwrap() {
+            Cache::Hit(mut entry) => assert_eq!(entry.get_stdout(), b"cached output"),
+            _ => panic!("expected a cache hit"),
+        }
+
+        runtime
+            .block_on(
+                service
+                    .storage
+                    .put_raw(key, bytes::Bytes::from_static(b"not a zip")),
+            )
+            .unwrap();
+        let GetPathResult::Found(path) = runtime.block_on(service.storage.get_path(key)).unwrap()
+        else {
+            panic!("expected a cached archive path");
+        };
+        let error = runtime.block_on(storage.get(key)).err().unwrap();
+        assert!(format!("{error:#}").contains(path.to_str().unwrap()));
+        assert!(error.downcast_ref::<zip::result::ZipError>().is_some());
+
+        drop(storage);
+        runtime.block_on(server).unwrap().unwrap();
+    }
+
+    #[test_case::test_case(true; "initialization_error")]
+    #[test_case::test_case(false; "normal_miss")]
+    fn ipc_disk_path_lookup_outcomes_reach_service_stats(initialization_error: bool) {
+        let (f, runtime, mut service, compile) = rustc_miss_fixture();
+        if initialization_error {
+            std::fs::write(f.tempdir.path().join("cache"), b"not a directory").unwrap();
+        }
+        let (storage, server) = connect_ipc_storage(&runtime, service.storage.clone());
+        service.storage = Arc::new(storage);
+
+        let (response, finished, _) = runtime
+            .block_on(service.compile_direct(compile, &mut Vec::new()))
+            .unwrap();
+        assert!(matches!(response, CompileResponse::CompileStarted));
+        assert_eq!(finished.unwrap().retcode, Some(0));
+        assert_eq!(
+            std::fs::read(f.tempdir.path().join("libdep.rlib")).unwrap(),
+            b"rlib"
+        );
+        let stats = runtime.block_on(service.take_stats());
+        assert_eq!(stats.cache_read_errors, u64::from(initialization_error));
+        assert_eq!(stats.cache_errors.all(), u64::from(initialization_error));
+        assert_eq!(stats.cache_misses.all(), 1);
+        assert_eq!(stats.cache_hits.all(), 0);
+        assert_eq!(stats.cache_timeouts, 0);
+        assert_eq!(stats.compile_fails, 0);
+        assert_eq!(stats.cache_writes, u64::from(!initialization_error));
+        assert_eq!(stats.cache_write_errors, u64::from(initialization_error));
+
+        drop(service);
+        runtime.block_on(server).unwrap().unwrap();
+    }
+
+    #[test_case::test_case(true, false; "daemon_read_error")]
+    #[test_case::test_case(false, false; "daemon_normal_miss")]
+    #[test_case::test_case(true, true; "client_side_read_error")]
+    #[test_case::test_case(false, true; "client_side_normal_miss")]
+    fn cache_lookup_outcomes_preserve_service_stats(read_error: bool, client_side: bool) {
+        use crate::cache::Cache;
+        use crate::test::mock_storage::MockStorage;
+
+        let (f, runtime, mut service, compile) = rustc_miss_fixture();
+        let storage = Arc::new(MockStorage::new(None, false));
+        storage.next_get(if read_error {
+            Err(anyhow!("cache lookup failed"))
+        } else {
+            Ok(Cache::Miss)
+        });
+        service.storage = storage;
+
+        let (finished, stats) = if client_side {
+            let (response, finished, _) = runtime
+                .block_on(service.compile_direct(compile, &mut Vec::new()))
+                .unwrap();
+            assert!(matches!(response, CompileResponse::CompileStarted));
+            (
+                finished.expect("compile started"),
+                runtime.block_on(service.take_stats()),
+            )
+        } else {
+            let (_, finished) = compile_body(&runtime, &service, compile);
+            (
+                finished,
+                runtime.block_on(service.get_info()).unwrap().stats,
+            )
+        };
+
+        assert_eq!(finished.retcode, Some(0));
+        assert_eq!(
+            std::fs::read(f.tempdir.path().join("libdep.rlib")).unwrap(),
+            b"rlib"
+        );
+        assert_eq!(service.creator.lock().unwrap().children.len(), 0);
+        assert_eq!(stats.requests_executed, 1);
+        assert_eq!(stats.cache_read_errors, u64::from(read_error));
+        assert_eq!(stats.cache_errors.all(), u64::from(read_error));
+        assert_eq!(
+            stats.cache_errors.get("Rust").copied().unwrap_or(0),
+            u64::from(read_error)
+        );
+        assert_eq!(stats.cache_misses.all(), 1);
+        assert_eq!(stats.cache_misses.get("Rust"), Some(&1));
+        assert_eq!(stats.compilations, 1);
+        assert_eq!(stats.cache_hits.all(), 0);
+        assert_eq!(stats.cache_timeouts, 0);
+        assert_eq!(stats.compile_fails, 0);
+        assert_eq!(stats.cache_writes, 1);
+        assert_eq!(stats.cache_write_errors, 0);
     }
 
     #[test]

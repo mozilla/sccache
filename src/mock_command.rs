@@ -52,7 +52,7 @@ use std::boxed::Box;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Output, Stdio};
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -120,6 +120,12 @@ pub trait RunCommand: fmt::Debug + Send {
     fn share_jobserver(&mut self) -> &mut Self {
         self
     }
+    /// [`share_jobserver`](RunCommand::share_jobserver), but only if our
+    /// jobserver is the build's own `fifo:` one, which costs no `pre_exec`
+    /// to hand on.
+    fn share_jobserver_if_fifo(&mut self) -> &mut Self {
+        self
+    }
     /// Execute the process and return a process object.
     async fn spawn(&mut self) -> Result<Self::C>;
 }
@@ -147,6 +153,20 @@ pub trait CommandCreatorSync: Clone + Send + Sync + 'static {
     fn new(client: &Client) -> Self;
 
     fn new_command_sync<S: AsRef<OsStr>>(&mut self, program: S) -> Self::Cmd;
+
+    /// Create a command that sees exactly `env`, rather than `env` layered
+    /// over the server's own environment.
+    fn new_command_with_env<S, I, K, V>(&mut self, program: S, env: I) -> Self::Cmd
+    where
+        S: AsRef<OsStr>,
+        I: IntoIterator<Item = (K, V)>,
+        K: AsRef<OsStr>,
+        V: AsRef<OsStr>,
+    {
+        let mut cmd = self.new_command_sync(program);
+        cmd.env_clear().envs(env);
+        cmd
+    }
 }
 
 pub struct Child {
@@ -172,17 +192,20 @@ impl CommandChild for Child {
     }
 
     async fn wait(self) -> io::Result<ExitStatus> {
-        let Child { mut inner, token } = self;
-        inner.wait().await.inspect(|_ret| {
-            drop(token);
-        })
+        let Child {
+            mut inner,
+            mut token,
+        } = self;
+        let ret = inner.wait().await;
+        token.record_exit(ret.as_ref().ok());
+        ret
     }
 
     async fn wait_with_output(self) -> io::Result<Output> {
-        let Child { inner, token } = self;
-        inner.wait_with_output().await.inspect(|_ret| {
-            drop(token);
-        })
+        let Child { inner, mut token } = self;
+        let ret = inner.wait_with_output().await;
+        token.record_exit(ret.as_ref().ok().map(|o| &o.status));
+        ret
     }
 }
 
@@ -190,6 +213,28 @@ pub struct AsyncCommand {
     inner: Option<Command>,
     jobserver: Client,
     share_jobserver: bool,
+}
+
+/// Whether the environment set on `cmd` hands it a jobserver opened by path
+/// (`--jobserver-auth=fifo:PATH`, as GNU make 4.4+ and Cargo pass on), which,
+/// unlike inherited pipe descriptors, any process can reopen.
+fn names_fifo_jobserver(cmd: &Command) -> bool {
+    // The variables `jobserver::Client::from_env` reads, in its order.
+    // `CARGO_MAKEFLAGS` never reaches the server: the client drops it from the
+    // environment it sends, so in practice the fifo comes through `MAKEFLAGS`.
+    ["CARGO_MAKEFLAGS", "MAKEFLAGS", "MFLAGS"]
+        .iter()
+        .find_map(|var| {
+            cmd.get_envs()
+                .find(|(key, _)| key == var)
+                .and_then(|(_, value)| value)
+        })
+        .and_then(OsStr::to_str)
+        .is_some_and(|flags| {
+            flags
+                .split_ascii_whitespace()
+                .any(|arg| arg.starts_with("--jobserver-auth=fifo:"))
+        })
 }
 
 impl AsyncCommand {
@@ -261,30 +306,45 @@ impl RunCommand for AsyncCommand {
         self.share_jobserver = true;
         self
     }
+    fn share_jobserver_if_fifo(&mut self) -> &mut AsyncCommand {
+        if self.jobserver.is_fifo() {
+            self.share_jobserver = true;
+        }
+        self
+    }
     async fn spawn(&mut self) -> Result<Child> {
         let mut inner = self.inner.take().unwrap();
-        inner.env_remove("MAKEFLAGS");
-        inner.env_remove("MFLAGS");
-        inner.env_remove("CARGO_MAKEFLAGS");
-        // `configure` registers a `pre_exec` closure to clear `CLOEXEC` on the
-        // jobserver's file descriptors, and any `pre_exec` makes `std` fall
-        // back from `posix_spawn` to `fork`+`exec`. Almost nothing sccache
-        // spawns can use a jobserver -- preprocessors, version probes and
-        // C/C++ compilers all ignore it -- so the default is not to share,
-        // and the callers that spawn `rustc` ask for it.
-        if self.share_jobserver {
-            self.jobserver.configure(&mut inner);
+        // The token rate-limits our children, independently of sharing the pool.
+        let mut token = self.jobserver.acquire().await?;
+        // If the build that asked for this compile named its jobserver by
+        // path, the child keeps it and opens it the way it would have without
+        // sccache, so it stays within that build's (or a system-wide) limit
+        // instead of getting our private pool.
+        let mut shared = false;
+        if !(self.share_jobserver && names_fifo_jobserver(&inner)) {
+            inner.env_remove("MAKEFLAGS");
+            inner.env_remove("MFLAGS");
+            inner.env_remove("CARGO_MAKEFLAGS");
+            // `configure` registers a `pre_exec` closure to clear `CLOEXEC` on
+            // the jobserver's file descriptors, and any `pre_exec` makes `std`
+            // fall back from `posix_spawn` to `fork`+`exec`. Almost nothing
+            // sccache spawns can use a jobserver -- preprocessors, version
+            // probes and C/C++ compilers all ignore it -- so the default is
+            // not to share, and the callers that spawn `rustc` ask for it.
+            if self.share_jobserver {
+                token.configure(&mut inner);
+                shared = true;
+            }
         }
 
-        // The token is acquired either way: it rate-limits how many children
-        // *we* run, which is separate from whether the child can acquire
-        // tokens of its own.
-        let token = self.jobserver.acquire().await?;
         let mut inner = tokio::process::Command::from(inner);
         let child = inner
             .kill_on_drop(true)
             .spawn()
             .with_context(|| format!("failed to spawn {:?}", inner))?;
+        if shared {
+            token.mark_shared();
+        }
 
         Ok(Child {
             inner: child,
@@ -435,7 +495,7 @@ pub enum ChildOrCall {
         dead_code,
         reason = "Read in the async_trait below, but rustc doesn't see it as used"
     )]
-    Call(Box<dyn Fn(&[OsString]) -> Result<MockChild> + Send>),
+    Call(Box<dyn Fn(&MockCommand) -> Result<MockChild> + Send>),
 }
 
 impl fmt::Debug for ChildOrCall {
@@ -449,10 +509,22 @@ impl fmt::Debug for ChildOrCall {
 
 /// A mocked command that simply returns its `child` from `spawn`.
 #[allow(dead_code)]
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct MockCommand {
     pub child: Option<ChildOrCall>,
     pub args: Vec<OsString>,
+    /// Whether the command was cut off from the inherited environment.
+    pub env_cleared: bool,
+    pub env: Vec<(OsString, OsString)>,
+    pub cwd: Option<PathBuf>,
+}
+
+impl MockCommand {
+    #[allow(dead_code)]
+    fn set_env(&mut self, key: &OsStr, val: &OsStr) {
+        self.env.retain(|(k, _)| k != key);
+        self.env.push((key.to_owned(), val.to_owned()));
+    }
 }
 
 #[async_trait]
@@ -467,26 +539,32 @@ impl RunCommand for MockCommand {
         self.args.extend(args.iter().map(|a| a.as_ref().to_owned()));
         self
     }
-    fn env<K, V>(&mut self, _key: K, _val: V) -> &mut MockCommand
+    fn env<K, V>(&mut self, key: K, val: V) -> &mut MockCommand
     where
         K: AsRef<OsStr>,
         V: AsRef<OsStr>,
     {
+        self.set_env(key.as_ref(), val.as_ref());
         self
     }
-    fn envs<I, K, V>(&mut self, _vars: I) -> &mut Self
+    fn envs<I, K, V>(&mut self, vars: I) -> &mut Self
     where
         I: IntoIterator<Item = (K, V)>,
         K: AsRef<OsStr>,
         V: AsRef<OsStr>,
     {
+        for (key, val) in vars {
+            self.set_env(key.as_ref(), val.as_ref());
+        }
         self
     }
     fn env_clear(&mut self) -> &mut MockCommand {
+        self.env_cleared = true;
+        self.env.clear();
         self
     }
-    fn current_dir<P: AsRef<Path>>(&mut self, _dir: P) -> &mut MockCommand {
-        //TODO: assert value of dir
+    fn current_dir<P: AsRef<Path>>(&mut self, dir: P) -> &mut MockCommand {
+        self.cwd = Some(dir.as_ref().to_owned());
         self
     }
     fn stdin(&mut self, _cfg: Stdio) -> &mut MockCommand {
@@ -501,7 +579,7 @@ impl RunCommand for MockCommand {
     async fn spawn(&mut self) -> Result<MockChild> {
         match self.child.take().unwrap() {
             ChildOrCall::Child(c) => c,
-            ChildOrCall::Call(f) => f(&self.args),
+            ChildOrCall::Call(f) => f(self),
         }
     }
 }
@@ -527,6 +605,16 @@ impl MockCommandCreator {
     where
         C: Fn(&[OsString]) -> Result<MockChild> + Send + 'static,
     {
+        self.next_command_inspects(move |cmd| call(&cmd.args));
+    }
+
+    /// Like `next_command_calls`, but `call` sees the whole command, including
+    /// its environment and working directory.
+    #[allow(dead_code)]
+    pub fn next_command_inspects<C>(&mut self, call: C)
+    where
+        C: Fn(&MockCommand) -> Result<MockChild> + Send + 'static,
+    {
         self.children.push(ChildOrCall::Call(Box::new(call)));
     }
 }
@@ -548,7 +636,7 @@ impl CommandCreator for MockCommandCreator {
         //TODO: assert value of program
         MockCommand {
             child: Some(self.children.remove(0)),
-            args: vec![],
+            ..Default::default()
         }
     }
 }
@@ -694,6 +782,29 @@ mod test {
         assert_eq!(exit_status(0), spawn_on_thread(creator, true));
     }
 
+    #[test]
+    fn test_new_command_with_env_mock() {
+        let client = Client::new_num(1);
+        let mut creator = Arc::new(Mutex::new(MockCommandCreator::new(&client)));
+        next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
+        let env = vec![
+            (OsString::from("A"), OsString::from("1")),
+            (OsString::from("B"), OsString::from("2")),
+        ];
+        let mut cmd = creator.new_command_with_env("foo", env.iter().cloned());
+        assert!(cmd.env_cleared);
+        assert_eq!(cmd.env, env);
+
+        cmd.env("A", "3");
+        assert_eq!(
+            cmd.env,
+            vec![
+                (OsString::from("B"), OsString::from("2")),
+                (OsString::from("A"), OsString::from("3")),
+            ]
+        );
+    }
+
     /// The jobserver reaches a child through `CARGO_MAKEFLAGS`, so reading it
     /// back out of the child is what "did the child get the jobserver?" means.
     #[cfg(unix)]
@@ -728,5 +839,171 @@ mod test {
             child_sees_cargo_makeflags(true),
             "share_jobserver() should give the child CARGO_MAKEFLAGS"
         );
+    }
+
+    /// `(CARGO_MAKEFLAGS, MAKEFLAGS)` as the child sees them, when the
+    /// compile's own environment (as the server sets it from the client's)
+    /// has `var` set to `flags`.
+    #[cfg(unix)]
+    fn child_makeflags_given(var: &str, flags: &str, share: bool) -> (String, String) {
+        let client = Client::new_num(1);
+        let mut creator = <ProcessCommandCreator as CommandCreator>::new(&client);
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let mut cmd = creator.new_command("/bin/sh");
+        cmd.args(&["-c", "printf '%s\\n%s' \"$CARGO_MAKEFLAGS\" \"$MAKEFLAGS\""])
+            .env_clear()
+            .env(var, flags);
+        if share {
+            cmd.share_jobserver();
+        }
+        let output: std::process::Output = runtime
+            .block_on(async { crate::util::run_input_output(cmd, None).await })
+            .unwrap();
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let (cargo_makeflags, makeflags) = stdout.split_once('\n').unwrap();
+        (cargo_makeflags.to_owned(), makeflags.to_owned())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn share_jobserver_keeps_a_fifo_jobserver() {
+        let flags = "-j8 --jobserver-auth=fifo:/tmp/GMfifo1234";
+        // The client strips `CARGO_MAKEFLAGS`, so the fifo normally arrives
+        // through `MAKEFLAGS`; both are honoured.
+        assert_eq!(
+            child_makeflags_given("MAKEFLAGS", flags, true),
+            (String::new(), flags.to_owned())
+        );
+        assert_eq!(
+            child_makeflags_given("CARGO_MAKEFLAGS", flags, true),
+            (flags.to_owned(), String::new())
+        );
+        for var in ["MAKEFLAGS", "CARGO_MAKEFLAGS"] {
+            assert_eq!(
+                child_makeflags_given(var, flags, false),
+                (String::new(), String::new()),
+                "a child that doesn't ask for a jobserver still gets none"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn share_jobserver_replaces_an_inherited_pipe_jobserver() {
+        let flags = "-j8 --jobserver-fds=1000,1001 --jobserver-auth=1000,1001";
+        for var in ["MAKEFLAGS", "CARGO_MAKEFLAGS"] {
+            let (cargo_makeflags, makeflags) = child_makeflags_given(var, flags, true);
+            assert_eq!(makeflags, "", "the inherited MAKEFLAGS is dropped");
+            let auth = cargo_makeflags
+                .split_ascii_whitespace()
+                .find_map(|arg| arg.strip_prefix("--jobserver-auth="))
+                .unwrap_or_else(|| panic!("no --jobserver-auth in {cargo_makeflags:?}"));
+            assert_ne!(auth, "1000,1001", "the child gets our jobserver instead");
+        }
+    }
+
+    #[test]
+    fn fifo_jobserver_detection() {
+        let names = |vars: &[(&str, &str)]| {
+            let mut cmd = Command::new("true");
+            cmd.env_clear();
+            for (key, value) in vars {
+                cmd.env(key, value);
+            }
+            names_fifo_jobserver(&cmd)
+        };
+        assert!(names(&[(
+            "CARGO_MAKEFLAGS",
+            "--jobserver-auth=fifo:/dev/x"
+        )]));
+        assert!(names(&[("MAKEFLAGS", " -j8 --jobserver-auth=fifo:/dev/x")]));
+        assert!(!names(&[("CARGO_MAKEFLAGS", "--jobserver-auth=3,4")]));
+        assert!(!names(&[]));
+        // `CARGO_MAKEFLAGS` wins, as in `jobserver::Client::from_env`.
+        assert!(!names(&[
+            ("CARGO_MAKEFLAGS", "--jobserver-auth=3,4"),
+            ("MAKEFLAGS", "--jobserver-auth=fifo:/dev/x"),
+        ]));
+    }
+
+    #[cfg(target_os = "linux")]
+    const LEAK_TOKEN_AND_SIGKILL: &str = r#"a=${CARGO_MAKEFLAGS##*--jobserver-auth=}; [ "$(head -c1 /proc/self/fd/${a%,*} | wc -c)" -eq 1 ] && kill -9 $$"#;
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn killed_child_does_not_leak_jobserver_tokens() {
+        use std::os::unix::process::ExitStatusExt;
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let client = Client::new_num(2);
+            let mut creator = <ProcessCommandCreator as CommandCreator>::new(&client);
+            let mut cmd = creator.new_command("/bin/sh");
+            cmd.args(&["-c", LEAK_TOKEN_AND_SIGKILL]);
+            cmd.share_jobserver();
+            let timeout = std::time::Duration::from_secs(10);
+            let child = async { cmd.spawn().await.unwrap().wait().await.unwrap() };
+            let status = tokio::time::timeout(timeout, child)
+                .await
+                .expect("the child never got a token");
+            assert_eq!(status.signal(), Some(9));
+            let both = async { (client.acquire().await, client.acquire().await) };
+            let (a, b) = tokio::time::timeout(timeout, both)
+                .await
+                .expect("the killed child's token was never replaced");
+            a.unwrap();
+            b.unwrap();
+        });
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn replaced_pool_keeps_the_child_limit() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let client = Client::new_num(3);
+            let mut creator = <ProcessCommandCreator as CommandCreator>::new(&client);
+            let mut hold = creator.new_command("/bin/sh");
+            hold.args(&["-c", "sleep 30"]);
+            let hold = hold.spawn().await.unwrap();
+            let mut victim = creator.new_command("/bin/sh");
+            victim.args(&["-c", LEAK_TOKEN_AND_SIGKILL]);
+            victim.share_jobserver();
+            let timeout = std::time::Duration::from_secs(10);
+            let victim = async { victim.spawn().await.unwrap().wait().await.unwrap() };
+            tokio::time::timeout(timeout, victim).await.unwrap();
+            let free = async { (client.acquire().await, client.acquire().await) };
+            let (a, b) = tokio::time::timeout(timeout, free).await.unwrap();
+            let _held = (a.unwrap(), b.unwrap());
+            let over =
+                tokio::time::timeout(std::time::Duration::from_millis(200), client.acquire());
+            assert!(
+                over.await.is_err(),
+                "a fresh pool ignored the running child"
+            );
+            drop(hold);
+            tokio::time::timeout(timeout, client.acquire())
+                .await
+                .unwrap()
+                .unwrap();
+        });
+    }
+
+    #[test]
+    fn failed_spawn_does_not_retire_jobserver_pool() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let client = Client::new_num(1);
+            let pool_replaced = client.watch_pool();
+            let mut creator = <ProcessCommandCreator as CommandCreator>::new(&client);
+            let tempdir = tempfile::tempdir().unwrap();
+            let mut cmd = creator.new_command(tempdir.path().join("no-such-binary"));
+            cmd.share_jobserver();
+            assert!(cmd.spawn().await.is_err());
+            assert!(
+                !pool_replaced(),
+                "a failed spawn should not retire the jobserver pool"
+            );
+            client.acquire().await.unwrap();
+        });
     }
 }

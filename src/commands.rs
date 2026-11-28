@@ -12,12 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cache::{CacheMode, IpcStorage, Storage, storage_from_config};
+use crate::cache::{CacheMode, CacheStorage as _, IpcStorage, storage_from_config};
 use crate::client::{ServerConnection, connect_to_server, connect_with_retry};
 use crate::cmdline::{Command, StatsFormat};
 use crate::compiler::{ColorMode, is_rmeta_artifact_notification};
 use crate::config::Config;
 use crate::jobserver::Client;
+use crate::lru_disk_cache::CACHEDIR_TAG_FILE_NAME;
 use crate::mock_command::{CommandChild, CommandCreatorSync, ProcessCommandCreator, RunCommand};
 use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
 use crate::server::{self, DistInfo, ServerInfo, ServerStartup, ServerStats};
@@ -41,7 +42,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use strip_ansi_escapes::Writer;
 use tokio::io::AsyncReadExt;
-use tokio::runtime::{Builder, Runtime};
+use tokio::runtime::Runtime;
 use walkdir::WalkDir;
 use which::which_in;
 
@@ -637,6 +638,11 @@ where
 
     let mut cmd = creator.new_command_sync(exe);
     cmd.args(&cmdline).current_dir(cwd);
+    // `spawn` strips the jobserver from the environment, so without this
+    // a compile we run ourselves (bins, tests, proc-macros, links) gets none
+    // and rustc makes its own pool of one token per CPU. When it is opened by
+    // path, our jobserver is the build's own (see `Client::from_env_fifo`).
+    cmd.share_jobserver_if_fifo();
     if log_enabled!(Trace) {
         trace!("running command: {:?}", cmd);
     }
@@ -830,7 +836,11 @@ pub fn run_command(cmd: Command) -> Result<i32> {
             for entry in WalkDir::new(entries_dir).sort_by_file_name() {
                 let preprocessor_cache_entry_file = entry?;
                 let path = preprocessor_cache_entry_file.path();
-                if !path.is_file() {
+                if !path.is_file()
+                    || preprocessor_cache_entry_file.file_name() == CACHEDIR_TAG_FILE_NAME
+                {
+                    // The cache-directory tag is metadata for backup tools,
+                    // not an entry (see lru_disk_cache).
                     continue;
                 }
                 println!("=========================");
@@ -983,13 +993,20 @@ pub fn run_command(cmd: Command) -> Result<i32> {
         } => {
             trace!("Command::Compile {{ {:?}, {:?}, {:?} }}", exe, cmdline, cwd);
 
+            // With the opt-in, `-C incremental=` compiles are left uncached (CannotCache),
+            // or cached with `cache`.
+            let allow_incremental =
+                env::var("SCCACHE_ALLOW_INCREMENTAL").is_ok_and(|v| v == "1" || v == "cache");
             let incr_env_strs = ["CARGO_BUILD_INCREMENTAL", "CARGO_INCREMENTAL"];
             incr_env_strs
                 .iter()
                 .for_each(|incr_str| match env::var(incr_str) {
-                    Ok(incr_val) if incr_val == "1" => {
+                    Ok(incr_val) if incr_val == "1" && !allow_incremental => {
                         println!(
-                            "sccache: incremental compilation is prohibited: Unset {} to continue.",
+                            "sccache: incremental compilation is prohibited: Unset {} to \
+                             continue, or set SCCACHE_ALLOW_INCREMENTAL=1 to keep caching \
+                             the non-incremental parts of the build, or \
+                             SCCACHE_ALLOW_INCREMENTAL=cache to cache incremental crates too.",
                             incr_str
                         );
                         std::process::exit(1);
@@ -997,16 +1014,13 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                     _ => (),
                 });
 
-            let jobserver = Client::new();
+            let jobserver = Client::from_env_fifo().unwrap_or_else(Client::new);
             let conn = connect_or_start_server(&get_addr(), startup_timeout)?;
+            // One compile needs no worker threads of its own: starting two in
+            // every invocation cost about 1ms per cache hit. The blocking
+            // thread pool still absorbs zstd/zip work.
+            let mut runtime = new_client_runtime()?;
             if config.client_side_mode {
-                // Under make -jN each CLI process gets only 2 worker threads;
-                // one for preprocessing/compilation and one for IPC.  The
-                // blocking thread pool absorbs zstd/zip work.
-                let mut runtime = Builder::new_multi_thread()
-                    .worker_threads(2)
-                    .enable_all()
-                    .build()?;
                 let res = do_compile_client_side::<ProcessCommandCreator>(
                     &jobserver,
                     &mut runtime,
@@ -1021,7 +1035,6 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                 );
                 return res.context("failed to execute compile");
             }
-            let mut runtime = new_client_runtime()?;
             let res = do_compile(
                 ProcessCommandCreator::new(&jobserver),
                 &mut runtime,
@@ -1099,6 +1112,77 @@ mod test {
         fn try_clone(&self) -> io::Result<Box<dyn Connection>> {
             Ok(Box::new(DisconnectedConnection))
         }
+    }
+
+    /// A compile the client runs itself gets the build's `fifo:` jobserver,
+    /// and only through a client opened on it: if that failed and we fell
+    /// back to a private pool, the compile gets no jobserver. The environment
+    /// is per process, so the test runs itself again in a child with
+    /// `CARGO_MAKEFLAGS` set.
+    #[test]
+    #[cfg(unix)]
+    fn local_compile_gets_fifo_jobserver() {
+        const OUT: &str = "SCCACHE_TEST_FIFO_JOBSERVER_OUT";
+        if let Some(out) = env::var_os(OUT) {
+            let compile = |client: &Client, out: &Path| {
+                let mut runtime = make_runtime();
+                let cmdline = vec![
+                    OsString::from("-c"),
+                    OsString::from("printf %s \"$CARGO_MAKEFLAGS\" > \"$1\""),
+                    OsString::from("sh"),
+                    out.into(),
+                ];
+                handle_compile_result(
+                    <ProcessCommandCreator as CommandCreatorSync>::new(client),
+                    &mut runtime,
+                    CompileResponse::UnhandledCompile,
+                    None,
+                    false,
+                    Path::new("/bin/sh"),
+                    cmdline,
+                    Path::new("/"),
+                    &mut vec![],
+                    &mut vec![],
+                )
+                .unwrap()
+            };
+            let out = std::path::PathBuf::from(out);
+            let client = Client::from_env_fifo().expect("fifo jobserver from the environment");
+            assert_eq!(compile(&client, &out), 0);
+            assert_eq!(
+                compile(&Client::new_num(1), &out.with_extension("private")),
+                0
+            );
+            return;
+        }
+
+        let tempdir = tempfile::tempdir().unwrap();
+        let fifo = tempdir.path().join("jobserver");
+        let fifo_c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        // SAFETY: a valid NUL-terminated path.
+        assert_eq!(unsafe { libc::mkfifo(fifo_c.as_ptr(), 0o600) }, 0);
+        let out = tempdir.path().join("cargo_makeflags");
+        let status = std::process::Command::new(env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "commands::test::local_compile_gets_fifo_jobserver",
+                "--nocapture",
+            ])
+            .env(
+                "CARGO_MAKEFLAGS",
+                format!("-j2 --jobserver-auth=fifo:{}", fifo.display()),
+            )
+            .env(OUT, &out)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let seen = std::fs::read_to_string(&out).unwrap();
+        assert!(
+            seen.contains(&format!("--jobserver-auth=fifo:{}", fifo.display())),
+            "the compile got {seen:?}"
+        );
+        let seen = std::fs::read_to_string(out.with_extension("private")).unwrap();
+        assert_eq!(seen, "", "a private pool is not handed on");
     }
 
     /// A mid-compile server disconnect: the server sends CompileStarted then drops the

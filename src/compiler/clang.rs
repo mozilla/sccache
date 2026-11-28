@@ -248,6 +248,8 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     flag!("-fno-pch-timestamp", PassThroughFlag),
     flag!("-fno-profile-instr-generate", TooHardFlag),
     flag!("-fno-profile-instr-use", TooHardFlag),
+    take_arg!("-fobjc-dispatch-method", OsString, Concatenated(b'='), PassThrough),
+    flag!("-fopenmp", PassThroughFlag),
     take_arg!("-foptimization-record-file", OsString, Concatenated(b'='), TooHard),
     take_arg!("-foptimization-record-passes", OsString, Concatenated(b'='), PassThrough),
     take_arg!("-fpass-plugin", PathBuf, Concatenated(b'='), ExtraHashFile),
@@ -266,7 +268,8 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("-fsanitize-system-ignorelist", PathBuf, Concatenated(b'='), ExtraHashFile),
     take_arg!("-fsave-optimization-record", OsString, Concatenated(b'='), TooHard),
     take_arg!("-fthin-link-bitcode", OsString, Concatenated(b'='), TooHard),
-    take_arg!("-ftime-trace", OsString, Concatenated(b'='), TooHard),
+    // The trace is a side file that doesn't affect the object; a cache hit just produces no trace.
+    take_arg!("-ftime-trace", OsString, Concatenated(b'='), PassThrough),
     flag!("-fuse-ctor-homing", PassThroughFlag),
     take_arg!("-fxray-always-instrument", PathBuf, Concatenated(b'='), ExtraHashFile),
     take_arg!("-fxray-attr-list", PathBuf, Concatenated(b'='), ExtraHashFile),
@@ -278,6 +281,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("-ivfsoverlay", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
     take_arg!("-load", PathBuf, Separated, ExtraHashFile),
     flag!("-mconstructor-aliases", PassThroughFlag),
+    take_arg!("-meabi", OsString, Separated, PassThrough),
     take_arg!("-mllvm", OsString, Separated, PassThrough),
     take_arg!("-mmlir", OsString, Separated, PassThrough),
     take_arg!("-module-dependency-dir", OsString, Separated, TooHard),
@@ -287,6 +291,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     // Note: this is ROCm clang specific. Parallelism level shouldn't affect output.
     take_arg!("-parallel-jobs", OsString, Concatenated(b'='), Unhashed),
     take_arg!("-plugin-arg", OsString, Concatenated(b'-'), PassThrough),
+    take_arg!("-resource-dir", PathBuf, CanBeSeparated(b'='), PassThroughPath),
     take_arg!("-save-stats", OsString, Concatenated(b'='), TooHard),
     take_arg!("-target", OsString, Separated, PassThrough),
     flag!("-verify", PreprocessorArgumentFlag),
@@ -389,6 +394,28 @@ mod test {
             version: Some("\"FreeBSD Clang 14.0.5 (https://github.com/llvm/llvm-project.git llvmorg-14.0.5-0-gc12386ae247c)\"".to_string()),
             assembler_digest: None,
         }.is_minversion(14)); // is_appleclang wins
+    }
+
+    #[test]
+    fn test_parse_arguments_resource_dir() {
+        let a = parses!(
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "-resource-dir",
+            "/usr/lib/clang/15"
+        );
+        assert_eq!(ovec!["-resource-dir", "/usr/lib/clang/15"], a.common_args);
+
+        let a = parses!(
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "-resource-dir=/usr/lib/clang/15"
+        );
+        assert_eq!(ovec!["-resource-dir", "/usr/lib/clang/15"], a.common_args);
     }
 
     #[test]
@@ -791,6 +818,31 @@ mod test {
     }
 
     #[test]
+    fn test_parse_arguments_time_trace() {
+        for flag in [
+            "-ftime-trace",
+            "-ftime-trace=trace.json",
+            "-ftime-trace-granularity=50",
+            "-ftime-trace-verbose",
+        ] {
+            let a = parses!("-c", "foo.c", "-o", "foo.o", flag);
+            assert_eq!(ovec![flag], a.common_args, "{flag}");
+            assert!(a.preprocessor_args.is_empty(), "{flag}");
+            assert_eq!(1, a.outputs.len(), "{flag}");
+            assert_map_contains!(
+                a.outputs,
+                (
+                    "obj",
+                    ArtifactDescriptor {
+                        path: PathBuf::from("foo.o"),
+                        optional: false
+                    }
+                )
+            );
+        }
+    }
+
+    #[test]
     fn test_parse_arguments_integrated_as() {
         assert!(!parses!("-c", "foo.c", "-o", "foo.o").uses_external_assembler);
         for flag in ["-fno-integrated-as", "-no-integrated-as"] {
@@ -900,6 +952,15 @@ mod test {
     }
 
     #[test]
+    fn test_parse_meabi() {
+        // The Linux kernel passes `-meabi gnu` on 32-bit ARM; `gnu` is the
+        // option's value, not a second input file.
+        let a = parses!("-c", "foo.c", "-o", "foo.o", "-meabi", "gnu");
+        assert_eq!(Some("foo.c"), a.input.to_str());
+        assert_eq!(ovec!["-meabi", "gnu"], a.common_args);
+    }
+
+    #[test]
     fn test_parse_xclang_llvm_stuff() {
         let a = parses!(
             "-c",
@@ -954,6 +1015,18 @@ mod test {
             ovec!["-fexperimental-assignment-tracking=disabled"],
             b.common_args
         );
+    }
+
+    #[test]
+    fn test_parse_xclang_fopenmp() {
+        // Apple clang's driver rejects -fopenmp, so CMake's FindOpenMP passes it to the
+        // frontend as `-Xclang -fopenmp`. It changes the generated code, so it must stay in
+        // the hashed common args.
+        let a = parses!("-c", "foo.c", "-o", "foo.o", "-Xclang", "-fopenmp");
+        assert_eq!(ovec!["-Xclang", "-fopenmp"], a.common_args);
+
+        let b = parses!("-c", "foo.c", "-o", "foo.o", "-fopenmp");
+        assert_eq!(ovec!["-fopenmp"], b.common_args);
     }
 
     #[test]
@@ -1073,6 +1146,22 @@ mod test {
     fn test_parse_xclang_mrelax_all() {
         let a = parses!("-c", "foo.c", "-o", "foo.o", "-Xclang", "-mrelax-all");
         assert_eq!(ovec!["-Xclang", "-mrelax-all"], a.common_args);
+    }
+
+    #[test]
+    fn test_parse_xclang_fobjc_dispatch_method() {
+        let a = parses!(
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "-Xclang",
+            "-fobjc-dispatch-method=legacy"
+        );
+        assert_eq!(
+            ovec!["-Xclang", "-fobjc-dispatch-method=legacy"],
+            a.common_args
+        );
     }
 
     #[test]
@@ -1316,8 +1405,6 @@ mod test {
             ),
             (&["-fthin-link-bitcode"], "-fthin-link-bitcode"),
             (&["-fthin-link-bitcode=foo.bc"], "-fthin-link-bitcode"),
-            (&["-ftime-trace"], "-ftime-trace"),
-            (&["-ftime-trace=trace.json"], "-ftime-trace"),
             (
                 &["-module-dependency-dir", "/tmp/moddeps"],
                 "-module-dependency-dir",

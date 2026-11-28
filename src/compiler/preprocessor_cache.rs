@@ -19,8 +19,10 @@
 //! different.
 
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, HashSet},
     ffi::{OsStr, OsString},
+    fs::Metadata,
     hash::Hash,
     io::Write,
     path::{Path, PathBuf},
@@ -34,7 +36,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     config::PreprocessorCacheModeConfig,
-    util::{Digest, HashToDigest, MetadataCtimeExt, Timestamp, encode_path, strip_basedirs},
+    util::{
+        Digest, HashToDigest, MetadataCtimeExt, TimeMacroFinder, Timestamp, basedir_prefix_len,
+        decode_path, encode_path, strip_basedirs,
+    },
 };
 
 use super::Language;
@@ -42,7 +47,7 @@ use super::c::hash_arguments;
 
 /// The current format is 1 header byte for the version + bincode encoding
 /// of the [`PreprocessorCacheEntry`] struct.
-const FORMAT_VERSION: u8 = 1;
+const FORMAT_VERSION: u8 = 2;
 const MAX_PREPROCESSOR_CACHE_ENTRIES: usize = 100;
 const MAX_PREPROCESSOR_CACHE_FILE_INFO_ENTRIES: usize = 10000;
 
@@ -55,7 +60,47 @@ pub struct PreprocessorCacheEntry {
     /// The digest of a result is computed by hashing the output of the
     /// C preprocessor. Entries correspond to the included files during the
     /// preprocessing step.
-    results: BTreeMap<String, Vec<IncludeEntry>>,
+    results: BTreeMap<String, ResultEntry>,
+}
+
+/// The included files of one result.
+#[derive(Clone, Deserialize, Serialize, Debug, Default, PartialEq, Eq)]
+struct ResultEntry {
+    valid_for: ValidFor,
+    includes: Vec<IncludeEntry>,
+}
+
+/// Which compilations a result may be used for.
+///
+/// A result is pinned to the tree root of the compilation that recorded it
+/// when some of its absolute include paths lie under another basedir: a list
+/// of basedirs does not say which other basedir belongs with which tree.
+#[derive(Clone, Deserialize, Serialize, Debug, Default, PartialEq, Eq)]
+enum ValidFor {
+    #[default]
+    AnyTree,
+    /// A tree root as [`comparable_dir`] spells it.
+    Tree(Vec<u8>),
+    /// Compilations outside every basedir.
+    NoTree,
+}
+
+impl ValidFor {
+    fn pinned_to(tree_root: Option<&[u8]>) -> Self {
+        match tree_root {
+            Some(root) => Self::Tree(root.to_owned()),
+            None => Self::NoTree,
+        }
+    }
+
+    fn admits(&self, tree_root: Option<&[u8]>) -> bool {
+        match (self, tree_root) {
+            (Self::AnyTree, _) => true,
+            (Self::Tree(pinned), Some(root)) => pinned == root,
+            (Self::NoTree, None) => true,
+            _ => false,
+        }
+    }
 }
 
 impl PreprocessorCacheEntry {
@@ -95,6 +140,8 @@ impl PreprocessorCacheEntry {
         compilation_time_start: SystemTime,
         result_key: &str,
         included_files: impl IntoIterator<Item = (String, PathBuf)>,
+        basedirs: &[Vec<u8>],
+        tree_root: Option<&Path>,
     ) {
         if self.results.len() > MAX_PREPROCESSOR_CACHE_ENTRIES {
             // Normally, there shouldn't be many result entries in the
@@ -118,6 +165,15 @@ impl PreprocessorCacheEntry {
             self.results.clear();
             self.number_of_entries = 0;
         }
+        let tree_root = match tree_root.map(comparable_dir).transpose() {
+            Ok(tree_root) => tree_root,
+            Err(e) => {
+                debug!("Could not add result key {result_key} to preprocessor cache entry: {e}");
+                return;
+            }
+        };
+        let tree_root = tree_root.as_deref();
+        let mut pinned = false;
         let includes: Result<Vec<_>, std::io::Error> = included_files
             .into_iter()
             .map(|(digest, path)| {
@@ -131,8 +187,10 @@ impl PreprocessorCacheEntry {
                     }
                     _ => false,
                 };
+                let (path, is_pinned) = relativize_include(&path, basedirs, tree_root)?;
+                pinned |= is_pinned;
                 Ok(IncludeEntry {
-                    path: path.into_os_string(),
+                    path,
                     digest,
                     file_size: meta.len(),
                     mtime: if should_cache_time { mtime } else { None },
@@ -142,7 +200,15 @@ impl PreprocessorCacheEntry {
             .collect();
         match includes {
             Ok(includes) => {
-                let new_number_of_entries = includes.len() + self.number_of_entries;
+                let includes = ResultEntry {
+                    valid_for: if pinned {
+                        ValidFor::pinned_to(tree_root)
+                    } else {
+                        ValidFor::AnyTree
+                    },
+                    includes,
+                };
+                let new_number_of_entries = includes.includes.len() + self.number_of_entries;
                 if new_number_of_entries > MAX_PREPROCESSOR_CACHE_FILE_INFO_ENTRIES {
                     // Rarely, entries can grow large in pathological cases
                     // where many included files change, but the main file
@@ -156,12 +222,12 @@ impl PreprocessorCacheEntry {
                 }
                 match self.results.entry(result_key.to_string()) {
                     std::collections::btree_map::Entry::Occupied(mut entry) => {
-                        self.number_of_entries -= entry.get().len();
-                        self.number_of_entries += includes.len();
+                        self.number_of_entries -= entry.get().includes.len();
+                        self.number_of_entries += includes.includes.len();
                         *entry.get_mut() = includes;
                     }
                     std::collections::btree_map::Entry::Vacant(vacant) => {
-                        self.number_of_entries += includes.len();
+                        self.number_of_entries += includes.includes.len();
                         vacant.insert(includes);
                     }
                 }
@@ -176,14 +242,24 @@ impl PreprocessorCacheEntry {
     /// Returns the digest of the first result whose expected included files
     /// are already on disk and have not changed.
     pub fn lookup_result_digest(
-        &mut self,
+        &self,
         config: PreprocessorCacheModeConfig,
-        updated: &mut bool,
+        tree_root: Option<&Path>,
     ) -> Option<String> {
+        let comparable_root = match tree_root.map(comparable_dir).transpose() {
+            Ok(root) => root,
+            Err(e) => {
+                debug!("Cannot look up preprocessor cache entry: {e}");
+                return None;
+            }
+        };
         // Check newest result first since it's more likely to match.
-        for (digest, includes) in self.results.iter_mut().rev() {
-            let result_matches = Self::result_matches(digest, includes, config, updated);
-            if result_matches {
+        for (digest, result) in self.results.iter().rev() {
+            if !result.valid_for.admits(comparable_root.as_deref()) {
+                debug!("{digest} was recorded for another tree than this compilation's");
+                continue;
+            }
+            if Self::result_matches(&result.includes, config, tree_root) {
                 return Some(digest.clone());
             }
         }
@@ -192,13 +268,19 @@ impl PreprocessorCacheEntry {
 
     /// A result matches if all of its include files exist on disk and have not changed.
     fn result_matches(
-        digest: &str,
-        includes: &mut [IncludeEntry],
+        includes: &[IncludeEntry],
         config: PreprocessorCacheModeConfig,
-        updated: &mut bool,
+        tree_root: Option<&Path>,
     ) -> bool {
         for include in includes {
-            let path = Path::new(include.path.as_os_str());
+            let Some(path_buf) = include.path_in(tree_root) else {
+                debug!(
+                    "{} was recorded relative to a tree and this compilation is in none",
+                    Path::new(include.path.as_os_str()).display()
+                );
+                return false;
+            };
+            let path: &Path = &path_buf;
             let meta = match std::fs::symlink_metadata(path) {
                 Ok(meta) => {
                     if meta.len() != include.file_size {
@@ -241,11 +323,11 @@ impl PreprocessorCacheEntry {
                 }
             }
 
-            let file = match std::fs::File::open(path) {
-                Ok(file) => file,
+            let (new_digest, finder) = match file_digest(path, Some(&meta)) {
+                Ok(digest) => digest,
                 Err(e) => {
                     debug!(
-                        "{} is in a preprocessor cache entry but can't be opened ({})",
+                        "{} is in a preprocessor cache entry but can't be read ({:#})",
                         path.display(),
                         e
                     );
@@ -254,37 +336,10 @@ impl PreprocessorCacheEntry {
             };
 
             if config.ignore_time_macros {
-                match Digest::reader_sync(file) {
-                    Ok(new_digest) => {
-                        if include.digest != new_digest {
-                            return false;
-                        }
-                    }
-                    Err(e) => {
-                        debug!(
-                            "{} is in a preprocessor cache entry but can't be read ({})",
-                            path.display(),
-                            e
-                        );
-                        return false;
-                    }
-                }
-            } else {
-                let (new_digest, finder): (String, _) = match Digest::reader_sync_time_macros(file)
-                {
-                    Ok((new_digest, finder)) => (new_digest, finder),
-                    Err(e) => {
-                        debug!(
-                            "{} is in a preprocessor cache entry but can't be read ({})",
-                            path.display(),
-                            e
-                        );
-                        return false;
-                    }
-                };
-                if !finder.found_time_macros() && include.digest != new_digest {
+                if include.digest != new_digest {
                     return false;
                 }
+            } else {
                 if finder.found_time() {
                     // We don't know for sure that the program actually uses the __TIME__ macro,
                     // but we have to assume it anyway and hash the time stamp. However, that's
@@ -294,61 +349,11 @@ impl PreprocessorCacheEntry {
                     debug!("Found __TIME__ in {}", path.display());
                     return false;
                 }
-
-                // __DATE__ or __TIMESTAMP__ found. We now make sure that the digest changes
-                // if the (potential) expansion of those macros changes by computing a new
-                // digest comprising the file digest and time information that represents the
-                // macro expansions.
-                let mut new_digest = Digest::new();
-                new_digest.update(digest.as_bytes());
-
-                if finder.found_date() {
-                    debug!("found __DATE__ in {}", path.display());
-                    new_digest.delimiter(b"date");
-                    let date = chrono::Local::now().date_naive();
-                    new_digest.update(&date.year().to_le_bytes());
-                    new_digest.update(&date.month().to_le_bytes());
-                    new_digest.update(&date.day().to_le_bytes());
-
-                    // If the compiler has support for it, the expansion of __DATE__ will change
-                    // according to the value of SOURCE_DATE_EPOCH. Note: We have to hash both
-                    // SOURCE_DATE_EPOCH and the current date since we can't be sure that the
-                    // compiler honors SOURCE_DATE_EPOCH.
-                    if let Ok(source_date_epoch) = std::env::var("SOURCE_DATE_EPOCH") {
-                        new_digest.update(source_date_epoch.as_bytes());
-                    }
-                }
-
-                if finder.found_timestamp() {
-                    debug!("found __TIMESTAMP__ in {}", path.display());
-                    let meta = match std::fs::symlink_metadata(path) {
-                        Ok(meta) => meta,
-                        Err(e) => {
-                            debug!(
-                                "{} is in a preprocessor cache entry but can't be read ({})",
-                                path.display(),
-                                e
-                            );
-                            return false;
-                        }
-                    };
-                    let mtime = match meta.modified() {
-                        Ok(mtime) => mtime,
-                        Err(_) => {
-                            debug!(
-                                "Couldn't get mtime of {} which contains __TIMESTAMP__",
-                                path.display()
-                            );
-                            return false;
-                        }
-                    };
-                    let mtime: chrono::DateTime<chrono::Local> = chrono::DateTime::from(mtime);
-                    new_digest.delimiter(b"timestamp");
-                    new_digest.update(&mtime.naive_local().and_utc().timestamp().to_le_bytes());
-                    include.digest = new_digest.finish();
-                    // Signal that the preprocessor cache entry has been updated and needs to be
-                    // written to disk.
-                    *updated = true;
+                let mtime = timestamp_mtime(&finder, path);
+                if time_macro_adjusted_digest(new_digest, &finder, path, mtime).as_ref()
+                    != Some(&include.digest)
+                {
+                    return false;
                 }
             }
         }
@@ -374,6 +379,61 @@ static CACHED_ENV_VARS: LazyLock<HashSet<&'static OsStr>> = LazyLock::new(|| {
     .map(OsStr::new)
     .collect()
 });
+
+/// The digest to store and compare for the file at `path`: `content_digest`, with
+/// the current date hashed in if the file uses `__DATE__` and its mtime if it uses
+/// `__TIMESTAMP__`. `mtime` is the file's, as the caller read it; `None` if the
+/// file uses `__TIMESTAMP__` and there is none.
+pub fn time_macro_adjusted_digest(
+    content_digest: String,
+    finder: &TimeMacroFinder,
+    path: &Path,
+    mtime: Option<Timestamp>,
+) -> Option<String> {
+    if !finder.found_date() && !finder.found_timestamp() {
+        return Some(content_digest);
+    }
+    let mut m = Digest::new();
+    m.update(content_digest.as_bytes());
+    if finder.found_date() {
+        debug!("found __DATE__ in {}", path.display());
+        m.delimiter(b"date");
+        let date = chrono::Local::now().date_naive();
+        m.update(&date.year().to_le_bytes());
+        m.update(&date.month().to_le_bytes());
+        m.update(&date.day().to_le_bytes());
+        // Hash both SOURCE_DATE_EPOCH and the date: the compiler may not honor the former.
+        if let Ok(source_date_epoch) = std::env::var("SOURCE_DATE_EPOCH") {
+            m.update(source_date_epoch.as_bytes());
+        }
+    }
+    if finder.found_timestamp() {
+        debug!("found __TIMESTAMP__ in {}", path.display());
+        m.delimiter(b"timestamp");
+        let Some(mtime) =
+            mtime.and_then(|mtime| chrono::DateTime::from_timestamp(mtime.seconds(), 0))
+        else {
+            debug!(
+                "Couldn't get mtime of {} which contains __TIMESTAMP__",
+                path.display()
+            );
+            return None;
+        };
+        let mtime = mtime.with_timezone(&chrono::Local);
+        m.update(&mtime.naive_local().and_utc().timestamp().to_le_bytes());
+    }
+    Some(m.finish())
+}
+
+/// The mtime of the file at `path` if it uses `__TIMESTAMP__`, following symlinks
+/// as the compiler does.
+fn timestamp_mtime(finder: &TimeMacroFinder, path: &Path) -> Option<Timestamp> {
+    if !finder.found_timestamp() {
+        return None;
+    }
+    let mtime = std::fs::metadata(path).and_then(|meta| meta.modified());
+    mtime.ok().map(Into::into)
+}
 
 /// Compute the hash key of compiler preprocessing `input` with `args`.
 #[allow(clippy::too_many_arguments)]
@@ -435,30 +495,175 @@ pub fn preprocessor_cache_entry_hash_key(
     // Strip basedirs from the input file path if configured
     let buf_to_hash = strip_basedirs(&buf, basedirs);
     m.update(&buf_to_hash);
-    let reader = std::fs::File::open(input_file)
+    let (digest, finder) = file_digest(input_file, None)
         .with_context(|| format!("while hashing the input file '{}'", input_file.display()))?;
-
+    if !config.ignore_time_macros && finder.found_time() {
+        // Disable preprocessor cache mode
+        debug!("Found __TIME__ in {}", input_file.display());
+        return Ok(None);
+    }
     let digest = if config.ignore_time_macros {
-        Digest::reader_sync(reader)?
-    } else {
-        let (digest, finder) = Digest::reader_sync_time_macros(reader)?;
-        if finder.found_time() {
-            // Disable preprocessor cache mode
-            debug!("Found __TIME__ in {}", input_file.display());
-            return Ok(None);
-        }
         digest
+    } else {
+        let mtime = timestamp_mtime(&finder, input_file);
+        match time_macro_adjusted_digest(digest, &finder, input_file, mtime) {
+            Some(digest) => digest,
+            None => return Ok(None),
+        }
     };
     m.update(digest.as_bytes());
     Ok(Some(m.finish()))
 }
 
+/// Digest of the contents of `path`, and the time macros found in it.
+/// `lstat` is the caller's `symlink_metadata` of `path`, if it has one: unless
+/// `path` is a symlink, it saves stat-ing the file again.
+#[cfg(unix)]
+fn file_digest(path: &Path, lstat: Option<&Metadata>) -> anyhow::Result<(String, TimeMacroFinder)> {
+    digest_cache::file_digest_at(path, lstat, SystemTime::now())
+}
+
+// Not remembered on Windows: there is no inode number, and the creation time
+// that stands in for the ctime does not change when a file is rewritten.
+#[cfg(not(unix))]
+fn file_digest(
+    path: &Path,
+    _lstat: Option<&Metadata>,
+) -> anyhow::Result<(String, TimeMacroFinder)> {
+    Digest::reader_sync_time_macros(std::fs::File::open(path)?)
+}
+
+#[cfg(unix)]
+mod digest_cache {
+    use super::*;
+    use std::collections::HashMap;
+    use std::os::unix::fs::MetadataExt;
+    use std::sync::Mutex;
+    use std::time::Duration;
+
+    /// Digests of the files hashed for the preprocessor cache, so that a
+    /// direct-mode hit does not re-read and re-hash every header.
+    pub(super) static FILE_DIGESTS: LazyLock<Mutex<HashMap<PathBuf, CachedFileDigest>>> =
+        LazyLock::new(Default::default);
+
+    /// Bound on the files remembered in [`FILE_DIGESTS`]; it is cleared when reached.
+    const MAX_CACHED_FILE_DIGESTS: usize = 100_000;
+
+    /// How old a file's mtime and ctime must be for its digest to be remembered.
+    /// File timestamps come from a coarse clock, so a file rewritten right after
+    /// being hashed can keep the timestamps it was hashed with.
+    const MIN_CACHED_FILE_AGE: Duration = Duration::from_secs(2);
+
+    /// What has to be unchanged for a remembered digest to be reused.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct FileStat {
+        len: u64,
+        mtime: Option<Timestamp>,
+        ctime: Option<Timestamp>,
+        dev: u64,
+        ino: u64,
+    }
+
+    impl FileStat {
+        fn new(meta: &Metadata) -> Self {
+            FileStat {
+                len: meta.len(),
+                mtime: meta.modified().ok().map(Into::into),
+                ctime: meta.ctime_or_creation().ok(),
+                dev: meta.dev(),
+                ino: meta.ino(),
+            }
+        }
+
+        /// Whether the file was last changed long enough before `now` for its
+        /// timestamps to tell any later change apart.
+        fn is_settled(&self, now: SystemTime) -> bool {
+            let Some(limit) = now.checked_sub(MIN_CACHED_FILE_AGE) else {
+                return false;
+            };
+            matches!((self.mtime, self.ctime), (Some(mtime), Some(ctime)) if mtime.max(ctime) < limit.into())
+        }
+    }
+
+    #[derive(Debug)]
+    pub(super) struct CachedFileDigest {
+        stat: FileStat,
+        digest: String,
+        found_date: bool,
+        found_time: bool,
+        found_timestamp: bool,
+    }
+
+    /// The digest remembered for `path`, if the file has not changed since.
+    fn remembered_file_digest(
+        path: &Path,
+        lstat: Option<&Metadata>,
+    ) -> Option<(String, TimeMacroFinder)> {
+        // A stat of the path is enough to reuse a digest: it describes the file as
+        // it is now, which is what the digest has to match.
+        let target_meta;
+        let meta = match lstat {
+            Some(meta) if !meta.file_type().is_symlink() => meta,
+            _ => {
+                target_meta = std::fs::metadata(path).ok()?;
+                &target_meta
+            }
+        };
+        let stat = FileStat::new(meta);
+        let digests = FILE_DIGESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let cached = digests.get(path).filter(|cached| cached.stat == stat)?;
+        let finder = TimeMacroFinder::with_found(
+            cached.found_date,
+            cached.found_time,
+            cached.found_timestamp,
+        );
+        Some((cached.digest.clone(), finder))
+    }
+
+    /// [`file_digest`], with `now` deciding whether the file is old enough to be
+    /// remembered.
+    pub(super) fn file_digest_at(
+        path: &Path,
+        lstat: Option<&Metadata>,
+        now: SystemTime,
+    ) -> anyhow::Result<(String, TimeMacroFinder)> {
+        if let Some(cached) = remembered_file_digest(path, lstat) {
+            return Ok(cached);
+        }
+
+        let file = std::fs::File::open(path)?;
+        // From the open file rather than the path, so that it describes what is read.
+        let stat = FileStat::new(&file.metadata()?);
+        let (digest, finder) = Digest::reader_sync_time_macros(&file)?;
+        // Not remembered if it changed while being read.
+        if stat.is_settled(now) && FileStat::new(&file.metadata()?) == stat {
+            let mut digests = FILE_DIGESTS.lock().unwrap_or_else(|e| e.into_inner());
+            if digests.len() >= MAX_CACHED_FILE_DIGESTS {
+                digests.clear();
+            }
+            digests.insert(
+                path.to_owned(),
+                CachedFileDigest {
+                    stat,
+                    digest: digest.clone(),
+                    found_date: finder.found_date(),
+                    found_time: finder.found_time(),
+                    found_timestamp: finder.found_timestamp(),
+                },
+            );
+        }
+        Ok((digest, finder))
+    }
+}
+
 /// Corresponds to a cached include file used in the pre-processor stage
 #[derive(Clone, Deserialize, Serialize, Debug, PartialEq, Eq)]
 pub struct IncludeEntry {
-    /// Its absolute path
+    /// Its absolute path, or, if relative, its path relative to the tree root
+    /// of the compilation
+    #[serde(deserialize_with = "deserialize_os_string")]
     path: OsString,
-    /// The hash of its contents
+    /// The hash of its contents, and of what `__DATE__` and `__TIMESTAMP__` expand to if it uses them
     digest: String,
     /// Its file size, in bytes
     file_size: u64,
@@ -466,6 +671,145 @@ pub struct IncludeEntry {
     mtime: Option<Timestamp>,
     /// Its status change time, `None` if not recorded.
     ctime: Option<Timestamp>,
+}
+
+/// Reads an `OsString` in serde's encoding of it, but its bytes as one buffer
+/// rather than one at a time: bincode encodes both the same way.
+fn deserialize_os_string<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<OsString, D::Error> {
+    // The other platform's variant is only read to be rejected.
+    #[allow(dead_code)]
+    #[derive(Deserialize)]
+    enum OsStringRepr {
+        Unix(Bytes),
+        Windows(Vec<u16>),
+    }
+
+    match OsStringRepr::deserialize(deserializer)? {
+        #[cfg(unix)]
+        OsStringRepr::Unix(Bytes(bytes)) => Ok(std::os::unix::ffi::OsStringExt::from_vec(bytes)),
+        #[cfg(windows)]
+        OsStringRepr::Windows(wide) => Ok(std::os::windows::ffi::OsStringExt::from_wide(&wide)),
+        _ => Err(serde::de::Error::custom(
+            "cannot deserialize an OsString from another platform",
+        )),
+    }
+}
+
+/// A `Vec<u8>` read as a byte buffer rather than as a sequence of bytes.
+// Only `Unix` paths are made of bytes; elsewhere they are only read to be rejected.
+#[cfg_attr(not(unix), allow(dead_code))]
+struct Bytes(Vec<u8>);
+
+impl<'de> Deserialize<'de> for Bytes {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct BytesVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for BytesVisitor {
+            type Value = Bytes;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("bytes")
+            }
+
+            fn visit_bytes<E>(self, v: &[u8]) -> Result<Bytes, E> {
+                Ok(Bytes(v.to_vec()))
+            }
+
+            fn visit_byte_buf<E>(self, v: Vec<u8>) -> Result<Bytes, E> {
+                Ok(Bytes(v))
+            }
+        }
+
+        deserializer.deserialize_byte_buf(BytesVisitor)
+    }
+}
+
+impl IncludeEntry {
+    /// Where this entry's file lives for the compilation being looked up.
+    ///
+    /// `None` when the entry was recorded relative to a tree and this
+    /// compilation is in none.
+    fn path_in(&self, tree_root: Option<&Path>) -> Option<Cow<'_, Path>> {
+        // Included files are recorded as absolute paths, so a relative one was
+        // made relative to its tree.
+        let path = Path::new(self.path.as_os_str());
+        if path.is_relative() {
+            Some(Cow::Owned(tree_root?.join(path)))
+        } else {
+            Some(Cow::Borrowed(path))
+        }
+    }
+}
+
+/// The basedir the compilation is being run in, which is the tree its
+/// [`IncludeEntry`] paths are re-rooted at.
+///
+/// The input file decides, since that is the tree being compiled; the working
+/// directory is a fallback for a source file that lives outside every basedir.
+pub fn compilation_tree_root(
+    input_file: &Path,
+    cwd: &Path,
+    basedirs: &[Vec<u8>],
+) -> std::io::Result<Option<PathBuf>> {
+    if basedirs.is_empty() {
+        return Ok(None);
+    }
+    for path in [input_file, cwd] {
+        let encoded = encode_dir(path)?;
+        if let Some(len) = basedir_prefix_len(&encoded, basedirs) {
+            return Ok(Some(decode_path(&encoded[..len])?));
+        }
+    }
+    Ok(None)
+}
+
+/// Encode `path` with a trailing separator, the way basedirs are spelled so
+/// that they only match whole path components.
+fn encode_dir(path: &Path) -> std::io::Result<Vec<u8>> {
+    let mut encoded = vec![];
+    encode_path(&mut encoded, path)?;
+    if !matches!(encoded.last(), Some(b'/') | Some(b'\\')) {
+        encoded.push(b'/');
+    }
+    Ok(encoded)
+}
+
+/// Split an included file's absolute path at the basedir it lies under, if
+/// that is `tree_root`, and tell whether it lies under another basedir.
+fn relativize_include(
+    path: &Path,
+    basedirs: &[Vec<u8>],
+    tree_root: Option<&[u8]>,
+) -> std::io::Result<(OsString, bool)> {
+    let absolute = || path.to_path_buf().into_os_string();
+    if basedirs.is_empty() {
+        return Ok((absolute(), false));
+    }
+    let mut encoded = vec![];
+    encode_path(&mut encoded, path)?;
+    let Some(len) = basedir_prefix_len(&encoded, basedirs) else {
+        return Ok((absolute(), false));
+    };
+    if tree_root.is_some_and(|root| normalize_dir(&encoded[..len]) == root) {
+        Ok((decode_path(&encoded[len..])?.into_os_string(), false))
+    } else {
+        Ok((absolute(), true))
+    }
+}
+
+/// `dir` spelled so that two spellings of the same directory compare equal.
+fn comparable_dir(dir: &Path) -> std::io::Result<Vec<u8>> {
+    Ok(normalize_dir(&encode_dir(dir)?).into_owned())
+}
+
+fn normalize_dir(encoded: &[u8]) -> Cow<'_, [u8]> {
+    if cfg!(target_os = "windows") {
+        Cow::Owned(crate::util::normalize_win_path(encoded))
+    } else {
+        Cow::Borrowed(encoded)
+    }
 }
 
 #[derive(Debug)]
@@ -506,7 +850,11 @@ impl std::error::Error for Error {}
 mod test {
     use crate::util::{HASH_BUFFER_SIZE, MAX_TIME_MACRO_HAYSTACK_LEN};
 
+    #[cfg(unix)]
+    use super::digest_cache::{FILE_DIGESTS, file_digest_at};
     use super::*;
+    #[cfg(unix)]
+    use std::time::Duration;
 
     #[test]
     fn test_find_time_macros_empty_file() {
@@ -655,6 +1003,203 @@ mod test {
         assert!(!finder.found_date());
     }
 
+    /// Bytes of a basedir as [`crate::config::Config`] normalizes them: with a
+    /// trailing separator, and lowercased slashes on Windows.
+    fn basedir_bytes(dir: &Path) -> Vec<u8> {
+        let bytes = format!("{}/", dir.display()).into_bytes();
+        #[cfg(target_os = "windows")]
+        return crate::util::normalize_win_path(&bytes);
+        #[cfg(not(target_os = "windows"))]
+        bytes
+    }
+
+    fn contents_digest(path: &Path) -> String {
+        Digest::reader_sync(std::fs::File::open(path).unwrap()).unwrap()
+    }
+
+    fn entry_with_header(
+        header: &Path,
+        basedirs: &[Vec<u8>],
+        tree_root: Option<&Path>,
+    ) -> PreprocessorCacheEntry {
+        let mut entry = PreprocessorCacheEntry::new();
+        entry.add_result(
+            SystemTime::now(),
+            "object_key",
+            [(contents_digest(header), header.to_path_buf())],
+            basedirs,
+            tree_root,
+        );
+        entry
+    }
+
+    fn hits(entry: &PreprocessorCacheEntry, tree_root: Option<&Path>) -> bool {
+        let digest =
+            entry.lookup_result_digest(PreprocessorCacheModeConfig::activated(), tree_root);
+        digest.as_deref() == Some("object_key")
+    }
+
+    /// Two checkouts listed as basedirs share a preprocessor cache entry, so an
+    /// entry written by one must be validated against the other's headers, not
+    /// against the ones that wrote it. See issue #2863.
+    #[test]
+    fn test_result_matches_checks_the_tree_being_compiled() {
+        use tempfile::TempDir;
+
+        let root = TempDir::new().unwrap();
+        let tree_a = root.path().join("treea");
+        let tree_b = root.path().join("treeb");
+        for (tree, contents) in [
+            (&tree_a, "struct S { int a; int b; };"),
+            (&tree_b, "struct S { int a; int pad; int b; };"),
+        ] {
+            std::fs::create_dir_all(tree.join("inc")).unwrap();
+            std::fs::write(tree.join("inc").join("cfg.h"), contents).unwrap();
+        }
+        let basedirs = vec![basedir_bytes(&tree_a), basedir_bytes(&tree_b)];
+
+        let entry = entry_with_header(&tree_a.join("inc").join("cfg.h"), &basedirs, Some(&tree_a));
+
+        assert!(hits(&entry, Some(&tree_a)));
+        assert!(!hits(&entry, Some(&tree_b)), "treeb has a different cfg.h");
+        assert!(!hits(&entry, None), "nothing to re-root the entry against");
+    }
+
+    /// The trees are interchangeable when they do agree, which is what makes
+    /// the shared entry worth having.
+    #[test]
+    fn test_result_matches_across_identical_trees() {
+        use tempfile::TempDir;
+
+        let root = TempDir::new().unwrap();
+        let tree_a = root.path().join("treea");
+        let tree_b = root.path().join("treeb");
+        for tree in [&tree_a, &tree_b] {
+            std::fs::create_dir_all(tree.join("inc")).unwrap();
+            std::fs::write(tree.join("inc").join("cfg.h"), "struct S { int a; };").unwrap();
+        }
+        let basedirs = vec![basedir_bytes(&tree_a), basedir_bytes(&tree_b)];
+
+        let entry = entry_with_header(&tree_a.join("inc").join("cfg.h"), &basedirs, Some(&tree_a));
+
+        assert!(hits(&entry, Some(&tree_b)));
+    }
+
+    /// An include outside every basedir, a system header say, is not part of
+    /// any checkout and stays absolute.
+    #[test]
+    fn test_include_outside_basedirs_stays_absolute() {
+        use tempfile::TempDir;
+
+        let root = TempDir::new().unwrap();
+        let tree = root.path().join("tree");
+        std::fs::create_dir_all(&tree).unwrap();
+        let outside = root.path().join("outside.h");
+        std::fs::write(&outside, "struct S { int a; };").unwrap();
+        let basedirs = vec![basedir_bytes(&tree)];
+
+        let entry = entry_with_header(&outside, &basedirs, Some(&tree));
+
+        assert!(hits(&entry, Some(&tree)));
+    }
+
+    /// A header found in a basedir other than the one holding the source, a
+    /// separate build tree say, has no counterpart in another checkout that a
+    /// list of basedirs could name, so it is only checked for the tree that
+    /// recorded it. Re-rooting it at the source's basedir would check a file
+    /// the compiler never opened.
+    #[test]
+    fn test_include_from_another_basedir_is_pinned_to_its_tree() {
+        use tempfile::TempDir;
+
+        let root = TempDir::new().unwrap();
+        let src = root.path().join("src");
+        let build = root.path().join("build");
+        let other = root.path().join("other");
+        for dir in [&src, &build, &other] {
+            std::fs::create_dir_all(dir.join("gen")).unwrap();
+        }
+        let header = build.join("gen").join("config.h");
+        std::fs::write(&header, "#define CONFIG_VALUE 111").unwrap();
+        // Where re-rooting at the source's basedir would look.
+        std::fs::write(src.join("gen").join("config.h"), "#define CONFIG_VALUE 111").unwrap();
+        let basedirs = vec![
+            basedir_bytes(&src),
+            basedir_bytes(&build),
+            basedir_bytes(&other),
+        ];
+
+        let tree_root = |dir: &Path| {
+            compilation_tree_root(&dir.join("main.c"), root.path(), &basedirs)
+                .unwrap()
+                .unwrap()
+        };
+        let src_root = tree_root(&src);
+
+        let entry = entry_with_header(&header, &basedirs, Some(&src_root));
+
+        assert!(hits(&entry, Some(&src_root)));
+        assert!(!hits(&entry, Some(&tree_root(&other))));
+        assert!(!hits(&entry, None));
+
+        // A compilation outside every basedir pins its result to no tree.
+        let outside = entry_with_header(&header, &basedirs, None);
+        assert!(hits(&outside, None));
+        assert!(!hits(&outside, Some(&src_root)));
+
+        std::fs::write(&header, "#define CONFIG_VALUE 222").unwrap();
+        assert!(
+            !hits(&entry, Some(&src_root)),
+            "the header the compiler read has changed"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_pinned_tree_matches_another_spelling_of_it() {
+        use tempfile::TempDir;
+
+        let root = TempDir::new().unwrap();
+        let src = root.path().join("src");
+        let build = root.path().join("build");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&build).unwrap();
+        let header = build.join("config.h");
+        std::fs::write(&header, "#define CONFIG_VALUE 111").unwrap();
+        let basedirs = vec![basedir_bytes(&src), basedir_bytes(&build)];
+
+        let entry = entry_with_header(&header, &basedirs, Some(&src));
+
+        let respelled = PathBuf::from(src.display().to_string().to_uppercase().replace('\\', "/"));
+        assert!(hits(&entry, Some(&respelled)));
+    }
+
+    #[test]
+    fn test_compilation_tree_root() {
+        use tempfile::TempDir;
+
+        let root = TempDir::new().unwrap();
+        let tree = root.path().join("tree");
+        let basedirs = vec![basedir_bytes(&tree)];
+        let outside = root.path().join("elsewhere");
+
+        let source = tree.join("src").join("main.c");
+        assert_eq!(
+            compilation_tree_root(&source, &outside, &basedirs).unwrap(),
+            Some(PathBuf::from(format!("{}/", tree.display())))
+        );
+        // The working directory stands in for a source file outside the trees.
+        assert_eq!(
+            compilation_tree_root(&outside.join("main.c"), &tree, &basedirs).unwrap(),
+            Some(PathBuf::from(format!("{}/", tree.display())))
+        );
+        assert_eq!(
+            compilation_tree_root(&outside.join("main.c"), &outside, &basedirs).unwrap(),
+            None
+        );
+        assert_eq!(compilation_tree_root(&source, &tree, &[]).unwrap(), None);
+    }
+
     #[test]
     fn test_preprocessor_cache_result_checks_all_includes_when_ignoring_time_macros() {
         use std::fs;
@@ -670,7 +1215,7 @@ mod test {
         fs::write(&first_path, first_contents).unwrap();
         fs::write(&second_path, second_contents).unwrap();
 
-        let mut includes = vec![
+        let includes = vec![
             IncludeEntry {
                 path: first_path.into_os_string(),
                 digest: Digest::reader_sync(first_contents.as_slice()).unwrap(),
@@ -693,14 +1238,123 @@ mod test {
             ignore_time_macros: true,
             ..PreprocessorCacheModeConfig::activated()
         };
-        let mut updated = false;
 
         assert!(!PreprocessorCacheEntry::result_matches(
-            "result-digest",
-            &mut includes,
-            config,
-            &mut updated
+            &includes, config, None
         ));
+    }
+
+    fn remembered(path: &Path, contents: &[u8]) -> IncludeEntry {
+        let (content_digest, finder) = Digest::reader_sync_time_macros(contents).unwrap();
+        IncludeEntry {
+            path: path.to_owned().into_os_string(),
+            digest: time_macro_adjusted_digest(
+                content_digest,
+                &finder,
+                path,
+                timestamp_mtime(&finder, path),
+            )
+            .unwrap(),
+            file_size: contents.len() as u64,
+            mtime: None,
+            ctime: None,
+        }
+    }
+
+    #[test]
+    fn test_preprocessor_cache_result_detects_an_edit_to_a_date_header() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("date.h");
+        let before = b"#define VAL 1\nstatic const char *bd = __DATE__;\n";
+        let after = b"#define VAL 2\nstatic const char *bd = __DATE__;\n";
+        assert_eq!(before.len(), after.len());
+
+        fs::write(&path, before).unwrap();
+        let includes = vec![remembered(&path, before)];
+        let config = PreprocessorCacheModeConfig::activated();
+        assert!(
+            PreprocessorCacheEntry::result_matches(&includes, config, None),
+            "an unchanged header must still match"
+        );
+
+        fs::write(&path, after).unwrap();
+        assert!(
+            !PreprocessorCacheEntry::result_matches(&includes, config, None),
+            "a same-size edit to a header containing __DATE__ must not match"
+        );
+    }
+
+    #[test]
+    fn test_preprocessor_cache_result_detects_a_new_mtime_on_a_timestamp_header() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("stamp.h");
+        let contents = b"static const char *bt = __TIMESTAMP__;\n";
+        fs::write(&path, contents).unwrap();
+        let config = PreprocessorCacheModeConfig::activated();
+
+        let includes = vec![remembered(&path, contents)];
+        assert!(
+            PreprocessorCacheEntry::result_matches(&includes, config, None),
+            "a header whose mtime has not moved must still match"
+        );
+
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))
+            .unwrap();
+        assert!(
+            !PreprocessorCacheEntry::result_matches(&includes, config, None),
+            "a header containing __TIMESTAMP__ must not match across an mtime change"
+        );
+    }
+
+    #[test]
+    fn test_preprocessor_cache_entry_hash_key_follows_the_input_files_timestamp() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("input.c");
+        fs::write(&path, b"const char *s(void) { return __TIMESTAMP__; }\n").unwrap();
+        let config = PreprocessorCacheModeConfig::activated();
+        let key = |path: &Path| {
+            preprocessor_cache_entry_hash_key(
+                "compiler-digest",
+                Language::C,
+                &[],
+                &[],
+                None,
+                &[],
+                path,
+                false,
+                false,
+                config,
+                &[],
+            )
+            .unwrap()
+            .unwrap()
+        };
+
+        let before = key(&path);
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))
+            .unwrap();
+        assert_ne!(
+            before,
+            key(&path),
+            "the key must follow the input file's mtime when it contains __TIMESTAMP__"
+        );
     }
 
     #[test]
@@ -880,5 +1534,167 @@ mod test {
 
         let fat = ["-arch", "x86_64", "-arch", "arm64"];
         assert_ne!(key(&fat, true), key(&fat, false));
+    }
+
+    #[cfg(unix)]
+    fn is_digest_cached(path: &Path) -> bool {
+        FILE_DIGESTS.lock().unwrap().contains_key(path)
+    }
+
+    /// Writes `contents` to `path` until its ctime changes: file timestamps come
+    /// from a coarse clock, which ticks once a second on some filesystems.
+    #[cfg(unix)]
+    fn rewrite_with_new_ctime(path: &Path, contents: &[u8]) {
+        let ctime = || {
+            std::fs::metadata(path)
+                .unwrap()
+                .ctime_or_creation()
+                .unwrap()
+        };
+        let before = ctime();
+        for _ in 0..300 {
+            std::thread::sleep(Duration::from_millis(10));
+            std::fs::write(path, contents).unwrap();
+            if ctime() != before {
+                return;
+            }
+        }
+        panic!("the ctime of {} did not change", path.display());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_file_digest_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("header.h");
+        std::fs::write(&path, b"#define A __DATE__\n").unwrap();
+        // Far enough ahead for the file to count as settled.
+        let later = SystemTime::now() + Duration::from_secs(60);
+
+        let (digest, finder) = file_digest_at(&path, None, later).unwrap();
+        assert!(is_digest_cached(&path));
+        assert!(finder.found_date() && !finder.found_time());
+
+        let (cached_digest, cached_finder) = file_digest_at(&path, None, later).unwrap();
+        assert_eq!(digest, cached_digest);
+        assert!(cached_finder.found_date() && !cached_finder.found_time());
+
+        // Same size, different contents, mtime put back: the ctime still changes.
+        let mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+        rewrite_with_new_ctime(&path, b"#define B __TIME__\n");
+        filetime::set_file_mtime(&path, filetime::FileTime::from_system_time(mtime)).unwrap();
+
+        let (new_digest, new_finder) = file_digest_at(&path, None, later).unwrap();
+        assert_ne!(digest, new_digest);
+        assert_eq!(
+            new_digest,
+            Digest::reader_sync(&b"#define B __TIME__\n"[..]).unwrap()
+        );
+        assert!(new_finder.found_time() && !new_finder.found_date());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_file_digest_recent_file_not_cached() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("header.h");
+        std::fs::write(&path, b"int x;\n").unwrap();
+
+        let (digest, _) = file_digest(&path, None).unwrap();
+        assert_eq!(digest, Digest::reader_sync(&b"int x;\n"[..]).unwrap());
+        assert!(!is_digest_cached(&path));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_file_digest_cache_through_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("real.h");
+        let link = dir.path().join("link.h");
+        std::fs::write(&target, b"int a;\n").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let later = SystemTime::now() + Duration::from_secs(60);
+
+        let lstat = std::fs::symlink_metadata(&link).unwrap();
+        let (digest, _) = file_digest_at(&link, Some(&lstat), later).unwrap();
+        assert!(is_digest_cached(&link));
+
+        // The link itself is untouched, so its lstat is the same: only the
+        // target's stat can tell that the contents changed.
+        rewrite_with_new_ctime(&target, b"int b;\n");
+        let lstat = std::fs::symlink_metadata(&link).unwrap();
+        let (new_digest, _) = file_digest_at(&link, Some(&lstat), later).unwrap();
+        assert_ne!(digest, new_digest);
+        assert_eq!(new_digest, Digest::reader_sync(&b"int b;\n"[..]).unwrap());
+    }
+
+    #[test]
+    fn test_deserialize_os_string_matches_serde_encoding() {
+        #[derive(Deserialize)]
+        struct Path(#[serde(deserialize_with = "deserialize_os_string")] OsString);
+
+        #[cfg_attr(not(unix), allow(unused_mut))]
+        let mut paths = vec![
+            OsString::new(),
+            OsString::from("/usr/include/stdio.h"),
+            OsString::from("/home/\u{e9}t\u{e9}/header with spaces.h"),
+        ];
+        #[cfg(unix)]
+        paths.push(std::os::unix::ffi::OsStringExt::from_vec(vec![
+            b'/', 0xff, 0xfe, b'x',
+        ]));
+        for path in paths {
+            let encoded = bincode::serialize(&path).unwrap();
+            let decoded: Path = bincode::deserialize(&encoded).unwrap();
+            assert_eq!(decoded.0, path);
+        }
+    }
+
+    #[test]
+    fn test_deserialize_os_string_from_other_platform() {
+        #[derive(Deserialize)]
+        struct Path(#[serde(deserialize_with = "deserialize_os_string")] OsString);
+        #[derive(Serialize)]
+        enum OsStringRepr {
+            Unix(Vec<u8>),
+            Windows(Vec<u16>),
+        }
+
+        let other = if cfg!(unix) {
+            OsStringRepr::Windows(vec![u16::from(b'a')])
+        } else {
+            OsStringRepr::Unix(b"a".to_vec())
+        };
+        let encoded = bincode::serialize(&other).unwrap();
+        match bincode::deserialize::<Path>(&encoded) {
+            Ok(path) => panic!("read {:?} from another platform", path.0),
+            Err(e) => assert!(e.to_string().contains("another platform"), "{e}"),
+        }
+    }
+
+    #[test]
+    fn test_preprocessor_cache_entry_roundtrip() {
+        let mut entry = PreprocessorCacheEntry::new();
+        let includes = (0..300)
+            .map(|i| IncludeEntry {
+                path: OsString::from(format!("/usr/include/c++/14/header{i}.h")),
+                digest: format!("digest{i}"),
+                file_size: i,
+                mtime: Some(Timestamp::from(SystemTime::UNIX_EPOCH)),
+                ctime: None,
+            })
+            .collect();
+        entry.number_of_entries = 300;
+        entry.results.insert(
+            "result".to_owned(),
+            ResultEntry {
+                valid_for: ValidFor::AnyTree,
+                includes,
+            },
+        );
+
+        let mut buf = vec![];
+        entry.serialize_to(&mut buf).unwrap();
+        assert_eq!(PreprocessorCacheEntry::read(&buf).unwrap(), entry);
     }
 }

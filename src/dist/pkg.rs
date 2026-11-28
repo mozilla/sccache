@@ -219,6 +219,7 @@ mod toolchain_imp {
         fn tarify_path(&mut self, path: &Path) -> Result<PathBuf> {
             SimplifyPath {
                 resolved_symlinks: Some(&mut self.symlinks),
+                traversed_dirs: None,
             }
             .simplify(path)
             .map(tar_safe_path)
@@ -411,36 +412,58 @@ mod toolchain_imp {
     }
 }
 
-pub fn make_tar_header(src: &Path, dest: &str) -> io::Result<tar::Header> {
-    let metadata_res = fs::metadata(src);
-
-    let mut file_header = tar::Header::new_ustar();
-    // TODO: test this works
-    if let Ok(metadata) = metadata_res {
-        // TODO: if the source file is a symlink, I think this does bad things
-        file_header.set_metadata(&metadata);
-    } else {
-        warn!(
-            "Couldn't get metadata of file {:?}, falling back to some defaults",
-            src
-        );
-        file_header.set_mode(0o644);
-        file_header.set_uid(0);
-        file_header.set_gid(0);
-        file_header.set_mtime(0);
-        file_header
-            .set_device_major(0)
-            .expect("expected a ustar header");
-        file_header
-            .set_device_minor(0)
-            .expect("expected a ustar header");
-        file_header.set_entry_type(tar::EntryType::file());
+fn populate_tar_header<'a>(
+    header: &mut tar::Header,
+    src: &Path,
+    dest: &'a str,
+    is_dir: bool,
+) -> &'a str {
+    match fs::metadata(src) {
+        Ok(metadata) if !is_dir || metadata.is_dir() => {
+            // TODO: if the source file is a symlink, I think this does bad things
+            header.set_metadata(&metadata);
+            if is_dir && let Ok(mode) = header.mode() {
+                // Source directories may be read-only (e.g. `0o555` in `/nix/store` or
+                // `FILE_ATTRIBUTE_READONLY` on Windows); ensure owner `rwx` so unpacking
+                // child files, traversing `..`, and cleanup succeed on the server.
+                header.set_mode(mode | 0o700);
+            }
+        }
+        _ => {
+            warn!(
+                "Couldn't get metadata of {:?}, falling back to some defaults",
+                src
+            );
+            let (mode, entry_type) = if is_dir {
+                (0o755, tar::EntryType::dir())
+            } else {
+                (0o644, tar::EntryType::file())
+            };
+            header.set_mode(mode);
+            header.set_uid(0);
+            header.set_gid(0);
+            header.set_mtime(0);
+            header.set_size(0);
+            header
+                .set_device_major(0)
+                .expect("expected a ustar or gnu header");
+            header
+                .set_device_minor(0)
+                .expect("expected a ustar or gnu header");
+            header.set_entry_type(entry_type);
+        }
     }
 
-    // tar-rs imposes that `set_path` takes a relative path
+    // tar-rs imposes that archive paths are relative
     assert!(dest.starts_with('/'));
     let dest = dest.trim_start_matches('/');
     assert!(!dest.starts_with('/'));
+    dest
+}
+
+pub fn make_tar_header(src: &Path, dest: &str) -> io::Result<tar::Header> {
+    let mut file_header = tar::Header::new_ustar();
+    let dest = populate_tar_header(&mut file_header, src, dest, false);
     // `set_path` converts its argument to a Path and back to bytes on Windows, so this is
     // a bit of an inefficient round-trip. Windows path separators will also be normalised
     // to be like Unix, and the path is (now) relative so there should be no funny results
@@ -448,6 +471,16 @@ pub fn make_tar_header(src: &Path, dest: &str) -> io::Result<tar::Header> {
     // TODO: should really use a `set_path_str` or similar
     file_header.set_path(dest)?;
     Ok(file_header)
+}
+
+pub fn append_tar_dir<W: io::Write>(
+    builder: &mut tar::Builder<W>,
+    src: &Path,
+    dest: &str,
+) -> io::Result<()> {
+    let mut dir_header = tar::Header::new_gnu();
+    let dest = populate_tar_header(&mut dir_header, src, dest, true);
+    builder.append_data(&mut dir_header, dest, io::empty())
 }
 
 /// Simplify a path to one without any relative components, erroring if it looks
@@ -462,12 +495,22 @@ pub fn make_tar_header(src: &Path, dest: &str) -> io::Result<tar::Header> {
 pub fn simplify_path(path: &Path) -> Result<PathBuf> {
     SimplifyPath {
         resolved_symlinks: None,
+        traversed_dirs: None,
+    }
+    .simplify(path)
+}
+
+pub fn simplify_path_and_dirs(path: &Path, traversed_dirs: &mut Vec<PathBuf>) -> Result<PathBuf> {
+    SimplifyPath {
+        resolved_symlinks: None,
+        traversed_dirs: Some(traversed_dirs),
     }
     .simplify(path)
 }
 
 struct SimplifyPath<'a> {
     pub resolved_symlinks: Option<&'a mut std::collections::BTreeMap<PathBuf, PathBuf>>,
+    pub traversed_dirs: Option<&'a mut Vec<PathBuf>>,
 }
 
 impl SimplifyPath<'_> {
@@ -496,11 +539,105 @@ impl SimplifyPath<'_> {
                     if final_path.is_symlink() {
                         bail!("Cannot handle symlinks in parent paths")
                     }
+                    if let Some(traversed_dirs) = self.traversed_dirs.as_deref_mut()
+                        && matches!(
+                            final_path.components().next_back(),
+                            Some(Component::Normal(_))
+                        )
+                    {
+                        traversed_dirs.push(final_path.clone());
+                    }
                     final_path.pop();
                 }
                 Component::CurDir => continue,
             }
         }
         Ok(final_path)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_simplify_path_and_dirs() {
+        let root = if cfg!(windows) {
+            Path::new(r"C:\src")
+        } else {
+            Path::new("/src")
+        };
+
+        let mut dirs = Vec::new();
+        let simplified = simplify_path_and_dirs(
+            &root.join("nptl/bits/../../x86/./nptl/bits/struct_mutex.rs"),
+            &mut dirs,
+        )
+        .unwrap();
+        assert_eq!(simplified, root.join("x86/nptl/bits/struct_mutex.rs"));
+        assert_eq!(dirs, vec![root.join("nptl/bits"), root.join("nptl")]);
+
+        dirs.clear();
+        let simplified = simplify_path_and_dirs(&root.join("a/../b/../c.rs"), &mut dirs).unwrap();
+        assert_eq!(simplified, root.join("c.rs"));
+        assert_eq!(dirs, vec![root.join("a"), root.join("b")]);
+
+        // Traversal at filesystem root should not record the root itself.
+        let fs_root = if cfg!(windows) {
+            Path::new(r"C:\")
+        } else {
+            Path::new("/")
+        };
+        dirs.clear();
+        let simplified = simplify_path_and_dirs(&fs_root.join("../foo.rs"), &mut dirs).unwrap();
+        assert_eq!(simplified, fs_root.join("foo.rs"));
+        assert!(dirs.is_empty());
+    }
+
+    #[test]
+    fn test_tar_header_helpers() {
+        let tempdir = tempfile::Builder::new()
+            .prefix("sccache_pkg_test")
+            .tempdir()
+            .unwrap();
+        let existing_dir = tempdir.path().join("dir");
+        fs::create_dir(&existing_dir).unwrap();
+        let missing = tempdir.path().join("missing");
+
+        let mut tar_bytes = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut tar_bytes);
+            append_tar_dir(&mut builder, &existing_dir, "/dist/existing").unwrap();
+            append_tar_dir(&mut builder, &missing, "/dist/missing").unwrap();
+            let file_hdr = make_tar_header(&missing, "/dist/missing.rs").unwrap();
+            assert_eq!(file_hdr.entry_type(), tar::EntryType::Regular);
+            assert_eq!(file_hdr.mode().unwrap(), 0o644);
+            builder.finish().unwrap();
+        }
+
+        let entries: Vec<_> = tar::Archive::new(tar_bytes.as_slice())
+            .entries()
+            .unwrap()
+            .map(|e| {
+                let e = e.unwrap();
+                (
+                    e.path().unwrap().into_owned(),
+                    e.header().entry_type(),
+                    e.header().mode().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].0, Path::new("dist/existing"));
+        assert_eq!(entries[0].1, tar::EntryType::Directory);
+        assert_eq!(entries[0].2 & 0o700, 0o700);
+        assert_eq!(
+            entries[1],
+            (
+                PathBuf::from("dist/missing"),
+                tar::EntryType::Directory,
+                0o755
+            )
+        );
     }
 }

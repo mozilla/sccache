@@ -22,6 +22,41 @@ use crate::util::OsStrExt;
 
 const TEMPFILE_PREFIX: &str = ".sccachetmp";
 
+/// Name of the cache-directory tag file (<https://bford.info/cachedir/>).
+pub const CACHEDIR_TAG_FILE_NAME: &str = "CACHEDIR.TAG";
+
+/// The canonical tag file content from the Cache Directory Tagging
+/// Specification, with sccache named as the creating application. Backup
+/// tools only match the first line; the comments document the file for
+/// humans.
+const CACHEDIR_TAG_CONTENTS: &[u8] = b"Signature: 8a477f597d28d172789f06886806bc55
+#
+# This file is a cache directory tag created by sccache.
+# For information about cache directory tags, see:
+#\thttps://bford.info/cachedir/
+";
+
+/// Write (or refresh) the cache-directory tag file in `root`.
+///
+/// Best-effort by design: a read-only or unwritable cache directory must not
+/// fail cache creation, and concurrent sccache processes writing identical
+/// bytes are harmless.
+fn write_cache_dir_tag<P: AsRef<Path>>(root: P) {
+    let tag = root.as_ref().join(CACHEDIR_TAG_FILE_NAME);
+    // Skip the write when the tag already matches, so cache hits don't dirty
+    // the directory's mtime.
+    if fs::read(&tag).is_ok_and(|buf| buf == CACHEDIR_TAG_CONTENTS) {
+        return;
+    }
+    if let Err(e) = fs::File::create(&tag).and_then(|mut f| f.write_all(CACHEDIR_TAG_CONTENTS)) {
+        warn!(
+            "Error writing cache directory tag `{}`: {}",
+            tag.display(),
+            e
+        );
+    }
+}
+
 struct FileSize;
 
 /// Given a tuple of (path, filesize), use the filesize for measurement.
@@ -185,6 +220,7 @@ impl LruDiskCache {
     /// Scan `self.root` for existing files and store them.
     fn init(mut self) -> Result<Self> {
         fs::create_dir_all(&self.root)?;
+        write_cache_dir_tag(&self.root);
         for (file, size) in get_all_files(&self.root) {
             if file
                 .file_name()
@@ -194,6 +230,10 @@ impl LruDiskCache {
                 fs::remove_file(&file).unwrap_or_else(|e| {
                     error!("Error removing temporary file `{}`: {}", file.display(), e);
                 });
+            } else if file.file_name().expect("Bad path?") == CACHEDIR_TAG_FILE_NAME {
+                // Not a cache entry: eviction would delete it, and the size
+                // limit would too.
+                continue;
             } else if !self.can_store(size) {
                 fs::remove_file(file).unwrap_or_else(|e| {
                     error!(
@@ -433,7 +473,10 @@ impl LruDiskCache {
 #[cfg(test)]
 mod tests {
     use super::fs::{self, File};
-    use super::{Error, LruDiskCache, LruDiskCacheAddEntry, get_all_files};
+    use super::{
+        CACHEDIR_TAG_CONTENTS, CACHEDIR_TAG_FILE_NAME, Error, LruDiskCache, LruDiskCacheAddEntry,
+        get_all_files,
+    };
 
     use filetime::{FileTime, set_file_times};
     use std::io::{self, Read, Write};
@@ -746,5 +789,50 @@ mod tests {
         assert!(!c.contains_key("file2"));
         assert!(!f.tmp().join("cache").join("file2").exists());
         assert!(!p4.exists());
+    }
+
+    #[test]
+    fn test_writes_cachedir_tag() {
+        let f = TestFixture::new();
+        LruDiskCache::new(f.tmp(), 1024).unwrap();
+        let tag = f.tmp().join(CACHEDIR_TAG_FILE_NAME);
+        assert_eq!(fs::read(&tag).unwrap(), CACHEDIR_TAG_CONTENTS);
+    }
+
+    #[test]
+    fn test_cachedir_tag_not_a_cache_entry() {
+        let f = TestFixture::new();
+        let c = LruDiskCache::new(f.tmp(), 50).unwrap();
+        assert_eq!(c.size(), 0);
+        assert_eq!(c.len(), 0);
+        // A second open over the same root must not count or evict the tag,
+        // and the tag must survive.
+        drop(c);
+        let mut c = LruDiskCache::new(f.tmp(), 50).unwrap();
+        assert_eq!(c.size(), 0);
+        assert_eq!(c.len(), 0);
+        assert!(f.tmp().join(CACHEDIR_TAG_FILE_NAME).exists());
+        // Filling the cache forces eviction; the tag must still survive.
+        c.insert_bytes("a", &[0u8; 30]).unwrap();
+        c.insert_bytes("b", &[0u8; 30]).unwrap();
+        assert!(f.tmp().join(CACHEDIR_TAG_FILE_NAME).exists());
+        assert!(!c.contains_key("a"));
+    }
+
+    #[test]
+    fn test_nested_cache_tag_survives() {
+        let f = TestFixture::new();
+        let c = LruDiskCache::new(f.tmp(), 50).unwrap();
+        // A nested cache (the preprocessor cache is <root>/preprocessor)
+        // writes its own tag; the recursive scan must leave it alone.
+        let nested = f.tmp().join("preprocessor");
+        LruDiskCache::new(&nested, 50).unwrap();
+        drop(c);
+        let mut c = LruDiskCache::new(f.tmp(), 50).unwrap();
+        assert_eq!(c.size(), 0);
+        c.insert_bytes("a", &[0u8; 30]).unwrap();
+        c.insert_bytes("b", &[0u8; 30]).unwrap();
+        assert!(nested.join(CACHEDIR_TAG_FILE_NAME).exists());
+        assert!(f.tmp().join(CACHEDIR_TAG_FILE_NAME).exists());
     }
 }

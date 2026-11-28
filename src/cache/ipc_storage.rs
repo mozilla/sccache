@@ -12,8 +12,8 @@
 
 use crate::cache::CacheMode;
 use crate::cache::GetPathResult;
-use crate::cache::cache::Storage;
 use crate::cache::cache_io::{Cache, CacheRead, CacheWrite};
+use crate::cache::storage::{CacheStorage, PreprocessorCacheStorage};
 use crate::client::ServerConnection;
 use crate::compiler::PreprocessorCacheEntry;
 use crate::config::PreprocessorCacheModeConfig;
@@ -69,38 +69,40 @@ impl IpcStorage {
 }
 
 #[async_trait]
-impl Storage for IpcStorage {
+impl CacheStorage for IpcStorage {
     async fn get(&self, key: &str) -> Result<Cache> {
-        match self.get_path(key).await {
+        match self.get_path(key).await? {
             GetPathResult::Found(path) => {
                 let file = std::fs::File::open(&path)
                     .with_context(|| format!("IpcStorage::get: open {}", path.display()))?;
-                match CacheRead::from(file) {
-                    Ok(entry) => Ok(Cache::Hit(entry)),
-                    Err(_) => Ok(Cache::Miss),
-                }
+                let entry = CacheRead::from(file)
+                    .with_context(|| format!("IpcStorage::get: read {}", path.display()))?;
+                Ok(Cache::Hit(entry))
             }
             GetPathResult::Miss => Ok(Cache::Miss),
             // Backend doesn't support paths (S3, Redis, …); fall back to bytes over IPC.
             GetPathResult::Unsupported => match self.get_raw(key).await? {
-                Some(bytes) => match CacheRead::from(Cursor::new(bytes)) {
-                    Ok(entry) => Ok(Cache::Hit(entry)),
-                    Err(_) => Ok(Cache::Miss),
-                },
+                Some(bytes) => {
+                    let entry = CacheRead::from(Cursor::new(bytes)).with_context(|| {
+                        format!("IpcStorage::get: decode archive for key {key}")
+                    })?;
+                    Ok(Cache::Hit(entry))
+                }
                 None => Ok(Cache::Miss),
             },
         }
     }
 
-    async fn get_path(&self, key: &str) -> GetPathResult {
-        match self
+    async fn get_path(&self, key: &str) -> Result<GetPathResult> {
+        let resp = self
             .rpc(Request::StorageGetPath {
                 key: key.to_owned(),
             })
-            .await
-        {
-            Ok(Response::StorageGetPath(result)) => result,
-            _ => GetPathResult::Unsupported,
+            .await?;
+        match resp {
+            Response::StorageGetPath(result) => Ok(result),
+            Response::StorageReadError(e) => bail!("IpcStorage::get_path: daemon error: {e}"),
+            other => bail!("IpcStorage::get_path: unexpected response: {other:?}"),
         }
     }
 
@@ -116,6 +118,7 @@ impl Storage for IpcStorage {
             .await?;
         match resp {
             Response::StorageGetRaw(opt) => Ok(opt.map(Bytes::from)),
+            Response::StorageReadError(e) => bail!("IpcStorage::get_raw: daemon error: {e}"),
             other => bail!("IpcStorage::get_raw: unexpected response: {other:?}"),
         }
     }
@@ -154,12 +157,15 @@ impl Storage for IpcStorage {
         Ok(self.handshake.max_size)
     }
 
-    fn preprocessor_cache_mode_config(&self) -> PreprocessorCacheModeConfig {
-        self.handshake.preprocessor_cache_mode_config
-    }
-
     fn basedirs(&self) -> &[Vec<u8>] {
         &self.handshake.basedirs
+    }
+}
+
+#[async_trait]
+impl PreprocessorCacheStorage for IpcStorage {
+    fn preprocessor_cache_mode_config(&self) -> PreprocessorCacheModeConfig {
+        self.handshake.preprocessor_cache_mode_config
     }
 
     async fn get_preprocessor_cache_entry(

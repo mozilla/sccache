@@ -160,6 +160,22 @@ are exchanged with `StorageGetPreprocessorEntry` / `StoragePutPreprocessorEntry`
 Because each CLI process accumulates its own statistics, it flushes them to the
 daemon with `RecordStats` before exiting.
 
+`StorageGetPath` and `StorageGetRaw` preserve backend read errors across IPC
+using a separate `StorageReadError` response. Hit and miss replies retain their
+existing wire format; older clients cannot decode the new error response as a
+miss. Restart the daemon after upgrading so both processes use the updated
+error handling. If the CLI cannot decode a cached archive, the error identifies
+the local path or, for raw bytes received over IPC, the cache key.
+
+A compilation recorded as a cache miss also increments `Cache read errors` and
+`Cache errors` if the lookup failed. Ordinary misses increment neither error
+counter; overall lookup timeouts are counted separately as `Cache timeouts`.
+
+A multilevel cache tries the next tier when a tier read fails. These failures
+do not increment the aggregate error counters, even if the chain is exhausted.
+If the chain returns raw bytes that the CLI cannot open as an archive, the CLI
+reports a read error rather than trying another tier.
+
 Client-side mode is enabled with the `SCCACHE_CLIENT_SIDE` environment variable
 (or the `client_side_mode` config key). It is expected to become the only
 supported configuration in the future, with server-side mode eventually

@@ -65,25 +65,47 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// logging for sccache, and sccache-dist.
 pub const LOGGING_ENV: &str = "SCCACHE_LOG";
 
+// See `--cfg pgo_training` in scripts/build-pgo.sh.
+#[cfg(all(pgo_training, windows))]
+unsafe extern "C" {
+    fn __llvm_profile_write_file() -> i32;
+}
+
+/// Terminates the process with `code`, flushing the PGO counters when the
+/// binary was built for profile training on Windows.
+fn exit(code: i32) -> ! {
+    #[cfg(all(pgo_training, windows))]
+    // SAFETY: the profiling runtime that defines it is linked in by the
+    // `-Cprofile-generate` build that sets this cfg.
+    unsafe {
+        __llvm_profile_write_file();
+    }
+    std::process::exit(code)
+}
+
 pub fn main() {
     init_logging();
 
     let command = match cmdline::try_parse() {
         Ok(cmd) => cmd,
         Err(e) => match e.downcast::<clap::error::Error>() {
-            // If the error is from clap then let them handle formatting and exiting
-            Ok(clap_err) => clap_err.exit(),
+            // Not `clap_err.exit()`: `--version` must also go through `exit`, the
+            // PGO training reads the profile it writes to find sccache's.
+            Ok(clap_err) => {
+                let _ = clap_err.print();
+                exit(clap_err.exit_code())
+            }
             Err(some_other_err) => {
                 println!("sccache: {some_other_err}");
                 for source in some_other_err.chain().skip(1) {
                     println!("sccache: caused by: {source}");
                 }
-                std::process::exit(1);
+                exit(1);
             }
         },
     };
 
-    std::process::exit(match commands::run_command(command) {
+    exit(match commands::run_command(command) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("sccache: error: {}", e);

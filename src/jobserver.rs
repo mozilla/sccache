@@ -1,10 +1,11 @@
 use std::io;
-use std::process::Command;
+use std::process::{Command, ExitStatus};
 use std::sync::Arc;
 
 use futures::StreamExt;
 use futures::channel::mpsc;
 use futures::channel::oneshot;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
 
 use crate::errors::*;
 
@@ -35,13 +36,48 @@ use crate::errors::*;
 
 #[derive(Clone)]
 pub struct Client {
-    helper: Option<Arc<jobserver::HelperThread>>,
-    tx: Option<mpsc::UnboundedSender<oneshot::Sender<io::Result<jobserver::Acquired>>>>,
+    fifo: Option<jobserver::Client>,
+    current: Option<Arc<watch::Sender<Arc<Pool>>>>,
+    // Caps our children across pool replacements, while older pools drain.
+    slots: Option<Arc<Semaphore>>,
+    limit: usize,
+}
+
+struct Pool {
+    // Close the sender before joining a helper waiting for a request.
+    tx: mpsc::UnboundedSender<oneshot::Sender<io::Result<jobserver::Acquired>>>,
+    helper: jobserver::HelperThread,
     inner: jobserver::Client,
 }
 
 pub struct Acquired {
     _token: Option<jobserver::Acquired>,
+    pool: Option<Arc<Pool>>,
+    client: Client,
+    shared: bool,
+    exited_on_its_own: bool,
+    _slot: Option<OwnedSemaphorePermit>,
+}
+
+impl Pool {
+    fn new(num: usize) -> Result<Pool> {
+        let inner = jobserver::Client::new(num).context("failed to create jobserver")?;
+        let (tx, mut rx) = mpsc::unbounded::<oneshot::Sender<_>>();
+        let helper = inner
+            .clone()
+            .into_helper_thread(move |token| {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .build()
+                    .unwrap();
+                rt.block_on(async {
+                    if let Some(sender) = rx.next().await {
+                        drop(sender.send(token));
+                    }
+                });
+            })
+            .context("failed to spawn jobserver helper thread")?;
+        Ok(Pool { tx, helper, inner })
+    }
 }
 
 impl Client {
@@ -49,38 +85,41 @@ impl Client {
         Client::new_num(crate::util::num_cpus())
     }
 
+    /// The jobserver of the build that ran us, if it is one opened by path
+    /// (`--jobserver-auth=fifo:PATH`, GNU make 4.4 and later). The problems
+    /// above are about inherited pipe descriptors; a path holds nothing of
+    /// the build's open, so the client, which lives only as long as one
+    /// compile, can use it and hand it on to what it runs. Whoever ran us
+    /// already holds a token for this compile, so none is taken per spawn.
+    pub fn from_env_fifo() -> Option<Client> {
+        if !env_names_fifo() {
+            return None;
+        }
+        // SAFETY: a `fifo:` jobserver is opened by path; no inherited file
+        // descriptors are taken over.
+        let inner = unsafe { jobserver::Client::from_env() }?;
+        Some(Client {
+            fifo: Some(inner),
+            current: None,
+            slots: None,
+            limit: 0,
+        })
+    }
+
     pub fn new_num(num: usize) -> Client {
-        let inner = jobserver::Client::new(num).expect("failed to create jobserver");
-        Client::_new(inner, false)
+        let pool = Pool::new(num).expect("failed to create jobserver");
+        Client {
+            fifo: None,
+            current: Some(Arc::new(watch::Sender::new(Arc::new(pool)))),
+            slots: Some(Arc::new(Semaphore::new(num))),
+            limit: num,
+        }
     }
 
-    fn _new(inner: jobserver::Client, inherited: bool) -> Client {
-        let (helper, tx) = if inherited {
-            (None, None)
-        } else {
-            let (tx, mut rx) = mpsc::unbounded::<oneshot::Sender<_>>();
-            let helper = inner
-                .clone()
-                .into_helper_thread(move |token| {
-                    let rt = tokio::runtime::Builder::new_current_thread()
-                        .build()
-                        .unwrap();
-                    rt.block_on(async {
-                        if let Some(sender) = rx.next().await {
-                            drop(sender.send(token));
-                        }
-                    });
-                })
-                .expect("failed to spawn helper thread");
-            (Some(Arc::new(helper)), Some(tx))
-        };
-
-        Client { inner, helper, tx }
-    }
-
-    /// Configures this jobserver to be inherited by the specified command
-    pub fn configure(&self, cmd: &mut Command) {
-        self.inner.configure(cmd);
+    /// Whether this is the build's own jobserver, opened by path (see
+    /// [`Client::from_env_fifo`]), rather than a private pool.
+    pub fn is_fifo(&self) -> bool {
+        self.fifo.is_some()
     }
 
     /// Returns a future that represents an acquired jobserver token.
@@ -89,21 +128,145 @@ impl Client {
     /// definition of "work" is) to ensure that the system is properly
     /// rate-limiting itself.
     pub async fn acquire(&self) -> Result<Acquired> {
-        let (helper, tx) = match (self.helper.as_ref(), self.tx.as_ref()) {
-            (Some(a), Some(b)) => (a, b),
-            _ => return Ok(Acquired { _token: None }),
+        let (Some(current), Some(slots)) = (&self.current, &self.slots) else {
+            return Ok(Acquired {
+                _token: None,
+                pool: None,
+                client: self.clone(),
+                shared: false,
+                exited_on_its_own: false,
+                _slot: None,
+            });
         };
-        let (mytx, myrx) = oneshot::channel();
-        helper.request_token();
-        tx.unbounded_send(mytx).unwrap();
-
-        let acquired = myrx
+        let slot = slots
+            .clone()
+            .acquire_owned()
             .await
-            .context("jobserver helper panicked")?
-            .context("failed to acquire jobserver token")?;
+            .context("jobserver slots closed")?;
+        let mut current = current.subscribe();
+        loop {
+            let pool = current.borrow_and_update().clone();
+            let (mytx, myrx) = oneshot::channel();
+            pool.tx.unbounded_send(mytx).unwrap();
+            pool.helper.request_token();
+            tokio::select! {
+                acquired = myrx => {
+                    let acquired = acquired
+                        .context("jobserver helper panicked")?
+                        .context("failed to acquire jobserver token")?;
+                    if !Arc::ptr_eq(&pool, &current.borrow()) {
+                        continue;
+                    }
+                    return Ok(Acquired {
+                        _token: Some(acquired),
+                        pool: Some(pool),
+                        client: self.clone(),
+                        shared: false,
+                        exited_on_its_own: false,
+                        _slot: Some(slot),
+                    });
+                }
+                // A retired pool may never get another token.
+                _ = current.changed() => {}
+            }
+        }
+    }
 
-        Ok(Acquired {
-            _token: Some(acquired),
-        })
+    fn retire(&self, pool: &Arc<Pool>) {
+        if let Some(current) = &self.current {
+            current.send_if_modified(|current| {
+                if !Arc::ptr_eq(current, pool) {
+                    return false;
+                }
+                match Pool::new(self.limit) {
+                    Ok(fresh) => {
+                        warn!("A compiler sharing the jobserver did not exit on its own; using a fresh token pool");
+                        *current = Arc::new(fresh);
+                        true
+                    }
+                    Err(e) => {
+                        warn!("Keeping a jobserver that may have lost tokens: {e:?}");
+                        false
+                    }
+                }
+            });
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn watch_pool(&self) -> impl Fn() -> bool {
+        let rx = self.current.as_ref().expect("private pool").subscribe();
+        move || rx.has_changed().unwrap_or(false)
+    }
+}
+
+impl Acquired {
+    pub fn configure(&self, cmd: &mut Command) {
+        if let Some(pool) = &self.pool {
+            pool.inner.configure(cmd);
+        } else if let Some(fifo) = &self.client.fifo {
+            fifo.configure(cmd);
+        }
+    }
+
+    pub fn mark_shared(&mut self) {
+        if self.pool.is_some() {
+            self.shared = true;
+        }
+    }
+
+    pub fn record_exit(&mut self, status: Option<&ExitStatus>) {
+        #[cfg(unix)]
+        let on_its_own =
+            status.is_some_and(|s| std::os::unix::process::ExitStatusExt::signal(s).is_none());
+        #[cfg(not(unix))]
+        let on_its_own = status.is_some();
+        self.exited_on_its_own = on_its_own;
+    }
+}
+
+impl Drop for Acquired {
+    fn drop(&mut self) {
+        // A killed compiler may have taken tokens directly from the pipe.
+        if self.shared
+            && !self.exited_on_its_own
+            && let Some(pool) = &self.pool
+        {
+            self.client.retire(pool);
+        }
+    }
+}
+
+/// Whether the jobserver in our environment, as `jobserver::Client::from_env`
+/// would pick it, is opened by path.
+fn env_names_fifo() -> bool {
+    ["CARGO_MAKEFLAGS", "MAKEFLAGS", "MFLAGS"]
+        .iter()
+        .find_map(std::env::var_os)
+        .is_some_and(|flags| flags.to_str().is_some_and(names_fifo))
+}
+
+fn names_fifo(flags: &str) -> bool {
+    flags
+        .split_ascii_whitespace()
+        .any(|arg| arg.starts_with("--jobserver-auth=fifo:"))
+}
+
+#[cfg(test)]
+mod test {
+    use super::{Client, names_fifo};
+
+    #[test]
+    fn fifo_jobserver_flags() {
+        assert!(names_fifo("-j8 --jobserver-auth=fifo:/tmp/GMfifo1234"));
+        assert!(names_fifo(" -j --jobserver-auth=fifo:/dev/steve"));
+        assert!(!names_fifo("-j8 --jobserver-fds=3,4 --jobserver-auth=3,4"));
+        assert!(!names_fifo("-j8"));
+        assert!(!names_fifo(""));
+    }
+
+    #[test]
+    fn private_pool_is_not_fifo() {
+        assert!(!Client::new_num(1).is_fifo());
     }
 }

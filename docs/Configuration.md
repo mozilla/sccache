@@ -30,6 +30,9 @@ server_startup_timeout_ms = 10000
 # For Rust, also applies to the working directory, the CARGO_*
 # variables and the variables read with env!, such as OUT_DIR.
 #
+# For how basedirs interact with preprocessor cache mode, see
+# docs/Local.md.
+#
 # Example:
 #   basedir = ["/home/user/project"] results in the path prefix rewrite:
 #   "/home/user/project/src/main.c" -> "src/main.c"
@@ -135,6 +138,9 @@ db = 1
 # Entry expiration time in seconds. Default is 0 (never expire)
 expiration = 3600
 key_prefix = "/custom/prefix/if/need"
+# Optional positive IO deadline in seconds, including connection-pool acquisition.
+# Unset preserves the Redis backend's existing timeouts.
+# io_timeout_secs = 2
 
 [cache.s3]
 bucket = "name"
@@ -190,8 +196,10 @@ Note that some env variables may need sccache server restart to take effect.
 ### misc
 
 * `SCCACHE_ALLOW_CORE_DUMPS` to enable core dumps by the server
+* `SCCACHE_ALLOW_INCREMENTAL` set to `1` to allow Rust builds with `CARGO_INCREMENTAL=1`, leaving incremental crates uncached, or to `cache` to cache them too. See [Rust caveats](Rust.md)
 * `SCCACHE_CONF` configuration file path
-* `SCCACHE_BASEDIRS` base directory (or directories) to strip from paths for cache key computation. This is similar to ccache's `CCACHE_BASEDIR` and enables cache hits across different absolute paths when compiling the same source code. Multiple directories can be separated by `;` on Windows hosts and by `:` on any other operating system. When multiple directories are specified, the longest matching prefix is used. Path matching is **case-insensitive** on Windows and **case-sensitive** on other operating systems. Environment variable takes precedence over file configuration. Only absolute paths are supported; relative paths will cause an error and prevent the server from start.
+* `SCCACHE_BASEDIRS` base directory (or directories) to strip from paths for cache key computation. This is similar to ccache's `CCACHE_BASEDIR` and enables cache hits across different absolute paths when compiling the same source code. Multiple directories can be separated by `;` on Windows hosts and by `:` on any other operating system. When multiple directories are specified, the longest matching prefix is used. Path matching is **case-insensitive** on Windows and **case-sensitive** on other operating systems. Environment variable takes precedence over file configuration. Only absolute paths are supported; relative paths will cause an error and prevent the server from start. Also read from the environment of each compile, where it replaces the server's basedirs for that compile, so each checkout can set its own root; an empty value turns basedirs off, and a value with a relative path or not valid UTF-8 is ignored with a warning. Names are case-insensitive on Windows.
+* `SCCACHE_BASEDIRS_VERBATIM_ENV_DEPS` comma-separated names of variables that a Rust crate reads with `env!` or `option_env!` whose values are hashed without stripping `SCCACHE_BASEDIRS`, e.g. `CARGO_MANIFEST_DIR,CARGO_MANIFEST_PATH`. Read from the environment of each compile; empty or not valid UTF-8 means none. Names are case-insensitive on Windows. See [Rust caveats](Rust.md)
 * `SCCACHE_CACHED_CONF`
 * `SCCACHE_DIST_CLIENT_CACHE_DIR` distributed toolchain cache directory; overrides `[dist].cache_dir` from the configuration file.
 * `SCCACHE_IDLE_TIMEOUT` how long the local daemon process waits for more client requests before exiting, in seconds. Set to `0` to run sccache permanently
@@ -284,6 +292,7 @@ will default to `us-east-1`.
 * `SCCACHE_REDIS_DB` redis database (optional, default is 0).
 * `SCCACHE_REDIS_EXPIRATION` / `SCCACHE_REDIS_TTL` ttl for redis cache, don't set for default behavior.
 * `SCCACHE_REDIS_KEY_PREFIX` key prefix (optional).
+* `SCCACHE_REDIS_IO_TIMEOUT_SECS` optional positive integer deadline in seconds for Redis read/write IO, including connection-pool acquisition. Unset preserves existing backend timeouts; see [Redis.md](Redis.md).
 * `SCCACHE_REDIS_RW_MODE` allows to use redis backend in read-only mode if set to `READ_ONLY`
 
 The full url appears then as `redis://user:passwd@1.2.3.4:6379/?db=1`.

@@ -15,19 +15,22 @@
 use crate::cache::{FileObjectSource, Storage};
 use crate::compiler::args::*;
 use crate::compiler::{
-    CCompileCommand, Cacheable, ColorMode, Compilation, CompileCommand, Compiler,
-    CompilerArguments, CompilerHasher, CompilerKind, CompilerProxy, HashResult, Language,
+    CCompileCommand, Cacheable, ColorMode, Compilation, CompileCommand, CompileCommandImpl,
+    Compiler, CompilerArguments, CompilerHasher, CompilerKind, CompilerProxy, HashResult, Language,
     SingleCompileCommand, c::ArtifactDescriptor,
 };
 #[cfg(feature = "dist-client")]
 use crate::compiler::{DistPackagers, NoopOutputsRewriter};
+use crate::config::compile_basedirs;
 #[cfg(feature = "dist-client")]
 use crate::dist::pkg;
 #[cfg(feature = "dist-client")]
 use crate::lru_disk_cache::{LruCache, Meter};
 use crate::mock_command::{CommandCreatorSync, RunCommand};
-use crate::util::{Digest, fmt_duration_as_secs, hash_all, hash_all_archives, run_input_output};
-use crate::util::{HashToDigest, OsStrExt, strip_basedirs_from_arg};
+use crate::util::{
+    Digest, fmt_duration_as_secs, hash_all, hash_all_archives, hash_all_externs, run_input_output,
+};
+use crate::util::{HashToDigest, OsStrExt, env_var_name_matches, strip_basedirs_from_arg};
 use crate::{counted_array, dist};
 use async_trait::async_trait;
 use filetime::FileTime;
@@ -353,16 +356,6 @@ pub struct ParsedArguments {
     crate_types: CrateTypes,
     /// If dependency info is being emitted, the name of the dep info file.
     dep_info: Option<PathBuf>,
-    /// If profile info is being emitted, the path of the profile.
-    ///
-    /// This could be filled while `-Cprofile-use` been enabled.
-    ///
-    /// We need to add the profile into our outputs to enable distributed compilation.
-    /// We don't need to track `profile-generate` since it's users work to make sure
-    /// the `profdata` been generated from profraw files.
-    ///
-    /// For more information, see https://doc.rust-lang.org/rustc/profile-guided-optimization.html
-    profile: Option<PathBuf>,
     /// If `-Z profile` has been enabled, we will use a GCC-compatible, gcov-based
     /// coverage implementation.
     ///
@@ -442,7 +435,7 @@ async fn get_source_files_and_env_deps<T>(
     cwd: &Path,
     env_vars: &[(OsString, OsString)],
     pool: &tokio::runtime::Handle,
-) -> Result<(Vec<PathBuf>, Vec<(OsString, OsString)>, String)>
+) -> Result<(Vec<PathBuf>, Vec<(OsString, Option<OsString>)>, String)>
 where
     T: CommandCreatorSync,
 {
@@ -453,14 +446,20 @@ where
         .tempdir()
         .context("Failed to create temp dir")?;
     let dep_file = temp_dir.path().join("deps.d");
-    let mut cmd = creator.clone().new_command_sync(executable);
-    cmd.args(arguments)
-        .args(&["--emit", "dep-info"])
-        .arg("-o")
-        .arg(&dep_file)
-        .env_clear()
-        .envs(env_vars.to_vec())
-        .current_dir(cwd);
+    let mut dep_info_arguments = arguments.to_vec();
+    dep_info_arguments.extend([
+        OsString::from("--emit"),
+        OsString::from("dep-info"),
+        OsString::from("-o"),
+        dep_file.clone().into_os_string(),
+    ]);
+    // The response file lives until rustc has run, see `arguments_for_spawn`.
+    let (dep_info_arguments, _response_file) =
+        arguments_for_spawn(executable, &dep_info_arguments, COMMAND_LINE_LIMIT)?;
+    let mut cmd = creator
+        .clone()
+        .new_command_with_env(executable, env_vars.iter().cloned());
+    cmd.args(&dep_info_arguments).current_dir(cwd);
     trace!("[{}]: get dep-info: {:?}", crate_name, cmd);
     // Output of command is in file under dep_file, so we ignore stdout&stderr
     let _dep_info = run_input_output(cmd, None).await?;
@@ -488,12 +487,133 @@ where
     })
 }
 
+/// What the `rustc --emit=dep-info` and `rustc --print file-names` runs found,
+/// kept so that a later compile with the same inputs can skip them: the first
+/// parses and expands the whole crate, and was most of the work of a cache hit.
+#[derive(Clone, Debug)]
+struct RememberedDepInfo {
+    inputs: DepInfoInputs,
+    source_files: Vec<PathBuf>,
+    source_hashes: Vec<String>,
+    env_deps: Vec<(OsString, Option<OsString>)>,
+    dep_info: String,
+    outputs: Vec<String>,
+}
+
+/// The hashes of the externs, static libraries and target spec of a crate.
+type DepInfoInputs = (Vec<String>, Vec<String>, Vec<String>);
+
+impl RememberedDepInfo {
+    /// Whether the crate is still built against the same inputs, and its
+    /// source files still have the same contents.
+    async fn is_current(&self, inputs: &DepInfoInputs, pool: &tokio::runtime::Handle) -> bool {
+        self.inputs == *inputs
+            && hash_all(&self.source_files, pool)
+                .await
+                .is_ok_and(|hashes| hashes == self.source_hashes)
+    }
+}
+
+/// [`RememberedDepInfo`] by [`dep_info_key`].
+static REMEMBERED_DEP_INFO: LazyLock<std::sync::Mutex<HashMap<String, RememberedDepInfo>>> =
+    LazyLock::new(Default::default);
+
+/// Bound on [`REMEMBERED_DEP_INFO`]; it is cleared when reached.
+const MAX_REMEMBERED_DEP_INFO: usize = 10_000;
+
+/// Environment variables left out of [`dep_info_key`]: they hold jobserver
+/// file descriptors, which change on every build.
+const DEP_INFO_KEY_IGNORED_ENV: &[&str] = &["CARGO_MAKEFLAGS", "MAKEFLAGS", "MFLAGS"];
+
+/// Everything the dep-info and file-names runs get besides the files they
+/// read. The whole environment is included, not just what the cache key uses,
+/// since a proc macro could pick the files it reads from any variable. The
+/// [`DepInfoInputs`] are not, so that rustc does not have to wait for them when
+/// there is nothing to reuse.
+fn dep_info_key(
+    compiler_shlibs_digests: &[String],
+    version: &str,
+    arguments: &[OsString],
+    cwd: &Path,
+    env_vars: &[(OsString, OsString)],
+) -> String {
+    let mut m = Digest::new();
+    m.update(b"rust-dep-info-1");
+    for d in compiler_shlibs_digests {
+        m.update(d.as_bytes());
+    }
+    m.delimiter(b"version");
+    m.update(version.as_bytes());
+    m.delimiter(b"arguments");
+    for arg in arguments {
+        arg.hash(&mut HashToDigest { digest: &mut m });
+    }
+    m.delimiter(b"cwd");
+    cwd.hash(&mut HashToDigest { digest: &mut m });
+    m.delimiter(b"env");
+    let mut env_vars: Vec<_> = env_vars
+        .iter()
+        .filter(|(var, _)| !DEP_INFO_KEY_IGNORED_ENV.iter().any(|v| var == v))
+        .collect();
+    env_vars.sort();
+    for (var, val) in env_vars {
+        var.hash(&mut HashToDigest { digest: &mut m });
+        val.hash(&mut HashToDigest { digest: &mut m });
+    }
+    m.finish()
+}
+
+fn remembered_dep_info(key: &str) -> Option<RememberedDepInfo> {
+    REMEMBERED_DEP_INFO
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(key)
+        .cloned()
+}
+
+type SourcesAndEnvDeps = (
+    Vec<PathBuf>,
+    Vec<String>,
+    Vec<(OsString, Option<OsString>)>,
+    String,
+);
+
+fn remember_dep_info(
+    key: String,
+    inputs: DepInfoInputs,
+    (source_files, source_hashes, env_deps, dep_info): &SourcesAndEnvDeps,
+    outputs: &[String],
+) {
+    // Their values are not in the key, so they could change on reuse.
+    if env_deps
+        .iter()
+        .any(|(var, _)| DEP_INFO_KEY_IGNORED_ENV.iter().any(|v| var == v))
+    {
+        return;
+    }
+    let dep_info = RememberedDepInfo {
+        inputs,
+        source_files: source_files.clone(),
+        source_hashes: source_hashes.clone(),
+        env_deps: env_deps.clone(),
+        dep_info: dep_info.clone(),
+        outputs: outputs.to_vec(),
+    };
+    let mut remembered = REMEMBERED_DEP_INFO
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if remembered.len() >= MAX_REMEMBERED_DEP_INFO {
+        remembered.clear();
+    }
+    remembered.insert(key, dep_info);
+}
+
 /// Parse dependency info from `file` and return a Vec of files mentioned, the env-deps,
 /// and the raw text. Treat paths as relative to `cwd`.
 fn parse_dep_file<T, U>(
     file: T,
     cwd: U,
-) -> Result<(Vec<PathBuf>, Vec<(OsString, OsString)>, String)>
+) -> Result<(Vec<PathBuf>, Vec<(OsString, Option<OsString>)>, String)>
 where
     T: AsRef<Path>,
     U: AsRef<Path>,
@@ -555,16 +675,21 @@ where
     deps
 }
 
-fn parse_env_dep_info(dep_info: &str) -> Vec<(OsString, OsString)> {
+/// The value is `None` for a variable that was unset, which rustc writes as `NAME`
+/// rather than `NAME=` for one set to the empty string.
+fn parse_env_dep_info(dep_info: &str) -> Vec<(OsString, Option<OsString>)> {
     let mut env_deps = Vec::new();
     for line in dep_info.lines() {
         if let Some(env_dep) = line.strip_prefix("# env-dep:") {
             let mut split = env_dep.splitn(2, '=');
             match (split.next(), split.next()) {
                 (Some(var), Some(val)) => {
-                    env_deps.push((unescape_dep_env(var).into(), unescape_dep_env(val).into()));
+                    env_deps.push((
+                        unescape_dep_env(var).into(),
+                        Some(unescape_dep_env(val).into()),
+                    ));
                 }
-                _ => env_deps.push((unescape_dep_env(env_dep).into(), "".into())),
+                _ => env_deps.push((unescape_dep_env(env_dep).into(), None)),
             }
         }
     }
@@ -673,12 +798,15 @@ where
     T: Clone + CommandCreatorSync,
 {
     let start = time::Instant::now();
-    let mut cmd = creator.clone().new_command_sync(executable);
-    cmd.args(&arguments)
-        .args(&["--print", "file-names"])
-        .env_clear()
-        .envs(env_vars.to_vec())
-        .current_dir(cwd);
+    let mut arguments = arguments;
+    arguments.extend([OsString::from("--print"), OsString::from("file-names")]);
+    // The response file lives until rustc has run, see `arguments_for_spawn`.
+    let (arguments, _response_file) =
+        arguments_for_spawn(executable, &arguments, COMMAND_LINE_LIMIT)?;
+    let mut cmd = creator
+        .clone()
+        .new_command_with_env(executable, env_vars.iter().cloned());
+    cmd.args(&arguments).current_dir(cwd);
     trace!("get_compiler_outputs: {:?}", cmd);
     let outputs = run_input_output(cmd, None).await?;
 
@@ -716,13 +844,11 @@ impl Rust {
             .to_string();
 
         // it's fine to use the `executable` directly no matter if proxied or not
-        let mut cmd = creator.new_command_sync(&executable);
+        let mut cmd = creator.new_command_with_env(&executable, env_vars.iter().cloned());
         cmd.stdout(process::Stdio::piped())
             .stderr(process::Stdio::null())
             .arg("--print=sysroot")
-            .arg("--print=target-libdir")
-            .env_clear()
-            .envs(env_vars.to_vec());
+            .arg("--print=target-libdir");
         let hashed_archive = dist_archive.clone();
         let sysroot_and_libs = async move {
             let output = run_input_output(cmd, None).await?;
@@ -837,9 +963,9 @@ where
         &self,
         arguments: &[OsString],
         cwd: &Path,
-        _env_vars: &[(OsString, OsString)],
+        env_vars: &[(OsString, OsString)],
     ) -> CompilerArguments<Box<dyn CompilerHasher<T> + 'static>> {
-        match parse_arguments(arguments, cwd) {
+        match parse_arguments(arguments, cwd, env_vars) {
             CompilerArguments::Ok(args) => CompilerArguments::Ok(Box::new(RustHasher {
                 executable: self.executable.clone(), // if rustup exists, this must already contain the true resolved compiler path
                 host: self.host.clone(),
@@ -875,12 +1001,8 @@ where
         cwd: PathBuf,
         env: &[(OsString, OsString)],
     ) -> Pin<Box<dyn Future<Output = Result<(PathBuf, FileTime)>> + Send>> {
-        let mut child = creator.new_command_sync(&self.proxy_executable);
-        child
-            .current_dir(&cwd)
-            .env_clear()
-            .envs(env.to_vec())
-            .args(&["which", "rustc"]);
+        let mut child = creator.new_command_with_env(&self.proxy_executable, env.iter().cloned());
+        child.current_dir(&cwd).args(&["which", "rustc"]);
 
         Box::pin(async move {
             let output = run_input_output(child, None)
@@ -958,8 +1080,8 @@ impl RustupProxy {
         // `rustc +stable` returns retcode 1 (!=0) if it is installed via i.e. rpm packages
 
         // verify rustc is proxy
-        let mut child = creator.new_command_sync(compiler_executable);
-        child.env_clear().envs(env.to_vec()).args(&["+stable"]);
+        let mut child = creator.new_command_with_env(compiler_executable, env.iter().cloned());
+        child.args(&["+stable"]);
         let state = run_input_output(child, None).await.map(move |output| {
             if output.status.success() {
                 trace!("proxy: Found a compiler proxy managed by rustup");
@@ -1021,8 +1143,9 @@ impl RustupProxy {
             Ok(ProxyPath::None) => Ok(Ok(None)),
             Ok(ProxyPath::Candidate(proxy_executable)) => {
                 // verify the candidate is a rustup
-                let mut child = creator.new_command_sync(&proxy_executable);
-                child.env_clear().envs(env.to_vec()).args(&["--version"]);
+                let mut child =
+                    creator.new_command_with_env(&proxy_executable, env.iter().cloned());
+                child.args(&["--version"]);
                 let rustup_candidate_check = run_input_output(child, None).await?;
 
                 let stdout = String::from_utf8(rustup_candidate_check.stdout)
@@ -1113,15 +1236,14 @@ impl IntoArg for ArgCrateTypes {
 
 #[derive(Clone, Debug, PartialEq)]
 struct ArgLinkLibrary {
-    kind: String,
+    kind: Option<String>,
     name: String,
 }
 impl FromArg for ArgLinkLibrary {
     fn process(arg: OsString) -> ArgParseResult<Self> {
         let (kind, name) = match split_os_string_arg(arg, "=")? {
-            (kind, Some(name)) => (kind, name),
-            // If no kind is specified, the default is dylib.
-            (name, None) => ("dylib".to_owned(), name),
+            (kind, Some(name)) => (Some(kind), name),
+            (name, None) => (None, name),
         };
         Ok(ArgLinkLibrary { kind, name })
     }
@@ -1129,11 +1251,19 @@ impl FromArg for ArgLinkLibrary {
 impl IntoArg for ArgLinkLibrary {
     fn into_arg_os_string(self) -> OsString {
         let ArgLinkLibrary { kind, name } = self;
-        make_os_string!(kind, "=", name)
+        if let Some(kind) = kind {
+            make_os_string!(kind, "=", name)
+        } else {
+            make_os_string!(name)
+        }
     }
     fn into_arg_string(self, _transformer: PathTransformerFn<'_>) -> ArgToStringResult {
         let ArgLinkLibrary { kind, name } = self;
-        Ok(format!("{}={}", kind, name))
+        if let Some(kind) = kind {
+            Ok(format!("{}={}", kind, name))
+        } else {
+            Ok(name)
+        }
     }
 }
 
@@ -1423,7 +1553,125 @@ impl Iterator for ExpandResponseFile<'_> {
     }
 }
 
-fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<ParsedArguments> {
+/// Windows takes 32,767 characters with the nul (os error 206); this leaves some room.
+#[cfg(windows)]
+const COMMAND_LINE_LIMIT: Option<usize> = Some(32_000);
+
+/// Unix's `ARG_MAX` is megabytes, far above what a rustc command line reaches.
+#[cfg(not(windows))]
+const COMMAND_LINE_LIMIT: Option<usize> = None;
+
+/// An upper bound: every `\` and `"` counts as escaped, which overcounts paths a lot.
+fn command_line_len(executable: &Path, arguments: &[OsString]) -> usize {
+    let len = |arg: &OsStr| {
+        let bytes = arg.as_encoded_bytes();
+        bytes.len() + 3 + bytes.iter().filter(|b| matches!(b, b'"' | b'\\')).count()
+    };
+    len(executable.as_os_str()) + arguments.iter().map(|arg| len(arg)).sum::<usize>()
+}
+
+/// A response file rustc reads `arguments` back from unchanged, if any: rustc trims and
+/// skips empty lines and does not expand `@file` inside one.
+fn response_file_contents(arguments: &[OsString]) -> Option<String> {
+    let mut contents = String::new();
+    for arg in arguments {
+        let arg = arg.to_str()?;
+        if arg.starts_with('@') {
+            return None;
+        }
+        contents.push_str(arg);
+        contents.push('\n');
+    }
+    (split_rust_response_file_args(&contents) == arguments).then_some(contents)
+}
+
+/// Like cargo, passes a command line too long to spawn as one `@file`, which must live
+/// until rustc has run. Arguments a response file would change are left as they are.
+fn arguments_for_spawn(
+    executable: &Path,
+    arguments: &[OsString],
+    limit: Option<usize>,
+) -> Result<(Vec<OsString>, Option<tempfile::NamedTempFile>)> {
+    let len = command_line_len(executable, arguments);
+    if !matches!(limit, Some(limit) if len > limit) {
+        return Ok((arguments.to_vec(), None));
+    }
+    let Some(contents) = response_file_contents(arguments) else {
+        warn!(
+            "a command line of {len} characters is too long for this platform, and holds an \
+             argument no response file can pass to rustc"
+        );
+        return Ok((arguments.to_vec(), None));
+    };
+    use std::io::Write;
+    let mut file = tempfile::Builder::new()
+        .prefix("sccache-args")
+        .suffix(".rsp")
+        .tempfile()
+        .context("Failed to create a response file")?;
+    file.write_all(contents.as_bytes())
+        .and_then(|()| file.flush())
+        .context("Failed to write a response file")?;
+    debug!(
+        "a command line of {len} characters is too long for this platform: rustc reads its \
+         {} arguments from {}",
+        arguments.len(),
+        file.path().display()
+    );
+    let mut arg = OsString::from("@");
+    arg.push(file.path());
+    Ok((vec![arg], Some(file)))
+}
+
+/// Keeps the response file of [`arguments_for_spawn`] until the compile has run.
+struct WithResponseFile<C> {
+    inner: C,
+    _response_file: Option<tempfile::NamedTempFile>,
+}
+
+#[async_trait]
+impl<C: CompileCommandImpl> CompileCommandImpl for WithResponseFile<C> {
+    fn get_executable(&self) -> PathBuf {
+        self.inner.get_executable()
+    }
+    fn get_arguments(&self) -> Vec<OsString> {
+        self.inner.get_arguments()
+    }
+    fn get_env_vars(&self) -> Vec<(OsString, OsString)> {
+        self.inner.get_env_vars()
+    }
+    fn get_cwd(&self) -> PathBuf {
+        self.inner.get_cwd()
+    }
+
+    async fn execute<T>(
+        &self,
+        service: &crate::server::SccacheService<T>,
+        creator: &T,
+    ) -> Result<process::Output>
+    where
+        T: CommandCreatorSync,
+    {
+        self.inner.execute(service, creator).await
+    }
+}
+
+fn is_incremental_arg(arg: &Argument<ArgData>) -> bool {
+    matches!(arg.get_data(), Some(CodeGen(ArgCodegen { opt, .. })) if opt == "incremental")
+}
+
+/// `SCCACHE_ALLOW_INCREMENTAL=cache`; with `1` incremental compiles only go uncached.
+fn cache_incremental(env_vars: &[(OsString, OsString)]) -> bool {
+    env_vars
+        .iter()
+        .any(|(k, v)| env_var_name_matches(k, "SCCACHE_ALLOW_INCREMENTAL") && v == "cache")
+}
+
+fn parse_arguments(
+    arguments: &[OsString],
+    cwd: &Path,
+    env_vars: &[(OsString, OsString)],
+) -> CompilerArguments<ParsedArguments> {
     let mut args = vec![];
 
     let mut emit: Option<HashSet<String>> = None;
@@ -1441,7 +1689,6 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
     let mut static_link_paths: Vec<PathBuf> = vec![];
     let mut color_mode = ColorMode::Auto;
     let mut has_json = false;
-    let mut profile = None;
     let mut gcno = false;
     let mut target_json = None;
 
@@ -1459,7 +1706,16 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                 return CompilerArguments::NotCompilation;
             }
             Some(LinkLibrary(ArgLinkLibrary { kind, name })) => {
-                if kind == "static" {
+                // Link modifiers follow the kind (e.g. `static:+bundle`), and `-bundle` libraries
+                // aren't copied into the rlib, so they don't change the output.
+                // Libraries without a kind are never bundled.
+                let bundled_static = kind.as_deref().is_some_and(|kind| {
+                    matches!(
+                        kind.split_once(':').unwrap_or((kind, "")),
+                        ("static", modifiers) if !modifiers.split(',').any(|m| m == "-bundle")
+                    )
+                });
+                if bundled_static {
                     static_lib_names.push(name.to_owned());
                 }
             }
@@ -1503,15 +1759,9 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                 match (opt.as_ref(), value) {
                     ("extra-filename", Some(value)) => extra_filename = Some(value.to_owned()),
                     ("extra-filename", None) => cannot_cache!("extra-filename"),
-                    ("profile-use", Some(v)) => profile = Some(v.clone()),
-                    // Incremental compilation makes a mess of sccache's entire world
-                    // view. It produces additional compiler outputs that we don't cache,
-                    // and just letting rustc do its work in incremental mode is likely
-                    // to be faster than trying to fetch a result from cache anyway, so
-                    // don't bother caching compiles where it's enabled currently.
-                    // Longer-term we would like to figure out better integration between
-                    // sccache and rustc in the incremental scenario:
-                    // https://github.com/mozilla/sccache/issues/236
+                    // Not cached by default: rustc reusing the incremental directory is
+                    // likely faster than a cache hit. See #236.
+                    ("incremental", Some(_)) if cache_incremental(env_vars) => {}
                     ("incremental", _) => cannot_cache!("incremental"),
                     (_, _) => (),
                 }
@@ -1622,9 +1872,6 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
         None
     };
 
-    // Ignore profile is `link` is not in emit which means we are running `cargo check`.
-    let profile = if emit.contains("link") { profile } else { None };
-
     // Figure out the gcno filename, if producing gcno files with `-Zprofile`.
     let gcno = if gcno && emit.contains("link") {
         let mut gcno = crate_name.clone();
@@ -1672,7 +1919,6 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
         staticlibs,
         crate_name,
         dep_info: dep_info.map(|s| s.into()),
-        profile: profile.map(|s| s.into()),
         gcno: gcno.map(|s| s.into()),
         emit,
         color_mode,
@@ -1705,6 +1951,25 @@ fn strip_basedirs_os<'a>(value: &'a OsStr, basedirs: &[Vec<u8>]) -> Cow<'a, OsSt
     }
 }
 
+/// Whether an env-dep is listed in `SCCACHE_BASEDIRS_VERBATIM_ENV_DEPS`. rustc lists the
+/// name as the crate wrote it, which on Windows can differ in case from the listed one.
+fn basedirs_verbatim_env_deps<'a>(
+    env_vars: &'a [(OsString, OsString)],
+    basedirs: &[Vec<u8>],
+) -> impl Fn(&OsStr) -> bool + 'a {
+    const VAR: &str = "SCCACHE_BASEDIRS_VERBATIM_ENV_DEPS";
+    let mut names = vec![];
+    if !basedirs.is_empty()
+        && let Some((_, value)) = env_vars.iter().find(|(k, _)| env_var_name_matches(k, VAR))
+    {
+        match value.to_str() {
+            Some(value) => names.extend(value.split(',').map(str::trim).filter(|n| !n.is_empty())),
+            None => warn!("Ignoring {VAR}: not valid UTF-8: {value:?}"),
+        }
+    }
+    move |var| names.iter().any(|name| env_var_name_matches(var, name))
+}
+
 #[allow(clippy::suspicious_else_formatting)] // False positive
 #[async_trait]
 impl<T> CompilerHasher<T> for RustHasher
@@ -1723,12 +1988,16 @@ where
         _cache_control: CacheControl,
     ) -> Result<HashResult<T>> {
         trace!("[{}]: generate_hash_key", self.parsed_args.crate_name);
-        let basedirs = storage.basedirs();
+        let basedirs = compile_basedirs(&env_vars, storage.basedirs());
+        // Keep the incremental directory out of the key, and out of the dep-info and
+        // file-names runs so they don't touch it.
+        let incremental = self.parsed_args.arguments.iter().any(is_incremental_arg);
         // TODO: this doesn't produce correct arguments if they should be concatenated - should use iter_os_strings
         let os_string_arguments: Vec<(OsString, Option<OsString>)> = self
             .parsed_args
             .arguments
             .iter()
+            .filter(|arg| !is_incremental_arg(arg))
             .map(|arg| {
                 (
                     arg.to_os_string(),
@@ -1751,22 +2020,6 @@ where
             .flat_map(|(arg, val)| Some(arg).into_iter().chain(val))
             .cloned()
             .collect::<Vec<_>>();
-        // Find all the source files and hash them
-        let source_hashes_pool = pool.clone();
-        let source_files_and_hashes_and_env_deps = async {
-            let (source_files, env_deps, dep_info) = get_source_files_and_env_deps(
-                creator,
-                &self.parsed_args.crate_name,
-                &self.executable,
-                &filtered_arguments,
-                &cwd,
-                &env_vars,
-                pool,
-            )
-            .await?;
-            let source_hashes = hash_all(&source_files, &source_hashes_pool).await?;
-            Ok((source_files, source_hashes, env_deps, dep_info))
-        };
 
         // Turn arguments into a simple Vec<OsString> to calculate outputs.
         let flat_os_string_arguments: Vec<OsString> = os_string_arguments
@@ -1774,6 +2027,7 @@ where
             .cloned()
             .flat_map(|(arg, val)| iter::once(arg).chain(val))
             .collect();
+        let dep_info_key_arguments = flat_os_string_arguments.clone();
         let outputs = get_compiler_outputs(
             creator,
             &self.executable,
@@ -1794,7 +2048,7 @@ where
             .iter()
             .map(|e| cwd.join(e))
             .collect::<Vec<_>>();
-        let extern_hashes = hash_all(&abs_externs, pool);
+        let extern_hashes = hash_all_externs(&abs_externs, pool);
         // Hash the contents of the staticlibs listed on the commandline.
         trace!(
             "[{}]: hashing {} staticlibs",
@@ -1822,21 +2076,75 @@ where
         }
 
         let target_json_hash = hash_all(&target_json_files, pool);
+        let inputs =
+            async { futures::try_join!(extern_hashes, staticlib_hashes, target_json_hash) };
 
-        // Invoke the compiler and perform all hashing operations on the files.
-        let (
-            (source_files, source_hashes, mut env_deps, dep_info_text),
-            extern_hashes,
-            staticlib_hashes,
-            target_json_hash,
-            mut outputs,
-        ) = futures::try_join!(
-            source_files_and_hashes_and_env_deps,
-            extern_hashes,
-            staticlib_hashes,
-            target_json_hash,
-            outputs,
-        )?;
+        // Find all the source files and hash them, and the outputs, reusing what
+        // earlier runs with the same inputs found if those files are unchanged.
+        let dep_info_key = dep_info_key(
+            &self.compiler_shlibs_digests,
+            &self.version,
+            &dep_info_key_arguments,
+            &cwd,
+            &env_vars,
+        );
+        let source_files_and_hashes_and_env_deps = async {
+            let (source_files, env_deps, dep_info) = get_source_files_and_env_deps(
+                creator,
+                &self.parsed_args.crate_name,
+                &self.executable,
+                &filtered_arguments,
+                &cwd,
+                &env_vars,
+                pool,
+            )
+            .await?;
+            let source_hashes = hash_all(&source_files, pool).await?;
+            Ok::<_, Error>((source_files, source_hashes, env_deps, dep_info))
+        };
+
+        let (inputs, (source_files, source_hashes, mut env_deps, dep_info_text), mut outputs) =
+            match remembered_dep_info(&dep_info_key) {
+                Some(remembered) => {
+                    let inputs = inputs.await?;
+                    if remembered.is_current(&inputs, pool).await {
+                        // Never polled, so neither rustc run happens.
+                        drop(source_files_and_hashes_and_env_deps);
+                        drop(outputs);
+                        trace!(
+                            "[{}]: reusing the dep-info and outputs of earlier runs",
+                            self.parsed_args.crate_name
+                        );
+                        let RememberedDepInfo {
+                            inputs,
+                            source_files,
+                            source_hashes,
+                            env_deps,
+                            dep_info,
+                            outputs,
+                        } = remembered;
+                        (
+                            inputs,
+                            (source_files, source_hashes, env_deps, dep_info),
+                            outputs,
+                        )
+                    } else {
+                        let (sources, outputs) =
+                            futures::try_join!(source_files_and_hashes_and_env_deps, outputs)?;
+                        remember_dep_info(dep_info_key, inputs.clone(), &sources, &outputs);
+                        (inputs, sources, outputs)
+                    }
+                }
+                None => {
+                    // Nothing to reuse: invoke the compiler and perform all
+                    // hashing operations on the files at once.
+                    let (inputs, sources, outputs) =
+                        futures::try_join!(inputs, source_files_and_hashes_and_env_deps, outputs)?;
+                    remember_dep_info(dep_info_key, inputs.clone(), &sources, &outputs);
+                    (inputs, sources, outputs)
+                }
+            };
+        let (extern_hashes, staticlib_hashes, target_json_hash) = inputs;
 
         // If you change any of the inputs to the hash, you should change `CACHE_VERSION`.
         let mut m = Digest::new();
@@ -1882,11 +2190,15 @@ where
                 .chain(sortables)
                 .flat_map(|(arg, val)| iter::once(arg).chain(val.as_ref()))
                 .fold(OsString::new(), |mut a, b| {
-                    a.push(strip_basedirs_os(b, basedirs));
+                    a.push(strip_basedirs_os(b, &basedirs));
                     a
                 })
         };
         args.hash(&mut HashToDigest { digest: &mut m });
+        // rustc's outputs differ when incremental, e.g. in the default codegen-units.
+        if incremental {
+            m.delimiter(b"incremental");
+        }
         // 4. The digest of all source files (this includes src file from cmdline).
         // 5. The digest of all files listed on the commandline (self.externs).
         // 6. The digest of all static libraries listed on the commandline (self.staticlibs).
@@ -1902,11 +2214,24 @@ where
         // 8. Environment variables: Hash all environment variables listed in the rustc dep-info
         //    output. Additionally also has all environment variables starting with `CARGO_`,
         //    since those are not listed in dep-info but affect cacheability.
+        //    A crate that bakes a listed env-dep such as `env!("CARGO_MANIFEST_DIR")` into its
+        //    outputs must not hit across checkouts. Stripped values start with a NUL, unlike these.
         env_deps.sort();
+        let verbatim = basedirs_verbatim_env_deps(&env_vars, &basedirs);
         for (var, val) in env_deps.iter() {
             var.hash(&mut HashToDigest { digest: &mut m });
+            let Some(val) = val else {
+                // `option_env!` yields `None` for an unset variable and `Some("")` for an
+                // empty one, so the two must not share a key.
+                m.update(b"\0");
+                continue;
+            };
             m.update(b"=");
-            strip_basedirs_os(val, basedirs).hash(&mut HashToDigest { digest: &mut m });
+            if verbatim(var) {
+                val.hash(&mut HashToDigest { digest: &mut m });
+            } else {
+                strip_basedirs_os(val, &basedirs).hash(&mut HashToDigest { digest: &mut m });
+            }
         }
         let mut env_vars: Vec<_> = env_vars
             .iter()
@@ -1925,11 +2250,14 @@ where
             // CARGO_REGISTRIES_*_TOKEN contains non-cacheable secrets.
             // Registry override config doesn't need to be hashed, because deps' package IDs
             // already uniquely identify the relevant registries.
-            // CARGO_BUILD_JOBS only affects Cargo's parallelism, not rustc output.
+            // CARGO_TARGET_DIR and CARGO_BUILD_* configure Cargo. What they change for rustc
+            // arrives as arguments, which are hashed. A crate that reads one with `env!` gets it
+            // through dep-info, also hashed.
             // CARGO_ENCODED_RUSTFLAGS is already cached in argument list
             if var == "CARGO_MAKEFLAGS"
                 || var.starts_with("CARGO_REGISTRIES_")
-                || var == "CARGO_BUILD_JOBS"
+                || var == "CARGO_TARGET_DIR"
+                || var.starts_with("CARGO_BUILD_")
                 || var == "CARGO_ENCODED_RUSTFLAGS"
             {
                 continue;
@@ -1937,10 +2265,10 @@ where
 
             var.hash(&mut HashToDigest { digest: &mut m });
             m.update(b"=");
-            strip_basedirs_os(val, basedirs).hash(&mut HashToDigest { digest: &mut m });
+            strip_basedirs_os(val, &basedirs).hash(&mut HashToDigest { digest: &mut m });
         }
         // 9. The cwd of the compile. This will wind up in the rlib.
-        Path::new(&strip_basedirs_os(cwd.as_os_str(), basedirs))
+        Path::new(&strip_basedirs_os(cwd.as_os_str(), &basedirs))
             .hash(&mut HashToDigest { digest: &mut m });
         // 10. The version of the compiler.
         self.version.hash(&mut HashToDigest { digest: &mut m });
@@ -2037,16 +2365,6 @@ where
                 )
             })
             .collect::<HashMap<_, _>>();
-        if let Some(profile) = &self.parsed_args.profile {
-            let p = self.parsed_args.output_dir.join(profile);
-            outputs.insert(
-                profile.to_string_lossy().into_owned(),
-                ArtifactDescriptor {
-                    path: p,
-                    optional: true,
-                },
-            );
-        }
         if let Some(gcno) = &self.parsed_args.gcno {
             let p = self.parsed_args.output_dir.join(gcno);
             outputs.insert(
@@ -2144,12 +2462,16 @@ impl<T: CommandCreatorSync> Compilation<T> for RustCompilation {
 
         trace!("[{}]: compile", crate_name);
 
+        let spawn_arguments: Vec<OsString> = arguments
+            .iter()
+            .flat_map(|arg| arg.iter_os_strings())
+            .collect();
+        // The response file lives as long as the command, see `arguments_for_spawn`.
+        let (spawn_arguments, response_file) =
+            arguments_for_spawn(executable, &spawn_arguments, COMMAND_LINE_LIMIT)?;
         let command = SingleCompileCommand {
             executable: executable.to_owned(),
-            arguments: arguments
-                .iter()
-                .flat_map(|arg| arg.iter_os_strings())
-                .collect(),
+            arguments: spawn_arguments,
             env_vars: env_vars.to_owned(),
             cwd: cwd.to_owned(),
             // rustc reads `CARGO_MAKEFLAGS` and runs codegen on a thread pool
@@ -2173,6 +2495,11 @@ impl<T: CommandCreatorSync> Compilation<T> for RustCompilation {
                         }
                     }
                 };
+            }
+
+            // The incremental directory is local state.
+            if arguments.iter().any(is_incremental_arg) {
+                return None;
             }
 
             let mut dist_arguments = vec![];
@@ -2264,6 +2591,10 @@ impl<T: CommandCreatorSync> Compilation<T> for RustCompilation {
             })
         })();
 
+        let command = WithResponseFile {
+            inner: command,
+            _response_file: response_file,
+        };
         Ok((CCompileCommand::new(command), dist_command, Cacheable::Yes))
     }
 
@@ -2543,8 +2874,9 @@ impl pkg::InputsPackager for RustInputsPackager {
         };
 
         let mut tar_inputs = vec![];
+        let mut traversed_dirs = vec![];
         for input_path in inputs {
-            let input_path = pkg::simplify_path(&input_path)?;
+            let input_path = pkg::simplify_path_and_dirs(&input_path, &mut traversed_dirs)?;
             if let Some(ext) = input_path.extension() {
                 if !super::CAN_DIST_DYLIBS && ext == DLL_EXTENSION {
                     bail!(
@@ -2595,7 +2927,8 @@ impl pkg::InputsPackager for RustInputsPackager {
         // crate, otherwise we need to send everything.
         let mut tar_crate_libs = vec![];
         for crate_link_path in crate_link_paths {
-            let crate_link_path = pkg::simplify_path(&crate_link_path)?;
+            let crate_link_path =
+                pkg::simplify_path_and_dirs(&crate_link_path, &mut traversed_dirs)?;
             let dir_entries = match fs::read_dir(crate_link_path) {
                 Ok(iter) => iter,
                 Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
@@ -2649,6 +2982,12 @@ impl pkg::InputsPackager for RustInputsPackager {
         // There are almost certainly duplicates from explicit externs also within the lib search paths
         all_tar_inputs.dedup();
 
+        // Resolving `a/b/../../c` on Unix walks into `a/b` before `..`, so any
+        // traversed directory must exist on the server even when no files are
+        // packaged beneath it.
+        traversed_dirs.sort();
+        traversed_dirs.dedup();
+
         // If we're just creating an rlib then the only thing inspected inside dependency rlibs is the
         // metadata, in which case we can create a trimmed rlib (which is actually a .a) with the metadata
         let can_trim_rlibs = matches!(
@@ -2660,6 +2999,13 @@ impl pkg::InputsPackager for RustInputsPackager {
         );
 
         let mut builder = tar::Builder::new(wtr);
+
+        for dir_path in &traversed_dirs {
+            let dist_dir_path = path_transformer
+                .as_dist(dir_path)
+                .with_context(|| format!("unable to transform input dir {}", dir_path.display()))?;
+            pkg::append_tar_dir(&mut builder, dir_path, &dist_dir_path)?;
+        }
 
         for (input_path, dist_input_path) in all_tar_inputs.iter() {
             let mut file_header = pkg::make_tar_header(input_path, dist_input_path)?;
@@ -3098,7 +3444,28 @@ mod test {
 
     fn _parse_arguments(arguments: &[String]) -> CompilerArguments<ParsedArguments> {
         let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
-        parse_arguments(&arguments, ".".as_ref())
+        parse_arguments(&arguments, ".".as_ref(), &[])
+    }
+
+    /// A lib compile, with `-C incremental=<dir>` when `dir` is given.
+    fn lib_args(dir: Option<&str>) -> Vec<OsString> {
+        let mut args = [
+            "--emit",
+            "link",
+            "foo.rs",
+            "--out-dir",
+            "out",
+            "--crate-name",
+            "foo",
+            "--crate-type",
+            "lib",
+        ]
+        .map(OsString::from)
+        .to_vec();
+        if let Some(dir) = dir {
+            args.extend(["-C".into(), format!("incremental={dir}").into()]);
+        }
+        args
     }
 
     macro_rules! parses {
@@ -3321,31 +3688,30 @@ LLVM version: 15.0.2
 
     #[test]
     fn test_parse_arguments_incremental() {
-        parses!(
-            "--emit",
-            "link",
-            "foo.rs",
-            "--out-dir",
-            "out",
-            "--crate-name",
-            "foo",
-            "--crate-type",
-            "lib"
+        let parse = |dir: Option<&str>, var: &str, val: &str| {
+            let env_vars = [(var.into(), val.into())];
+            parse_arguments(&lib_args(dir), ".".as_ref(), &env_vars)
+        };
+        assert!(matches!(parse(None, "", ""), CompilerArguments::Ok(_)));
+        let cannot_cache = CompilerArguments::CannotCache("incremental", None);
+        for val in ["", "0", "1", "true", "Cache"] {
+            assert_eq!(
+                parse(Some("/foo"), "SCCACHE_ALLOW_INCREMENTAL", val),
+                cannot_cache
+            );
+        }
+        match parse(Some("/foo"), "SCCACHE_ALLOW_INCREMENTAL", "cache") {
+            CompilerArguments::Ok(a) => assert!(a.arguments.iter().any(is_incremental_arg)),
+            o => panic!("Got unexpected parse result: {:?}", o),
+        }
+        // The client reads it with `env::var`, which ignores case on Windows.
+        assert_eq!(
+            matches!(
+                parse(Some("/foo"), "sccache_allow_incremental", "cache"),
+                CompilerArguments::Ok(_)
+            ),
+            cfg!(windows)
         );
-        let r = fails!(
-            "--emit",
-            "link",
-            "foo.rs",
-            "--out-dir",
-            "out",
-            "--crate-name",
-            "foo",
-            "--crate-type",
-            "lib",
-            "-C",
-            "incremental=/foo"
-        );
-        assert_eq!(r, CompilerArguments::CannotCache("incremental", None));
     }
 
     #[test]
@@ -3404,6 +3770,65 @@ LLVM version: 15.0.2
             "--out-dir",
             "out"
         );
+    }
+
+    /// `-l` reaches rustc as it was given. In particular a library without a kind must not
+    /// become `dylib`: rustc picks the kind per target (e.g. static with `crt-static`).
+    #[test_case("bar" ; "without kind")]
+    #[test_case("static=bar" ; "static kind")]
+    #[test_case("static:-bundle=bar" ; "static with modifiers")]
+    #[test_case("dylib=bar" ; "dylib")]
+    fn test_parse_arguments_link_library_is_passed_unchanged(lib: &str) {
+        let h = parses!(
+            "--crate-name",
+            "foo",
+            "--crate-type",
+            "lib",
+            "--emit",
+            "link",
+            "-l",
+            lib,
+            "foo.rs",
+            "--out-dir",
+            "out"
+        );
+        let arguments: Vec<OsString> = h
+            .arguments
+            .iter()
+            .flat_map(|arg| arg.iter_os_strings())
+            .collect();
+        let position = arguments.iter().position(|arg| arg == "-l").unwrap();
+        assert_eq!(arguments[position + 1], lib);
+    }
+
+    #[test_case("static", true ; "without modifiers")]
+    #[test_case("static:+bundle", true ; "with bundle")]
+    #[test_case("static:+whole-archive", true ; "with whole-archive")]
+    #[test_case("static:-bundle", false ; "without bundle")]
+    #[test_case("static:+whole-archive,-bundle", false ; "with whole-archive, without bundle")]
+    #[test_case("static:-bundle,+whole-archive", false ; "without bundle, with whole-archive")]
+    #[test_case("dylib", false ; "dylib, without modifiers")]
+    #[test_case("dylib:+as-needed", false ; "dylib, with as-needed")]
+    fn test_parse_arguments_static_lib_with_link_modifiers(kind: &str, hashed: bool) {
+        let f = TestFixture::new();
+        let lib = f.touch("libbar.a").unwrap();
+        let h = parses!(
+            "--crate-name",
+            "foo",
+            "--crate-type",
+            "lib",
+            "--emit",
+            "link",
+            "-L",
+            format!("native={}", lib.parent().unwrap().display()),
+            "-l",
+            format!("{kind}=bar"),
+            "foo.rs",
+            "--out-dir",
+            "out"
+        );
+        let expected = if hashed { vec![lib] } else { vec![] };
+        assert_eq!(h.staticlibs, expected);
     }
 
     #[test]
@@ -3619,9 +4044,9 @@ bar.rs:
         assert_eq!(
             parse_env_dep_info(deps),
             [
-                ("OUT_DIR".into(), r"C:\dir\out".into()),
-                ("X".into(), "a\nb\rc=d".into()),
-                ("Y".into(), "".into()),
+                ("OUT_DIR".into(), Some(r"C:\dir\out".into())),
+                ("X".into(), Some("a\nb\rc=d".into())),
+                ("Y".into(), None),
             ]
         );
     }
@@ -3979,6 +4404,12 @@ hash 42fac6f0 stable_crate_id StableCrateId(12206970385906972588)
             .replace('\r', r"\r")
     }
 
+    /// rustc's runs for the cache key must not touch the incremental directory.
+    fn assert_no_incremental_dir(args: &[OsString]) {
+        let incremental = |a: &OsString| a.to_string_lossy().starts_with("incremental=");
+        assert!(!args.iter().any(incremental), "{args:?}");
+    }
+
     fn mock_dep_info(creator: &Arc<Mutex<MockCommandCreator>>, dep_srcs: &[&str]) {
         mock_dep_info_with_env(creator, dep_srcs, &[]);
     }
@@ -3986,7 +4417,7 @@ hash 42fac6f0 stable_crate_id StableCrateId(12206970385906972588)
     fn mock_dep_info_with_env(
         creator: &Arc<Mutex<MockCommandCreator>>,
         dep_srcs: &[&str],
-        env_deps: &[(&str, OsString)],
+        env_deps: &[(&str, Option<OsString>)],
     ) {
         // Mock the `rustc --emit=dep-info` process by writing
         // a dep-info file.
@@ -3995,11 +4426,18 @@ hash 42fac6f0 stable_crate_id StableCrateId(12206970385906972588)
             .map(|s| (*s).to_string())
             .collect::<Vec<String>>();
         sorted_deps.sort();
+        // rustc writes `NAME` for a variable that was unset and `NAME=` for an empty one.
         let env_deps = env_deps
             .iter()
-            .map(|(var, val)| format!("# env-dep:{var}={}", escape_dep_env(val)))
+            .map(|(var, val)| match val {
+                Some(val) => format!("# env-dep:{var}={}", escape_dep_env(val)),
+                None => format!("# env-dep:{var}"),
+            })
             .collect::<Vec<String>>();
         next_command_calls(creator, move |args| {
+            // A long command line comes as a response file, see `arguments_for_spawn`.
+            let args: Vec<OsString> = ExpandResponseFile::new(Path::new(""), args).collect();
+            assert_no_incremental_dir(&args);
             let mut dep_info_path = None;
             let mut it = args.iter();
             while let Some(a) = it.next() {
@@ -4023,14 +4461,12 @@ hash 42fac6f0 stable_crate_id StableCrateId(12206970385906972588)
 
     fn mock_file_names(creator: &Arc<Mutex<MockCommandCreator>>, filenames: &[&str]) {
         // Mock the `rustc --print=file-names` process output.
-        next_command(
-            creator,
-            Ok(MockChild::new(
-                exit_status(0),
-                filenames.iter().join("\n"),
-                "",
-            )),
-        );
+        let stdout = filenames.iter().join("\n");
+        next_command_calls(creator, move |args| {
+            let args: Vec<OsString> = ExpandResponseFile::new(Path::new(""), args).collect();
+            assert_no_incremental_dir(&args);
+            Ok(MockChild::new(exit_status(0), stdout.clone(), ""))
+        });
     }
 
     #[test_case(true ; "with preprocessor cache")]
@@ -4100,7 +4536,6 @@ hash 42fac6f0 stable_crate_id StableCrateId(12206970385906972588)
                 emit,
                 color_mode: ColorMode::Auto,
                 has_json: false,
-                profile: None,
                 gcno: None,
                 target_json: None,
             },
@@ -4124,6 +4559,14 @@ hash 42fac6f0 stable_crate_id StableCrateId(12206970385906972588)
                     ),
                     (
                         OsString::from("CARGO_BUILD_JOBS"),
+                        OsString::from("ignored"),
+                    ),
+                    (
+                        OsString::from("CARGO_TARGET_DIR"),
+                        OsString::from("ignored"),
+                    ),
+                    (
+                        OsString::from("CARGO_BUILD_BUILD_DIR"),
                         OsString::from("ignored"),
                     ),
                 ]
@@ -4172,6 +4615,94 @@ hash 42fac6f0 stable_crate_id StableCrateId(12206970385906972588)
     }
 
     #[test]
+    fn test_generate_hash_key_reuses_dep_info() {
+        drop(env_logger::try_init());
+        let f = TestFixture::new();
+        for s in ["foo.rs", "bar.rs", "bar.rlib"] {
+            f.touch(s).unwrap();
+        }
+        let hasher = || {
+            Box::new(RustHasher {
+                executable: "rustc".into(),
+                host: "x86-64-unknown-unknown-unknown".to_owned(),
+                version: TEST_RUSTC_VERSION.to_string(),
+                sysroot: f.tempdir.path().join("sysroot"),
+                #[cfg(feature = "dist-client")]
+                target_libdir: f.tempdir.path().join("sysroot/lib/rustlib/fake-target/lib"),
+                compiler_shlibs_digests: vec!["abcd1234".to_owned()],
+                dist_archive: None,
+                #[cfg(feature = "dist-client")]
+                rlib_dep_reader: None,
+                parsed_args: ParsedArguments {
+                    arguments: vec![Argument::Raw("a".into())],
+                    output_dir: "foo/".into(),
+                    externs: vec!["bar.rlib".into()],
+                    crate_link_paths: vec![],
+                    staticlibs: vec![],
+                    crate_name: "foo".into(),
+                    crate_types: CrateTypes {
+                        rlib: true,
+                        staticlib: false,
+                    },
+                    dep_info: None,
+                    emit: ["link".to_string()].into_iter().collect(),
+                    color_mode: ColorMode::Auto,
+                    has_json: false,
+                    gcno: None,
+                    target_json: None,
+                },
+            })
+        };
+        let runtime = single_threaded_runtime();
+        let pool = runtime.handle().clone();
+        let creator = new_creator();
+        let key = |env: &str| {
+            hasher()
+                .generate_hash_key(
+                    &creator,
+                    f.tempdir.path().to_owned(),
+                    vec![(OsString::from("FOO"), OsString::from(env))],
+                    false,
+                    &pool,
+                    false,
+                    Arc::new(MockStorage::new(None, false)),
+                    CacheControl::Default,
+                )
+                .wait()
+                .unwrap()
+                .key
+        };
+
+        let rustc_runs = |key: &dyn Fn() -> String| {
+            mock_dep_info(&creator, &["foo.rs", "bar.rs"]);
+            mock_file_names(&creator, &["foo.rlib"]);
+            let k = key();
+            assert_eq!(creator.lock().unwrap().children.len(), 0);
+            k
+        };
+
+        let first = rustc_runs(&|| key("1"));
+        // Nothing queued: running rustc again would panic.
+        assert_eq!(key("1"), first);
+
+        // A source file changed: rustc runs again, and the key changes.
+        fs::write(f.tempdir.path().join("foo.rs"), b"fn main() {}").unwrap();
+        let edited = rustc_runs(&|| key("1"));
+        assert_ne!(edited, first);
+        assert_eq!(key("1"), edited);
+
+        // So does an extern.
+        fs::write(f.tempdir.path().join("bar.rlib"), b"changed").unwrap();
+        let relinked = rustc_runs(&|| key("1"));
+        assert_ne!(relinked, edited);
+        assert_eq!(key("1"), relinked);
+
+        // And the environment, even a variable the cache key does not use.
+        rustc_runs(&|| key("2"));
+        assert_eq!(key("2"), key("2"));
+    }
+
+    #[test]
     fn test_generate_hash_key_dep_info() {
         let f = TestFixture::new();
         f.touch("foo.rs").unwrap();
@@ -4206,7 +4737,6 @@ hash 42fac6f0 stable_crate_id StableCrateId(12206970385906972588)
                 emit,
                 color_mode: ColorMode::Auto,
                 has_json: false,
-                profile: None,
                 gcno: None,
                 target_json: None,
             },
@@ -4253,6 +4783,72 @@ foo.rs:
         );
     }
 
+    #[test]
+    fn test_generate_hash_key_profile_use() {
+        // The profile is an input: rustc lists it in its dep-info, which is how its
+        // contents reach the key. As an output it was rewritten on every cache hit, and
+        // the new mtime made cargo rebuild every crate that had read it.
+        let f = TestFixture::new();
+        f.touch("foo.rs").unwrap();
+        let key_and_outputs = |profile: &[u8]| {
+            create_file(f.tempdir.path(), "merged.profdata", |mut f| {
+                f.write_all(profile)
+            })
+            .unwrap();
+            let parsed_args = parses!(
+                "--emit",
+                "link",
+                "foo.rs",
+                "--out-dir",
+                "out",
+                "--crate-name",
+                "foo",
+                "--crate-type",
+                "lib",
+                "-C",
+                "profile-use=merged.profdata"
+            );
+            let mut hasher = Box::new(RustHasher {
+                executable: "rustc".into(),
+                host: "x86-64-unknown-unknown-unknown".to_owned(),
+                version: TEST_RUSTC_VERSION.to_string(),
+                sysroot: f.tempdir.path().join("sysroot"),
+                #[cfg(feature = "dist-client")]
+                target_libdir: f.tempdir.path().join("sysroot/lib/rustlib/fake-target/lib"),
+                compiler_shlibs_digests: vec![],
+                dist_archive: None,
+                #[cfg(feature = "dist-client")]
+                rlib_dep_reader: None,
+                parsed_args,
+            });
+            let creator = new_creator();
+            mock_dep_info(&creator, &["foo.rs", "merged.profdata"]);
+            mock_file_names(&creator, &["libfoo.rlib"]);
+            let runtime = single_threaded_runtime();
+            let pool = runtime.handle().clone();
+            let res = hasher
+                .generate_hash_key(
+                    &creator,
+                    f.tempdir.path().to_owned(),
+                    vec![],
+                    false,
+                    &pool,
+                    false,
+                    Arc::new(MockStorage::new(None, false)),
+                    CacheControl::Default,
+                )
+                .wait()
+                .unwrap();
+            let outputs = res.compilation.outputs().map(|k| k.key).collect::<Vec<_>>();
+            (res.key, outputs)
+        };
+
+        let (key, outputs) = key_and_outputs(b"one profile");
+        assert_eq!(outputs, ["libfoo.rlib"]);
+        assert_eq!(key, key_and_outputs(b"one profile").0);
+        assert_ne!(key, key_and_outputs(b"another profile").0);
+    }
+
     fn hash_key<F>(
         f: &TestFixture,
         args: &[&'static str],
@@ -4277,10 +4873,25 @@ foo.rs:
         f: &TestFixture,
         args: &[A],
         env_vars: &[(OsString, OsString)],
-        env_deps: &[(&str, OsString)],
+        env_deps: &[(&str, Option<OsString>)],
         pre_func: F,
         storage: MockStorage,
     ) -> String
+    where
+        A: AsRef<OsStr>,
+        F: Fn(&Path) -> Result<()>,
+    {
+        hash_result_with(f, args, env_vars, env_deps, pre_func, storage).key
+    }
+
+    fn hash_result_with<A, F>(
+        f: &TestFixture,
+        args: &[A],
+        env_vars: &[(OsString, OsString)],
+        env_deps: &[(&str, Option<OsString>)],
+        pre_func: F,
+        storage: MockStorage,
+    ) -> HashResult<Arc<Mutex<MockCommandCreator>>>
     where
         A: AsRef<OsStr>,
         F: Fn(&Path) -> Result<()>,
@@ -4289,7 +4900,7 @@ foo.rs:
             .iter()
             .map(|a| a.as_ref().to_owned())
             .collect::<Vec<OsString>>();
-        let parsed_args = match parse_arguments(&oargs, f.tempdir.path()) {
+        let parsed_args = match parse_arguments(&oargs, f.tempdir.path(), env_vars) {
             CompilerArguments::Ok(parsed_args) => parsed_args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
@@ -4338,7 +4949,6 @@ foo.rs:
             )
             .wait()
             .unwrap()
-            .key
     }
 
     #[allow(clippy::unnecessary_unwrap)]
@@ -4383,7 +4993,7 @@ foo.rs:
                     ("CARGO_MANIFEST_DIR".into(), root.into()),
                     ("CARGO_OUTSIDE".into(), outside.into()),
                 ],
-                &[("OUT_DIR", root.join("target").join("out").into())],
+                &[("OUT_DIR", Some(root.join("target").join("out").into()))],
                 nothing,
                 MockStorage::new(None, false).with_basedirs(basedirs),
             )
@@ -4401,13 +5011,118 @@ foo.rs:
         assert_eq!(key(&a, "x", vec![]), key(&a, "x", vec![elsewhere]));
     }
 
-    /// An env-dep equal to a basedir is keyed apart from an unset one, which rustc
-    /// writes as `# env-dep:Y` for an `option_env!("Y")`.
+    /// `SCCACHE_BASEDIRS` in the compile environment replaces the configured basedirs.
     #[test]
-    fn test_hash_env_dep_equal_to_basedir_is_not_unset() {
+    fn test_hash_basedirs_from_compile_env() {
+        fn key(f: &TestFixture, env_basedirs: Option<&OsStr>, configured: Vec<Vec<u8>>) -> String {
+            let root = f.tempdir.path();
+            let mut env_vars: Vec<(OsString, OsString)> =
+                vec![("CARGO_MANIFEST_DIR".into(), root.into())];
+            env_vars.extend(env_basedirs.map(|v| ("SCCACHE_BASEDIRS".into(), v.into())));
+            hash_key_with(
+                f,
+                &[
+                    "--emit",
+                    "link",
+                    "foo.rs",
+                    "--out-dir",
+                    "out",
+                    "--crate-name",
+                    "foo",
+                    "--crate-type",
+                    "lib",
+                ],
+                &env_vars,
+                &[],
+                nothing,
+                MockStorage::new(None, false).with_basedirs(configured),
+            )
+        }
+
+        let a = TestFixture::new();
+        let b = TestFixture::new();
+        let a_root = a.tempdir.path().as_os_str();
+        let b_root = b.tempdir.path().as_os_str();
+        let both = vec![basedir(a.tempdir.path()), basedir(b.tempdir.path())];
+        // Each checkout names only its own root and still shares the key.
+        assert_eq!(key(&a, Some(a_root), vec![]), key(&b, Some(b_root), vec![]));
+        assert_eq!(key(&a, Some(a_root), vec![]), key(&a, None, both.clone()));
+        // An empty value turns the configured basedirs off.
+        assert_ne!(
+            key(&a, Some(OsStr::new("")), both.clone()),
+            key(&b, Some(OsStr::new("")), both.clone())
+        );
+        assert_eq!(
+            key(&a, Some(OsStr::new("")), both.clone()),
+            key(&a, None, vec![])
+        );
+        // A relative path is ignored in favor of the configured basedirs.
+        let relative = Some(OsStr::new("relative"));
+        assert_eq!(key(&a, relative, both.clone()), key(&b, relative, both));
+    }
+
+    #[test]
+    fn test_hash_key_cache_incremental() {
+        let f = TestFixture::new();
+        // `RUN` is in the dep-info key only: a value used before reuses that dep-info.
+        let key_with = |dir: Option<&str>, run: &str, env: &[(&str, &str)]| {
+            let mut env_vars: Vec<(OsString, OsString)> = vec![("RUN".into(), run.into())];
+            env_vars.extend(env.iter().map(|(k, v)| ((*k).into(), (*v).into())));
+            let res = hash_result_with(
+                &f,
+                &lib_args(dir),
+                &env_vars,
+                &[],
+                nothing,
+                MockStorage::new(None, false),
+            );
+            let (command, dist_command, _) = res
+                .compilation
+                .generate_compile_commands(&mut dist::PathTransformer::new(), false)
+                .unwrap();
+            let incremental_arg = dir.map(|dir| OsString::from(format!("incremental={dir}")));
+            assert_eq!(
+                command
+                    .get_arguments()
+                    .into_iter()
+                    .find(|a| a.to_string_lossy().starts_with("incremental=")),
+                incremental_arg
+            );
+            assert_eq!(
+                dist_command.is_some(),
+                cfg!(feature = "dist-client") && dir.is_none()
+            );
+            res.key
+        };
+        let allow = ("SCCACHE_ALLOW_INCREMENTAL", "cache");
+        let key = |dir: Option<&str>, run: &str| key_with(dir, run, &[allow]);
+        let plain = key(None, "1");
+        let incremental = key(Some("/inc/a"), "2");
+        assert_ne!(incremental, plain);
+        assert_eq!(key(Some("/inc/b"), "3"), incremental);
+        // Reusing the dep-info of a non-incremental compile, and the other way around.
+        assert_eq!(key(Some("/inc/c"), "1"), incremental);
+        assert_eq!(key(None, "2"), plain);
+        // The opt-in alone doesn't change the key.
+        assert_eq!(key_with(None, "4", &[]), plain);
+        // `CARGO_INCREMENTAL=1` and the profile's default give different keys.
+        let forced = key_with(Some("/inc/d"), "5", &[allow, ("CARGO_INCREMENTAL", "1")]);
+        assert_ne!(forced, incremental);
+    }
+
+    /// `option_env!("Y")` is `None` when `Y` is unset and `Some("")` when it is empty,
+    /// which rustc writes as `# env-dep:Y` and `# env-dep:Y=`. A crate that read it in
+    /// one state must not be served the output of another, whether that is an empty
+    /// value, some other value or one equal to a basedir.
+    #[test]
+    fn test_hash_unset_env_dep_is_keyed_apart() {
         let f = TestFixture::new();
         let root = f.tempdir.path().to_owned();
-        let key = |val: OsString| {
+        // rustc reads `Y` from the environment, so a set `Y` is there too. Without
+        // it both compiles share a dep-info key and the second reuses the first's.
+        let key = |val: Option<OsString>| {
+            let env_vars: Vec<(OsString, OsString)> =
+                val.iter().map(|v| ("Y".into(), v.clone())).collect();
             hash_key_with(
                 &f,
                 &[
@@ -4421,13 +5136,102 @@ foo.rs:
                     "--crate-type",
                     "lib",
                 ],
-                &[],
+                &env_vars,
                 &[("Y", val)],
                 nothing,
                 MockStorage::new(None, false).with_basedirs(vec![basedir(&root)]),
             )
         };
-        assert_ne!(key("".into()), key(root.clone().into()));
+        let unset = key(None);
+        let empty = key(Some("".into()));
+        assert_ne!(unset, empty);
+        assert_ne!(unset, key(Some("x".into())));
+        assert_ne!(unset, key(Some(root.clone().into())));
+        assert_ne!(empty, key(Some("x".into())));
+        // The same state keeps its key.
+        assert_eq!(unset, key(None));
+        assert_eq!(empty, key(Some("".into())));
+    }
+
+    /// SCCACHE_BASEDIRS_VERBATIM_ENV_DEPS keeps a crate that read a listed env-dep keyed
+    /// per checkout; other crates still share their key across checkouts.
+    #[test]
+    fn test_hash_basedirs_verbatim_env_deps() {
+        // `reads` is the name the crate read `CARGO_MANIFEST_DIR` under, if any.
+        fn key(
+            f: &TestFixture,
+            verbatim: Option<(&str, &OsStr)>,
+            reads: Option<&'static str>,
+            basedirs: &[Vec<u8>],
+        ) -> String {
+            let root = f.tempdir.path();
+            let mut env_vars: Vec<(OsString, OsString)> = vec![
+                ("CARGO_MANIFEST_DIR".into(), root.into()),
+                // Keeps the remembered dep-info of the kinds of crate apart.
+                ("READS".into(), reads.unwrap_or_default().into()),
+            ];
+            env_vars.extend(verbatim.map(|(var, v)| (var.into(), v.into())));
+            let mut env_deps = vec![("OUT_DIR", Some(root.join("target").join("out").into()))];
+            env_deps.extend(reads.map(|name| (name, Some(root.into()))));
+            hash_key_with(
+                f,
+                &[
+                    "--emit",
+                    "link",
+                    "foo.rs",
+                    "--out-dir",
+                    "out",
+                    "--crate-name",
+                    "foo",
+                    "--crate-type",
+                    "lib",
+                ],
+                &env_vars,
+                &env_deps,
+                nothing,
+                MockStorage::new(None, false).with_basedirs(basedirs.to_vec()),
+            )
+        }
+
+        let a = TestFixture::new();
+        let b = TestFixture::new();
+        let both = [basedir(a.tempdir.path()), basedir(b.tempdir.path())];
+        const VAR: &str = "SCCACHE_BASEDIRS_VERBATIM_ENV_DEPS";
+        let list = OsStr::new(" CARGO_MANIFEST_DIR,,CARGO_MANIFEST_PATH");
+        let names = Some((VAR, list));
+        let reads = Some("CARGO_MANIFEST_DIR");
+        // Unset, the env-dep is stripped and the checkouts share a key.
+        assert_eq!(key(&a, None, reads, &both), key(&b, None, reads, &both));
+        // Listed, a crate that read it is keyed per checkout...
+        assert_ne!(key(&a, names, reads, &both), key(&b, names, reads, &both));
+        // ...one that did not keeps the key it has when unset, as does every crate
+        // without basedirs.
+        assert_eq!(key(&a, names, None, &both), key(&b, None, None, &both));
+        assert_eq!(key(&a, names, reads, &[]), key(&a, None, reads, &[]));
+        // `env!("cargo_manifest_dir")` reads the same variable on Windows only.
+        let lower = Some("cargo_manifest_dir");
+        assert_eq!(
+            key(&a, names, lower, &both) != key(&b, names, lower, &both),
+            cfg!(windows)
+        );
+        // On Windows the list's own variable also matches in lowercase.
+        let lower_var = Some(("sccache_basedirs_verbatim_env_deps", list));
+        assert_eq!(
+            key(&a, lower_var, reads, &both) != key(&b, lower_var, reads, &both),
+            cfg!(windows)
+        );
+        // An empty or invalid value is ignored.
+        #[cfg(unix)]
+        let invalid = <OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(&[0xff]);
+        #[cfg(windows)]
+        let invalid: &OsStr =
+            &<OsString as std::os::windows::ffi::OsStringExt>::from_wide(&[0xd800]);
+        for value in [OsStr::new(""), invalid] {
+            assert_eq!(
+                key(&a, Some((VAR, value)), reads, &both),
+                key(&b, None, reads, &both)
+            );
+        }
     }
 
     #[test_case(true ; "with preprocessor cache")]
@@ -4822,6 +5626,155 @@ foo.rs:
     }
 
     #[test]
+    fn test_command_line_len() {
+        let len = |args: &[&str]| {
+            command_line_len(
+                Path::new("rustc"),
+                &args.iter().map(OsString::from).collect::<Vec<_>>(),
+            )
+        };
+        // The executable alone: its own bytes, a separator and both quotes.
+        assert_eq!(len(&[]), "rustc".len() + 3);
+        // An argument adds its bytes, a separator and both quotes...
+        assert_eq!(len(&["--crate-name"]), len(&[]) + "--crate-name".len() + 3);
+        // ...and an escape for every byte Windows may have to escape.
+        assert_eq!(len(&[r"a\b"]), len(&["axb"]) + 1);
+        assert_eq!(len(&["a\"b"]), len(&["axb"]) + 1);
+    }
+
+    fn long_arguments() -> Vec<OsString> {
+        (0..1000)
+            .map(|i| OsString::from(format!("--cfg=feature=\"some-feature-{i}\"")))
+            .collect()
+    }
+
+    #[test]
+    fn test_arguments_for_spawn() {
+        let rustc = Path::new("rustc");
+        let short = ovec!["--emit", "link", "foo.rs"];
+        let long = long_arguments();
+        let spawn = |arguments: &[OsString], limit: Option<usize>| {
+            arguments_for_spawn(rustc, arguments, limit).unwrap()
+        };
+        // Under the limit, and with no limit at all, the arguments are spawned as they are.
+        let (arguments, file) = spawn(&short, Some(100));
+        assert_eq!(arguments, short);
+        assert!(file.is_none());
+        let (arguments, file) = spawn(&long, None);
+        assert_eq!(arguments, long);
+        assert!(file.is_none());
+        // Over the limit, rustc reads the same arguments back from one `@file`.
+        assert!(command_line_len(rustc, &long) > 32_000);
+        let (arguments, file) = spawn(&long, Some(32_000));
+        let file = file.expect("the arguments went in a response file");
+        assert_eq!(arguments.len(), 1);
+        let path = arguments[0]
+            .to_str()
+            .unwrap()
+            .strip_prefix('@')
+            .expect("the argument names the response file")
+            .to_owned();
+        assert_eq!(Path::new(&path), file.path());
+        let contents = fs::read_to_string(file.path()).unwrap();
+        assert_eq!(split_rust_response_file_args(&contents), long);
+        assert!(command_line_len(rustc, &arguments) <= 32_000);
+    }
+
+    /// An argument a response file would change leaves the command line as it is.
+    #[test]
+    fn test_arguments_for_spawn_keeps_arguments_a_response_file_would_change() {
+        let rustc = Path::new("rustc");
+        let long = long_arguments();
+        let with = |arg: OsString| {
+            let mut arguments = long.clone();
+            arguments.push(arg.clone());
+            let (spawned, file) = arguments_for_spawn(rustc, &arguments, Some(32_000)).unwrap();
+            assert!(file.is_none(), "{arg:?} went in a response file");
+            assert!(spawned == arguments, "{arg:?} was not spawned as it is");
+        };
+        // rustc splits on newlines, trims, skips empty lines and does not expand `@file`.
+        with(OsString::from("--cfg=feature=\"a\nb\""));
+        with(OsString::from("--cfg=feature=\"a\"\r"));
+        with(OsString::from(" --cfg=feature=\"a\""));
+        with(OsString::from("--cfg=feature=\"a\" "));
+        with(OsString::from(""));
+        with(OsString::from("@more-args"));
+        // It reads the file as UTF-8.
+        #[cfg(unix)]
+        with({
+            use std::os::unix::ffi::OsStringExt;
+            OsString::from_vec(vec![b'-', b'-', 0x80])
+        });
+        #[cfg(windows)]
+        with({
+            use std::os::windows::ffi::OsStringExt;
+            OsString::from_wide(&[0x2d, 0x2d, 0xd800])
+        });
+        // The same arguments without the one that cannot be written do get a response file.
+        let (_, file) = arguments_for_spawn(rustc, &long, Some(32_000)).unwrap();
+        assert!(file.is_some());
+    }
+
+    /// A crate with a thousand features compiles through a response file that is deleted
+    /// with the command.
+    #[cfg(windows)]
+    #[test]
+    fn test_generate_compile_commands_response_file() {
+        let f = TestFixture::new();
+        let mut args: Vec<OsString> = ovec![
+            "--emit",
+            "link",
+            "foo.rs",
+            "--out-dir",
+            "out",
+            "--crate-name",
+            "foo",
+            "--crate-type",
+            "lib"
+        ];
+        let cfgs: Vec<String> = (0..1000)
+            .map(|i| format!("feature=\"some-feature-{i}\""))
+            .collect();
+        for cfg in &cfgs {
+            args.push(OsString::from("--cfg"));
+            args.push(OsString::from(cfg));
+        }
+        let result = hash_result_with(&f, &args, &[], &[], nothing, MockStorage::new(None, false));
+        let (command, _, _) = result
+            .compilation
+            .generate_compile_commands(&mut dist::PathTransformer::new(), false)
+            .unwrap();
+        let arguments = command.get_arguments();
+        assert_eq!(
+            arguments.len(),
+            1,
+            "spawned with one @file rather than {} arguments",
+            arguments.len()
+        );
+        let path = PathBuf::from(
+            arguments[0]
+                .to_str()
+                .unwrap()
+                .strip_prefix('@')
+                .expect("the argument names a response file"),
+        );
+        let read_back = split_rust_response_file_args(&fs::read_to_string(&path).unwrap());
+        // What rustc reads is the command line that could not be spawned.
+        assert!(command_line_len(Path::new("rustc"), &read_back) > 32_000);
+        for cfg in &cfgs {
+            assert!(
+                read_back.contains(&OsString::from(cfg)),
+                "the compile asked for --cfg {cfg}"
+            );
+        }
+        assert!(read_back.contains(&OsString::from("foo.rs")));
+        assert!(read_back.contains(&OsString::from("foo")));
+        // The file lives as long as the command that names it, and no longer.
+        drop(command);
+        assert!(!path.exists());
+    }
+
+    #[test]
     fn test_parse_arguments_response_file() {
         let td = tempfile::Builder::new()
             .prefix("sccache")
@@ -4833,7 +5786,7 @@ foo.rs:
             .unwrap();
         let arg = format!("@{}", td.path().join("args").display());
         let args: Vec<OsString> = vec![OsString::from(arg)];
-        let result = parse_arguments(&args, td.path());
+        let result = parse_arguments(&args, td.path(), &[]);
         let parsed = match result {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
@@ -4850,7 +5803,7 @@ foo.rs:
         // to missing --out-dir / --emit etc.
         let cwd = Path::new("/nonexistent");
         let args: Vec<OsString> = vec![OsString::from("@missing_file")];
-        let result = parse_arguments(&args, cwd);
+        let result = parse_arguments(&args, cwd, &[]);
         assert!(matches!(result, CompilerArguments::CannotCache(..)));
     }
 
@@ -4883,5 +5836,119 @@ foo.rs:
         ));
         assert!(!is_rmeta_artifact_notification(b"not json\n"));
         assert!(!is_rmeta_artifact_notification(b""));
+    }
+
+    #[cfg(feature = "dist-client")]
+    #[test]
+    fn test_write_inputs_parent_dir_components() {
+        use crate::dist::pkg::InputsPackager;
+
+        let tempdir = tempfile::Builder::new()
+            .prefix("sccache_test")
+            .tempdir()
+            .unwrap();
+        let root = tempdir.path();
+
+        fs::create_dir_all(root.join("sysdeps/nptl/bits")).unwrap();
+        fs::create_dir_all(root.join("sysdeps/nptl/bits-other")).unwrap();
+        fs::create_dir_all(root.join("sysdeps/x86/nptl/bits")).unwrap();
+        fs::create_dir_all(root.join("src/sub")).unwrap();
+        fs::create_dir_all(root.join("deps/empty_link_sub")).unwrap();
+        fs::write(root.join("sysdeps/nptl/mod.rs"), b"mod struct_mutex;\n").unwrap();
+        fs::write(
+            root.join("sysdeps/nptl/bits-other/sibling.rs"),
+            b"pub struct Sibling;\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("sysdeps/x86/nptl/bits/struct_mutex.rs"),
+            b"pub struct Mutex;\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("sysdeps/x86/nptl/bits/cond.rs"),
+            b"pub struct Cond;\n",
+        )
+        .unwrap();
+        fs::write(root.join("src/sub/helper.rs"), b"pub fn h() {}\n").unwrap();
+        fs::write(root.join("src/lib.rs"), b"mod sub;\n").unwrap();
+
+        let packager = RustInputsPackager {
+            env_vars: vec![],
+            crate_link_paths: vec![root.join("deps/empty_link_sub/..")],
+            crate_types: CrateTypes {
+                rlib: true,
+                staticlib: false,
+            },
+            inputs: vec![
+                root.join("sysdeps/nptl/mod.rs"),
+                root.join("sysdeps/nptl/bits-other/sibling.rs"),
+                root.join("sysdeps/nptl/bits/../../x86/nptl/bits/struct_mutex.rs"),
+                root.join("sysdeps/nptl/bits/../../x86/nptl/bits/cond.rs"),
+                root.join("src/sub/helper.rs"),
+                root.join("src/sub/../lib.rs"),
+            ],
+            path_transformer: dist::PathTransformer::new(),
+            rlib_dep_reader: None,
+        };
+
+        let mut tar_bytes = vec![];
+        Box::new(packager).write_inputs(&mut tar_bytes).unwrap();
+
+        let mut pt = dist::PathTransformer::new();
+        let mut dist_rel =
+            |rel: &str| PathBuf::from(pt.as_dist(&root.join(rel)).unwrap().trim_start_matches('/'));
+        let bits_dir = dist_rel("sysdeps/nptl/bits");
+        let link_sub_dir = dist_rel("deps/empty_link_sub");
+        let nptl_dir = dist_rel("sysdeps/nptl");
+        let sub_dir = dist_rel("src/sub");
+
+        let mut entries = vec![];
+        for entry in tar::Archive::new(tar_bytes.as_slice()).entries().unwrap() {
+            let entry = entry.unwrap();
+            let header = entry.header();
+            entries.push((
+                entry.path().unwrap().into_owned(),
+                header.entry_type(),
+                header.mode().unwrap(),
+            ));
+        }
+
+        let dir_paths: Vec<_> = entries
+            .iter()
+            .filter(|(_, kind, _)| *kind == tar::EntryType::Directory)
+            .map(|(p, _, mode)| {
+                assert_eq!(mode & 0o700, 0o700);
+                p.clone()
+            })
+            .collect();
+        assert_eq!(
+            dir_paths,
+            vec![
+                link_sub_dir.clone(),
+                sub_dir.clone(),
+                nptl_dir.clone(),
+                bits_dir.clone(),
+            ]
+        );
+
+        let unpack_dir = tempfile::Builder::new()
+            .prefix("sccache_unpack")
+            .tempdir()
+            .unwrap();
+        tar::Archive::new(tar_bytes.as_slice())
+            .unpack(unpack_dir.path())
+            .unwrap();
+
+        assert!(unpack_dir.path().join(&bits_dir).is_dir());
+        assert!(unpack_dir.path().join(&link_sub_dir).is_dir());
+        let unsimplified = unpack_dir
+            .path()
+            .join(&nptl_dir)
+            .join("bits/../../x86/nptl/bits/struct_mutex.rs");
+        assert_eq!(
+            fs::read_to_string(unsimplified).unwrap(),
+            "pub struct Mutex;\n"
+        );
     }
 }

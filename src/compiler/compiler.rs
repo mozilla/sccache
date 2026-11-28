@@ -212,11 +212,10 @@ impl CompileCommandImpl for SingleCompileCommand {
         } = self;
         // Resolve compiler avoiding ccache wrappers to prevent double-caching.
         let resolved_executable = resolve_compiler_avoiding_wrapper(executable, env_vars);
-        let mut cmd = creator.clone().new_command_sync(&resolved_executable);
-        cmd.args(arguments)
-            .env_clear()
-            .envs(env_vars.clone())
-            .current_dir(cwd);
+        let mut cmd = creator
+            .clone()
+            .new_command_with_env(&resolved_executable, env_vars.iter().cloned());
+        cmd.args(arguments).current_dir(cwd);
         if *share_jobserver {
             cmd.share_jobserver();
         }
@@ -666,7 +665,7 @@ where
                 );
                 let output = process::Output {
                     status: exit_status(0),
-                    stdout: entry.get_stdout(),
+                    stdout: compilation.cached_stdout(entry.get_stdout()),
                     stderr: entry.get_stderr(),
                 };
 
@@ -1166,6 +1165,11 @@ where
         true
     }
 
+    /// Adjust the stdout replayed from a cache hit for this compilation.
+    fn cached_stdout(&self, stdout: Vec<u8>) -> Vec<u8> {
+        stdout
+    }
+
     /// Returns an iterator over the results of this compilation.
     ///
     /// Each item is a descriptive (and unique) name of the output paired with
@@ -1581,14 +1585,16 @@ async fn resolve_rust_compiler<T>(
 where
     T: CommandCreatorSync,
 {
-    let mut child = creator.clone().new_command_sync(executable);
+    let mut child = creator
+        .clone()
+        .new_command_with_env(executable, env.iter().cloned());
     // We're wrapping rustc if the executable doesn't match the detected rustc_executable. In this case the wrapper
     // expects rustc as the first argument.
     if rustc_executable != executable {
         child.arg(&rustc_executable);
     }
 
-    child.env_clear().envs(env.to_vec()).args(&["-vV"]);
+    child.args(&["-vV"]);
 
     let rustc_vv = run_input_output(child, None).await.map(|output| {
         if let Ok(stdout) = String::from_utf8(output.stdout.clone())
@@ -2279,6 +2285,26 @@ mod test {
                 .wait()
                 .unwrap();
         }
+    }
+
+    #[test]
+    fn test_assembler_path_relative_path_entry_uses_client_cwd() {
+        let f = TestFixture::new();
+        let runtime = single_threaded_runtime();
+        let creator = new_creator();
+        let assembler = mk_bin(f.tempdir.path(), "tools/as").unwrap();
+        next_command(&creator, Ok(MockChild::new(exit_status(0), "as\n", "")));
+        let env = vec![(OsString::from("PATH"), OsString::from("tools"))];
+        let found = runtime
+            .block_on(assembler_path(
+                &creator,
+                Path::new("gcc"),
+                &[],
+                f.tempdir.path(),
+                &env,
+            ))
+            .unwrap();
+        assert_eq!(assembler, found.canonicalize().unwrap());
     }
 
     #[test]
@@ -3849,6 +3875,29 @@ LLVM version: 6.0",
             assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
             assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_single_compile_command_uses_only_client_env() {
+        let runtime = Runtime::new().unwrap();
+        let storage = Arc::new(MockStorage::new(None, false));
+        let service: server::SccacheService<ProcessCommandCreator> =
+            server::SccacheService::mock_with_storage(storage, runtime.handle().clone());
+        let client = crate::jobserver::Client::new_num(1);
+        let creator = <ProcessCommandCreator as CommandCreator>::new(&client);
+        let cmd = SingleCompileCommand {
+            executable: "/usr/bin/env".into(),
+            arguments: vec![],
+            env_vars: vec![("SCCACHE_TEST_ONLY".into(), "1".into())],
+            cwd: std::env::temp_dir(),
+            share_jobserver: false,
+        };
+        let output = runtime.block_on(cmd.execute(&service, &creator)).unwrap();
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            "SCCACHE_TEST_ONLY=1\n"
+        );
     }
 }
 

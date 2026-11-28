@@ -194,7 +194,7 @@ counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     flag!("--save-temps=cwd", TooHardFlag),
     flag!("--save-temps=obj", TooHardFlag),
     take_arg!("--serialize-diagnostics", PathBuf, Separated, SerializeDiagnostics),
-    take_arg!("--sysroot", PathBuf, Separated, PassThroughPath),
+    take_arg!("--sysroot", PathBuf, CanBeSeparated(b'='), PassThroughPath),
     take_arg!("-A", OsString, Separated, PassThrough),
     take_arg!("-B", PathBuf, CanBeSeparated, PassThroughPath),
     take_arg!("-D", OsString, CanBeSeparated, PassThrough),
@@ -829,7 +829,6 @@ fn preprocess_cmd<F, T>(
     parsed_args: &ParsedArguments,
     arch_args: &[OsString],
     cwd: &Path,
-    env_vars: &[(OsString, OsString)],
     may_dist: bool,
     kind: CCompilerKind,
     rewrite_includes_only: bool,
@@ -876,10 +875,7 @@ fn preprocess_cmd<F, T>(
     if parsed_args.double_dash_input {
         cmd.arg("--");
     }
-    cmd.arg(&parsed_args.input)
-        .env_clear()
-        .envs(env_vars.to_vec())
-        .current_dir(cwd);
+    cmd.arg(&parsed_args.input).current_dir(cwd);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -901,13 +897,14 @@ where
 {
     trace!("preprocess");
     let run_pass = |parsed_args: &ParsedArguments, arch_args: &[OsString], may_dist: bool| {
-        let mut cmd = creator.clone().new_command_sync(executable);
+        let mut cmd = creator
+            .clone()
+            .new_command_with_env(executable, env_vars.iter().cloned());
         preprocess_cmd(
             &mut cmd,
             parsed_args,
             arch_args,
             cwd,
-            env_vars,
             may_dist,
             kind.clone(),
             rewrite_includes_only,
@@ -1113,6 +1110,14 @@ where
             // https://gcc.gnu.org/onlinedocs/gcc-4.9.0/gcc/Overall-Options.html
             let mut language: Option<String> =
                 language_to_arg(parsed_args.language).map(|lang| lang.into());
+            // The gcc driver forces -fno-directives-only for assembly, so the
+            // client output is already fully preprocessed. Running it through
+            // cpp again with -fpreprocessed breaks the first linemarker, which
+            // the assembler then rejects. clang's -frewrite-includes keeps the
+            // macros, so clang assembly still needs the server-side cpp pass.
+            let rewrite_includes_only = rewrite_includes_only
+                && !(kind == CCompilerKind::Gcc
+                    && parsed_args.language == Language::AssemblerToPreprocess);
             if rewrite_includes_only || parsed_args.language.is_c_like_header() {
             } else if let Some(processed_lang) = parsed_args.language.to_c_preprocessed_language() {
                 language = Some(language_to_arg(processed_lang)?.into());
@@ -1330,6 +1335,35 @@ mod test {
             plusplus,
             CCompilerKind::Clang,
         )
+    }
+
+    #[test]
+    fn test_parse_arguments_sysroot() {
+        let parse = |args| match parse_arguments_(args, false) {
+            CompilerArguments::Ok(ParsedArguments { common_args, .. }) => common_args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(
+            ovec!["--sysroot", "/opt/sysroot"],
+            parse(stringvec![
+                "-c",
+                "foo.c",
+                "-o",
+                "foo.o",
+                "--sysroot",
+                "/opt/sysroot"
+            ])
+        );
+        assert_eq!(
+            ovec!["--sysroot", "/opt/sysroot"],
+            parse(stringvec![
+                "-c",
+                "foo.c",
+                "-o",
+                "foo.o",
+                "--sysroot=/opt/sysroot"
+            ])
+        );
     }
 
     #[test]
@@ -2176,6 +2210,37 @@ mod test {
     }
 
     #[test]
+    fn test_preprocess_uses_only_client_env() {
+        let parsed_args = match parse_arguments_(stringvec!["-c", "foo.c"], false) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        let env_vars = vec![(OsString::from("CPATH"), OsString::from("/inc"))];
+        let creator = new_creator();
+        let expected_env = env_vars.clone();
+        creator.lock().unwrap().next_command_inspects(move |cmd| {
+            assert!(cmd.env_cleared);
+            assert_eq!(cmd.env, expected_env);
+            assert_eq!(cmd.cwd.as_deref(), Some(Path::new("/build")));
+            Ok(MockChild::new(exit_status(0), "", ""))
+        });
+        single_threaded_runtime()
+            .block_on(preprocess(
+                &creator,
+                Path::new("gcc"),
+                &parsed_args,
+                Path::new("/build"),
+                &env_vars,
+                true,
+                CCompilerKind::Gcc,
+                true,
+                vec![],
+                language_to_gcc_arg,
+            ))
+            .unwrap();
+    }
+
+    #[test]
     fn test_preprocess_passes_per_arch() {
         let single = |arch_args: Vec<OsString>| {
             let mut args = ovec!["-x", "c", "-E", "-fdirectives-only"];
@@ -2382,16 +2447,12 @@ mod test {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
-        let mut cmd = MockCommand {
-            child: None,
-            args: vec![],
-        };
+        let mut cmd = MockCommand::default();
         preprocess_cmd(
             &mut cmd,
             &parsed_args,
             &parsed_args.arch_args,
-            Path::new(""),
-            &[],
+            Path::new("/build"),
             true,
             CCompilerKind::Clang,
             true,
@@ -2400,6 +2461,7 @@ mod test {
         );
         let expected_args = ovec!["-x", "c", "-E", "-frewrite-includes", "--", "foo.c"];
         assert_eq!(cmd.args, expected_args);
+        assert_eq!(cmd.cwd.as_deref(), Some(Path::new("/build")));
     }
 
     #[test]
@@ -2409,16 +2471,12 @@ mod test {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
-        let mut cmd = MockCommand {
-            child: None,
-            args: vec![],
-        };
+        let mut cmd = MockCommand::default();
         preprocess_cmd(
             &mut cmd,
             &parsed_args,
             &parsed_args.arch_args,
             Path::new(""),
-            &[],
             true,
             CCompilerKind::Gcc,
             true,
@@ -2436,16 +2494,12 @@ mod test {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
-        let mut cmd = MockCommand {
-            child: None,
-            args: vec![],
-        };
+        let mut cmd = MockCommand::default();
         preprocess_cmd(
             &mut cmd,
             &parsed_args,
             &parsed_args.arch_args,
             Path::new(""),
-            &[],
             true,
             CCompilerKind::Gcc,
             true,
@@ -2463,16 +2517,12 @@ mod test {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
-        let mut cmd = MockCommand {
-            child: None,
-            args: vec![],
-        };
+        let mut cmd = MockCommand::default();
         preprocess_cmd(
             &mut cmd,
             &parsed_args,
             &parsed_args.arch_args,
             Path::new(""),
-            &[],
             true,
             CCompilerKind::Gcc,
             true,
@@ -2566,7 +2616,7 @@ mod test {
     fn test_parse_arguments_empty_args() {
         assert_eq!(
             CompilerArguments::NotCompilation,
-            parse_arguments_(vec!(), false)
+            parse_arguments_(vec![], false)
         );
     }
 
@@ -3080,6 +3130,59 @@ mod test {
     }
 
     #[test]
+    #[cfg(feature = "dist-client")]
+    fn test_compile_rewrite_includes_only_dist_assembler() {
+        let f = TestFixture::new();
+        let dist_args = |kind: CCompilerKind, input: &str| {
+            let parsed_args = match parse_arguments_(stringvec!["-c", input, "-o", "foo.o"], false)
+            {
+                CompilerArguments::Ok(args) => args,
+                o => panic!("Got unexpected parse result: {:?}", o),
+            };
+            let language_to_arg = match kind {
+                CCompilerKind::Clang => crate::compiler::clang::language_to_clang_arg,
+                _ => language_to_gcc_arg,
+            };
+            let mut path_transformer = dist::PathTransformer::new();
+            generate_compile_commands(
+                &mut path_transformer,
+                &f.bins[0],
+                &parsed_args,
+                f.tempdir.path(),
+                &[],
+                kind,
+                true,
+                language_to_arg,
+            )
+            .unwrap()
+            .1
+            .unwrap()
+            .arguments
+        };
+
+        // gcc assembly is fully preprocessed on the client, so the server
+        // only assembles it.
+        let args = dist_args(CCompilerKind::Gcc, "foo.S");
+        assert_eq!(&args[..2], &["-x", "assembler"]);
+        assert!(!args.contains(&"-fdirectives-only".to_string()));
+
+        // C still has its macros left for the server to expand.
+        let args = dist_args(CCompilerKind::Gcc, "foo.c");
+        assert_eq!(&args[..2], &["-x", "c"]);
+        assert!(args.contains(&"-fdirectives-only".to_string()));
+
+        // clang's -frewrite-includes leaves the macros in assembly too;
+        // sending it as plain assembler would silently miscompile it.
+        let args = dist_args(CCompilerKind::Clang, "foo.S");
+        assert_eq!(&args[..2], &["-x", "assembler-with-cpp"]);
+
+        // -fpreprocessed is gcc only, clang must not get it for C either.
+        let args = dist_args(CCompilerKind::Clang, "foo.c");
+        assert_eq!(&args[..2], &["-x", "c"]);
+        assert!(!args.contains(&"-fpreprocessed".to_string()));
+    }
+
+    #[test]
     fn test_compile_simple_verbose_long() {
         let creator = new_creator();
         let f = TestFixture::new();
@@ -3215,16 +3318,12 @@ mod test {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
-        let mut cmd = MockCommand {
-            child: None,
-            args: vec![],
-        };
+        let mut cmd = MockCommand::default();
         preprocess_cmd(
             &mut cmd,
             &parsed_args,
             &parsed_args.arch_args,
             Path::new(""),
-            &[],
             true,
             CCompilerKind::Gcc,
             true,
@@ -3241,16 +3340,12 @@ mod test {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
-        let mut cmd = MockCommand {
-            child: None,
-            args: vec![],
-        };
+        let mut cmd = MockCommand::default();
         preprocess_cmd(
             &mut cmd,
             &parsed_args,
             &parsed_args.arch_args,
             Path::new(""),
-            &[],
             true,
             CCompilerKind::Gcc,
             true,
@@ -3267,16 +3362,12 @@ mod test {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
-        let mut cmd = MockCommand {
-            child: None,
-            args: vec![],
-        };
+        let mut cmd = MockCommand::default();
         preprocess_cmd(
             &mut cmd,
             &parsed_args,
             &parsed_args.arch_args,
             Path::new(""),
-            &[],
             true,
             CCompilerKind::Gcc,
             true,

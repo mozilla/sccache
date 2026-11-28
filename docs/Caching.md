@@ -36,6 +36,8 @@ We also take into account in the hash:
   the version it reports, when there is one: GCC always assembles that way,
   clang only with `-fno-integrated-as`
 * Programming language
+* File name of the input, without its directory, since the compiler records it
+  in the object file
 * Flag required to compile for the given language
 * File in which to generate dependencies.
 * Commandline arguments for dependency generation
@@ -56,6 +58,14 @@ to the C/C++ compiler one, but with additional elements:
 
 * The path of the input file
 * The hash of the input file
+
+A hit on this key hands back the C/C++ compiler key that was stored with the
+entry, so the hash above is never computed on that path. What stands in for it
+is the list of include files recorded with the entry: the entry only counts as
+a hit if every one of them is still on disk with the contents it had.
+
+For how that list is checked when [`basedirs`](Configuration.md) is set, and
+what it cannot detect, see [the local doc](Local.md).
 
 Note that some compiler options can disable preprocessor cache mode. As of this
 writing, only `-Xpreprocessor` and `-Wp,*` do.

@@ -200,11 +200,11 @@ impl CCompilerImpl for Nvcc {
         let resolved_executable = resolve_compiler_avoiding_wrapper(executable, &env_vars);
 
         let initialize_cmd_and_args = || {
-            let mut command = creator.clone().new_command_sync(&resolved_executable);
+            let mut command = creator
+                .clone()
+                .new_command_with_env(&resolved_executable, env_vars.iter().cloned());
             command
                 .current_dir(cwd)
-                .env_clear()
-                .envs(env_vars.clone())
                 .args(&parsed_args.preprocessor_args)
                 .args(&parsed_args.common_args)
                 .arg("-x")
@@ -404,7 +404,7 @@ pub fn generate_compile_commands(
         .prefix("sccache_nvcc")
         .tempdir()
         .unwrap()
-        .into_path();
+        .keep();
 
     let mut arguments = vec![];
 
@@ -976,13 +976,13 @@ where
     // Resolve compiler avoiding ccache wrappers to prevent double-caching.
     let resolved_executable = resolve_compiler_avoiding_wrapper(executable, env_vars);
 
-    let mut nvcc_dryrun_cmd = creator.clone().new_command_sync(&resolved_executable);
+    let mut nvcc_dryrun_cmd = creator
+        .clone()
+        .new_command_with_env(&resolved_executable, env_vars.iter().cloned());
 
     nvcc_dryrun_cmd
         .args(&[arguments, &["--dryrun".into(), "--keep".into()][..]].concat())
-        .env_clear()
-        .current_dir(cwd)
-        .envs(env_vars.clone());
+        .current_dir(cwd);
 
     let nvcc_dryrun_output = run_input_output(nvcc_dryrun_cmd, None).await?;
 
@@ -1018,6 +1018,7 @@ where
             cwd,
             &line,
             host_compiler,
+            env_vars,
         )?;
 
         let (exe, mut args) = match maybe_exe_and_args {
@@ -1071,6 +1072,7 @@ fn fold_env_vars_or_split_into_exe_and_args(
     cwd: &Path,
     line: &str,
     host_compiler: &NvccHostCompiler,
+    inherited_env_vars: &[(OsString, OsString)],
 ) -> Result<Option<(PathBuf, Vec<String>)>> {
     fn envvar_in_shell_format(var: &str) -> String {
         if cfg!(target_os = "windows") {
@@ -1143,13 +1145,20 @@ fn fold_env_vars_or_split_into_exe_and_args(
         None => return Err(anyhow!("Could not split shell line")),
     };
 
+    // Some NVCC distributions omit the inherited PATH from their dry-run output.
     let env_path = env_vars
         .iter()
-        .find(|(k, _)| k == "PATH")
-        .map(|(_, p)| p.to_owned())
-        .unwrap();
+        .chain(inherited_env_vars)
+        .find(|(k, _)| {
+            if cfg!(windows) {
+                k.eq_ignore_ascii_case("PATH")
+            } else {
+                k == "PATH"
+            }
+        })
+        .map(|(_, p)| p);
 
-    let exe = which_in(exe, env_path.into(), cwd)?;
+    let exe = which_in(exe, env_path, cwd)?;
 
     Ok(Some((exe.clone(), args.to_vec())))
 }
@@ -1289,12 +1298,11 @@ where
 
         let out = match cacheable {
             Cacheable::No => {
-                let mut cmd = creator.clone().new_command_sync(&resolved_exe);
+                let mut cmd = creator
+                    .clone()
+                    .new_command_with_env(&resolved_exe, env_vars.iter().cloned());
 
-                cmd.args(args)
-                    .current_dir(cwd)
-                    .env_clear()
-                    .envs(env_vars.clone());
+                cmd.args(args).current_dir(cwd);
 
                 run_input_output(cmd, None)
                     .await
@@ -1566,6 +1574,94 @@ mod test {
             permissions.set_mode(0o755);
             fs::set_permissions(&path, permissions).unwrap();
         }
+    }
+
+    #[test_case::test_case("PATH"; "uppercase")]
+    #[cfg_attr(windows, test_case::test_case("Path"; "mixed_case"))]
+    fn test_select_nvcc_subcommands_path(path_name: &str) {
+        let inherited_dir = tempfile::tempdir().unwrap();
+        let dryrun_dir = tempfile::tempdir().unwrap();
+        for dir in [inherited_dir.path(), dryrun_dir.path()] {
+            fake_executable(dir, "host-compiler");
+        }
+        let executable_name = format!("host-compiler{}", std::env::consts::EXE_SUFFIX);
+        let inherited_executable = inherited_dir.path().join(&executable_name);
+        let inherited_env = vec![(
+            path_name.into(),
+            inherited_dir.path().as_os_str().to_owned(),
+        )];
+
+        for (dryrun, mut env_vars, expected_executable) in [
+            (
+                "#$ host-compiler -c kernel.cu\n".to_owned(),
+                inherited_env.clone(),
+                inherited_executable.clone(),
+            ),
+            (
+                format!(
+                    "#$ PATH={}\n#$ host-compiler -c kernel.cu\n",
+                    dryrun_dir.path().display()
+                ),
+                inherited_env,
+                dryrun_dir.path().join(&executable_name),
+            ),
+            (
+                format!("#$ \"{}\" -c kernel.cu\n", inherited_executable.display()),
+                vec![],
+                inherited_executable,
+            ),
+        ] {
+            let creator = new_creator();
+            next_command(
+                &creator,
+                Ok(MockChild::new(
+                    exit_status(0),
+                    dryrun.as_bytes(),
+                    dryrun.as_bytes(),
+                )),
+            );
+            let commands = select_nvcc_subcommands(
+                &creator,
+                &inherited_dir.path().join("nvcc"),
+                inherited_dir.path(),
+                &mut env_vars,
+                false,
+                &[],
+                |_| true,
+                &NvccHostCompiler::Gcc,
+                OsStr::new("kernel.o"),
+            )
+            .wait()
+            .unwrap();
+            assert_eq!(commands.len(), 1);
+            assert_eq!(
+                fs::canonicalize(&commands[0].1).unwrap(),
+                fs::canonicalize(expected_executable).unwrap()
+            );
+            assert_eq!(commands[0].2, ["-c", "kernel.cu"]);
+        }
+    }
+
+    #[test]
+    fn test_select_nvcc_subcommands_without_path_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let creator = new_creator();
+        let dryrun = b"#$ host-compiler -c kernel.cu\n";
+        next_command(&creator, Ok(MockChild::new(exit_status(0), dryrun, dryrun)));
+        let error = select_nvcc_subcommands(
+            &creator,
+            &dir.path().join("nvcc"),
+            dir.path(),
+            &mut vec![],
+            false,
+            &[],
+            |_| true,
+            &NvccHostCompiler::Gcc,
+            OsStr::new("kernel.o"),
+        )
+        .wait()
+        .unwrap_err();
+        assert!(error.downcast_ref::<which::Error>().is_some());
     }
 
     #[test]

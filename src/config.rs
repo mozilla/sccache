@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::cache::CacheMode;
+use crate::util::env_var_name_matches;
 #[cfg(target_os = "windows")]
 use crate::util::normalize_win_path;
 use directories::ProjectDirs;
@@ -26,8 +27,11 @@ use serde::{
 };
 #[cfg(test)]
 use serial_test::serial;
+use std::borrow::Cow;
 use std::env;
+use std::ffi::OsString;
 use std::io::{Read, Write};
+use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::result::Result as StdResult;
 use std::str::FromStr;
@@ -175,7 +179,9 @@ pub fn parse_size(val: &str) -> Option<u64> {
     } else {
         val
     };
-    u64::from_str(val).ok().map(|size| size * multiplier)
+    u64::from_str(val)
+        .ok()
+        .and_then(|size| size.checked_mul(multiplier))
 }
 
 #[cfg(any_dist)]
@@ -441,6 +447,8 @@ pub struct RedisCacheConfig {
     /// Default to infinity (0)
     #[serde(default, alias = "expiration")]
     pub ttl: u64,
+
+    pub io_timeout_secs: Option<NonZeroU64>,
 
     #[serde(default)]
     pub key_prefix: String,
@@ -954,6 +962,9 @@ fn config_from_env() -> Result<EnvConfig> {
                 .transpose()?
                 .unwrap_or(DEFAULT_REDIS_CACHE_TTL);
 
+            let io_timeout_secs =
+                number_from_env_var("SCCACHE_REDIS_IO_TIMEOUT_SECS").transpose()?;
+
             let key_prefix = key_prefix_from_env_var("SCCACHE_REDIS_KEY_PREFIX");
 
             let rw_mode = cache_mode_from_env_var("SCCACHE_REDIS_RW_MODE")
@@ -967,6 +978,7 @@ fn config_from_env() -> Result<EnvConfig> {
                 password,
                 db,
                 ttl,
+                io_timeout_secs,
                 key_prefix,
                 rw_mode,
             })
@@ -1202,7 +1214,11 @@ fn config_from_env() -> Result<EnvConfig> {
 
     // ======= Local =======
     let disk_dir = env::var_os("SCCACHE_DIR").map(PathBuf::from);
-    let disk_sz = string_from_env_var("SCCACHE_CACHE_SIZE").and_then(|v| parse_size(&v));
+    let disk_sz = string_from_env_var("SCCACHE_CACHE_SIZE")
+        .map(|v| {
+            parse_size(&v).ok_or_else(|| anyhow!("SCCACHE_CACHE_SIZE value is invalid: {v:?}"))
+        })
+        .transpose()?;
 
     let mut preprocessor_mode_config = PreprocessorCacheModeConfig::activated();
     let preprocessor_mode_overridden = if let Some(value) = bool_from_env_var("SCCACHE_DIRECT")? {
@@ -1263,20 +1279,7 @@ fn config_from_env() -> Result<EnvConfig> {
         multilevel,
     };
 
-    // ======= Base directory =======
-    // Support multiple paths separated by ';' on Windows and ':' on other platforms
-    // to match PATH behavior.
-    #[cfg(target_os = "windows")]
-    let split_symbol = ';';
-    #[cfg(not(target_os = "windows"))]
-    let split_symbol = ':';
-    let basedirs = env::var_os("SCCACHE_BASEDIRS").map(|s| {
-        s.to_string_lossy()
-            .split(split_symbol)
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_owned())
-            .collect()
-    });
+    let basedirs = env::var_os("SCCACHE_BASEDIRS").map(|s| split_basedirs(&s.to_string_lossy()));
 
     let dist_cache_dir = env::var_os("SCCACHE_DIST_CLIENT_CACHE_DIR").map(PathBuf::from);
     let client_side_mode = bool_from_env_var("SCCACHE_CLIENT_SIDE")?;
@@ -1287,6 +1290,78 @@ fn config_from_env() -> Result<EnvConfig> {
         dist_cache_dir,
         client_side_mode,
     })
+}
+
+/// Split a `SCCACHE_BASEDIRS` value on `;` on Windows and `:` elsewhere, like `PATH`.
+fn split_basedirs(value: &str) -> Vec<String> {
+    #[cfg(target_os = "windows")]
+    let split_symbol = ';';
+    #[cfg(not(target_os = "windows"))]
+    let split_symbol = ':';
+    value
+        .split(split_symbol)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_owned())
+        .collect()
+}
+
+/// Normalize basedirs into the form `strip_basedirs` matches against: absolute,
+/// without `.` and `..`, with a trailing `/`, and on Windows with forward slashes
+/// and lowercase.
+fn normalize_basedirs(raw: Vec<String>) -> Result<Vec<Vec<u8>>> {
+    let mut basedirs = Vec::with_capacity(raw.len());
+    for d in raw {
+        let p = Utf8TypedPathBuf::from(d);
+        if !p.is_absolute() {
+            bail!("Basedir path must be absolute: {:?}", p);
+        }
+        let mut bytes = p.normalize().to_string().into_bytes();
+        // Only match complete path components.
+        bytes.push(b'/');
+        #[cfg(target_os = "windows")]
+        let bytes = normalize_win_path(&bytes);
+        if !basedirs.contains(&bytes) {
+            basedirs.push(bytes);
+        }
+    }
+    Ok(basedirs)
+}
+
+fn basedirs_display(basedirs: &[Vec<u8>]) -> Vec<Cow<'_, str>> {
+    basedirs
+        .iter()
+        .map(|b| String::from_utf8_lossy(b))
+        .collect()
+}
+
+/// The basedirs for one compile: `SCCACHE_BASEDIRS` from its environment when set,
+/// else the configured ones. An invalid value is ignored.
+pub fn compile_basedirs<'a>(
+    env_vars: &[(OsString, OsString)],
+    configured: &'a [Vec<u8>],
+) -> Cow<'a, [Vec<u8>]> {
+    const VAR: &str = "SCCACHE_BASEDIRS";
+    let Some((_, value)) = env_vars.iter().find(|(k, _)| env_var_name_matches(k, VAR)) else {
+        return Cow::Borrowed(configured);
+    };
+    let Some(value) = value.to_str() else {
+        warn!("Ignoring {VAR}: not valid UTF-8: {value:?}");
+        return Cow::Borrowed(configured);
+    };
+    match normalize_basedirs(split_basedirs(value)) {
+        Ok(basedirs) if basedirs == configured => Cow::Borrowed(configured),
+        Ok(basedirs) => {
+            debug!(
+                "Using basedirs from the compile environment: {:?}",
+                basedirs_display(&basedirs)
+            );
+            Cow::Owned(basedirs)
+        }
+        Err(e) => {
+            warn!("Ignoring {VAR}={value:?}: {e}");
+            Cow::Borrowed(configured)
+        }
+    }
 }
 
 // The directories crate changed the location of `config_dir` on macos in version 3,
@@ -1375,47 +1450,12 @@ impl Config {
             file_basedirs
         };
 
-        // Validate that all basedirs are absolute paths
-        // basedirs_raw is Vec<PathBuf>
-        let mut basedirs = Vec::with_capacity(basedirs_raw.len());
-        for d in basedirs_raw {
-            let p = Utf8TypedPathBuf::from(d);
-            if !p.is_absolute() {
-                bail!("Basedir path must be absolute: {:?}", p);
-            }
-            // Normalize basedir:
-            // remove double separators, cur_dirs, parent_dirs, trailing slashes
-            let p_norm = p.normalize();
-            let mut bytes = p_norm.to_string().into_bytes();
-
-            // Always add a trailing `/` to basedirs to ensure we only match complete path
-            // components
-            bytes.push(b'/');
-
-            // normalize windows paths: use slashes and lowercase
-            let normalized = {
-                #[cfg(target_os = "windows")]
-                {
-                    normalize_win_path(&bytes)
-                }
-
-                #[cfg(not(target_os = "windows"))]
-                {
-                    bytes
-                }
-            };
-            // push only if not already present
-            if !basedirs.contains(&normalized) {
-                basedirs.push(normalized);
-            }
-        }
-
+        let basedirs = normalize_basedirs(basedirs_raw)?;
         if !basedirs.is_empty() && log::log_enabled!(log::Level::Debug) {
-            let basedirs_str: Vec<String> = basedirs
-                .iter()
-                .map(|b| String::from_utf8_lossy(b).into_owned())
-                .collect();
-            debug!("Using basedirs for path normalization: {:?}", basedirs_str);
+            debug!(
+                "Using basedirs for path normalization: {:?}",
+                basedirs_display(&basedirs)
+            );
         }
 
         let client_side_mode = env_client_side_mode.unwrap_or(file_client_side_mode)
@@ -1682,24 +1722,41 @@ fn test_parse_size() {
     assert_eq!(Some(10 * 1024 * 1024), parse_size("10M"));
     assert_eq!(Some(TEN_GIGS), parse_size("10G"));
     assert_eq!(Some(1024 * TEN_GIGS), parse_size("10T"));
+    assert_eq!(Some(u64::MAX), parse_size("18446744073709551615"));
+    assert_eq!(None, parse_size("18446744073709551615K"));
+    assert_eq!(None, parse_size("16777216T"));
+}
+
+#[test]
+#[serial(config_from_env)]
+fn test_env_cache_size() {
+    let config = temp_env::with_var("SCCACHE_CACHE_SIZE", Some("2G"), || {
+        config_from_env().unwrap()
+    });
+    assert_eq!(
+        config.cache.disk.expect("SCCACHE_CACHE_SIZE is set").size,
+        2 * 1024 * 1024 * 1024
+    );
+}
+
+#[test]
+#[serial(config_from_env)]
+fn test_env_cache_size_invalid() {
+    for value in ["20GB", "1.5G", "10 G", "G", "16777216T"] {
+        let error = temp_env::with_var("SCCACHE_CACHE_SIZE", Some(value), config_from_env)
+            .expect_err(value);
+        assert_eq!(
+            format!("SCCACHE_CACHE_SIZE value is invalid: {value:?}"),
+            error.to_string()
+        );
+    }
 }
 
 #[test]
 fn test_string_from_env_var() {
     let var_name = "TEST_SCCACHE_VAR";
     for value in [None, Some(""), Some("foo")] {
-        match value {
-            None => unsafe {
-                std::env::remove_var(var_name);
-            },
-            Some(value) => unsafe {
-                std::env::set_var(var_name, value);
-            },
-        }
-        let result = string_from_env_var(var_name);
-        unsafe {
-            std::env::remove_var(var_name);
-        }
+        let result = temp_env::with_var(var_name, value, || string_from_env_var(var_name));
 
         let expected = match value {
             None | Some("") => None,
@@ -1715,10 +1772,7 @@ fn test_string_from_env_var() {
 fn test_skip_cache_check_from_env() {
     const ENV_VAR: &str = "SCCACHE_SKIP_CACHE_CHECK";
 
-    unsafe {
-        std::env::remove_var(ENV_VAR);
-    }
-    assert!(!skip_cache_check_from_env().unwrap());
+    assert!(!temp_env::with_var_unset(ENV_VAR, skip_cache_check_from_env).unwrap());
 
     for (value, expected) in [
         ("true", true),
@@ -1728,22 +1782,78 @@ fn test_skip_cache_check_from_env() {
         ("off", false),
         ("0", false),
     ] {
-        unsafe {
-            std::env::set_var(ENV_VAR, value);
-        }
-        assert_eq!(skip_cache_check_from_env().unwrap(), expected);
+        assert_eq!(
+            temp_env::with_var(ENV_VAR, Some(value), skip_cache_check_from_env).unwrap(),
+            expected
+        );
     }
 
-    unsafe {
-        std::env::set_var(ENV_VAR, "invalid");
-    }
     assert_eq!(
-        skip_cache_check_from_env().unwrap_err().to_string(),
+        temp_env::with_var(ENV_VAR, Some("invalid"), skip_cache_check_from_env)
+            .unwrap_err()
+            .to_string(),
         "SCCACHE_SKIP_CACHE_CHECK must be 'true', 'on', '1', 'false', 'off' or '0'."
     );
+}
 
-    unsafe {
-        std::env::remove_var(ENV_VAR);
+#[test]
+fn test_redis_io_timeout_from_file() {
+    for (setting, expected) in [
+        ("", None),
+        ("io_timeout_secs = 1", Some(1)),
+        ("io_timeout_secs = 37", Some(37)),
+    ] {
+        let config: FileConfig = toml::from_str(&format!(
+            "[cache.redis]\nendpoint = \"redis://localhost:6379\"\n{setting}"
+        ))
+        .unwrap();
+        assert_eq!(
+            config.cache.redis.unwrap().io_timeout_secs,
+            expected.and_then(NonZeroU64::new)
+        );
+    }
+}
+
+#[test]
+fn test_redis_io_timeout_from_file_invalid() {
+    for value in ["0", "-1", "\"invalid\"", "\"1\"", "1.5"] {
+        let result = toml::from_str::<FileConfig>(&format!(
+            "[cache.redis]\nendpoint = \"redis://localhost:6379\"\nio_timeout_secs = {value}"
+        ));
+        assert!(result.is_err(), "accepted io_timeout_secs = {value}");
+    }
+}
+
+#[test]
+#[serial(config_from_env)]
+fn test_redis_io_timeout_from_env() {
+    fn parse_with_timeout(value: Option<&str>) -> Result<EnvConfig> {
+        temp_env::with_vars(
+            [
+                ("SCCACHE_REDIS_ENDPOINT", Some("redis://localhost:6379")),
+                ("SCCACHE_REDIS_IO_TIMEOUT_SECS", value),
+            ],
+            config_from_env,
+        )
+    }
+
+    for (value, expected) in [
+        (None, None),
+        (Some(""), None),
+        (Some("1"), Some(1)),
+        (Some("37"), Some(37)),
+        (Some("18446744073709551615"), Some(u64::MAX)),
+    ] {
+        let result = parse_with_timeout(value);
+        assert_eq!(
+            result.unwrap().cache.redis.unwrap().io_timeout_secs,
+            expected.and_then(NonZeroU64::new)
+        );
+    }
+
+    for value in ["0", "invalid", "-1", "18446744073709551616"] {
+        let result = parse_with_timeout(Some(value));
+        assert!(result.is_err(), "accepted Redis IO timeout {value:?}");
     }
 }
 
@@ -1798,6 +1908,7 @@ fn config_overrides() {
             redis: Some(RedisCacheConfig {
                 url: Some("myredisurl".to_owned()),
                 ttl: 25 * 3600,
+                io_timeout_secs: NonZeroU64::new(9),
                 key_prefix: String::new(),
                 ..Default::default()
             }),
@@ -2133,34 +2244,76 @@ fn test_cache_mode_from_env_var() {
     let var_name = "SCCACHE_ANY_CACHE_MODE_ENV_VAR";
 
     for info in env_check_infos {
-        unsafe {
-            if let Some(env_var_value) = &info.env_var_value {
-                std::env::set_var(var_name, env_var_value);
-            } else {
-                std::env::remove_var(var_name);
-            }
-        }
-        let cache_mode = cache_mode_from_env_var(var_name);
-
-        unsafe {
-            std::env::remove_var(var_name);
-        }
+        let cache_mode = temp_env::with_var(var_name, info.env_var_value.as_deref(), || {
+            cache_mode_from_env_var(var_name)
+        });
 
         assert_eq!(cache_mode, info.expected_cache_mode);
     }
 }
 
 #[test]
+fn test_compile_basedirs() {
+    #[cfg(not(target_os = "windows"))]
+    let (value, expected, relative) = (
+        "/env/a:/env/./b/:/env/a",
+        vec![b"/env/a/".to_vec(), b"/env/b/".to_vec()],
+        "/env/a:relative",
+    );
+    #[cfg(target_os = "windows")]
+    let (value, expected, relative) = (
+        "C:\\Env\\A;c:/env/./b/;c:/env/a",
+        vec![b"c:/env/a/".to_vec(), b"c:/env/b/".to_vec()],
+        "c:/env/a;relative",
+    );
+    let configured = normalize_basedirs(split_basedirs(if cfg!(windows) {
+        "c:/conf"
+    } else {
+        "/conf"
+    }))
+    .unwrap();
+    let env = |k: &str, v: &str| vec![(OsString::from(k), OsString::from(v))];
+
+    assert_eq!(compile_basedirs(&[], &configured), configured.as_slice());
+    assert_eq!(
+        compile_basedirs(&env("SCCACHE_BASEDIRS", value), &configured),
+        expected.as_slice()
+    );
+    assert!(compile_basedirs(&env("SCCACHE_BASEDIRS", ""), &configured).is_empty());
+    assert_eq!(
+        compile_basedirs(&env("SCCACHE_BASEDIRS", relative), &configured),
+        configured.as_slice()
+    );
+
+    let lowercase = compile_basedirs(&env("sccache_basedirs", value), &configured);
+    #[cfg(windows)]
+    assert_eq!(lowercase, expected.as_slice());
+    #[cfg(not(windows))]
+    assert_eq!(lowercase, configured.as_slice());
+
+    #[cfg(unix)]
+    let invalid = {
+        use std::os::unix::ffi::OsStringExt;
+        OsString::from_vec(vec![0xff])
+    };
+    #[cfg(windows)]
+    let invalid = {
+        use std::os::windows::ffi::OsStringExt;
+        OsString::from_wide(&[0xd800])
+    };
+    assert_eq!(
+        compile_basedirs(&[("SCCACHE_BASEDIRS".into(), invalid)], &configured),
+        configured.as_slice()
+    );
+}
+
+#[test]
 #[serial(config_from_env)]
 #[cfg(not(target_os = "windows"))]
 fn test_env_basedirs_single() {
-    unsafe {
-        std::env::set_var("SCCACHE_BASEDIRS", "/home/user/project");
-    }
-    let config = config_from_env().unwrap();
-    unsafe {
-        std::env::remove_var("SCCACHE_BASEDIRS");
-    }
+    let config = temp_env::with_var("SCCACHE_BASEDIRS", Some("/home/user/project"), || {
+        config_from_env().unwrap()
+    });
 
     assert_eq!(
         config.basedirs.expect("SCCACHE_BASEDIRS is set"),
@@ -2172,13 +2325,9 @@ fn test_env_basedirs_single() {
 #[serial(config_from_env)]
 #[cfg(target_os = "windows")]
 fn test_env_basedirs_single() {
-    unsafe {
-        std::env::set_var("SCCACHE_BASEDIRS", "C:/home/user/project");
-    }
-    let config = config_from_env().unwrap();
-    unsafe {
-        std::env::remove_var("SCCACHE_BASEDIRS");
-    }
+    let config = temp_env::with_var("SCCACHE_BASEDIRS", Some("C:/home/user/project"), || {
+        config_from_env().unwrap()
+    });
 
     assert_eq!(
         config.basedirs.expect("SCCACHE_BASEDIRS is set"),
@@ -2190,16 +2339,11 @@ fn test_env_basedirs_single() {
 #[serial(config_from_env)]
 #[cfg(not(target_os = "windows"))]
 fn test_env_basedirs_multiple() {
-    unsafe {
-        std::env::set_var(
-            "SCCACHE_BASEDIRS",
-            "/home/user/project:/home/user/workspace",
-        );
-    }
-    let config = config_from_env().unwrap();
-    unsafe {
-        std::env::remove_var("SCCACHE_BASEDIRS");
-    }
+    let config = temp_env::with_var(
+        "SCCACHE_BASEDIRS",
+        Some("/home/user/project:/home/user/workspace"),
+        || config_from_env().unwrap(),
+    );
 
     assert_eq!(
         config.basedirs.expect("SCCACHE_BASEDIRS is set"),
@@ -2214,16 +2358,11 @@ fn test_env_basedirs_multiple() {
 #[serial(config_from_env)]
 #[cfg(target_os = "windows")]
 fn test_env_basedirs_multiple() {
-    unsafe {
-        std::env::set_var(
-            "SCCACHE_BASEDIRS",
-            "C:/home/user/project;C:/home/user/workspace",
-        );
-    }
-    let config = config_from_env().unwrap();
-    unsafe {
-        std::env::remove_var("SCCACHE_BASEDIRS");
-    }
+    let config = temp_env::with_var(
+        "SCCACHE_BASEDIRS",
+        Some("C:/home/user/project;C:/home/user/workspace"),
+        || config_from_env().unwrap(),
+    );
 
     assert_eq!(
         config.basedirs.expect("SCCACHE_BASEDIRS is set"),
@@ -2239,16 +2378,11 @@ fn test_env_basedirs_multiple() {
 #[cfg(not(target_os = "windows"))]
 fn test_env_basedirs_with_spaces() {
     // Test that spaces around paths are not trimmed
-    unsafe {
-        std::env::set_var(
-            "SCCACHE_BASEDIRS",
-            " /home/user/project : /home/user/workspace ",
-        );
-    }
-    let env_conf = config_from_env().unwrap();
-    unsafe {
-        std::env::remove_var("SCCACHE_BASEDIRS");
-    }
+    let env_conf = temp_env::with_var(
+        "SCCACHE_BASEDIRS",
+        Some(" /home/user/project : /home/user/workspace "),
+        || config_from_env().unwrap(),
+    );
 
     assert_eq!(
         env_conf.basedirs.clone().expect("SCCACHE_BASEDIRS is set"),
@@ -2274,16 +2408,11 @@ fn test_env_basedirs_with_spaces() {
 #[cfg(target_os = "windows")]
 fn test_env_basedirs_with_spaces() {
     // Test that spaces around paths are not trimmed
-    unsafe {
-        std::env::set_var(
-            "SCCACHE_BASEDIRS",
-            " C:/home/user/project ; C:/home/user/workspace ",
-        );
-    }
-    let env_conf = config_from_env().unwrap();
-    unsafe {
-        std::env::remove_var("SCCACHE_BASEDIRS");
-    }
+    let env_conf = temp_env::with_var(
+        "SCCACHE_BASEDIRS",
+        Some(" C:/home/user/project ; C:/home/user/workspace "),
+        || config_from_env().unwrap(),
+    );
 
     assert_eq!(
         env_conf.basedirs.clone().expect("SCCACHE_BASEDIRS is set"),
@@ -2309,16 +2438,11 @@ fn test_env_basedirs_with_spaces() {
 #[cfg(not(target_os = "windows"))]
 fn test_env_basedirs_empty_entries() {
     // Test that empty entries are filtered out
-    unsafe {
-        std::env::set_var(
-            "SCCACHE_BASEDIRS",
-            "/home/user/project::/home/user/workspace",
-        );
-    }
-    let config = config_from_env().unwrap();
-    unsafe {
-        std::env::remove_var("SCCACHE_BASEDIRS");
-    }
+    let config = temp_env::with_var(
+        "SCCACHE_BASEDIRS",
+        Some("/home/user/project::/home/user/workspace"),
+        || config_from_env().unwrap(),
+    );
 
     assert_eq!(
         config.basedirs.expect("SCCACHE_BASEDIRS is set"),
@@ -2334,16 +2458,11 @@ fn test_env_basedirs_empty_entries() {
 #[cfg(target_os = "windows")]
 fn test_env_basedirs_empty_entries() {
     // Test that empty entries are filtered out
-    unsafe {
-        std::env::set_var(
-            "SCCACHE_BASEDIRS",
-            "c:/home/user/project;;c:/home/user/workspace",
-        );
-    }
-    let config = config_from_env().unwrap();
-    unsafe {
-        std::env::remove_var("SCCACHE_BASEDIRS");
-    }
+    let config = temp_env::with_var(
+        "SCCACHE_BASEDIRS",
+        Some("c:/home/user/project;;c:/home/user/workspace"),
+        || config_from_env().unwrap(),
+    );
 
     assert_eq!(
         config.basedirs.expect("SCCACHE_BASEDIRS is set"),
@@ -2357,10 +2476,7 @@ fn test_env_basedirs_empty_entries() {
 #[test]
 #[serial(config_from_env)]
 fn test_env_basedirs_not_set() {
-    unsafe {
-        std::env::remove_var("SCCACHE_BASEDIRS");
-    }
-    let config = config_from_env().unwrap();
+    let config = temp_env::with_var_unset("SCCACHE_BASEDIRS", config_from_env).unwrap();
     assert!(config.basedirs.is_none());
 }
 
@@ -2368,21 +2484,15 @@ fn test_env_basedirs_not_set() {
 #[serial(config_from_env)]
 #[cfg(feature = "s3")]
 fn test_s3_no_credentials_conflict() {
-    unsafe {
-        env::set_var("SCCACHE_S3_NO_CREDENTIALS", "true");
-        env::set_var("SCCACHE_BUCKET", "my-bucket");
-        env::set_var("AWS_ACCESS_KEY_ID", "aws-access-key-id");
-        env::set_var("AWS_SECRET_ACCESS_KEY", "aws-secret-access-key");
-    }
-
-    let cfg = config_from_env();
-
-    unsafe {
-        env::remove_var("SCCACHE_S3_NO_CREDENTIALS");
-        env::remove_var("SCCACHE_BUCKET");
-        env::remove_var("AWS_ACCESS_KEY_ID");
-        env::remove_var("AWS_SECRET_ACCESS_KEY");
-    }
+    let cfg = temp_env::with_vars(
+        [
+            ("SCCACHE_S3_NO_CREDENTIALS", Some("true")),
+            ("SCCACHE_BUCKET", Some("my-bucket")),
+            ("AWS_ACCESS_KEY_ID", Some("aws-access-key-id")),
+            ("AWS_SECRET_ACCESS_KEY", Some("aws-secret-access-key")),
+        ],
+        config_from_env,
+    );
 
     let error = cfg.unwrap_err();
     assert_eq!(
@@ -2394,17 +2504,13 @@ fn test_s3_no_credentials_conflict() {
 #[test]
 #[serial(config_from_env)]
 fn test_s3_no_credentials_invalid() {
-    unsafe {
-        env::set_var("SCCACHE_S3_NO_CREDENTIALS", "yes");
-        env::set_var("SCCACHE_BUCKET", "my-bucket");
-    }
-
-    let cfg = config_from_env();
-
-    unsafe {
-        env::remove_var("SCCACHE_S3_NO_CREDENTIALS");
-        env::remove_var("SCCACHE_BUCKET");
-    }
+    let cfg = temp_env::with_vars(
+        [
+            ("SCCACHE_S3_NO_CREDENTIALS", Some("yes")),
+            ("SCCACHE_BUCKET", Some("my-bucket")),
+        ],
+        config_from_env,
+    );
 
     let error = cfg.unwrap_err();
     assert_eq!(
@@ -2416,17 +2522,13 @@ fn test_s3_no_credentials_invalid() {
 #[test]
 #[serial(config_from_env)]
 fn test_s3_no_credentials_valid_true() {
-    unsafe {
-        env::set_var("SCCACHE_S3_NO_CREDENTIALS", "true");
-        env::set_var("SCCACHE_BUCKET", "my-bucket");
-    }
-
-    let cfg = config_from_env();
-
-    unsafe {
-        env::remove_var("SCCACHE_S3_NO_CREDENTIALS");
-        env::remove_var("SCCACHE_BUCKET");
-    }
+    let cfg = temp_env::with_vars(
+        [
+            ("SCCACHE_S3_NO_CREDENTIALS", Some("true")),
+            ("SCCACHE_BUCKET", Some("my-bucket")),
+        ],
+        config_from_env,
+    );
 
     let env_cfg = cfg.unwrap();
     match env_cfg.cache.s3 {
@@ -2445,17 +2547,13 @@ fn test_s3_no_credentials_valid_true() {
 #[test]
 #[serial(config_from_env)]
 fn test_s3_no_credentials_valid_false() {
-    unsafe {
-        env::set_var("SCCACHE_S3_NO_CREDENTIALS", "false");
-        env::set_var("SCCACHE_BUCKET", "my-bucket");
-    }
-
-    let cfg = config_from_env();
-
-    unsafe {
-        env::remove_var("SCCACHE_S3_NO_CREDENTIALS");
-        env::remove_var("SCCACHE_BUCKET");
-    }
+    let cfg = temp_env::with_vars(
+        [
+            ("SCCACHE_S3_NO_CREDENTIALS", Some("false")),
+            ("SCCACHE_BUCKET", Some("my-bucket")),
+        ],
+        config_from_env,
+    );
 
     let env_cfg = cfg.unwrap();
     match env_cfg.cache.s3 {
@@ -2475,22 +2573,17 @@ fn test_s3_no_credentials_valid_false() {
 #[serial(config_from_env)]
 #[cfg(feature = "s3")]
 fn test_s3_sse_kms_from_env() {
-    unsafe {
-        env::set_var("SCCACHE_BUCKET", "my-bucket");
-        env::set_var("SCCACHE_S3_SERVER_SIDE_ENCRYPTION_AWS_KMS", "true");
-        env::set_var(
-            "SCCACHE_S3_SERVER_SIDE_ENCRYPTION_KMS_KEY_ID",
-            "arn:aws:kms:us-east-1:111:key/abc",
-        );
-    }
-
-    let cfg = config_from_env();
-
-    unsafe {
-        env::remove_var("SCCACHE_BUCKET");
-        env::remove_var("SCCACHE_S3_SERVER_SIDE_ENCRYPTION_AWS_KMS");
-        env::remove_var("SCCACHE_S3_SERVER_SIDE_ENCRYPTION_KMS_KEY_ID");
-    }
+    let cfg = temp_env::with_vars(
+        [
+            ("SCCACHE_BUCKET", Some("my-bucket")),
+            ("SCCACHE_S3_SERVER_SIDE_ENCRYPTION_AWS_KMS", Some("true")),
+            (
+                "SCCACHE_S3_SERVER_SIDE_ENCRYPTION_KMS_KEY_ID",
+                Some("arn:aws:kms:us-east-1:111:key/abc"),
+            ),
+        ],
+        config_from_env,
+    );
 
     let env_cfg = cfg.unwrap();
     match env_cfg.cache.s3 {
@@ -2513,17 +2606,16 @@ fn test_s3_sse_kms_from_env() {
 #[serial(config_from_env)]
 #[cfg(feature = "webdav")]
 fn test_webdav_disable_create_dir_from_env() {
-    unsafe {
-        env::set_var("SCCACHE_WEBDAV_ENDPOINT", "https://example.com/webdav");
-        env::set_var("SCCACHE_WEBDAV_DISABLE_CREATE_DIR", "true");
-    }
-
-    let cfg = config_from_env();
-
-    unsafe {
-        env::remove_var("SCCACHE_WEBDAV_ENDPOINT");
-        env::remove_var("SCCACHE_WEBDAV_DISABLE_CREATE_DIR");
-    }
+    let cfg = temp_env::with_vars(
+        [
+            (
+                "SCCACHE_WEBDAV_ENDPOINT",
+                Some("https://example.com/webdav"),
+            ),
+            ("SCCACHE_WEBDAV_DISABLE_CREATE_DIR", Some("true")),
+        ],
+        config_from_env,
+    );
 
     let env_cfg = cfg.unwrap();
     match env_cfg.cache.webdav {
@@ -2540,16 +2632,16 @@ fn test_webdav_disable_create_dir_from_env() {
 #[serial(config_from_env)]
 #[cfg(feature = "webdav")]
 fn test_webdav_disable_create_dir_defaults_to_false() {
-    unsafe {
-        env::set_var("SCCACHE_WEBDAV_ENDPOINT", "https://example.com/webdav");
-        env::remove_var("SCCACHE_WEBDAV_DISABLE_CREATE_DIR");
-    }
-
-    let cfg = config_from_env();
-
-    unsafe {
-        env::remove_var("SCCACHE_WEBDAV_ENDPOINT");
-    }
+    let cfg = temp_env::with_vars(
+        [
+            (
+                "SCCACHE_WEBDAV_ENDPOINT",
+                Some("https://example.com/webdav"),
+            ),
+            ("SCCACHE_WEBDAV_DISABLE_CREATE_DIR", None::<&str>),
+        ],
+        config_from_env,
+    );
 
     let env_cfg = cfg.unwrap();
     match env_cfg.cache.webdav {
@@ -2566,17 +2658,13 @@ fn test_webdav_disable_create_dir_defaults_to_false() {
 #[serial(config_from_env)]
 #[cfg(feature = "azure")]
 fn test_azure_entra_storage_account_enables() {
-    unsafe {
-        env::set_var("SCCACHE_AZURE_BLOB_CONTAINER", "my-container");
-        env::set_var("SCCACHE_AZURE_STORAGE_ACCOUNT", "mystorageacct");
-    }
-
-    let cfg = config_from_env();
-
-    unsafe {
-        env::remove_var("SCCACHE_AZURE_BLOB_CONTAINER");
-        env::remove_var("SCCACHE_AZURE_STORAGE_ACCOUNT");
-    }
+    let cfg = temp_env::with_vars(
+        [
+            ("SCCACHE_AZURE_BLOB_CONTAINER", Some("my-container")),
+            ("SCCACHE_AZURE_STORAGE_ACCOUNT", Some("mystorageacct")),
+        ],
+        config_from_env,
+    );
 
     let env_cfg = cfg.unwrap();
     match env_cfg.cache.azure {
@@ -2600,20 +2688,16 @@ fn test_azure_entra_storage_account_enables() {
 #[serial(config_from_env)]
 #[cfg(feature = "azure")]
 fn test_azure_entra_endpoint_enables() {
-    unsafe {
-        env::set_var("SCCACHE_AZURE_BLOB_CONTAINER", "my-container");
-        env::set_var(
-            "SCCACHE_AZURE_ENDPOINT",
-            "https://acct.blob.core.usgovcloudapi.net",
-        );
-    }
-
-    let cfg = config_from_env();
-
-    unsafe {
-        env::remove_var("SCCACHE_AZURE_BLOB_CONTAINER");
-        env::remove_var("SCCACHE_AZURE_ENDPOINT");
-    }
+    let cfg = temp_env::with_vars(
+        [
+            ("SCCACHE_AZURE_BLOB_CONTAINER", Some("my-container")),
+            (
+                "SCCACHE_AZURE_ENDPOINT",
+                Some("https://acct.blob.core.usgovcloudapi.net"),
+            ),
+        ],
+        config_from_env,
+    );
 
     let env_cfg = cfg.unwrap();
     match env_cfg.cache.azure {
@@ -2638,17 +2722,16 @@ fn test_azure_entra_endpoint_enables() {
 #[serial(config_from_env)]
 #[cfg(feature = "azure")]
 fn test_azure_connection_string_still_works() {
-    unsafe {
-        env::set_var("SCCACHE_AZURE_BLOB_CONTAINER", "my-container");
-        env::set_var("SCCACHE_AZURE_CONNECTION_STRING", "some-connection-string");
-    }
-
-    let cfg = config_from_env();
-
-    unsafe {
-        env::remove_var("SCCACHE_AZURE_BLOB_CONTAINER");
-        env::remove_var("SCCACHE_AZURE_CONNECTION_STRING");
-    }
+    let cfg = temp_env::with_vars(
+        [
+            ("SCCACHE_AZURE_BLOB_CONTAINER", Some("my-container")),
+            (
+                "SCCACHE_AZURE_CONNECTION_STRING",
+                Some("some-connection-string"),
+            ),
+        ],
+        config_from_env,
+    );
 
     let env_cfg = cfg.unwrap();
     match env_cfg.cache.azure {
@@ -2670,19 +2753,17 @@ fn test_azure_connection_string_still_works() {
 #[serial(config_from_env)]
 #[cfg(feature = "azure")]
 fn test_azure_conflicting_auth_sources() {
-    unsafe {
-        env::set_var("SCCACHE_AZURE_BLOB_CONTAINER", "my-container");
-        env::set_var("SCCACHE_AZURE_CONNECTION_STRING", "some-connection-string");
-        env::set_var("SCCACHE_AZURE_STORAGE_ACCOUNT", "mystorageacct");
-    }
-
-    let cfg = config_from_env();
-
-    unsafe {
-        env::remove_var("SCCACHE_AZURE_BLOB_CONTAINER");
-        env::remove_var("SCCACHE_AZURE_CONNECTION_STRING");
-        env::remove_var("SCCACHE_AZURE_STORAGE_ACCOUNT");
-    }
+    let cfg = temp_env::with_vars(
+        [
+            ("SCCACHE_AZURE_BLOB_CONTAINER", Some("my-container")),
+            (
+                "SCCACHE_AZURE_CONNECTION_STRING",
+                Some("some-connection-string"),
+            ),
+            ("SCCACHE_AZURE_STORAGE_ACCOUNT", Some("mystorageacct")),
+        ],
+        config_from_env,
+    );
 
     let error = cfg.unwrap_err();
     assert_eq!(
@@ -2697,22 +2778,20 @@ fn test_azure_conflicting_auth_sources() {
 fn test_azure_conflicting_connection_string_and_endpoint() {
     // The other operand of the mutual-exclusivity check: connection string paired
     // with an endpoint (rather than a storage account) must also be rejected.
-    unsafe {
-        env::set_var("SCCACHE_AZURE_BLOB_CONTAINER", "my-container");
-        env::set_var("SCCACHE_AZURE_CONNECTION_STRING", "some-connection-string");
-        env::set_var(
-            "SCCACHE_AZURE_ENDPOINT",
-            "https://acct.blob.core.windows.net",
-        );
-    }
-
-    let cfg = config_from_env();
-
-    unsafe {
-        env::remove_var("SCCACHE_AZURE_BLOB_CONTAINER");
-        env::remove_var("SCCACHE_AZURE_CONNECTION_STRING");
-        env::remove_var("SCCACHE_AZURE_ENDPOINT");
-    }
+    let cfg = temp_env::with_vars(
+        [
+            ("SCCACHE_AZURE_BLOB_CONTAINER", Some("my-container")),
+            (
+                "SCCACHE_AZURE_CONNECTION_STRING",
+                Some("some-connection-string"),
+            ),
+            (
+                "SCCACHE_AZURE_ENDPOINT",
+                Some("https://acct.blob.core.windows.net"),
+            ),
+        ],
+        config_from_env,
+    );
 
     let error = cfg.unwrap_err();
     assert_eq!(
@@ -2725,15 +2804,9 @@ fn test_azure_conflicting_connection_string_and_endpoint() {
 #[serial(config_from_env)]
 #[cfg(feature = "azure")]
 fn test_azure_no_auth_source_disables_backend() {
-    unsafe {
-        env::set_var("SCCACHE_AZURE_BLOB_CONTAINER", "my-container");
-    }
-
-    let cfg = config_from_env();
-
-    unsafe {
-        env::remove_var("SCCACHE_AZURE_BLOB_CONTAINER");
-    }
+    let cfg = temp_env::with_var("SCCACHE_AZURE_BLOB_CONTAINER", Some("my-container"), || {
+        config_from_env()
+    });
 
     // A container with no auth source disables Azure (backwards compatible)
     // rather than failing the whole config load.
@@ -2814,19 +2887,14 @@ key_prefix = "p"
 #[serial(config_from_env)]
 #[cfg(feature = "gcs")]
 fn test_gcs_service_account() {
-    unsafe {
-        env::set_var("SCCACHE_GCS_BUCKET", "my-bucket");
-        env::set_var("SCCACHE_GCS_SERVICE_ACCOUNT", "my@example.com");
-        env::set_var("SCCACHE_GCS_RW_MODE", "READ_WRITE");
-    }
-
-    let cfg = config_from_env();
-
-    unsafe {
-        env::remove_var("SCCACHE_GCS_BUCKET");
-        env::remove_var("SCCACHE_GCS_SERVICE_ACCOUNT");
-        env::remove_var("SCCACHE_GCS_RW_MODE");
-    }
+    let cfg = temp_env::with_vars(
+        [
+            ("SCCACHE_GCS_BUCKET", Some("my-bucket")),
+            ("SCCACHE_GCS_SERVICE_ACCOUNT", Some("my@example.com")),
+            ("SCCACHE_GCS_RW_MODE", Some("READ_WRITE")),
+        ],
+        config_from_env,
+    );
 
     let env_cfg = cfg.unwrap();
     match env_cfg.cache.gcs {
@@ -2976,6 +3044,7 @@ key_prefix = "cosprefix"
                     password: Some("new_passwd".to_owned()),
                     db: 12,
                     ttl: 24 * 3600,
+                    io_timeout_secs: None,
                     key_prefix: "/my/redis/cache".into(),
                     rw_mode: CacheModeConfig::ReadWrite,
                 }),
@@ -3107,7 +3176,7 @@ fn server_toml_parse() {
             },
             toolchain_cache_size: 10737418240,
         }
-    )
+    );
 }
 
 #[test]
@@ -3146,13 +3215,12 @@ size = "7g"
 #[serial(config_from_env)]
 fn test_dist_client_cache_dir_env_overrides_file_config() {
     for env_cache_dir in [PathBuf::from("/env-dist-cache"), PathBuf::new()] {
-        unsafe {
-            env::set_var("SCCACHE_DIST_CLIENT_CACHE_DIR", &env_cache_dir);
-        }
-        let env_conf = config_from_env().unwrap();
-        unsafe {
-            env::remove_var("SCCACHE_DIST_CLIENT_CACHE_DIR");
-        }
+        let env_conf = temp_env::with_var(
+            "SCCACHE_DIST_CLIENT_CACHE_DIR",
+            Some(&env_cache_dir),
+            config_from_env,
+        )
+        .unwrap();
 
         let config = Config::from_env_and_file_configs(
             env_conf,
@@ -3449,17 +3517,15 @@ fn test_integration_env_variable_to_strip() {
     // Test full flow: SCCACHE_BASEDIRS env var -> Config -> strip_basedirs
     use crate::util::strip_basedirs;
 
-    unsafe {
-        env::set_var("SCCACHE_BASEDIRS", "/home/user/project:/tmp/build");
-    }
-
-    let env_conf = config_from_env().unwrap();
-    let file_conf = FileConfig::default();
-    let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
-
-    unsafe {
-        env::remove_var("SCCACHE_BASEDIRS");
-    }
+    let config = temp_env::with_var(
+        "SCCACHE_BASEDIRS",
+        Some("/home/user/project:/tmp/build"),
+        || {
+            let env_conf = config_from_env().unwrap();
+            let file_conf = FileConfig::default();
+            Config::from_env_and_file_configs(env_conf, file_conf).unwrap()
+        },
+    );
 
     // Should have two normalized basedirs
     assert_eq!(config.basedirs.len(), 2);

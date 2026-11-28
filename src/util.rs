@@ -19,9 +19,11 @@ use fs::File;
 use fs_err as fs;
 use object::read::archive::ArchiveFile;
 use object::read::macho::{FatArch, MachOFatFile32, MachOFatFile64};
+use object::{Object as _, ObjectSection as _};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::cell::Cell;
+use std::env::consts::DLL_EXTENSION;
 use std::ffi::{OsStr, OsString};
 use std::hash::Hasher;
 use std::io::prelude::*;
@@ -358,6 +360,15 @@ impl TimeMacroFinder {
     pub fn new() -> Self {
         Default::default()
     }
+
+    /// A finder for a file already known to contain the given macros.
+    pub fn with_found(date: bool, time: bool, timestamp: bool) -> Self {
+        let finder = Self::new();
+        finder.found_date.set(date);
+        finder.found_time.set(time);
+        finder.found_timestamp.set(timestamp);
+        finder
+    }
 }
 
 pub fn hex(bytes: &[u8]) -> String {
@@ -453,6 +464,42 @@ pub async fn hash_all_archives(
         fmt_duration_as_secs(&start.elapsed())
     );
     Ok(hashes.into_iter().map(|res| res.unwrap()).collect())
+}
+
+/// Calculate the digest of each `--extern` input in `files`. A dylib, which is how a proc-macro
+/// is built, is hashed by its `.rustc` metadata alone, since on macOS the rest embeds its path.
+pub async fn hash_all_externs(
+    files: &[PathBuf],
+    pool: &tokio::runtime::Handle,
+) -> Result<Vec<String>> {
+    let start = time::Instant::now();
+    let count = files.len();
+    let iter = files.iter().map(|path| async move {
+        if path.extension() != Some(OsStr::new(DLL_EXTENSION)) {
+            return Digest::file(path, pool).await;
+        }
+        let library = path.clone();
+        pool.spawn_blocking(move || -> Result<String> {
+            let data = fs::read(&library)?;
+            let mut m = Digest::new();
+            m.update(rustc_metadata_section(&data).unwrap_or(&data));
+            Ok(m.finish())
+        })
+        .await?
+    });
+    let hashes = futures::future::try_join_all(iter).await?;
+    trace!(
+        "Hashed {} externs in {}",
+        count,
+        fmt_duration_as_secs(&start.elapsed())
+    );
+    Ok(hashes)
+}
+
+fn rustc_metadata_section(data: &[u8]) -> Option<&[u8]> {
+    let file = object::File::parse(data).ok()?;
+    let section = file.section_by_name(".rustc")?;
+    section.data().ok().filter(|bytes| !bytes.is_empty())
 }
 
 fn hash_regular_archive(m: &mut Digest, data: &[u8]) -> Result<()> {
@@ -627,10 +674,12 @@ where
     W: Write,
     S: Serialize,
 {
-    let bytes = bincode::serialize(&data)?;
-    let mut len = [0; 4];
-    BigEndian::write_u32(&mut len, bytes.len() as u32);
-    writer.write_all(&len)?;
+    // One write: with TCP_NODELAY, writing the length on its own would send it
+    // as a separate packet whenever the body overflows the caller's BufWriter.
+    let mut bytes = vec![0; 4];
+    bincode::serialize_into(&mut bytes, &data)?;
+    let len = (bytes.len() - 4) as u32;
+    BigEndian::write_u32(&mut bytes[..4], len);
     writer.write_all(&bytes)?;
     writer.flush()?;
     Ok(())
@@ -928,6 +977,10 @@ impl Timestamp {
             nanoseconds,
         }
     }
+
+    pub fn seconds(&self) -> i64 {
+        self.seconds
+    }
 }
 
 /// Adds a fallback for trying Unix's `ctime` semantics on Windows systems.
@@ -1015,16 +1068,34 @@ fn close_inherited_fds(preserve: &[std::os::unix::io::RawFd]) {
 /// still needs afterwards; everything else inherited is closed.
 #[cfg(not(windows))]
 pub fn daemonize(preserve_fds: &[std::os::unix::io::RawFd]) -> Result<()> {
-    use daemonix::Daemonize;
+    use daemonix::Outcome;
     use std::env;
-    use std::mem;
 
     match env::var("SCCACHE_NO_DAEMON") {
         Ok(ref val) if val == "1" => {}
-        _ => {
-            Daemonize::new().start().context("failed to daemonize")?;
-        }
+        _ => match daemonize_with_parent() {
+            Outcome::Parent(Ok(parent)) => std::process::exit(parent.first_child_exit_code),
+            Outcome::Parent(Err(error)) | Outcome::Child(Err(error)) => {
+                return Err(error).context("failed to daemonize");
+            }
+            Outcome::Child(Ok(_)) => {}
+        },
     }
+
+    daemonize_cleanup(preserve_fds)
+}
+
+/// Retain the original process so callers can wait for daemon startup.
+#[cfg(not(windows))]
+pub fn daemonize_with_parent() -> daemonix::Outcome<()> {
+    daemonix::Daemonize::new().execute()
+}
+
+/// Run after the final fork, before creating worker threads or async runtimes.
+#[cfg(not(windows))]
+pub fn daemonize_cleanup(preserve_fds: &[std::os::unix::io::RawFd]) -> Result<()> {
+    use std::env;
+    use std::mem;
 
     close_inherited_fds(preserve_fds);
 
@@ -1345,6 +1416,45 @@ pub fn strip_basedirs<'a>(preprocessor_output: &'a [u8], basedirs: &[Vec<u8>]) -
     Cow::Owned(result)
 }
 
+/// The length of the basedir prefix of `path`, if it lies under one.
+///
+/// `path` is an absolute path encoded by [`encode_path`]. The length covers the
+/// trailing separator, so `path[..len]` is the basedir and `path[len..]` is the
+/// path relative to it. The longest basedir wins, as everywhere else.
+///
+/// Unlike [`strip_basedirs`] and [`strip_basedirs_from_arg`], which look for
+/// basedirs anywhere in a haystack that also holds non-path text, a path is all
+/// path, so this only matches at its start.
+pub fn basedir_prefix_len(path: &[u8], basedirs: &[Vec<u8>]) -> Option<usize> {
+    #[cfg(not(target_os = "windows"))]
+    let haystack: &[u8] = path;
+    #[cfg(target_os = "windows")]
+    let normalized = normalize_win_path(path);
+    #[cfg(target_os = "windows")]
+    let haystack: &[u8] = &normalized;
+
+    let len = basedirs
+        .iter()
+        .filter(|basedir| haystack.starts_with(basedir))
+        .map(|basedir| basedir.len())
+        .max()?;
+    unnormalized_len(path, haystack, len)
+}
+
+/// The length of the prefix of `path` that normalizes to `normalized[..len]`,
+/// which ends in a separator. Lowercasing can change the byte length of a
+/// non-ASCII character, but normalizing neither adds nor removes separators,
+/// so count those.
+fn unnormalized_len(path: &[u8], normalized: &[u8], len: usize) -> Option<usize> {
+    let is_separator = |b: &u8| matches!(b, b'/' | b'\\');
+    let separators = normalized[..len].iter().filter(|b| is_separator(b)).count();
+    path.iter()
+        .enumerate()
+        .filter(|(_, b)| is_separator(b))
+        .nth(separators.checked_sub(1)?)
+        .map(|(i, _)| i + 1)
+}
+
 /// Strip the base directories from a single compiler argument, for hashing.
 ///
 /// [`strip_basedirs`] looks for a basedir where preprocessor output would put
@@ -1496,6 +1606,18 @@ fn double_path_separators(path: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Environment variable names are case-insensitive on Windows.
+pub fn env_var_name_matches(key: &OsStr, name: &str) -> bool {
+    #[cfg(windows)]
+    {
+        key.eq_ignore_ascii_case(name)
+    }
+    #[cfg(not(windows))]
+    {
+        key == name
+    }
+}
+
 /// Normalize path for case-insensitive comparison.
 /// On Windows: converts all backslashes to forward slashes;
 ///             lowercases characters for consistency.
@@ -1642,10 +1764,104 @@ pub fn resolve_compiler_avoiding_wrapper(
 #[cfg(test)]
 mod tests {
     use super::{
-        Digest, OsStrExt, TimeMacroFinder, exit_status_from_code, resolve_compiler_avoiding_wrapper,
+        Digest, OsStrExt, TimeMacroFinder, exit_status_from_code, hash_all_archives,
+        hash_all_externs, resolve_compiler_avoiding_wrapper,
     };
+    use crate::test::utils::single_threaded_runtime;
+    use object::write::Object as WriteObject;
+    use object::{Architecture, BinaryFormat, Endianness, SectionKind};
+    use std::env::consts::DLL_EXTENSION;
     use std::ffi::{OsStr, OsString};
     use std::path::Path;
+
+    fn object_with(metadata: &[u8], code: &[u8]) -> Vec<u8> {
+        let mut obj = WriteObject::new(BinaryFormat::Elf, Architecture::X86_64, Endianness::Little);
+        let text = obj.add_section(Vec::new(), b".text".to_vec(), SectionKind::Text);
+        obj.append_section_data(text, code, 1);
+        let rustc = obj.add_section(Vec::new(), b".rustc".to_vec(), SectionKind::Data);
+        obj.append_section_data(rustc, metadata, 1);
+        obj.write().unwrap()
+    }
+
+    // Dist JWT secrets and PKCE values are stored or sent in this form, so the
+    // alphabet and lack of padding must not change.
+    #[test]
+    fn test_base64_url_safe_engine_output() {
+        use base64::Engine;
+        let engine = super::BASE64_URL_SAFE_ENGINE;
+        assert_eq!(engine.encode([0xfb, 0xff]), "-_8");
+        assert_eq!(engine.decode("-_8").unwrap(), [0xfb, 0xff]);
+        assert!(engine.decode("-_8=").is_err());
+    }
+
+    #[test]
+    fn test_hash_all_externs_hashes_a_dylib_by_its_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let write = |name: &str, bytes: Vec<u8>| {
+            let path = dir.path().join(format!("{name}.{DLL_EXTENSION}"));
+            std::fs::write(&path, bytes).unwrap();
+            path
+        };
+        let files = [
+            write("a", object_with(b"meta", b"code")),
+            write("b", object_with(b"meta", b"other code, longer")),
+            write("c", object_with(b"changed", b"code")),
+        ];
+
+        let runtime = single_threaded_runtime();
+        let hashes = runtime
+            .block_on(hash_all_externs(&files, runtime.handle()))
+            .unwrap();
+        assert_eq!(hashes[0], hashes[1]);
+        assert_ne!(hashes[0], hashes[2]);
+    }
+
+    fn coff_archive(members: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut archive = b"!<arch>\n".to_vec();
+        for (name, data) in members {
+            let mut header = [b' '; 60];
+            header[..name.len()].copy_from_slice(name.as_bytes());
+            let size = data.len().to_string();
+            header[48..48 + size.len()].copy_from_slice(size.as_bytes());
+            header[58..].copy_from_slice(b"`\n");
+            archive.extend_from_slice(&header);
+            archive.extend_from_slice(data);
+            if data.len() % 2 != 0 {
+                archive.push(b'\n');
+            }
+        }
+        archive
+    }
+
+    #[test]
+    fn test_hash_all_archives_skips_ec_symbol_table() {
+        // llvm-ar omits the `//` names table when every member name fits in
+        // the header; object < 0.40 then returned `/<ECSYMBOLS>/` as a member.
+        let dir = tempfile::tempdir().unwrap();
+        let write = |name: &str, ec_symbols: &[u8], code: &[u8]| {
+            let path = dir.path().join(name);
+            let archive = coff_archive(&[
+                ("/", &[0; 4]),
+                ("/", &[0; 4]),
+                ("/<ECSYMBOLS>/", ec_symbols),
+                ("foo.obj/", code),
+            ]);
+            std::fs::write(&path, archive).unwrap();
+            path
+        };
+        let files = [
+            write("a.lib", &[1, 0, 1, 0], b"code"),
+            write("b.lib", &[2, 0, 2, 0], b"code"),
+            write("c.lib", &[1, 0, 1, 0], b"changed"),
+        ];
+
+        let runtime = single_threaded_runtime();
+        let hashes = runtime
+            .block_on(hash_all_archives(&files, runtime.handle()))
+            .unwrap();
+        assert_eq!(hashes[0], hashes[1]);
+        assert_ne!(hashes[0], hashes[2]);
+    }
 
     #[test]
     fn test_reader_sync_across_buffer_sizes() {
@@ -1713,6 +1929,26 @@ mod tests {
                 super::new_reqwest_blocking_client().map(drop)
             },
         )
+    }
+
+    #[test]
+    fn test_hash_all_externs_hashes_whole_files_without_rustc_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let rlib = dir.path().join("libfoo.rlib");
+        let not_an_object = dir.path().join(format!("libbar.{DLL_EXTENSION}"));
+        let missing = dir.path().join(format!("libmissing.{DLL_EXTENSION}"));
+        std::fs::write(&rlib, b"an rlib").unwrap();
+        std::fs::write(&not_an_object, b"not an object file").unwrap();
+
+        let runtime = single_threaded_runtime();
+        let pool = runtime.handle();
+        let whole = |path| runtime.block_on(Digest::file(path, pool)).unwrap();
+        let files = [rlib.clone(), not_an_object.clone()];
+        let hashes = runtime.block_on(hash_all_externs(&files, pool)).unwrap();
+        assert_eq!(hashes, vec![whole(&rlib), whole(&not_an_object)]);
+
+        let missing_result = runtime.block_on(hash_all_externs(&[missing], pool));
+        assert!(missing_result.is_err());
     }
 
     #[test]
@@ -2386,6 +2622,31 @@ mod tests {
     }
 
     #[test]
+    fn test_unnormalized_len_with_lowercase_of_different_length() {
+        // KELVIN SIGN lowercases to an ASCII 'k', and LATIN CAPITAL LETTER I
+        // WITH DOT ABOVE to two characters, three bytes in all.
+        for dir in ["C:\\\u{212A}\\", "C:\\\u{130}\\"] {
+            let path = format!("{dir}include\\x.h");
+            let normalized = super::normalize_win_path(path.as_bytes());
+            let basedir = super::normalize_win_path(dir.as_bytes());
+            assert!(normalized.starts_with(&basedir));
+            assert_ne!(basedir.len(), dir.len());
+            assert_eq!(
+                super::unnormalized_len(path.as_bytes(), &normalized, basedir.len()),
+                Some(dir.len())
+            );
+        }
+    }
+
+    #[test]
+    fn test_basedir_prefix_len_without_trailing_separator() {
+        assert_eq!(
+            super::basedir_prefix_len(b"project/x.h", &[b"project".to_vec()]),
+            None
+        );
+    }
+
+    #[test]
     fn test_normalize_win_path_empty() {
         let input = b"";
         let normalized = super::normalize_win_path(input);
@@ -2477,5 +2738,34 @@ mod tests {
             .await
             .unwrap();
         assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn test_write_length_prefixed_bincode_single_write() {
+        use super::write_length_prefixed_bincode;
+        use byteorder::{BigEndian, ByteOrder};
+        use std::io::Write;
+
+        #[derive(Default)]
+        struct Writes(Vec<Vec<u8>>);
+        impl Write for Writes {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.push(buf.to_vec());
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let data = vec![7u8; 20_000];
+        let mut writes = Writes::default();
+        write_length_prefixed_bincode(&mut writes, &data).unwrap();
+
+        assert_eq!(writes.0.len(), 1);
+        let frame = &writes.0[0];
+        let body = bincode::serialize(&data).unwrap();
+        assert_eq!(BigEndian::read_u32(&frame[..4]) as usize, body.len());
+        assert_eq!(&frame[4..], &body[..]);
     }
 }
