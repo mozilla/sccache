@@ -15,7 +15,6 @@ use sccache::dist::{
     UpdateJobStateResult,
 };
 use sccache::util::BASE64_URL_SAFE_ENGINE;
-use sccache::util::daemonize;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet, btree_map};
 use std::env;
@@ -29,6 +28,7 @@ use std::time::{Duration, Instant};
 mod build;
 
 mod cmdline;
+mod startup;
 mod token_check;
 
 use cmdline::{AuthSubcommand, Command};
@@ -170,66 +170,68 @@ fn run(command: Command) -> Result<i32> {
             client_auth,
             server_auth,
         }) => {
-            let check_client_auth: Box<dyn dist::http::ClientAuthCheck> = match client_auth {
-                scheduler_config::ClientAuth::Insecure => Box::new(token_check::EqCheck::new(
-                    INSECURE_DIST_CLIENT_TOKEN.to_owned(),
-                )),
-                scheduler_config::ClientAuth::Token { token } => {
-                    Box::new(token_check::EqCheck::new(token))
-                }
-                scheduler_config::ClientAuth::JwtValidate {
-                    audience,
-                    issuer,
-                    jwks_url,
-                } => Box::new(
-                    token_check::ValidJWTCheck::new(audience, issuer, &jwks_url)
-                        .context("Failed to create a checker for valid JWTs")?,
-                ),
-                scheduler_config::ClientAuth::ProxyToken { url, cache_secs } => Box::new(
-                    token_check::ProxyTokenCheck::new(url, cache_secs)
-                        .context("failed to create proxy token checker")?,
-                ),
-            };
-
-            let check_server_auth: dist::http::ServerAuthCheck = match server_auth {
-                scheduler_config::ServerAuth::Insecure => {
-                    warn!("Scheduler starting with DANGEROUSLY_INSECURE server authentication");
-                    let token = INSECURE_DIST_SERVER_TOKEN;
-                    Box::new(move |server_token| check_server_token(server_token, token))
-                }
-                scheduler_config::ServerAuth::Token { token } => {
-                    Box::new(move |server_token| check_server_token(server_token, &token))
-                }
-                scheduler_config::ServerAuth::JwtHS256 { secret_key } => {
-                    let secret_key = BASE64_URL_SAFE_ENGINE
-                        .decode(secret_key)
-                        .context("Secret key base64 invalid")?;
-                    if secret_key.len() != 256 / 8 {
-                        bail!("Size of secret key incorrect")
+            if matches!(&server_auth, scheduler_config::ServerAuth::Insecure) {
+                warn!("Scheduler starting with DANGEROUSLY_INSECURE server authentication");
+            }
+            startup::run(|notifier| {
+                let check_server_auth: dist::http::ServerAuthCheck = match server_auth {
+                    scheduler_config::ServerAuth::Insecure => {
+                        let token = INSECURE_DIST_SERVER_TOKEN;
+                        Box::new(move |server_token| check_server_token(server_token, token))
                     }
-                    let validation = {
-                        let mut validation = jwt::Validation::new(jwt::Algorithm::HS256);
-                        validation.leeway = 0;
-                        validation.validate_exp = false;
-                        validation.validate_nbf = false;
-                        validation
-                    };
-                    Box::new(move |server_token| {
-                        check_jwt_server_token(server_token, &secret_key, &validation)
-                    })
-                }
-            };
+                    scheduler_config::ServerAuth::Token { token } => {
+                        Box::new(move |server_token| check_server_token(server_token, &token))
+                    }
+                    scheduler_config::ServerAuth::JwtHS256 { secret_key } => {
+                        let secret_key = BASE64_URL_SAFE_ENGINE
+                            .decode(secret_key)
+                            .context("Secret key base64 invalid")?;
+                        if secret_key.len() != 256 / 8 {
+                            bail!("Size of secret key incorrect")
+                        }
+                        let validation = {
+                            let mut validation = jwt::Validation::new(jwt::Algorithm::HS256);
+                            validation.leeway = 0;
+                            validation.validate_exp = false;
+                            validation.validate_nbf = false;
+                            validation
+                        };
+                        Box::new(move |server_token| {
+                            check_jwt_server_token(server_token, &secret_key, &validation)
+                        })
+                    }
+                };
 
-            daemonize(&[])?;
-            let scheduler = Scheduler::new();
-            let http_scheduler = dist::http::Scheduler::new(
-                public_addr,
-                scheduler,
-                check_client_auth,
-                check_server_auth,
-            );
-            http_scheduler.start()?;
-            unreachable!();
+                let check_client_auth: Box<dyn dist::http::ClientAuthCheck> = match client_auth {
+                    scheduler_config::ClientAuth::Insecure => Box::new(token_check::EqCheck::new(
+                        INSECURE_DIST_CLIENT_TOKEN.to_owned(),
+                    )),
+                    scheduler_config::ClientAuth::Token { token } => {
+                        Box::new(token_check::EqCheck::new(token))
+                    }
+                    scheduler_config::ClientAuth::JwtValidate {
+                        audience,
+                        issuer,
+                        jwks_url,
+                    } => Box::new(
+                        token_check::ValidJWTCheck::new(audience, issuer, &jwks_url)
+                            .context("Failed to create a checker for valid JWTs")?,
+                    ),
+                    scheduler_config::ClientAuth::ProxyToken { url, cache_secs } => Box::new(
+                        token_check::ProxyTokenCheck::new(url, cache_secs)
+                            .context("failed to create proxy token checker")?,
+                    ),
+                };
+
+                let scheduler = Scheduler::new();
+                let http_scheduler = dist::http::Scheduler::new(
+                    public_addr,
+                    scheduler,
+                    check_client_auth,
+                    check_server_auth,
+                );
+                http_scheduler.start_with_ready(|| notifier.ready())
+            })
         }
 
         Command::Server(server_config::Config {
